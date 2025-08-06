@@ -8,7 +8,7 @@ import os
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
-from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.automation_engine import AutomationEngine, CommandExecutor, CommandResult, AutomationConfig
 
 
 class TestAutomationEngine:
@@ -18,11 +18,12 @@ class TestAutomationEngine:
         """Test AutomationEngine initialization."""
         with patch('os.makedirs'):
             engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-            
+
             assert engine.github == mock_github_client
             assert engine.gemini == mock_gemini_client
             assert engine.dry_run is True
-            assert engine.reports_dir == "reports"
+            assert engine.config.REPORTS_DIR == "reports"
+            assert hasattr(engine, 'cmd')
     
     @patch('src.auto_coder.automation_engine.datetime')
     def test_run_success(self, mock_datetime, mock_github_client, mock_gemini_client, test_repo_name):
@@ -698,3 +699,79 @@ class TestAutomationEngine:
         assert "3 commits behind main" in result[0]
         assert "Successfully merged main branch" in result[1]
         assert "Pushed updated branch" in result[2]
+
+
+class TestCommandExecutor:
+    """Test cases for CommandExecutor class."""
+
+    @patch('subprocess.run')
+    def test_run_command_success(self, mock_run):
+        """Test successful command execution."""
+        # Setup
+        mock_run.return_value = Mock(returncode=0, stdout="success", stderr="")
+
+        # Execute
+        result = CommandExecutor.run_command(['echo', 'test'])
+
+        # Assert
+        assert result.success is True
+        assert result.stdout == "success"
+        assert result.stderr == ""
+        assert result.returncode == 0
+
+    @patch('subprocess.run')
+    def test_run_command_failure(self, mock_run):
+        """Test failed command execution."""
+        # Setup
+        mock_run.return_value = Mock(returncode=1, stdout="", stderr="error")
+
+        # Execute
+        result = CommandExecutor.run_command(['false'])
+
+        # Assert
+        assert result.success is False
+        assert result.stdout == ""
+        assert result.stderr == "error"
+        assert result.returncode == 1
+
+    @patch('subprocess.run')
+    def test_run_command_timeout(self, mock_run):
+        """Test command timeout handling."""
+        # Setup
+        mock_run.side_effect = subprocess.TimeoutExpired(['sleep', '10'], 5)
+
+        # Execute
+        result = CommandExecutor.run_command(['sleep', '10'], timeout=5)
+
+        # Assert
+        assert result.success is False
+        assert "timed out" in result.stderr
+        assert result.returncode == -1
+
+    def test_auto_timeout_detection(self):
+        """Test automatic timeout detection based on command type."""
+        # Test git command timeout
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+            CommandExecutor.run_command(['git', 'status'])
+            mock_run.assert_called_once()
+            args, kwargs = mock_run.call_args
+            assert kwargs['timeout'] == CommandExecutor.DEFAULT_TIMEOUTS['git']
+
+
+class TestAutomationConfig:
+    """Test cases for AutomationConfig class."""
+
+    def test_default_values(self):
+        """Test default configuration values."""
+        config = AutomationConfig()
+
+        assert config.REPORTS_DIR == "reports"
+        assert config.TEST_SCRIPT_PATH == "scripts/test.sh"
+        assert config.MAX_PR_DIFF_SIZE == 2000
+        assert config.MAX_PROMPT_SIZE == 1000
+        assert config.MAX_RESPONSE_SIZE == 200
+        assert config.MAX_FIX_ATTEMPTS == 3
+        assert config.MAIN_BRANCH == "main"
+        assert config.MERGE_METHOD == "--squash"
+        assert config.MERGE_AUTO is True

@@ -3,12 +3,13 @@ Automation engine for Auto-Coder.
 """
 
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import json
 import os
 import subprocess
 import tempfile
 from datetime import datetime
+from dataclasses import dataclass
 
 from .github_client import GitHubClient
 from .gemini_client import GeminiClient
@@ -17,18 +18,137 @@ from .config import settings
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class AutomationConfig:
+    """Configuration constants for automation engine."""
+
+    # File paths
+    REPORTS_DIR: str = "reports"
+    TEST_SCRIPT_PATH: str = "scripts/test.sh"
+
+    # Limits
+    MAX_PR_DIFF_SIZE: int = 2000
+    MAX_PROMPT_SIZE: int = 1000
+    MAX_RESPONSE_SIZE: int = 200
+    MAX_FIX_ATTEMPTS: int = 3
+
+    # Git settings
+    MAIN_BRANCH: str = "main"
+
+    # GitHub CLI merge options
+    MERGE_METHOD: str = "--squash"
+    MERGE_AUTO: bool = True
+
+
+@dataclass
+class CommandResult:
+    """Result of a command execution."""
+    success: bool
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+class CommandExecutor:
+    """Utility class for executing commands with consistent error handling."""
+
+    # Default timeouts for different command types
+    DEFAULT_TIMEOUTS = {
+        'git': 120,
+        'gh': 60,
+        'test': 3600,
+        'default': 60
+    }
+
+    @classmethod
+    def run_command(
+        cls,
+        cmd: List[str],
+        timeout: Optional[int] = None,
+        cwd: Optional[str] = None,
+        check_success: bool = True
+    ) -> CommandResult:
+        """Run a command with consistent error handling."""
+        if timeout is None:
+            # Auto-detect timeout based on command type
+            cmd_type = cmd[0] if cmd else 'default'
+            timeout = cls.DEFAULT_TIMEOUTS.get(cmd_type, cls.DEFAULT_TIMEOUTS['default'])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=cwd
+            )
+
+            success = result.returncode == 0 if check_success else True
+
+            return CommandResult(
+                success=success,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                returncode=result.returncode
+            )
+
+        except subprocess.TimeoutExpired:
+            logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=f"Command timed out after {timeout}s",
+                returncode=-1
+            )
+        except Exception as e:
+            logger.error(f"Command execution failed: {' '.join(cmd)}: {e}")
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=str(e),
+                returncode=-1
+            )
+
+
 class AutomationEngine:
     """Main automation engine that orchestrates GitHub and Gemini integration."""
-    
-    def __init__(self, github_client: GitHubClient, gemini_client: GeminiClient, dry_run: bool = False):
+
+    def __init__(
+        self,
+        github_client: GitHubClient,
+        gemini_client: GeminiClient,
+        dry_run: bool = False,
+        config: Optional[AutomationConfig] = None
+    ):
         """Initialize automation engine."""
         self.github = github_client
         self.gemini = gemini_client
         self.dry_run = dry_run
-        
+        self.config = config or AutomationConfig()
+        self.cmd = CommandExecutor()
+
         # Create reports directory if it doesn't exist
-        self.reports_dir = "reports"
-        os.makedirs(self.reports_dir, exist_ok=True)
+        os.makedirs(self.config.REPORTS_DIR, exist_ok=True)
+
+    def _handle_error(self, operation: str, error: Exception, context: str = "") -> str:
+        """Standardized error handling."""
+        error_msg = f"Error {operation}"
+        if context:
+            error_msg += f" for {context}"
+        error_msg += f": {error}"
+
+        logger.error(error_msg)
+        return error_msg
+
+    def _log_action(self, action: str, success: bool = True, details: str = "") -> str:
+        """Standardized action logging."""
+        level = logging.INFO if success else logging.ERROR
+        message = action
+        if details:
+            message += f": {details}"
+
+        logger.log(level, message)
+        return message
     
     def run(self, repo_name: str) -> Dict[str, Any]:
         """Run the main automation process."""
@@ -299,35 +419,60 @@ Please proceed with analyzing and taking action on this issue now.
 
         try:
             # Get PR diff for analysis
-            pr_diff = ""
-            try:
-                result = subprocess.run(
-                    ['gh', 'pr', 'diff', str(pr_data['number']), '--repo', repo_name],
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
-                if result.returncode == 0:
-                    pr_diff = result.stdout[:2000]  # Limit diff size
-            except Exception:
-                pr_diff = "Could not retrieve PR diff"
+            pr_diff = self._get_pr_diff(repo_name, pr_data['number'])
 
-            # Create a comprehensive prompt for Gemini CLI
-            action_prompt = f"""
+            # Create analysis prompt
+            action_prompt = self._create_pr_analysis_prompt(repo_name, pr_data, pr_diff)
+
+            # Use Gemini CLI to analyze and take actions
+            self._log_action(f"Applying PR actions directly for PR #{pr_data['number']}")
+            response = self.gemini._run_gemini_cli(action_prompt)
+
+            # Process the response
+            if response and len(response.strip()) > 0:
+                actions.append(f"Gemini CLI analyzed and took action on PR: {response[:self.config.MAX_RESPONSE_SIZE]}...")
+
+                # Check if Gemini indicated the PR should be merged
+                if "merged" in response.lower() or "auto-merge" in response.lower():
+                    actions.append(f"Auto-merged PR #{pr_data['number']} based on analysis")
+                else:
+                    # Add analysis comment
+                    comment = f"## 🤖 Auto-Coder PR Analysis\n\n{response}"
+                    self.github.add_comment_to_issue(repo_name, pr_data['number'], comment)
+                    actions.append(f"Added analysis comment to PR #{pr_data['number']}")
+            else:
+                actions.append("Gemini CLI did not provide a clear response for PR analysis")
+
+        except Exception as e:
+            actions.append(self._handle_error("applying PR actions directly", e))
+
+        return actions
+
+    def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
+        """Get PR diff for analysis."""
+        try:
+            result = self.cmd.run_command(['gh', 'pr', 'diff', str(pr_number), '--repo', repo_name])
+            return result.stdout[:self.config.MAX_PR_DIFF_SIZE] if result.success else "Could not retrieve PR diff"
+        except Exception:
+            return "Could not retrieve PR diff"
+
+    def _create_pr_analysis_prompt(self, repo_name: str, pr_data: Dict[str, Any], pr_diff: str) -> str:
+        """Create a comprehensive prompt for PR analysis."""
+        return f"""
 Analyze the following GitHub Pull Request and take appropriate actions:
 
 Repository: {repo_name}
 PR #{pr_data['number']}: {pr_data['title']}
 
 PR Description:
-{pr_data['body'][:1000]}...
+{pr_data['body'][:self.config.MAX_PROMPT_SIZE]}...
 
 PR Author: {pr_data.get('user', {}).get('login', 'unknown')}
 PR State: {pr_data.get('state', 'open')}
 Draft: {pr_data.get('draft', False)}
 Mergeable: {pr_data.get('mergeable', False)}
 
-PR Changes (first 2000 chars):
+PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
 {pr_diff}
 
 Please analyze this PR and determine the appropriate action:
@@ -351,37 +496,12 @@ Please analyze this PR and determine the appropriate action:
    - Not a draft PR
    - Is mergeable
 
-If auto-merging, use: gh pr merge {pr_data['number']} --repo {repo_name} --squash
+If auto-merging, use: gh pr merge {pr_data['number']} --repo {repo_name} {self.config.MERGE_METHOD}
 
 After taking action, respond with a summary of what you did and why.
 
 Please proceed with analyzing and taking action on this PR now.
 """
-
-            # Use Gemini CLI to analyze and take actions
-            logger.info(f"Applying PR actions directly for PR #{pr_data['number']}")
-            response = self.gemini._run_gemini_cli(action_prompt)
-
-            # Parse the response
-            if response and len(response.strip()) > 0:
-                actions.append(f"Gemini CLI analyzed and took action on PR: {response[:200]}...")
-
-                # Check if Gemini indicated the PR should be merged
-                if "merged" in response.lower() or "auto-merge" in response.lower():
-                    actions.append(f"Auto-merged PR #{pr_data['number']} based on analysis")
-                else:
-                    # Add analysis comment
-                    comment = f"## 🤖 Auto-Coder PR Analysis\n\n{response}"
-                    self.github.add_comment_to_issue(repo_name, pr_data['number'], comment)
-                    actions.append(f"Added analysis comment to PR #{pr_data['number']}")
-            else:
-                actions.append("Gemini CLI did not provide a clear response for PR analysis")
-
-        except Exception as e:
-            logger.error(f"Error applying PR actions directly: {e}")
-            actions.append(f"Error applying PR actions: {e}")
-
-        return actions
 
     def _should_auto_merge_pr(self, analysis: Dict[str, Any], pr_data: Dict[str, Any]) -> bool:
         """Determine if PR should be auto-merged based on analysis."""
@@ -424,20 +544,13 @@ Please proceed with analyzing and taking action on this PR now.
 
         try:
             # Use gh CLI to get PR status checks (text output)
-            cmd = ['gh', 'pr', 'checks', str(pr_number)]
-
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            result = self.cmd.run_command(['gh', 'pr', 'checks', str(pr_number)], check_success=False)
 
             # Note: gh pr checks returns non-zero exit code when some checks fail
             # This is expected behavior, not an error
             if result.returncode != 0 and not result.stdout.strip():
                 # Only treat as error if there's no output (real failure)
-                logger.error(f"Failed to get PR checks for #{pr_number}: {result.stderr}")
+                self._log_action(f"Failed to get PR checks for #{pr_number}", False, result.stderr)
                 return {
                     'success': False,
                     'error': f"Failed to get PR checks: {result.stderr}",
@@ -720,25 +833,17 @@ Please proceed with analyzing and taking action on this PR now.
         pr_number = pr_data['number']
 
         try:
-            # Use gh CLI to checkout the PR
-            cmd = ['gh', 'pr', 'checkout', str(pr_number)]
+            result = self.cmd.run_command(['gh', 'pr', 'checkout', str(pr_number)])
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-
-            if result.returncode == 0:
-                logger.info(f"Successfully checked out PR #{pr_number}")
+            if result.success:
+                self._log_action(f"Successfully checked out PR #{pr_number}")
                 return True
             else:
-                logger.error(f"Failed to checkout PR #{pr_number}: {result.stderr}")
+                self._log_action(f"Failed to checkout PR #{pr_number}", False, result.stderr)
                 return False
 
         except Exception as e:
-            logger.error(f"Error checking out PR #{pr_number}: {e}")
+            self._handle_error("checking out PR", e, f"#{pr_number}")
             return False
 
     def _update_with_main_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
@@ -748,59 +853,35 @@ Please proceed with analyzing and taking action on this PR now.
 
         try:
             # Fetch latest changes from origin
-            result = subprocess.run(
-                ['git', 'fetch', 'origin'],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-
-            if result.returncode != 0:
+            result = self.cmd.run_command(['git', 'fetch', 'origin'])
+            if not result.success:
                 actions.append(f"Failed to fetch latest changes: {result.stderr}")
                 return actions
 
             # Check if main branch has new commits
-            result = subprocess.run(
-                ['git', 'rev-list', '--count', 'HEAD..origin/main'],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-
-            if result.returncode != 0:
+            result = self.cmd.run_command(['git', 'rev-list', '--count', f'HEAD..origin/{self.config.MAIN_BRANCH}'])
+            if not result.success:
                 actions.append(f"Failed to check main branch status: {result.stderr}")
                 return actions
 
             commits_behind = int(result.stdout.strip())
             if commits_behind == 0:
-                actions.append(f"PR #{pr_number} is up to date with main branch")
+                actions.append(f"PR #{pr_number} is up to date with {self.config.MAIN_BRANCH} branch")
                 return actions
 
-            actions.append(f"PR #{pr_number} is {commits_behind} commits behind main, updating...")
+            actions.append(f"PR #{pr_number} is {commits_behind} commits behind {self.config.MAIN_BRANCH}, updating...")
 
             # Try to merge main branch
-            result = subprocess.run(
-                ['git', 'merge', 'origin/main'],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-
-            if result.returncode == 0:
-                actions.append(f"Successfully merged main branch into PR #{pr_number}")
+            result = self.cmd.run_command(['git', 'merge', f'origin/{self.config.MAIN_BRANCH}'])
+            if result.success:
+                actions.append(f"Successfully merged {self.config.MAIN_BRANCH} branch into PR #{pr_number}")
 
                 # Push the updated branch
-                result = subprocess.run(
-                    ['git', 'push'],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-
-                if result.returncode == 0:
+                push_result = self.cmd.run_command(['git', 'push'])
+                if push_result.success:
                     actions.append(f"Pushed updated branch for PR #{pr_number}")
                 else:
-                    actions.append(f"Failed to push updated branch: {result.stderr}")
+                    actions.append(f"Failed to push updated branch: {push_result.stderr}")
             else:
                 # Merge conflict occurred, ask Gemini to resolve it
                 actions.append(f"Merge conflict detected for PR #{pr_number}, asking Gemini to resolve...")
@@ -811,27 +892,15 @@ Please proceed with analyzing and taking action on this PR now.
                 actions.extend(merge_actions)
 
         except Exception as e:
-            logger.error(f"Error updating PR #{pr_number} with main branch: {e}")
-            actions.append(f"Error updating with main branch: {e}")
+            actions.append(self._handle_error("updating with main branch", e, f"PR #{pr_number}"))
 
         return actions
 
     def _get_merge_conflict_info(self) -> str:
         """Get information about merge conflicts."""
         try:
-            # Get status of conflicted files
-            result = subprocess.run(
-                ['git', 'status', '--porcelain'],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-
-            if result.returncode == 0:
-                return result.stdout
-            else:
-                return "Could not get merge conflict information"
-
+            result = self.cmd.run_command(['git', 'status', '--porcelain'])
+            return result.stdout if result.success else "Could not get merge conflict information"
         except Exception as e:
             return f"Error getting conflict info: {e}"
 
@@ -1025,36 +1094,25 @@ Please proceed with fixing these GitHub Actions failures now.
         """Commit the applied changes to git."""
         try:
             # Add all modified files
-            result = subprocess.run(
-                ['git', 'add', '.'],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-
-            if result.returncode != 0:
-                return f"Failed to add files to git: {result.stderr}"
+            add_result = self.cmd.run_command(['git', 'add', '.'])
+            if not add_result.success:
+                return f"Failed to add files to git: {add_result.stderr}"
 
             # Create commit message
             summary = fix_suggestion.get('summary', 'Auto-Coder fix')
             commit_message = f"Auto-Coder: {summary}"
 
             # Commit the changes
-            result = subprocess.run(
-                ['git', 'commit', '-m', commit_message],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            commit_result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
 
-            if result.returncode == 0:
+            if commit_result.success:
                 return f"Committed changes: {commit_message}"
             else:
                 # Check if there were no changes to commit
-                if 'nothing to commit' in result.stdout:
+                if 'nothing to commit' in commit_result.stdout:
                     return "No changes to commit"
                 else:
-                    return f"Failed to commit changes: {result.stderr}"
+                    return f"Failed to commit changes: {commit_result.stderr}"
 
         except Exception as e:
             return f"Error committing changes: {e}"
@@ -1064,82 +1122,60 @@ Please proceed with fixing these GitHub Actions failures now.
         pr_number = pr_data['number']
 
         try:
-            # Check if scripts/test.sh exists
-            test_script = "scripts/test.sh"
-            if not os.path.exists(test_script):
-                logger.warning(f"Test script {test_script} not found, skipping tests")
-                return {'success': True, 'output': 'No test script found', 'errors': []}
+            # Check if test script exists
+            if not os.path.exists(self.config.TEST_SCRIPT_PATH):
+                logger.warning(f"Test script {self.config.TEST_SCRIPT_PATH} not found, skipping tests")
+                return {'success': True, 'output': 'No test script found', 'errors': ''}
 
             # Run the test script
-            logger.info(f"Running tests for PR #{pr_number}")
-            result = subprocess.run(
-                ['bash', test_script],
-                capture_output=True,
-                text=True,
-                timeout=3600  # 60 minutes timeout
-            )
+            self._log_action(f"Running tests for PR #{pr_number}")
+            result = self.cmd.run_command(['bash', self.config.TEST_SCRIPT_PATH], timeout=self.cmd.DEFAULT_TIMEOUTS['test'])
 
-            success = result.returncode == 0
-            output = result.stdout
-            errors = result.stderr
-
-            logger.info(f"Test result for PR #{pr_number}: {'PASS' if success else 'FAIL'}")
+            self._log_action(f"Test result for PR #{pr_number}: {'PASS' if result.success else 'FAIL'}")
 
             return {
-                'success': success,
-                'output': output,
-                'errors': errors,
+                'success': result.success,
+                'output': result.stdout,
+                'errors': result.stderr,
                 'return_code': result.returncode
             }
 
-        except subprocess.TimeoutExpired:
-            logger.error(f"Tests timed out for PR #{pr_number}")
-            return {
-                'success': False,
-                'output': '',
-                'errors': 'Tests timed out after 60 minutes',
-                'return_code': -1
-            }
         except Exception as e:
-            logger.error(f"Failed to run tests for PR #{pr_number}: {e}")
+            error_msg = self._handle_error("running tests", e, f"PR #{pr_number}")
             return {
                 'success': False,
                 'output': '',
-                'errors': str(e),
+                'errors': error_msg,
                 'return_code': -1
             }
 
     def _merge_pr(self, repo_name: str, pr_number: int, analysis: Dict[str, Any]) -> bool:
         """Merge a PR using GitHub CLI."""
         try:
-            # Use gh CLI to merge the PR
-            cmd = ['gh', 'pr', 'merge', str(pr_number), '--auto', '--squash']
+            cmd = ['gh', 'pr', 'merge', str(pr_number)]
+            if self.config.MERGE_AUTO:
+                cmd.append('--auto')
+            cmd.append(self.config.MERGE_METHOD)
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            result = self.cmd.run_command(cmd)
 
-            if result.returncode == 0:
-                logger.info(f"Successfully merged PR #{pr_number}")
+            if result.success:
+                self._log_action(f"Successfully merged PR #{pr_number}")
                 return True
             else:
-                logger.error(f"Failed to merge PR #{pr_number}: {result.stderr}")
+                self._log_action(f"Failed to merge PR #{pr_number}", False, result.stderr)
                 return False
 
         except Exception as e:
-            logger.error(f"Error merging PR #{pr_number}: {e}")
+            self._handle_error("merging PR", e, f"#{pr_number}")
             return False
 
     def _fix_pr_test_failures(self, repo_name: str, pr_data: Dict[str, Any], test_result: Dict[str, Any]) -> List[str]:
         """Attempt to fix PR test failures using Gemini."""
         actions = []
         pr_number = pr_data['number']
-        max_attempts = 3
 
-        for attempt in range(max_attempts):
+        for attempt in range(self.config.MAX_FIX_ATTEMPTS):
             try:
                 # Extract important error information
                 error_summary = self._extract_important_errors(test_result)
@@ -1414,9 +1450,9 @@ Please provide a fix suggestion in the following JSON format:
     def _save_report(self, data: Dict[str, Any], filename: str) -> None:
         """Save report to file."""
         try:
-            filepath = os.path.join(self.reports_dir, f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            filepath = os.path.join(self.config.REPORTS_DIR, f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            logger.info(f"Report saved to {filepath}")
+            self._log_action(f"Report saved to {filepath}")
         except Exception as e:
-            logger.error(f"Failed to save report {filename}: {e}")
+            self._handle_error("saving report", e, filename)
