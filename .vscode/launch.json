@@ -1,0 +1,69 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Auto-Coder: Process Issues (Dry Run)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/home/ubuntu/src/outliner",
+            "args": [
+                "process-issues",
+                "--dry-run"
+            ],
+            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "env": {
+                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+            }
+        },
+        {
+            "name": "Auto-Coder: Create Feature Issues",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/home/ubuntu/src/outliner",
+            "args": [
+                "create-feature-issues"
+            ],
+            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "env": {
+                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+            }
+        },
+        {
+            "name": "Auto-Coder: Auth Status",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/home/ubuntu/src/outliner",
+            "args": [
+                "auth-status"
+            ],
+            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "env": {
+                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+            }
+        },
+        {
+            "name": "Auto-Coder: Process Issues (Live)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/home/ubuntu/src/outliner",
+            "args": [
+                "process-issues"
+            ],
+            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "env": {
+                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+            }
+        }
+    ]
+}

@@ -1,0 +1,240 @@
+---
+# Auto-Coder Client Features Documentation
+# This file documents all features implemented in the Auto-Coder application
+
+application:
+  name: "Auto-Coder"
+  version: "0.1.0"
+  description: "Automated application development using Gemini CLI and GitHub integration"
+
+features:
+  github_integration:
+    name: "GitHub API Integration"
+    description: "Integration with GitHub API to fetch and manage issues and pull requests"
+    components:
+      - name: "GitHubClient"
+        file: "src/auto_coder/github_client.py"
+        methods:
+          - name: "get_repository"
+            description: "Retrieve repository object by name"
+            parameters: ["repo_name"]
+            returns: "Repository object"
+          - name: "get_open_issues"
+            description: "Fetch open issues from repository"
+            parameters: ["repo_name", "limit"]
+            returns: "List of Issue objects"
+          - name: "get_open_pull_requests"
+            description: "Fetch open pull requests from repository"
+            parameters: ["repo_name", "limit"]
+            returns: "List of PullRequest objects"
+          - name: "get_issue_details"
+            description: "Extract detailed information from an issue"
+            parameters: ["issue"]
+            returns: "Dictionary with issue details"
+          - name: "get_pr_details"
+            description: "Extract detailed information from a pull request"
+            parameters: ["pr"]
+            returns: "Dictionary with PR details"
+          - name: "create_issue"
+            description: "Create a new issue in the repository"
+            parameters: ["repo_name", "title", "body", "labels"]
+            returns: "Issue object"
+          - name: "add_comment_to_issue"
+            description: "Add a comment to an existing issue"
+            parameters: ["repo_name", "issue_number", "comment"]
+            returns: "None"
+          - name: "close_issue"
+            description: "Close an issue with optional comment"
+            parameters: ["repo_name", "issue_number", "comment"]
+            returns: "None"
+
+  gemini_integration:
+    name: "Gemini AI Integration"
+    description: "Integration with Gemini AI for analyzing issues and generating solutions"
+    components:
+      - name: "GeminiClient"
+        file: "src/auto_coder/gemini_client.py"
+        methods:
+          - name: "analyze_issue"
+            description: "Analyze a GitHub issue and provide recommendations"
+            parameters: ["issue_data"]
+            returns: "Dictionary with analysis results"
+          - name: "analyze_pull_request"
+            description: "Analyze a GitHub pull request and provide recommendations"
+            parameters: ["pr_data"]
+            returns: "Dictionary with analysis results"
+          - name: "suggest_features"
+            description: "Suggest new features based on repository analysis"
+            parameters: ["repo_context"]
+            returns: "List of feature suggestions"
+          - name: "generate_solution"
+            description: "Generate a solution for a specific issue"
+            parameters: ["issue_data", "analysis"]
+            returns: "Dictionary with solution details"
+
+  automation_engine:
+    name: "Automation Engine"
+    description: "Main orchestration engine that coordinates GitHub and Gemini integration"
+    components:
+      - name: "AutomationEngine"
+        file: "src/auto_coder/automation_engine.py"
+        methods:
+          - name: "run"
+            description: "Execute the main automation process for a repository"
+            parameters: ["repo_name"]
+            returns: "Dictionary with automation results"
+          - name: "create_feature_issues"
+            description: "Analyze repository and create feature enhancement issues"
+            parameters: ["repo_name"]
+            returns: "List of created issues"
+          - name: "_process_issues"
+            description: "Process open issues in the repository"
+            parameters: ["repo_name"]
+            returns: "List of processed issues"
+          - name: "_process_pull_requests"
+            description: "Process open pull requests in the repository"
+            parameters: ["repo_name"]
+            returns: "List of processed PRs"
+          - name: "_take_issue_actions"
+            description: "Take automated actions based on issue analysis"
+            parameters: ["repo_name", "issue_data", "analysis", "solution"]
+            returns: "List of actions taken"
+          - name: "_take_pr_actions"
+            description: "Take automated actions based on PR analysis"
+            parameters: ["repo_name", "pr_data", "analysis"]
+            returns: "List of actions taken"
+
+  cli_interface:
+    name: "Command Line Interface"
+    description: "CLI for interacting with Auto-Coder functionality"
+    components:
+      - name: "CLI Commands"
+        file: "src/auto_coder/cli.py"
+        commands:
+          - name: "process-issues"
+            description: "Process GitHub issues and PRs using Gemini CLI"
+            options:
+              - "--repo": "GitHub repository (owner/repo)"
+              - "--github-token": "GitHub API token"
+              - "--gemini-api-key": "Gemini API key"
+              - "--dry-run": "Run in dry-run mode without making changes"
+          - name: "create-feature-issues"
+            description: "Analyze repository and create feature enhancement issues"
+            options:
+              - "--repo": "GitHub repository (owner/repo)"
+              - "--github-token": "GitHub API token"
+              - "--gemini-api-key": "Gemini API key"
+
+  configuration:
+    name: "Configuration Management"
+    description: "Application configuration and settings management"
+    components:
+      - name: "Settings"
+        file: "src/auto_coder/config.py"
+        settings:
+          - name: "github_token"
+            description: "GitHub API token"
+            env_var: "GITHUB_TOKEN"
+            default: null
+          - name: "github_api_url"
+            description: "GitHub API URL"
+            env_var: "GITHUB_API_URL"
+            default: "https://api.github.com"
+          - name: "gemini_api_key"
+            description: "Gemini API key"
+            env_var: "GEMINI_API_KEY"
+            default: null
+          - name: "gemini_model"
+            description: "Gemini model to use"
+            env_var: "GEMINI_MODEL"
+            default: "gemini-pro"
+          - name: "max_issues_per_run"
+            description: "Maximum issues to process per run"
+            env_var: "MAX_ISSUES_PER_RUN"
+            default: 10
+          - name: "max_prs_per_run"
+            description: "Maximum PRs to process per run"
+            env_var: "MAX_PRS_PER_RUN"
+            default: 5
+          - name: "dry_run"
+            description: "Enable dry-run mode"
+            env_var: "DRY_RUN"
+            default: false
+
+workflows:
+  issue_processing:
+    name: "Issue Processing Workflow"
+    description: "Automated workflow for processing GitHub issues"
+    steps:
+      1. "Fetch open issues from repository"
+      2. "Analyze each issue using Gemini AI"
+      3. "Generate solutions for high-priority issues"
+      4. "Add analysis comments to issues"
+      5. "Auto-close duplicate or invalid issues"
+      6. "Generate automation report"
+
+  pr_processing:
+    name: "Pull Request Processing Workflow"
+    description: "Automated workflow for processing GitHub pull requests"
+    steps:
+      1. "Fetch open pull requests from repository"
+      2. "Analyze each PR using Gemini AI"
+      3. "Add analysis comments to PRs"
+      4. "Generate automation report"
+
+  feature_suggestion:
+    name: "Feature Suggestion Workflow"
+    description: "Automated workflow for suggesting and creating feature issues"
+    steps:
+      1. "Analyze repository context"
+      2. "Generate feature suggestions using Gemini AI"
+      3. "Create feature issues in repository"
+      4. "Generate feature suggestions report"
+
+testing:
+  unit_tests:
+    description: "Unit tests for individual components"
+    files:
+      - "tests/test_github_client.py"
+      - "tests/test_gemini_client.py"
+      - "tests/test_automation_engine.py"
+      - "tests/test_cli.py"
+      - "tests/test_config.py"
+    coverage: "All public methods and error conditions"
+
+  integration_tests:
+    description: "Integration tests for component interactions"
+    included_in: "tests/test_automation_engine.py"
+    coverage: "GitHub-Gemini integration, CLI-Engine integration"
+
+  e2e_tests:
+    description: "End-to-end tests for complete workflows"
+    files:
+      - "tests/test_e2e.py"
+    coverage: "Complete automation workflows, CLI integration"
+
+deployment:
+  installation:
+    method: "pip install"
+    requirements: "Python 3.9+"
+    dependencies: "Listed in pyproject.toml"
+
+  configuration:
+    environment_variables:
+      required:
+        - "GITHUB_TOKEN"
+        - "GEMINI_API_KEY"
+      optional:
+        - "GITHUB_API_URL"
+        - "GEMINI_MODEL"
+        - "MAX_ISSUES_PER_RUN"
+        - "MAX_PRS_PER_RUN"
+        - "DRY_RUN"
+        - "LOG_LEVEL"
+
+  usage:
+    examples:
+      - command: "auto-coder process-issues --repo owner/repo --dry-run"
+        description: "Process issues in dry-run mode"
+      - command: "auto-coder create-feature-issues --repo owner/repo"
+        description: "Create feature enhancement issues"
