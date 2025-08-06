@@ -395,21 +395,35 @@ Please proceed with analyzing and taking action on this issue now.
         return actions
 
     def _take_pr_actions(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
-        """Take actions on a PR using direct Gemini CLI analysis."""
+        """Take actions on a PR including merge handling and analysis."""
         actions = []
         pr_number = pr_data['number']
 
         try:
             if self.dry_run:
-                actions.append(f"[DRY RUN] Would analyze and take actions on PR #{pr_number}")
+                actions.append(f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}")
+                # In dry run, still show what merge actions would be taken
+                dry_run_analysis = {'category': 'feature', 'risk_level': 'low'}  # Mock analysis
+                merge_actions = self._handle_pr_merge(repo_name, pr_data, dry_run_analysis)
+                actions.extend(merge_actions)
             else:
-                # Ask Gemini CLI to analyze the PR and take appropriate actions
-                action_results = self._apply_pr_actions_directly(repo_name, pr_data)
-                actions.extend(action_results)
+                # First, handle the merge process (GitHub Actions, testing, etc.)
+                # This doesn't depend on Gemini analysis
+                merge_actions = self._handle_pr_merge(repo_name, pr_data, {})
+                actions.extend(merge_actions)
+
+                # If merge process completed successfully (PR was merged), skip analysis
+                if any("Successfully merged" in action for action in merge_actions):
+                    actions.append(f"PR #{pr_number} was merged, skipping further analysis")
+                elif any("skipping to next PR" in action.lower() for action in merge_actions):
+                    actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
+                else:
+                    # Only do Gemini analysis if merge process didn't complete
+                    analysis_results = self._apply_pr_actions_directly(repo_name, pr_data)
+                    actions.extend(analysis_results)
 
         except Exception as e:
-            logger.error(f"Error taking actions on PR #{pr_number}: {e}")
-            actions.append(f"Error processing PR #{pr_number}: {e}")
+            actions.append(self._handle_error("taking PR actions", e, f"PR #{pr_number}"))
 
         return actions
 
@@ -502,6 +516,8 @@ After taking action, respond with a summary of what you did and why.
 
 Please proceed with analyzing and taking action on this PR now.
 """
+
+
 
     def _should_auto_merge_pr(self, analysis: Dict[str, Any], pr_data: Dict[str, Any]) -> bool:
         """Determine if PR should be auto-merged based on analysis."""
@@ -747,23 +763,23 @@ Please proceed with analyzing and taking action on this PR now.
         return '\n\n'.join(logs) if logs else "No detailed logs available"
 
     def _handle_pr_merge(self, repo_name: str, pr_data: Dict[str, Any], analysis: Dict[str, Any]) -> List[str]:
-        """Handle PR merge process including testing."""
+        """Handle PR merge process following the intended flow."""
         actions = []
         pr_number = pr_data['number']
 
         try:
-            # First, check GitHub Actions status
+            # Step 1: Check GitHub Actions status
             github_checks = self._check_github_actions_status(repo_name, pr_data)
 
-            # Skip if GitHub Actions are still in progress
+            # Step 2: Skip if GitHub Actions are still in progress
             if github_checks.get('in_progress', False):
-                actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping")
+                actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
                 return actions
 
+            # Step 3: If GitHub Actions passed, merge directly
             if github_checks['success']:
                 actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
-                # If GitHub Actions passed, merge directly without local testing
                 if not self.dry_run:
                     merge_result = self._merge_pr(repo_name, pr_number, analysis)
                     if merge_result:
@@ -772,61 +788,206 @@ Please proceed with analyzing and taking action on this PR now.
                         actions.append(f"Failed to merge PR #{pr_number}")
                 else:
                     actions.append(f"[DRY RUN] Would merge PR #{pr_number}")
-            else:
-                # GitHub Actions failed
-                failed_checks = github_checks.get('failed_checks', [])
-                actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
+                return actions
 
-                # Checkout the PR branch for local testing and fixes
-                checkout_result = self._checkout_pr_branch(repo_name, pr_data)
-                if not checkout_result:
-                    actions.append(f"Failed to checkout PR #{pr_number} branch")
-                    return actions
+            # Step 4: GitHub Actions failed - checkout PR branch
+            failed_checks = github_checks.get('failed_checks', [])
+            actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
-                actions.append(f"Checked out PR #{pr_number} branch")
+            checkout_result = self._checkout_pr_branch(repo_name, pr_data)
+            if not checkout_result:
+                actions.append(f"Failed to checkout PR #{pr_number} branch")
+                return actions
 
-                # Update with latest main branch commits
-                update_actions = self._update_with_main_branch(repo_name, pr_data)
-                actions.extend(update_actions)
+            actions.append(f"Checked out PR #{pr_number} branch")
 
-                # If main branch update required pushing changes, skip to next PR for GitHub Actions check
-                if any("Pushed updated branch" in action for action in update_actions):
-                    actions.append(f"Updated PR #{pr_number} with main branch, skipping to next PR for GitHub Actions check")
-                    return actions
+            # Step 5: Update with latest main branch commits
+            update_actions = self._update_with_main_branch(repo_name, pr_data)
+            actions.extend(update_actions)
 
-                # Get GitHub Actions error logs and ask Gemini for initial fix
+            # Step 6: If main branch update required pushing changes, skip to next PR
+            if any("Pushed updated branch" in action for action in update_actions):
+                actions.append(f"Updated PR #{pr_number} with main branch, skipping to next PR for GitHub Actions check")
+                return actions
+
+            # Step 7: If no main branch updates were needed, the test failures are due to PR content
+            # Get GitHub Actions error logs and ask Gemini to fix
+            if any("up to date with" in action for action in update_actions):
+                actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
+
+                # Fix PR issues using GitHub Actions logs first, then local tests
                 if failed_checks:
                     github_logs = self._get_github_actions_logs(repo_name, failed_checks)
-                    initial_fix_actions = self._fix_github_actions_failures(repo_name, pr_data, github_logs)
-                    actions.extend(initial_fix_actions)
+                    fix_actions = self._fix_pr_issues_with_testing(repo_name, pr_data, github_logs)
+                    actions.extend(fix_actions)
+                else:
+                    actions.append(f"No specific failed checks found for PR #{pr_number}")
+            else:
+                # If we reach here, some other update action occurred
+                actions.append(f"PR #{pr_number} processing completed")
 
-                # Then run local tests and continue with local testing loop
+        except Exception as e:
+            actions.append(self._handle_error("handling PR merge", e, f"PR #{pr_number}"))
+
+        return actions
+
+    def _fix_pr_issues_with_testing(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
+        """Fix PR issues using GitHub Actions logs first, then local testing loop."""
+        actions = []
+        pr_number = pr_data['number']
+
+        try:
+            # Step 1: Initial fix using GitHub Actions logs
+            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+
+            initial_fix_actions = self._apply_github_actions_fix(repo_name, pr_data, github_logs)
+            actions.extend(initial_fix_actions)
+
+            # Step 2: Local testing and iterative fixing loop
+            for attempt in range(self.config.MAX_FIX_ATTEMPTS):
+                actions.append(f"Running local tests (attempt {attempt + 1}/{self.config.MAX_FIX_ATTEMPTS})")
+
                 test_result = self._run_pr_tests(repo_name, pr_data)
 
                 if test_result['success']:
-                    actions.append(f"Local tests passed for PR #{pr_number}")
+                    actions.append(f"Local tests passed on attempt {attempt + 1}")
 
-                    # Merge the PR
+                    # Commit and push the successful fix
                     if not self.dry_run:
-                        merge_result = self._merge_pr(repo_name, pr_number, analysis)
-                        if merge_result:
-                            actions.append(f"Successfully merged PR #{pr_number}")
-                        else:
-                            actions.append(f"Failed to merge PR #{pr_number}")
+                        commit_result = self._commit_and_push_fix(pr_data, f"Fix PR issues (attempt {attempt + 1})")
+                        actions.append(commit_result)
                     else:
-                        actions.append(f"[DRY RUN] Would merge PR #{pr_number}")
-                else:
-                    actions.append(f"Local tests failed for PR #{pr_number}, attempting to fix")
+                        actions.append(f"[DRY RUN] Would commit and push fix for PR #{pr_number}")
 
-                    # Attempt to fix local test failures
-                    fix_actions = self._fix_pr_test_failures(repo_name, pr_data, test_result)
-                    actions.extend(fix_actions)
+                    break
+                else:
+                    actions.append(f"Local tests failed on attempt {attempt + 1}")
+
+                    if attempt < self.config.MAX_FIX_ATTEMPTS - 1:
+                        # Apply local test failure fix
+                        local_fix_actions = self._apply_local_test_fix(repo_name, pr_data, test_result)
+                        actions.extend(local_fix_actions)
+                    else:
+                        actions.append(f"Max fix attempts ({self.config.MAX_FIX_ATTEMPTS}) reached for PR #{pr_number}")
 
         except Exception as e:
-            logger.error(f"Failed to handle PR merge for #{pr_number}: {e}")
-            actions.append(f"Error handling PR merge: {e}")
+            actions.append(self._handle_error("fixing PR issues with testing", e, f"PR #{pr_number}"))
 
         return actions
+
+    def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
+        """Apply initial fix using GitHub Actions error logs."""
+        actions = []
+        pr_number = pr_data['number']
+
+        try:
+            # Create prompt for GitHub Actions error fix
+            fix_prompt = f"""
+Fix the following GitHub Actions test failures for PR #{pr_number}:
+
+Repository: {repo_name}
+PR Title: {pr_data.get('title', 'Unknown')}
+
+GitHub Actions Error Logs:
+{github_logs[:self.config.MAX_PROMPT_SIZE]}
+
+Please analyze the errors and provide specific code fixes to resolve the test failures.
+Focus on the root cause of the failures and provide complete, working code solutions.
+
+After analyzing, apply the necessary fixes to the codebase.
+"""
+
+            if not self.dry_run:
+                response = self.gemini._run_gemini_cli(fix_prompt)
+                if response:
+                    actions.append(f"Applied GitHub Actions fix: {response[:self.config.MAX_RESPONSE_SIZE]}...")
+                else:
+                    actions.append("No response from Gemini for GitHub Actions fix")
+            else:
+                actions.append(f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}")
+
+        except Exception as e:
+            actions.append(self._handle_error("applying GitHub Actions fix", e, f"PR #{pr_number}"))
+
+        return actions
+
+    def _apply_local_test_fix(self, repo_name: str, pr_data: Dict[str, Any], test_result: Dict[str, Any]) -> List[str]:
+        """Apply fix using local test failure logs."""
+        actions = []
+        pr_number = pr_data['number']
+
+        try:
+            # Extract important error information
+            error_summary = self._extract_important_errors(test_result)
+
+            if not error_summary:
+                actions.append(f"No actionable errors found in local test output for PR #{pr_number}")
+                return actions
+
+            # Create prompt for local test error fix
+            fix_prompt = f"""
+Fix the following local test failures for PR #{pr_number}:
+
+Repository: {repo_name}
+PR Title: {pr_data.get('title', 'Unknown')}
+
+Test Output:
+{test_result.get('output', '')[:self.config.MAX_PROMPT_SIZE]}
+
+Test Errors:
+{test_result.get('errors', '')[:self.config.MAX_PROMPT_SIZE]}
+
+Key Errors:
+{error_summary}
+
+Please analyze the test failures and provide specific code fixes.
+Focus on making the tests pass while maintaining code quality.
+
+After analyzing, apply the necessary fixes to the codebase.
+"""
+
+            if not self.dry_run:
+                response = self.gemini._run_gemini_cli(fix_prompt)
+                if response:
+                    actions.append(f"Applied local test fix: {response[:self.config.MAX_RESPONSE_SIZE]}...")
+                else:
+                    actions.append("No response from Gemini for local test fix")
+            else:
+                actions.append(f"[DRY RUN] Would apply local test fix for PR #{pr_number}")
+
+        except Exception as e:
+            actions.append(self._handle_error("applying local test fix", e, f"PR #{pr_number}"))
+
+        return actions
+
+    def _commit_and_push_fix(self, pr_data: Dict[str, Any], commit_message: str) -> str:
+        """Commit and push the applied fixes."""
+        try:
+            # Add all modified files
+            add_result = self.cmd.run_command(['git', 'add', '.'])
+            if not add_result.success:
+                return f"Failed to add files to git: {add_result.stderr}"
+
+            # Commit the changes
+            full_commit_message = f"Auto-Coder: {commit_message}"
+            commit_result = self.cmd.run_command(['git', 'commit', '-m', full_commit_message])
+
+            if commit_result.success:
+                # Push the changes
+                push_result = self.cmd.run_command(['git', 'push'])
+                if push_result.success:
+                    return f"Successfully committed and pushed: {commit_message}"
+                else:
+                    return f"Committed but failed to push: {push_result.stderr}"
+            else:
+                # Check if there were no changes to commit
+                if 'nothing to commit' in commit_result.stdout:
+                    return "No changes to commit"
+                else:
+                    return f"Failed to commit changes: {commit_result.stderr}"
+
+        except Exception as e:
+            return f"Error committing and pushing changes: {e}"
 
     def _checkout_pr_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
         """Checkout the PR branch for local testing."""
@@ -1170,117 +1331,7 @@ Please proceed with fixing these GitHub Actions failures now.
             self._handle_error("merging PR", e, f"#{pr_number}")
             return False
 
-    def _fix_pr_test_failures(self, repo_name: str, pr_data: Dict[str, Any], test_result: Dict[str, Any]) -> List[str]:
-        """Attempt to fix PR test failures using Gemini."""
-        actions = []
-        pr_number = pr_data['number']
 
-        for attempt in range(self.config.MAX_FIX_ATTEMPTS):
-            try:
-                # Extract important error information
-                error_summary = self._extract_important_errors(test_result)
-
-                if not error_summary:
-                    actions.append(f"No actionable errors found in test output for PR #{pr_number}")
-                    break
-
-                # Ask Gemini to directly fix the issues
-                if self.dry_run:
-                    actions.append(f"[DRY RUN] Would apply fix for PR #{pr_number} based on error: {error_summary[:100]}...")
-                else:
-                    fix_actions = self._apply_local_test_fixes_directly(pr_data, error_summary)
-                    actions.extend(fix_actions)
-
-                    # Also add a comment documenting what was done
-                    if fix_actions:
-                        fix_comment = self._format_direct_test_fix_comment(pr_data, error_summary, fix_actions)
-                        self.github.add_comment_to_issue(repo_name, pr_number, fix_comment)
-                        actions.append(f"Applied local test fixes and added comment to PR #{pr_number}")
-
-                # Re-run tests to see if the issue is resolved
-                new_test_result = self._run_pr_tests(repo_name, pr_data)
-
-                if new_test_result['success']:
-                    actions.append(f"Tests now pass for PR #{pr_number} after fix attempt {attempt + 1}")
-                    break
-                else:
-                    test_result = new_test_result  # Update for next iteration
-                    actions.append(f"Tests still failing for PR #{pr_number} after fix attempt {attempt + 1}")
-
-            except Exception as e:
-                logger.error(f"Error in fix attempt {attempt + 1} for PR #{pr_number}: {e}")
-                actions.append(f"Error in fix attempt {attempt + 1}: {e}")
-
-        return actions
-
-    def _apply_local_test_fixes_directly(self, pr_data: Dict[str, Any], error_summary: str) -> List[str]:
-        """Ask Gemini CLI to directly fix local test failures."""
-        actions = []
-
-        try:
-            # Create a direct fix prompt for Gemini CLI
-            fix_prompt = f"""
-The following local tests are failing for PR #{pr_data['number']}: {pr_data['title']}
-
-PR Description:
-{pr_data['body'][:500]}...
-
-Test Error Summary:
-{error_summary}
-
-Please analyze the test failures and directly fix the issues by:
-1. Modifying the necessary files to resolve the test failures
-2. Running any required commands (like installing dependencies, updating configs, etc.)
-3. Ensuring all changes are syntactically correct and follow best practices
-4. Making sure the fixes don't break other functionality
-
-After applying the fixes, respond with a summary of what you changed.
-
-Please proceed with fixing these test failures now.
-"""
-
-            # Use Gemini CLI to apply the fixes directly
-            logger.info(f"Applying local test fixes directly for PR #{pr_data['number']}")
-            response = self.gemini._run_gemini_cli(fix_prompt)
-
-            # Parse the response
-            if response and len(response.strip()) > 0:
-                actions.append(f"Gemini CLI applied local test fixes: {response[:200]}...")
-
-                # Commit the changes
-                commit_action = self._commit_changes({'summary': f"Fix local tests for PR #{pr_data['number']}"})
-                actions.append(commit_action)
-            else:
-                actions.append("Gemini CLI did not provide a clear response for local test fixes")
-
-        except Exception as e:
-            logger.error(f"Error applying local test fixes directly: {e}")
-            actions.append(f"Error applying local test fixes: {e}")
-
-        return actions
-
-    def _format_direct_test_fix_comment(self, pr_data: Dict[str, Any], error_summary: str, fix_actions: List[str]) -> str:
-        """Format a comment documenting the direct test fixes applied."""
-        comment = f"## 🔧 Auto-Coder Applied Local Test Fixes\n\n"
-        comment += f"**PR:** #{pr_data['number']} - {pr_data['title']}\n\n"
-        comment += f"**Local Test Failures Detected**\n\n"
-
-        # Show a summary of the errors (first few lines)
-        error_lines = error_summary.split('\n')[:10]
-        comment += "**Error Summary:**\n```\n"
-        comment += '\n'.join(error_lines)
-        if len(error_summary.split('\n')) > 10:
-            comment += "\n... (truncated)"
-        comment += "\n```\n\n"
-
-        if fix_actions:
-            comment += "**Applied Fixes:**\n"
-            for action in fix_actions:
-                comment += f"- {action}\n"
-            comment += "\n"
-
-        comment += "*These fixes were applied automatically by Auto-Coder using Gemini CLI.*"
-        return comment
 
     def _extract_important_errors(self, test_result: Dict[str, Any]) -> str:
         """Extract important error information from test output."""

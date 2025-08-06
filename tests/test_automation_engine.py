@@ -775,3 +775,126 @@ class TestAutomationConfig:
         assert config.MAIN_BRANCH == "main"
         assert config.MERGE_METHOD == "--squash"
         assert config.MERGE_AUTO is True
+
+
+class TestAutomationEngineExtended:
+    """Extended test cases for AutomationEngine."""
+
+    def test_handle_pr_merge_in_progress(self, mock_github_client, mock_gemini_client):
+        """Test PR merge handling when GitHub Actions are in progress."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+
+        # Mock GitHub Actions in progress
+        with patch.object(engine, '_check_github_actions_status') as mock_check:
+            mock_check.return_value = {'success': False, 'in_progress': True, 'checks': []}
+
+            # Execute
+            result = engine._handle_pr_merge('test/repo', pr_data, {})
+
+            # Assert
+            assert len(result) == 1
+            assert "still in progress" in result[0]
+            assert "skipping to next PR" in result[0]
+
+    def test_handle_pr_merge_success(self, mock_github_client, mock_gemini_client):
+        """Test PR merge handling when GitHub Actions pass."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+
+        # Mock GitHub Actions success
+        with patch.object(engine, '_check_github_actions_status') as mock_check:
+            mock_check.return_value = {'success': True, 'in_progress': False, 'checks': []}
+
+            # Execute
+            result = engine._handle_pr_merge('test/repo', pr_data, {})
+
+            # Assert
+            assert len(result) == 2
+            assert "All GitHub Actions checks passed" in result[0]
+            assert "[DRY RUN] Would merge" in result[1]
+
+    def test_handle_pr_merge_with_integrated_fix(self, mock_github_client, mock_gemini_client):
+        """Test PR merge handling with integrated GitHub Actions and local test fixing."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+        failed_checks = [{'name': 'test', 'status': 'failed'}]
+
+        # Mock GitHub Actions failure, checkout success, and up-to-date branch
+        with patch.object(engine, '_check_github_actions_status') as mock_check, \
+             patch.object(engine, '_checkout_pr_branch') as mock_checkout, \
+             patch.object(engine, '_update_with_main_branch') as mock_update, \
+             patch.object(engine, '_get_github_actions_logs') as mock_logs, \
+             patch.object(engine, '_fix_pr_issues_with_testing') as mock_fix:
+
+            mock_check.return_value = {'success': False, 'in_progress': False, 'failed_checks': failed_checks}
+            mock_checkout.return_value = True
+            mock_update.return_value = ["PR #123 is up to date with main branch"]
+            mock_logs.return_value = "Test failed: assertion error"
+            mock_fix.return_value = ["Applied GitHub Actions fix", "Local tests passed", "Committed and pushed fix"]
+
+            # Execute
+            result = engine._handle_pr_merge('test/repo', pr_data, {})
+
+            # Assert
+            assert any("up to date with main branch" in action for action in result)
+            assert any("test failures are due to PR content" in action for action in result)
+            mock_logs.assert_called_once_with('test/repo', failed_checks)
+            mock_fix.assert_called_once_with('test/repo', pr_data, "Test failed: assertion error")
+
+    def test_fix_pr_issues_with_testing_success(self, mock_github_client, mock_gemini_client):
+        """Test integrated PR issue fixing with successful local tests."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+        github_logs = "Test failed: assertion error"
+
+        # Mock successful test after initial fix
+        with patch.object(engine, '_apply_github_actions_fix') as mock_github_fix, \
+             patch.object(engine, '_run_pr_tests') as mock_test:
+
+            mock_github_fix.return_value = ["Applied GitHub Actions fix"]
+            mock_test.return_value = {'success': True, 'output': 'All tests passed', 'errors': ''}
+
+            # Execute
+            result = engine._fix_pr_issues_with_testing('test/repo', pr_data, github_logs)
+
+            # Assert
+            assert any("Starting PR issue fixing" in action for action in result)
+            assert any("Local tests passed on attempt 1" in action for action in result)
+            assert any("[DRY RUN] Would commit and push fix" in action for action in result)
+            mock_github_fix.assert_called_once()
+            mock_test.assert_called_once()
+
+    def test_fix_pr_issues_with_testing_retry(self, mock_github_client, mock_gemini_client):
+        """Test integrated PR issue fixing with retry logic."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+        github_logs = "Test failed: assertion error"
+
+        # Mock test failure then success
+        with patch.object(engine, '_apply_github_actions_fix') as mock_github_fix, \
+             patch.object(engine, '_run_pr_tests') as mock_test, \
+             patch.object(engine, '_apply_local_test_fix') as mock_local_fix:
+
+            mock_github_fix.return_value = ["Applied GitHub Actions fix"]
+            # First test fails, second test passes
+            mock_test.side_effect = [
+                {'success': False, 'output': 'Test failed', 'errors': 'Error'},
+                {'success': True, 'output': 'All tests passed', 'errors': ''}
+            ]
+            mock_local_fix.return_value = ["Applied local test fix"]
+
+            # Execute
+            result = engine._fix_pr_issues_with_testing('test/repo', pr_data, github_logs)
+
+            # Assert
+            assert any("Local tests failed on attempt 1" in action for action in result)
+            assert any("Local tests passed on attempt 2" in action for action in result)
+            mock_github_fix.assert_called_once()
+            assert mock_test.call_count == 2
+            mock_local_fix.assert_called_once()
