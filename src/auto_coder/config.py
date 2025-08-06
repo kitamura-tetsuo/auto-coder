@@ -20,8 +20,8 @@ class Settings(BaseSettings):
     gemini_model: str = Field('gemini-pro', env='GEMINI_MODEL')
     
     # Application settings
-    max_issues_per_run: int = Field(10, env='MAX_ISSUES_PER_RUN')
-    max_prs_per_run: int = Field(5, env='MAX_PRS_PER_RUN')
+    max_issues_per_run: int = Field(-1, env='MAX_ISSUES_PER_RUN')  # -1 means unlimited
+    max_prs_per_run: int = Field(-1, env='MAX_PRS_PER_RUN')  # -1 means unlimited
     dry_run: bool = Field(False, env='DRY_RUN')
     
     # Logging settings

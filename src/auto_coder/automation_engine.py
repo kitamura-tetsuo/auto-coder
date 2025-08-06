@@ -415,7 +415,7 @@ Please proceed with analyzing and taking action on this issue now.
                 # If merge process completed successfully (PR was merged), skip analysis
                 if any("Successfully merged" in action for action in merge_actions):
                     actions.append(f"PR #{pr_number} was merged, skipping further analysis")
-                elif any("skipping to next PR" in action.lower() for action in merge_actions):
+                elif any("skipping to next PR" in action for action in merge_actions):
                     actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
                 else:
                     # Only do Gemini analysis if merge process didn't complete
