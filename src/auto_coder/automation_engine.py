@@ -7,7 +7,6 @@ from typing import Dict, Any, List, Optional
 import json
 import os
 import subprocess
-import tempfile
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -516,43 +515,6 @@ After taking action, respond with a summary of what you did and why.
 
 Please proceed with analyzing and taking action on this PR now.
 """
-
-
-
-    def _should_auto_merge_pr(self, analysis: Dict[str, Any], pr_data: Dict[str, Any]) -> bool:
-        """Determine if PR should be auto-merged based on analysis."""
-        # Only consider merging if analysis recommends it
-        recommendations = analysis.get('recommendations', [])
-        merge_recommended = any(
-            'merge' in rec.get('action', '').lower()
-            for rec in recommendations
-        )
-
-        if not merge_recommended:
-            return False
-
-        # Additional safety checks
-        risk_level = analysis.get('risk_level', 'high').lower()
-        category = analysis.get('category', '').lower()
-
-        # Only auto-merge low-risk changes
-        if risk_level != 'low':
-            return False
-
-        # Only auto-merge certain categories
-        safe_categories = ['bugfix', 'documentation', 'dependency']
-        if category not in safe_categories:
-            return False
-
-        # Check if PR is mergeable
-        if not pr_data.get('mergeable', False):
-            return False
-
-        # Don't merge draft PRs
-        if pr_data.get('draft', False):
-            return False
-
-        return True
 
     def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
         """Check GitHub Actions status for a PR."""
@@ -1134,123 +1096,6 @@ Please proceed with resolving these merge conflicts now.
 
         return actions
 
-    def _fix_github_actions_failures(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
-        """Fix GitHub Actions failures using Gemini."""
-        actions = []
-        pr_number = pr_data['number']
-
-        try:
-            # Ask Gemini to directly fix GitHub Actions failures
-            if self.dry_run:
-                actions.append(f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}")
-            else:
-                fix_actions = self._apply_github_actions_fixes_directly(pr_data, github_logs)
-                actions.extend(fix_actions)
-
-                # Add a comment documenting what was done
-                if fix_actions:
-                    fix_comment = self._format_direct_fix_comment(pr_data, github_logs, fix_actions)
-                    self.github.add_comment_to_issue(repo_name, pr_number, fix_comment)
-                    actions.append(f"Applied GitHub Actions fixes and added comment to PR #{pr_number}")
-
-        except Exception as e:
-            logger.error(f"Error fixing GitHub Actions failures for PR #{pr_number}: {e}")
-            actions.append(f"Error fixing GitHub Actions failures: {e}")
-
-        return actions
-
-    def _apply_github_actions_fixes_directly(self, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
-        """Ask Gemini CLI to directly fix GitHub Actions failures."""
-        actions = []
-
-        try:
-            # Create a direct fix prompt for Gemini CLI
-            fix_prompt = f"""
-The following GitHub Actions checks are failing for PR #{pr_data['number']}: {pr_data['title']}
-
-PR Description:
-{pr_data['body'][:500]}...
-
-GitHub Actions Error Logs:
-{github_logs}
-
-Please analyze the errors and directly fix the issues by:
-1. Modifying the necessary files to resolve the failures
-2. Running any required commands (like installing dependencies, updating configs, etc.)
-3. Ensuring all changes are syntactically correct and follow best practices
-
-After applying the fixes, respond with a summary of what you changed.
-
-Please proceed with fixing these GitHub Actions failures now.
-"""
-
-            # Use Gemini CLI to apply the fixes directly
-            logger.info(f"Applying GitHub Actions fixes directly for PR #{pr_data['number']}")
-            response = self.gemini._run_gemini_cli(fix_prompt)
-
-            # Parse the response
-            if response and len(response.strip()) > 0:
-                actions.append(f"Gemini CLI applied GitHub Actions fixes: {response[:200]}...")
-
-                # Commit the changes
-                commit_action = self._commit_changes({'summary': f"Fix GitHub Actions for PR #{pr_data['number']}"})
-                actions.append(commit_action)
-            else:
-                actions.append("Gemini CLI did not provide a clear response for GitHub Actions fixes")
-
-        except Exception as e:
-            logger.error(f"Error applying GitHub Actions fixes directly: {e}")
-            actions.append(f"Error applying GitHub Actions fixes: {e}")
-
-        return actions
-
-    def _format_direct_fix_comment(self, pr_data: Dict[str, Any], github_logs: str, fix_actions: List[str]) -> str:
-        """Format a comment documenting the direct fixes applied."""
-        comment = f"## 🔧 Auto-Coder Applied GitHub Actions Fixes\n\n"
-        comment += f"**PR:** #{pr_data['number']} - {pr_data['title']}\n\n"
-        comment += f"**GitHub Actions Failures Detected**\n\n"
-
-        # Show a summary of the errors (first few lines)
-        error_lines = github_logs.split('\n')[:5]
-        comment += "**Error Summary:**\n```\n"
-        comment += '\n'.join(error_lines)
-        if len(github_logs.split('\n')) > 5:
-            comment += "\n... (truncated)"
-        comment += "\n```\n\n"
-
-        if fix_actions:
-            comment += "**Applied Fixes:**\n"
-            for action in fix_actions:
-                comment += f"- {action}\n"
-            comment += "\n"
-
-        comment += "*These fixes were applied automatically by Auto-Coder using Gemini CLI.*"
-        return comment
-
-
-
-    def _format_applied_fix_comment(self, fix_suggestion: Dict[str, Any], fix_actions: List[str]) -> str:
-        """Format a comment documenting the applied fixes."""
-        comment = "## 🔧 Auto-Coder Applied Fixes\n\n"
-
-        if fix_suggestion.get('summary'):
-            comment += f"**Issue:** {fix_suggestion['summary']}\n\n"
-
-        if fix_suggestion.get('root_cause'):
-            comment += f"**Root Cause:** {fix_suggestion['root_cause']}\n\n"
-
-        if fix_actions:
-            comment += "**Applied Changes:**\n"
-            for action in fix_actions:
-                comment += f"- {action}\n"
-            comment += "\n"
-
-        if fix_suggestion.get('explanation'):
-            comment += f"**Explanation:** {fix_suggestion['explanation']}\n\n"
-
-        comment += "*These fixes were applied automatically by Auto-Coder.*"
-        return comment
-
     def _commit_changes(self, fix_suggestion: Dict[str, Any]) -> str:
         """Commit the applied changes to git."""
         try:
@@ -1389,74 +1234,6 @@ Please proceed with fixing these GitHub Actions failures now.
             result = result[:2000] + "\n... (output truncated)"
 
         return result if result else "Tests failed but no specific error information found"
-
-    def _get_gemini_fix_suggestion(self, pr_data: Dict[str, Any], error_summary: str) -> Dict[str, Any]:
-        """Get fix suggestion from Gemini for test failures."""
-        prompt = f"""
-Analyze the following test failure for a GitHub pull request and provide a fix suggestion.
-
-Pull Request Information:
-- Title: {pr_data['title']}
-- Description: {pr_data['body'][:500]}...
-- Number: #{pr_data['number']}
-
-Test Error Output:
-{error_summary}
-
-Please provide a fix suggestion in the following JSON format:
-{{
-    "fix_type": "code_fix|configuration|dependency|test_fix",
-    "summary": "Brief summary of the issue and fix",
-    "root_cause": "What is causing the test failure",
-    "suggested_changes": [
-        {{
-            "file": "path/to/file",
-            "action": "modify|create|delete",
-            "description": "What to change in this file",
-            "code_snippet": "relevant code if applicable"
-        }}
-    ],
-    "commands_to_run": ["command1", "command2"],
-    "explanation": "Detailed explanation of why this fix should work"
-}}
-"""
-
-        try:
-            response_text = self.gemini._run_gemini_cli(prompt)
-            return self.gemini._parse_solution_response(response_text)
-        except Exception as e:
-            logger.error(f"Failed to get fix suggestion from Gemini: {e}")
-            return {'error': str(e)}
-
-    def _format_fix_suggestion_comment(self, fix_suggestion: Dict[str, Any]) -> str:
-        """Format fix suggestion as a GitHub comment."""
-        comment = "## 🔧 Auto-Coder Fix Suggestion\n\n"
-
-        if fix_suggestion.get('summary'):
-            comment += f"**Issue:** {fix_suggestion['summary']}\n\n"
-
-        if fix_suggestion.get('root_cause'):
-            comment += f"**Root Cause:** {fix_suggestion['root_cause']}\n\n"
-
-        if fix_suggestion.get('suggested_changes'):
-            comment += "**Suggested Changes:**\n"
-            for change in fix_suggestion['suggested_changes']:
-                comment += f"- **{change.get('file', 'Unknown file')}**: {change.get('description', 'No description')}\n"
-                if change.get('code_snippet'):
-                    comment += f"  ```\n  {change['code_snippet']}\n  ```\n"
-            comment += "\n"
-
-        if fix_suggestion.get('commands_to_run'):
-            comment += "**Commands to run:**\n"
-            for cmd in fix_suggestion['commands_to_run']:
-                comment += f"```bash\n{cmd}\n```\n"
-            comment += "\n"
-
-        if fix_suggestion.get('explanation'):
-            comment += f"**Explanation:** {fix_suggestion['explanation']}\n\n"
-
-        comment += "*This fix suggestion was generated automatically by Auto-Coder.*"
-        return comment
 
     def _get_repository_context(self, repo_name: str) -> Dict[str, Any]:
         """Get repository context for feature analysis."""

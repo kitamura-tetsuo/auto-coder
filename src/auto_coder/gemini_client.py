@@ -5,11 +5,7 @@ Gemini CLI client for Auto-Coder.
 import logging
 import json
 import subprocess
-import tempfile
-import os
-from typing import Dict, Any, List, Optional
-
-from .config import settings
+from typing import Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -85,44 +81,6 @@ class GeminiClient:
                 raise RuntimeError(f"Failed to run Gemini CLI: {e}")
             raise
     
-    def analyze_issue(self, issue_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze a GitHub issue and provide recommendations."""
-        prompt = self._create_issue_analysis_prompt(issue_data)
-
-        try:
-            response_text = self._run_gemini_cli(prompt)
-            analysis = self._parse_analysis_response(response_text)
-            logger.info(f"Analyzed issue #{issue_data['number']}: {issue_data['title']}")
-            return analysis
-
-        except Exception as e:
-            logger.error(f"Failed to analyze issue #{issue_data['number']}: {e}")
-            return {
-                'error': str(e),
-                'category': 'analysis_error',
-                'priority': 'unknown',
-                'recommendations': []
-            }
-    
-    def analyze_pull_request(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze a GitHub pull request and provide recommendations."""
-        prompt = self._create_pr_analysis_prompt(pr_data)
-
-        try:
-            response_text = self._run_gemini_cli(prompt)
-            analysis = self._parse_analysis_response(response_text)
-            logger.info(f"Analyzed PR #{pr_data['number']}: {pr_data['title']}")
-            return analysis
-
-        except Exception as e:
-            logger.error(f"Failed to analyze PR #{pr_data['number']}: {e}")
-            return {
-                'error': str(e),
-                'category': 'analysis_error',
-                'priority': 'unknown',
-                'recommendations': []
-            }
-    
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Suggest new features based on repository analysis."""
         prompt = self._create_feature_suggestion_prompt(repo_context)
@@ -136,54 +94,6 @@ class GeminiClient:
         except Exception as e:
             logger.error(f"Failed to generate feature suggestions: {e}")
             return []
-    
-    def generate_solution(self, issue_data: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate a solution for a specific issue."""
-        prompt = self._create_solution_prompt(issue_data, analysis)
-
-        try:
-            response_text = self._run_gemini_cli(prompt)
-            solution = self._parse_solution_response(response_text)
-            logger.info(f"Generated solution for issue #{issue_data['number']}")
-            return solution
-
-        except Exception as e:
-            logger.error(f"Failed to generate solution for issue #{issue_data['number']}: {e}")
-            return {
-                'error': str(e),
-                'solution_type': 'unknown',
-                'steps': [],
-                'code_changes': []
-            }
-    
-    def _create_issue_analysis_prompt(self, issue_data: Dict[str, Any]) -> str:
-        """Create prompt for issue analysis."""
-        return f"""
-Analyze the following GitHub issue and provide a structured analysis:
-
-Title: {issue_data['title']}
-Body: {issue_data['body']}
-Labels: {', '.join(issue_data['labels'])}
-Created: {issue_data['created_at']}
-Author: {issue_data['author']}
-
-Please provide analysis in the following JSON format:
-{{
-    "category": "bug|feature|enhancement|documentation|question",
-    "priority": "low|medium|high|critical",
-    "complexity": "simple|moderate|complex",
-    "estimated_effort": "hours|days|weeks",
-    "tags": ["tag1", "tag2"],
-    "recommendations": [
-        {{
-            "action": "description of recommended action",
-            "rationale": "why this action is recommended"
-        }}
-    ],
-    "related_components": ["component1", "component2"],
-    "summary": "brief summary of the issue"
-}}
-"""
     
     def _create_pr_analysis_prompt(self, pr_data: Dict[str, Any]) -> str:
         """Create prompt for pull request analysis."""
@@ -244,65 +154,6 @@ Please provide feature suggestions in the following JSON format:
 ]
 """
     
-    def _create_solution_prompt(self, issue_data: Dict[str, Any], analysis: Dict[str, Any]) -> str:
-        """Create prompt for solution generation."""
-        return f"""
-Generate a detailed solution for the following issue:
-
-Issue: {issue_data['title']}
-Description: {issue_data['body']}
-Analysis: {json.dumps(analysis, indent=2)}
-
-Please provide a solution in the following JSON format:
-{{
-    "solution_type": "code_fix|configuration|documentation|investigation",
-    "summary": "brief summary of the solution",
-    "steps": [
-        {{
-            "step": 1,
-            "description": "what to do in this step",
-            "commands": ["command1", "command2"]
-        }}
-    ],
-    "code_changes": [
-        {{
-            "file": "path/to/file",
-            "action": "create|modify|delete",
-            "description": "what changes to make",
-            "code": "actual code if applicable"
-        }}
-    ],
-    "testing_strategy": "how to test the solution",
-    "risks": ["potential risk 1", "potential risk 2"]
-}}
-"""
-    
-    def _parse_analysis_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse analysis response from Gemini."""
-        try:
-            # Try to extract JSON from the response
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}') + 1
-            
-            if start_idx != -1 and end_idx != -1:
-                json_str = response_text[start_idx:end_idx]
-                return json.loads(json_str)
-            else:
-                # Fallback to basic parsing
-                return {
-                    'category': 'unknown',
-                    'priority': 'medium',
-                    'summary': response_text[:200] + '...' if len(response_text) > 200 else response_text,
-                    'recommendations': []
-                }
-        except json.JSONDecodeError:
-            return {
-                'category': 'unknown',
-                'priority': 'medium',
-                'summary': response_text[:200] + '...' if len(response_text) > 200 else response_text,
-                'recommendations': []
-            }
-    
     def _parse_feature_suggestions(self, response_text: str) -> List[Dict[str, Any]]:
         """Parse feature suggestions from Gemini."""
         try:
@@ -317,28 +168,3 @@ Please provide a solution in the following JSON format:
                 return []
         except json.JSONDecodeError:
             return []
-    
-    def _parse_solution_response(self, response_text: str) -> Dict[str, Any]:
-        """Parse solution response from Gemini."""
-        try:
-            # Try to extract JSON from the response
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}') + 1
-            
-            if start_idx != -1 and end_idx != -1:
-                json_str = response_text[start_idx:end_idx]
-                return json.loads(json_str)
-            else:
-                return {
-                    'solution_type': 'investigation',
-                    'summary': response_text[:200] + '...' if len(response_text) > 200 else response_text,
-                    'steps': [],
-                    'code_changes': []
-                }
-        except json.JSONDecodeError:
-            return {
-                'solution_type': 'investigation',
-                'summary': response_text[:200] + '...' if len(response_text) > 200 else response_text,
-                'steps': [],
-                'code_changes': []
-            }

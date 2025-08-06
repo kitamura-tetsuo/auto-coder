@@ -1,0 +1,8 @@
+services:
+  deadcode:
+    build: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - ..:/target
+    command: ["sleep", "infinity"]
