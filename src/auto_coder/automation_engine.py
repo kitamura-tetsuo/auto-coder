@@ -3,7 +3,7 @@ Automation engine for Auto-Coder.
 """
 
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 import json
 import os
 import subprocess
@@ -120,39 +120,31 @@ class AutomationEngine:
         try:
             issues = self.github.get_open_issues(repo_name, limit=settings.max_issues_per_run)
             processed_issues = []
-            
+
             for issue in issues:
                 try:
                     issue_data = self.github.get_issue_details(issue)
-                    analysis = self.gemini.analyze_issue(issue_data)
-                    
-                    # Generate solution if it's a high priority issue
-                    solution = None
-                    if analysis.get('priority') in ['high', 'critical']:
-                        solution = self.gemini.generate_solution(issue_data, analysis)
-                    
+
                     processed_issue = {
                         'issue_data': issue_data,
-                        'analysis': analysis,
-                        'solution': solution,
                         'actions_taken': []
                     }
-                    
-                    # Take automated actions based on analysis
-                    actions = self._take_issue_actions(repo_name, issue_data, analysis, solution)
+
+                    # Take automated actions using direct Gemini CLI
+                    actions = self._take_issue_actions(repo_name, issue_data)
                     processed_issue['actions_taken'] = actions
-                    
+
                     processed_issues.append(processed_issue)
-                    
+
                 except Exception as e:
                     logger.error(f"Failed to process issue #{issue.number}: {e}")
                     processed_issues.append({
                         'issue_number': issue.number,
                         'error': str(e)
                     })
-            
+
             return processed_issues
-            
+
         except Exception as e:
             logger.error(f"Failed to process issues for {repo_name}: {e}")
             return []
@@ -162,88 +154,232 @@ class AutomationEngine:
         try:
             prs = self.github.get_open_pull_requests(repo_name, limit=settings.max_prs_per_run)
             processed_prs = []
-            
+
             for pr in prs:
                 try:
                     pr_data = self.github.get_pr_details(pr)
-                    analysis = self.gemini.analyze_pull_request(pr_data)
-                    
+
                     processed_pr = {
                         'pr_data': pr_data,
-                        'analysis': analysis,
                         'actions_taken': []
                     }
-                    
-                    # Take automated actions based on analysis
-                    actions = self._take_pr_actions(repo_name, pr_data, analysis)
+
+                    # Take automated actions using direct Gemini CLI
+                    actions = self._take_pr_actions(repo_name, pr_data)
                     processed_pr['actions_taken'] = actions
-                    
+
                     processed_prs.append(processed_pr)
-                    
+
                 except Exception as e:
                     logger.error(f"Failed to process PR #{pr.number}: {e}")
                     processed_prs.append({
                         'pr_number': pr.number,
                         'error': str(e)
                     })
-            
+
             return processed_prs
-            
+
         except Exception as e:
             logger.error(f"Failed to process PRs for {repo_name}: {e}")
             return []
     
-    def _take_issue_actions(self, repo_name: str, issue_data: Dict[str, Any], analysis: Dict[str, Any], solution: Optional[Dict[str, Any]]) -> List[str]:
-        """Take automated actions based on issue analysis."""
+    def _take_issue_actions(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
+        """Take actions on an issue using direct Gemini CLI analysis and implementation."""
         actions = []
-        
+        issue_number = issue_data['number']
+
         try:
-            # Add analysis comment
-            if not self.dry_run:
-                comment = self._format_analysis_comment(analysis, solution)
-                self.github.add_comment_to_issue(repo_name, issue_data['number'], comment)
-                actions.append(f"Added analysis comment to issue #{issue_data['number']}")
+            if self.dry_run:
+                actions.append(f"[DRY RUN] Would analyze and take actions on issue #{issue_number}")
             else:
-                actions.append(f"[DRY RUN] Would add analysis comment to issue #{issue_data['number']}")
-            
-            # Auto-close if it's a duplicate or invalid
-            if analysis.get('category') == 'duplicate' or 'invalid' in analysis.get('tags', []):
-                if not self.dry_run:
-                    close_comment = "This issue has been automatically closed as it appears to be a duplicate or invalid. Please reopen if this is incorrect."
-                    self.github.close_issue(repo_name, issue_data['number'], close_comment)
-                    actions.append(f"Auto-closed issue #{issue_data['number']}")
-                else:
-                    actions.append(f"[DRY RUN] Would auto-close issue #{issue_data['number']}")
-            
+                # Ask Gemini CLI to analyze the issue and take appropriate actions
+                action_results = self._apply_issue_actions_directly(repo_name, issue_data)
+                actions.extend(action_results)
+
         except Exception as e:
-            logger.error(f"Failed to take actions for issue #{issue_data['number']}: {e}")
-            actions.append(f"Error taking actions: {e}")
-        
+            logger.error(f"Error taking actions on issue #{issue_number}: {e}")
+            actions.append(f"Error processing issue #{issue_number}: {e}")
+
         return actions
-    
-    def _take_pr_actions(self, repo_name: str, pr_data: Dict[str, Any], analysis: Dict[str, Any]) -> List[str]:
-        """Take automated actions based on PR analysis."""
+
+    def _apply_issue_actions_directly(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
+        """Ask Gemini CLI to analyze an issue and take appropriate actions directly."""
         actions = []
 
         try:
-            # Add analysis comment
-            if not self.dry_run:
-                comment = self._format_pr_analysis_comment(analysis)
-                self.github.add_comment_to_issue(repo_name, pr_data['number'], comment)
-                actions.append(f"Added analysis comment to PR #{pr_data['number']}")
+            # Create a comprehensive prompt for Gemini CLI
+            action_prompt = f"""
+Analyze the following GitHub issue and take appropriate actions:
+
+Repository: {repo_name}
+Issue #{issue_data['number']}: {issue_data['title']}
+
+Issue Description:
+{issue_data['body'][:1000]}...
+
+Issue Labels: {', '.join([label['name'] for label in issue_data.get('labels', [])])}
+Issue State: {issue_data.get('state', 'open')}
+Created by: {issue_data.get('user', {}).get('login', 'unknown')}
+
+Please analyze this issue and determine the appropriate action:
+
+1. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
+2. If this is a valid bug report or feature request, provide analysis and implementation
+3. If this needs clarification, add a comment requesting more information
+
+For valid issues that can be implemented:
+- Analyze the requirements
+- Implement the necessary code changes
+- Create or modify files as needed
+- Ensure the implementation follows best practices
+
+For duplicate/invalid issues:
+- Close the issue
+- Add a polite comment explaining why it was closed
+
+After taking action, respond with a summary of what you did.
+
+Please proceed with analyzing and taking action on this issue now.
+"""
+
+            # Use Gemini CLI to analyze and take actions
+            logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
+            response = self.gemini._run_gemini_cli(action_prompt)
+
+            # Parse the response
+            if response and len(response.strip()) > 0:
+                actions.append(f"Gemini CLI analyzed and took action on issue: {response[:200]}...")
+
+                # Check if Gemini indicated the issue should be closed
+                if "closed" in response.lower() or "duplicate" in response.lower() or "invalid" in response.lower():
+                    # Close the issue
+                    close_comment = f"Auto-Coder Analysis: {response[:500]}..."
+                    self.github.close_issue(repo_name, issue_data['number'], close_comment)
+                    actions.append(f"Closed issue #{issue_data['number']} based on analysis")
+                else:
+                    # Add analysis comment
+                    comment = f"## 🤖 Auto-Coder Analysis\n\n{response}"
+                    self.github.add_comment_to_issue(repo_name, issue_data['number'], comment)
+                    actions.append(f"Added analysis comment to issue #{issue_data['number']}")
+
+                # Commit any changes made
+                commit_action = self._commit_changes({'summary': f"Auto-Coder: Address issue #{issue_data['number']}"})
+                actions.append(commit_action)
             else:
-                actions.append(f"[DRY RUN] Would add analysis comment to PR #{pr_data['number']}")
-
-            # Check if PR should be auto-merged based on analysis
-            should_merge = self._should_auto_merge_pr(analysis, pr_data)
-
-            if should_merge:
-                merge_actions = self._handle_pr_merge(repo_name, pr_data, analysis)
-                actions.extend(merge_actions)
+                actions.append("Gemini CLI did not provide a clear response for issue analysis")
 
         except Exception as e:
-            logger.error(f"Failed to take actions for PR #{pr_data['number']}: {e}")
-            actions.append(f"Error taking actions: {e}")
+            logger.error(f"Error applying issue actions directly: {e}")
+            actions.append(f"Error applying issue actions: {e}")
+
+        return actions
+
+    def _take_pr_actions(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
+        """Take actions on a PR using direct Gemini CLI analysis."""
+        actions = []
+        pr_number = pr_data['number']
+
+        try:
+            if self.dry_run:
+                actions.append(f"[DRY RUN] Would analyze and take actions on PR #{pr_number}")
+            else:
+                # Ask Gemini CLI to analyze the PR and take appropriate actions
+                action_results = self._apply_pr_actions_directly(repo_name, pr_data)
+                actions.extend(action_results)
+
+        except Exception as e:
+            logger.error(f"Error taking actions on PR #{pr_number}: {e}")
+            actions.append(f"Error processing PR #{pr_number}: {e}")
+
+        return actions
+
+    def _apply_pr_actions_directly(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
+        """Ask Gemini CLI to analyze a PR and take appropriate actions directly."""
+        actions = []
+
+        try:
+            # Get PR diff for analysis
+            pr_diff = ""
+            try:
+                result = subprocess.run(
+                    ['gh', 'pr', 'diff', str(pr_data['number']), '--repo', repo_name],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if result.returncode == 0:
+                    pr_diff = result.stdout[:2000]  # Limit diff size
+            except Exception:
+                pr_diff = "Could not retrieve PR diff"
+
+            # Create a comprehensive prompt for Gemini CLI
+            action_prompt = f"""
+Analyze the following GitHub Pull Request and take appropriate actions:
+
+Repository: {repo_name}
+PR #{pr_data['number']}: {pr_data['title']}
+
+PR Description:
+{pr_data['body'][:1000]}...
+
+PR Author: {pr_data.get('user', {}).get('login', 'unknown')}
+PR State: {pr_data.get('state', 'open')}
+Draft: {pr_data.get('draft', False)}
+Mergeable: {pr_data.get('mergeable', False)}
+
+PR Changes (first 2000 chars):
+{pr_diff}
+
+Please analyze this PR and determine the appropriate action:
+
+1. Analyze the code changes for:
+   - Risk level (low/medium/high)
+   - Category (bugfix/feature/documentation/dependency/etc.)
+   - Code quality and best practices
+   - Potential issues or improvements
+
+2. Based on the analysis, take appropriate action:
+   - For low-risk, well-written changes (bugfixes, documentation, dependencies): Consider auto-merging
+   - For higher-risk or complex changes: Add analysis comment only
+   - For problematic PRs: Add feedback and suggestions
+
+3. Auto-merge criteria (all must be true):
+   - Low risk level
+   - Category is bugfix, documentation, or dependency
+   - Code follows best practices
+   - No obvious issues
+   - Not a draft PR
+   - Is mergeable
+
+If auto-merging, use: gh pr merge {pr_data['number']} --repo {repo_name} --squash
+
+After taking action, respond with a summary of what you did and why.
+
+Please proceed with analyzing and taking action on this PR now.
+"""
+
+            # Use Gemini CLI to analyze and take actions
+            logger.info(f"Applying PR actions directly for PR #{pr_data['number']}")
+            response = self.gemini._run_gemini_cli(action_prompt)
+
+            # Parse the response
+            if response and len(response.strip()) > 0:
+                actions.append(f"Gemini CLI analyzed and took action on PR: {response[:200]}...")
+
+                # Check if Gemini indicated the PR should be merged
+                if "merged" in response.lower() or "auto-merge" in response.lower():
+                    actions.append(f"Auto-merged PR #{pr_data['number']} based on analysis")
+                else:
+                    # Add analysis comment
+                    comment = f"## 🤖 Auto-Coder PR Analysis\n\n{response}"
+                    self.github.add_comment_to_issue(repo_name, pr_data['number'], comment)
+                    actions.append(f"Added analysis comment to PR #{pr_data['number']}")
+            else:
+                actions.append("Gemini CLI did not provide a clear response for PR analysis")
+
+        except Exception as e:
+            logger.error(f"Error applying PR actions directly: {e}")
+            actions.append(f"Error applying PR actions: {e}")
 
         return actions
 
@@ -282,19 +418,239 @@ class AutomationEngine:
 
         return True
 
+    def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Check GitHub Actions status for a PR."""
+        pr_number = pr_data['number']
+
+        try:
+            # Use gh CLI to get PR status checks (text output)
+            cmd = ['gh', 'pr', 'checks', str(pr_number)]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            # Note: gh pr checks returns non-zero exit code when some checks fail
+            # This is expected behavior, not an error
+            if result.returncode != 0 and not result.stdout.strip():
+                # Only treat as error if there's no output (real failure)
+                logger.error(f"Failed to get PR checks for #{pr_number}: {result.stderr}")
+                return {
+                    'success': False,
+                    'error': f"Failed to get PR checks: {result.stderr}",
+                    'checks': []
+                }
+
+            # Parse text output to extract check information
+            checks_output = result.stdout.strip()
+            if not checks_output:
+                # No checks found, assume success
+                return {
+                    'success': True,
+                    'checks': [],
+                    'failed_checks': [],
+                    'total_checks': 0
+                }
+
+            # Parse the text output
+            checks = []
+            failed_checks = []
+            all_passed = True
+            has_in_progress = False
+
+            lines = checks_output.split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Check if this is tab-separated format (newer gh CLI)
+                if '\t' in line:
+                    # Format: name\tstatus\ttime\turl
+                    parts = line.split('\t')
+                    if len(parts) >= 2:
+                        name = parts[0].strip()
+                        status = parts[1].strip().lower()
+                        url = parts[3].strip() if len(parts) > 3 else ''
+
+                        if status in ['pass', 'success']:
+                            checks.append({
+                                'name': name,
+                                'state': 'completed',
+                                'conclusion': 'success'
+                            })
+                        elif status in ['fail', 'failure', 'error']:
+                            all_passed = False
+                            check_info = {
+                                'name': name,
+                                'state': 'completed',
+                                'conclusion': 'failure'
+                            }
+                            checks.append(check_info)
+                            failed_checks.append({
+                                'name': name,
+                                'conclusion': 'failure',
+                                'details_url': url
+                            })
+                        elif status in ['skipping', 'skipped', 'pending', 'in_progress']:
+                            # Check for in-progress status
+                            if status in ['pending', 'in_progress']:
+                                has_in_progress = True
+                                all_passed = False
+                            # Don't count skipped checks as failures
+                            elif status not in ['skipping', 'skipped']:
+                                all_passed = False
+                            check_info = {
+                                'name': name,
+                                'state': 'pending' if status in ['pending', 'in_progress'] else 'skipped',
+                                'conclusion': status
+                            }
+                            checks.append(check_info)
+                            if status in ['pending', 'in_progress']:
+                                failed_checks.append({
+                                    'name': name,
+                                    'conclusion': status,
+                                    'details_url': url
+                                })
+                else:
+                    # Legacy format: "✓ check-name" or "✗ check-name" or "- check-name"
+                    if line.startswith('✓'):
+                        # Successful check
+                        name = line[2:].strip()
+                        checks.append({
+                            'name': name,
+                            'state': 'completed',
+                            'conclusion': 'success'
+                        })
+                    elif line.startswith('✗'):
+                        # Failed check
+                        name = line[2:].strip()
+                        all_passed = False
+                        check_info = {
+                            'name': name,
+                            'state': 'completed',
+                            'conclusion': 'failure'
+                        }
+                        checks.append(check_info)
+                        failed_checks.append({
+                            'name': name,
+                            'conclusion': 'failure',
+                            'details_url': ''
+                        })
+                    elif line.startswith('-') or line.startswith('○'):
+                        # Pending/in-progress check
+                        name = line[2:].strip() if line.startswith('-') else line[2:].strip()
+                        has_in_progress = True
+                        all_passed = False
+                        check_info = {
+                            'name': name,
+                            'state': 'pending',
+                            'conclusion': 'pending'
+                        }
+                        checks.append(check_info)
+                        failed_checks.append({
+                            'name': name,
+                            'conclusion': 'pending',
+                            'details_url': ''
+                        })
+
+            return {
+                'success': all_passed,
+                'in_progress': has_in_progress,
+                'checks': checks,
+                'failed_checks': failed_checks,
+                'total_checks': len(checks)
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'checks': []
+            }
+
+    def _get_github_actions_logs(self, repo_name: str, failed_checks: List[Dict[str, Any]]) -> str:
+        """Get GitHub Actions logs for failed checks."""
+        logs = []
+
+        try:
+            # Get the latest workflow runs for this PR
+            cmd = ['gh', 'run', 'list', '--limit', '5']
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode == 0:
+                # Parse the run list to find failed runs
+                lines = result.stdout.strip().split('\n')
+                for line in lines[1:]:  # Skip header
+                    if 'failure' in line.lower() or 'cancelled' in line.lower():
+                        # Extract run ID (first column)
+                        parts = line.split('\t')
+                        if len(parts) > 0:
+                            run_id = parts[0].strip()
+
+                            # Get logs for this run
+                            log_cmd = ['gh', 'run', 'view', run_id, '--log-failed']
+
+                            log_result = subprocess.run(
+                                log_cmd,
+                                capture_output=True,
+                                text=True,
+                                timeout=120
+                            )
+
+                            if log_result.returncode == 0:
+                                log_content = log_result.stdout
+                                # Extract important error information
+                                important_logs = self._extract_important_errors({
+                                    'success': False,
+                                    'output': log_content,
+                                    'errors': ''
+                                })
+
+                                logs.append(f"=== Run {run_id} ===\n{important_logs}")
+                            break  # Only get logs from the most recent failed run
+
+            # If no logs found from runs, try to get general error info
+            if not logs:
+                for check in failed_checks:
+                    check_name = check.get('name', 'Unknown')
+                    conclusion = check.get('conclusion', 'unknown')
+                    logs.append(f"=== {check_name} ===\nStatus: {conclusion}\nNo detailed logs available")
+
+        except Exception as e:
+            logger.error(f"Error getting GitHub Actions logs: {e}")
+            logs.append(f"Error getting logs: {e}")
+
+        return '\n\n'.join(logs) if logs else "No detailed logs available"
+
     def _handle_pr_merge(self, repo_name: str, pr_data: Dict[str, Any], analysis: Dict[str, Any]) -> List[str]:
         """Handle PR merge process including testing."""
         actions = []
         pr_number = pr_data['number']
 
         try:
-            # First, run tests to ensure PR is safe to merge
-            test_result = self._run_pr_tests(repo_name, pr_data)
+            # First, check GitHub Actions status
+            github_checks = self._check_github_actions_status(repo_name, pr_data)
 
-            if test_result['success']:
-                actions.append(f"Tests passed for PR #{pr_number}")
+            # Skip if GitHub Actions are still in progress
+            if github_checks.get('in_progress', False):
+                actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping")
+                return actions
 
-                # Merge the PR
+            if github_checks['success']:
+                actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
+
+                # If GitHub Actions passed, merge directly without local testing
                 if not self.dry_run:
                     merge_result = self._merge_pr(repo_name, pr_number, analysis)
                     if merge_result:
@@ -304,17 +660,404 @@ class AutomationEngine:
                 else:
                     actions.append(f"[DRY RUN] Would merge PR #{pr_number}")
             else:
-                actions.append(f"Tests failed for PR #{pr_number}, attempting to fix")
+                # GitHub Actions failed
+                failed_checks = github_checks.get('failed_checks', [])
+                actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
-                # Attempt to fix test failures
-                fix_actions = self._fix_pr_test_failures(repo_name, pr_data, test_result)
-                actions.extend(fix_actions)
+                # Checkout the PR branch for local testing and fixes
+                checkout_result = self._checkout_pr_branch(repo_name, pr_data)
+                if not checkout_result:
+                    actions.append(f"Failed to checkout PR #{pr_number} branch")
+                    return actions
+
+                actions.append(f"Checked out PR #{pr_number} branch")
+
+                # Update with latest main branch commits
+                update_actions = self._update_with_main_branch(repo_name, pr_data)
+                actions.extend(update_actions)
+
+                # If main branch update required pushing changes, skip to next PR for GitHub Actions check
+                if any("Pushed updated branch" in action for action in update_actions):
+                    actions.append(f"Updated PR #{pr_number} with main branch, skipping to next PR for GitHub Actions check")
+                    return actions
+
+                # Get GitHub Actions error logs and ask Gemini for initial fix
+                if failed_checks:
+                    github_logs = self._get_github_actions_logs(repo_name, failed_checks)
+                    initial_fix_actions = self._fix_github_actions_failures(repo_name, pr_data, github_logs)
+                    actions.extend(initial_fix_actions)
+
+                # Then run local tests and continue with local testing loop
+                test_result = self._run_pr_tests(repo_name, pr_data)
+
+                if test_result['success']:
+                    actions.append(f"Local tests passed for PR #{pr_number}")
+
+                    # Merge the PR
+                    if not self.dry_run:
+                        merge_result = self._merge_pr(repo_name, pr_number, analysis)
+                        if merge_result:
+                            actions.append(f"Successfully merged PR #{pr_number}")
+                        else:
+                            actions.append(f"Failed to merge PR #{pr_number}")
+                    else:
+                        actions.append(f"[DRY RUN] Would merge PR #{pr_number}")
+                else:
+                    actions.append(f"Local tests failed for PR #{pr_number}, attempting to fix")
+
+                    # Attempt to fix local test failures
+                    fix_actions = self._fix_pr_test_failures(repo_name, pr_data, test_result)
+                    actions.extend(fix_actions)
 
         except Exception as e:
             logger.error(f"Failed to handle PR merge for #{pr_number}: {e}")
             actions.append(f"Error handling PR merge: {e}")
 
         return actions
+
+    def _checkout_pr_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
+        """Checkout the PR branch for local testing."""
+        pr_number = pr_data['number']
+
+        try:
+            # Use gh CLI to checkout the PR
+            cmd = ['gh', 'pr', 'checkout', str(pr_number)]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Successfully checked out PR #{pr_number}")
+                return True
+            else:
+                logger.error(f"Failed to checkout PR #{pr_number}: {result.stderr}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error checking out PR #{pr_number}: {e}")
+            return False
+
+    def _update_with_main_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
+        """Update PR branch with latest main branch commits."""
+        actions = []
+        pr_number = pr_data['number']
+
+        try:
+            # Fetch latest changes from origin
+            result = subprocess.run(
+                ['git', 'fetch', 'origin'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode != 0:
+                actions.append(f"Failed to fetch latest changes: {result.stderr}")
+                return actions
+
+            # Check if main branch has new commits
+            result = subprocess.run(
+                ['git', 'rev-list', '--count', 'HEAD..origin/main'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                actions.append(f"Failed to check main branch status: {result.stderr}")
+                return actions
+
+            commits_behind = int(result.stdout.strip())
+            if commits_behind == 0:
+                actions.append(f"PR #{pr_number} is up to date with main branch")
+                return actions
+
+            actions.append(f"PR #{pr_number} is {commits_behind} commits behind main, updating...")
+
+            # Try to merge main branch
+            result = subprocess.run(
+                ['git', 'merge', 'origin/main'],
+                capture_output=True,
+                text=True,
+                timeout=120
+            )
+
+            if result.returncode == 0:
+                actions.append(f"Successfully merged main branch into PR #{pr_number}")
+
+                # Push the updated branch
+                result = subprocess.run(
+                    ['git', 'push'],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+
+                if result.returncode == 0:
+                    actions.append(f"Pushed updated branch for PR #{pr_number}")
+                else:
+                    actions.append(f"Failed to push updated branch: {result.stderr}")
+            else:
+                # Merge conflict occurred, ask Gemini to resolve it
+                actions.append(f"Merge conflict detected for PR #{pr_number}, asking Gemini to resolve...")
+
+                # Get conflict information
+                conflict_info = self._get_merge_conflict_info()
+                merge_actions = self._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
+                actions.extend(merge_actions)
+
+        except Exception as e:
+            logger.error(f"Error updating PR #{pr_number} with main branch: {e}")
+            actions.append(f"Error updating with main branch: {e}")
+
+        return actions
+
+    def _get_merge_conflict_info(self) -> str:
+        """Get information about merge conflicts."""
+        try:
+            # Get status of conflicted files
+            result = subprocess.run(
+                ['git', 'status', '--porcelain'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                return result.stdout
+            else:
+                return "Could not get merge conflict information"
+
+        except Exception as e:
+            return f"Error getting conflict info: {e}"
+
+    def _resolve_merge_conflicts_with_gemini(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
+        """Ask Gemini CLI to resolve merge conflicts."""
+        actions = []
+
+        try:
+            # Create a prompt for Gemini CLI to resolve conflicts
+            resolve_prompt = f"""
+There are merge conflicts when trying to merge main branch into PR #{pr_data['number']}: {pr_data['title']}
+
+PR Description:
+{pr_data['body'][:500]}...
+
+Merge Conflict Information:
+{conflict_info}
+
+Please resolve these merge conflicts by:
+1. Examining the conflicted files
+2. Choosing the appropriate resolution for each conflict
+3. Staging the resolved files with 'git add'
+4. Completing the merge with 'git commit'
+5. Pushing the resolved changes
+
+After resolving the conflicts, respond with a summary of what you resolved.
+
+Please proceed with resolving these merge conflicts now.
+"""
+
+            # Use Gemini CLI to resolve conflicts
+            logger.info(f"Asking Gemini to resolve merge conflicts for PR #{pr_data['number']}")
+            response = self.gemini._run_gemini_cli(resolve_prompt)
+
+            # Parse the response
+            if response and len(response.strip()) > 0:
+                actions.append(f"Gemini CLI resolved merge conflicts: {response[:200]}...")
+
+                # Check if merge was completed
+                result = subprocess.run(
+                    ['git', 'status', '--porcelain'],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+
+                if result.returncode == 0 and not result.stdout.strip():
+                    actions.append(f"Merge conflicts resolved and committed for PR #{pr_data['number']}")
+
+                    # Push the resolved changes
+                    result = subprocess.run(
+                        ['git', 'push'],
+                        capture_output=True,
+                        text=True,
+                        timeout=120
+                    )
+
+                    if result.returncode == 0:
+                        actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
+                    else:
+                        actions.append(f"Failed to push resolved merge: {result.stderr}")
+                else:
+                    actions.append(f"Merge conflicts may not be fully resolved for PR #{pr_data['number']}")
+            else:
+                actions.append("Gemini CLI did not provide a clear response for merge conflict resolution")
+
+        except Exception as e:
+            logger.error(f"Error resolving merge conflicts with Gemini: {e}")
+            actions.append(f"Error resolving merge conflicts: {e}")
+
+        return actions
+
+    def _fix_github_actions_failures(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
+        """Fix GitHub Actions failures using Gemini."""
+        actions = []
+        pr_number = pr_data['number']
+
+        try:
+            # Ask Gemini to directly fix GitHub Actions failures
+            if self.dry_run:
+                actions.append(f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}")
+            else:
+                fix_actions = self._apply_github_actions_fixes_directly(pr_data, github_logs)
+                actions.extend(fix_actions)
+
+                # Add a comment documenting what was done
+                if fix_actions:
+                    fix_comment = self._format_direct_fix_comment(pr_data, github_logs, fix_actions)
+                    self.github.add_comment_to_issue(repo_name, pr_number, fix_comment)
+                    actions.append(f"Applied GitHub Actions fixes and added comment to PR #{pr_number}")
+
+        except Exception as e:
+            logger.error(f"Error fixing GitHub Actions failures for PR #{pr_number}: {e}")
+            actions.append(f"Error fixing GitHub Actions failures: {e}")
+
+        return actions
+
+    def _apply_github_actions_fixes_directly(self, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
+        """Ask Gemini CLI to directly fix GitHub Actions failures."""
+        actions = []
+
+        try:
+            # Create a direct fix prompt for Gemini CLI
+            fix_prompt = f"""
+The following GitHub Actions checks are failing for PR #{pr_data['number']}: {pr_data['title']}
+
+PR Description:
+{pr_data['body'][:500]}...
+
+GitHub Actions Error Logs:
+{github_logs}
+
+Please analyze the errors and directly fix the issues by:
+1. Modifying the necessary files to resolve the failures
+2. Running any required commands (like installing dependencies, updating configs, etc.)
+3. Ensuring all changes are syntactically correct and follow best practices
+
+After applying the fixes, respond with a summary of what you changed.
+
+Please proceed with fixing these GitHub Actions failures now.
+"""
+
+            # Use Gemini CLI to apply the fixes directly
+            logger.info(f"Applying GitHub Actions fixes directly for PR #{pr_data['number']}")
+            response = self.gemini._run_gemini_cli(fix_prompt)
+
+            # Parse the response
+            if response and len(response.strip()) > 0:
+                actions.append(f"Gemini CLI applied GitHub Actions fixes: {response[:200]}...")
+
+                # Commit the changes
+                commit_action = self._commit_changes({'summary': f"Fix GitHub Actions for PR #{pr_data['number']}"})
+                actions.append(commit_action)
+            else:
+                actions.append("Gemini CLI did not provide a clear response for GitHub Actions fixes")
+
+        except Exception as e:
+            logger.error(f"Error applying GitHub Actions fixes directly: {e}")
+            actions.append(f"Error applying GitHub Actions fixes: {e}")
+
+        return actions
+
+    def _format_direct_fix_comment(self, pr_data: Dict[str, Any], github_logs: str, fix_actions: List[str]) -> str:
+        """Format a comment documenting the direct fixes applied."""
+        comment = f"## 🔧 Auto-Coder Applied GitHub Actions Fixes\n\n"
+        comment += f"**PR:** #{pr_data['number']} - {pr_data['title']}\n\n"
+        comment += f"**GitHub Actions Failures Detected**\n\n"
+
+        # Show a summary of the errors (first few lines)
+        error_lines = github_logs.split('\n')[:5]
+        comment += "**Error Summary:**\n```\n"
+        comment += '\n'.join(error_lines)
+        if len(github_logs.split('\n')) > 5:
+            comment += "\n... (truncated)"
+        comment += "\n```\n\n"
+
+        if fix_actions:
+            comment += "**Applied Fixes:**\n"
+            for action in fix_actions:
+                comment += f"- {action}\n"
+            comment += "\n"
+
+        comment += "*These fixes were applied automatically by Auto-Coder using Gemini CLI.*"
+        return comment
+
+
+
+    def _format_applied_fix_comment(self, fix_suggestion: Dict[str, Any], fix_actions: List[str]) -> str:
+        """Format a comment documenting the applied fixes."""
+        comment = "## 🔧 Auto-Coder Applied Fixes\n\n"
+
+        if fix_suggestion.get('summary'):
+            comment += f"**Issue:** {fix_suggestion['summary']}\n\n"
+
+        if fix_suggestion.get('root_cause'):
+            comment += f"**Root Cause:** {fix_suggestion['root_cause']}\n\n"
+
+        if fix_actions:
+            comment += "**Applied Changes:**\n"
+            for action in fix_actions:
+                comment += f"- {action}\n"
+            comment += "\n"
+
+        if fix_suggestion.get('explanation'):
+            comment += f"**Explanation:** {fix_suggestion['explanation']}\n\n"
+
+        comment += "*These fixes were applied automatically by Auto-Coder.*"
+        return comment
+
+    def _commit_changes(self, fix_suggestion: Dict[str, Any]) -> str:
+        """Commit the applied changes to git."""
+        try:
+            # Add all modified files
+            result = subprocess.run(
+                ['git', 'add', '.'],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode != 0:
+                return f"Failed to add files to git: {result.stderr}"
+
+            # Create commit message
+            summary = fix_suggestion.get('summary', 'Auto-Coder fix')
+            commit_message = f"Auto-Coder: {summary}"
+
+            # Commit the changes
+            result = subprocess.run(
+                ['git', 'commit', '-m', commit_message],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+
+            if result.returncode == 0:
+                return f"Committed changes: {commit_message}"
+            else:
+                # Check if there were no changes to commit
+                if 'nothing to commit' in result.stdout:
+                    return "No changes to commit"
+                else:
+                    return f"Failed to commit changes: {result.stderr}"
+
+        except Exception as e:
+            return f"Error committing changes: {e}"
 
     def _run_pr_tests(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
         """Run tests for a PR and return results."""
@@ -405,22 +1148,18 @@ class AutomationEngine:
                     actions.append(f"No actionable errors found in test output for PR #{pr_number}")
                     break
 
-                # Ask Gemini to suggest fixes
-                fix_suggestion = self._get_gemini_fix_suggestion(pr_data, error_summary)
-
-                if not fix_suggestion or 'error' in fix_suggestion:
-                    actions.append(f"Could not get fix suggestion from Gemini for PR #{pr_number}")
-                    break
-
-                # Apply the suggested fix (in dry run, just log it)
+                # Ask Gemini to directly fix the issues
                 if self.dry_run:
-                    actions.append(f"[DRY RUN] Would apply fix for PR #{pr_number}: {fix_suggestion.get('summary', 'No summary')}")
+                    actions.append(f"[DRY RUN] Would apply fix for PR #{pr_number} based on error: {error_summary[:100]}...")
                 else:
-                    # In a real implementation, this would apply the fix
-                    # For now, just add a comment with the suggestion
-                    fix_comment = self._format_fix_suggestion_comment(fix_suggestion)
-                    self.github.add_comment_to_issue(repo_name, pr_number, fix_comment)
-                    actions.append(f"Added fix suggestion comment to PR #{pr_number}")
+                    fix_actions = self._apply_local_test_fixes_directly(pr_data, error_summary)
+                    actions.extend(fix_actions)
+
+                    # Also add a comment documenting what was done
+                    if fix_actions:
+                        fix_comment = self._format_direct_test_fix_comment(pr_data, error_summary, fix_actions)
+                        self.github.add_comment_to_issue(repo_name, pr_number, fix_comment)
+                        actions.append(f"Applied local test fixes and added comment to PR #{pr_number}")
 
                 # Re-run tests to see if the issue is resolved
                 new_test_result = self._run_pr_tests(repo_name, pr_data)
@@ -437,6 +1176,75 @@ class AutomationEngine:
                 actions.append(f"Error in fix attempt {attempt + 1}: {e}")
 
         return actions
+
+    def _apply_local_test_fixes_directly(self, pr_data: Dict[str, Any], error_summary: str) -> List[str]:
+        """Ask Gemini CLI to directly fix local test failures."""
+        actions = []
+
+        try:
+            # Create a direct fix prompt for Gemini CLI
+            fix_prompt = f"""
+The following local tests are failing for PR #{pr_data['number']}: {pr_data['title']}
+
+PR Description:
+{pr_data['body'][:500]}...
+
+Test Error Summary:
+{error_summary}
+
+Please analyze the test failures and directly fix the issues by:
+1. Modifying the necessary files to resolve the test failures
+2. Running any required commands (like installing dependencies, updating configs, etc.)
+3. Ensuring all changes are syntactically correct and follow best practices
+4. Making sure the fixes don't break other functionality
+
+After applying the fixes, respond with a summary of what you changed.
+
+Please proceed with fixing these test failures now.
+"""
+
+            # Use Gemini CLI to apply the fixes directly
+            logger.info(f"Applying local test fixes directly for PR #{pr_data['number']}")
+            response = self.gemini._run_gemini_cli(fix_prompt)
+
+            # Parse the response
+            if response and len(response.strip()) > 0:
+                actions.append(f"Gemini CLI applied local test fixes: {response[:200]}...")
+
+                # Commit the changes
+                commit_action = self._commit_changes({'summary': f"Fix local tests for PR #{pr_data['number']}"})
+                actions.append(commit_action)
+            else:
+                actions.append("Gemini CLI did not provide a clear response for local test fixes")
+
+        except Exception as e:
+            logger.error(f"Error applying local test fixes directly: {e}")
+            actions.append(f"Error applying local test fixes: {e}")
+
+        return actions
+
+    def _format_direct_test_fix_comment(self, pr_data: Dict[str, Any], error_summary: str, fix_actions: List[str]) -> str:
+        """Format a comment documenting the direct test fixes applied."""
+        comment = f"## 🔧 Auto-Coder Applied Local Test Fixes\n\n"
+        comment += f"**PR:** #{pr_data['number']} - {pr_data['title']}\n\n"
+        comment += f"**Local Test Failures Detected**\n\n"
+
+        # Show a summary of the errors (first few lines)
+        error_lines = error_summary.split('\n')[:10]
+        comment += "**Error Summary:**\n```\n"
+        comment += '\n'.join(error_lines)
+        if len(error_summary.split('\n')) > 10:
+            comment += "\n... (truncated)"
+        comment += "\n```\n\n"
+
+        if fix_actions:
+            comment += "**Applied Fixes:**\n"
+            for action in fix_actions:
+                comment += f"- {action}\n"
+            comment += "\n"
+
+        comment += "*These fixes were applied automatically by Auto-Coder using Gemini CLI.*"
+        return comment
 
     def _extract_important_errors(self, test_result: Dict[str, Any]) -> str:
         """Extract important error information from test output."""
@@ -583,58 +1391,7 @@ Please provide a fix suggestion in the following JSON format:
             logger.error(f"Failed to get repository context for {repo_name}: {e}")
             return {'name': repo_name, 'description': '', 'language': 'Unknown'}
     
-    def _format_analysis_comment(self, analysis: Dict[str, Any], solution: Optional[Dict[str, Any]]) -> str:
-        """Format analysis as a GitHub comment."""
-        comment = "## 🤖 Auto-Coder Analysis\n\n"
-        comment += f"**Category:** {analysis.get('category', 'unknown')}\n"
-        comment += f"**Priority:** {analysis.get('priority', 'unknown')}\n"
-        comment += f"**Complexity:** {analysis.get('complexity', 'unknown')}\n\n"
-        
-        if analysis.get('summary'):
-            comment += f"**Summary:** {analysis['summary']}\n\n"
-        
-        if analysis.get('recommendations'):
-            comment += "**Recommendations:**\n"
-            for rec in analysis['recommendations']:
-                comment += f"- {rec.get('action', 'No action specified')}\n"
-            comment += "\n"
-        
-        if solution:
-            comment += "**Suggested Solution:**\n"
-            comment += f"{solution.get('summary', 'No solution summary')}\n\n"
-            
-            if solution.get('steps'):
-                comment += "**Implementation Steps:**\n"
-                for step in solution['steps']:
-                    comment += f"{step.get('step', '?')}. {step.get('description', 'No description')}\n"
-        
-        comment += "\n*This analysis was generated automatically by Auto-Coder.*"
-        return comment
-    
-    def _format_pr_analysis_comment(self, analysis: Dict[str, Any]) -> str:
-        """Format PR analysis as a GitHub comment."""
-        comment = "## 🤖 Auto-Coder PR Analysis\n\n"
-        comment += f"**Category:** {analysis.get('category', 'unknown')}\n"
-        comment += f"**Risk Level:** {analysis.get('risk_level', 'unknown')}\n"
-        comment += f"**Review Priority:** {analysis.get('review_priority', 'unknown')}\n\n"
-        
-        if analysis.get('summary'):
-            comment += f"**Summary:** {analysis['summary']}\n\n"
-        
-        if analysis.get('recommendations'):
-            comment += "**Recommendations:**\n"
-            for rec in analysis['recommendations']:
-                comment += f"- {rec.get('action', 'No action specified')}\n"
-            comment += "\n"
-        
-        if analysis.get('potential_issues'):
-            comment += "**Potential Issues:**\n"
-            for issue in analysis['potential_issues']:
-                comment += f"- {issue}\n"
-            comment += "\n"
-        
-        comment += "\n*This analysis was generated automatically by Auto-Coder.*"
-        return comment
+
     
     def _format_feature_issue_body(self, suggestion: Dict[str, Any]) -> str:
         """Format feature suggestion as issue body."""

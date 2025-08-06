@@ -182,54 +182,56 @@ class TestAutomationEngine:
         mock_github_client.get_open_pull_requests.assert_called_once()
         mock_gemini_client.analyze_pull_request.assert_called_once_with(sample_pr_data)
     
-    def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data, sample_analysis_result):
+    def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test issue actions in dry run mode."""
         # Setup
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._format_analysis_comment = Mock(return_value="Test comment")
-        
+
         # Execute
-        result = engine._take_issue_actions("test/repo", sample_issue_data, sample_analysis_result, None)
-        
+        result = engine._take_issue_actions("test/repo", sample_issue_data)
+
         # Assert
         assert len(result) == 1
         assert "[DRY RUN]" in result[0]
-        mock_github_client.add_comment_to_issue.assert_not_called()
-    
-    def test_take_issue_actions_auto_close_duplicate(self, mock_github_client, mock_gemini_client, sample_issue_data):
-        """Test auto-closing duplicate issues."""
+        assert "123" in result[0]
+
+    def test_apply_issue_actions_directly(self, mock_github_client, mock_gemini_client):
+        """Test direct issue actions application using Gemini CLI."""
         # Setup
-        duplicate_analysis = {'category': 'duplicate', 'tags': []}
-        
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
-        engine._format_analysis_comment = Mock(return_value="Test comment")
-        
+        mock_gemini_client._run_gemini_cli.return_value = "Analyzed the issue and added implementation. This is a valid bug report that has been fixed."
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        issue_data = {
+            'number': 123,
+            'title': 'Bug in login system',
+            'body': 'The login system has a bug',
+            'labels': [{'name': 'bug'}],
+            'state': 'open',
+            'user': {'login': 'testuser'}
+        }
+
         # Execute
-        result = engine._take_issue_actions("test/repo", sample_issue_data, duplicate_analysis, None)
-        
+        with patch.object(engine, '_commit_changes', return_value="Committed changes"):
+            result = engine._apply_issue_actions_directly('test/repo', issue_data)
+
         # Assert
-        assert len(result) == 2
-        assert "Added analysis comment" in result[0]
-        assert "Auto-closed issue" in result[1]
-        
-        mock_github_client.add_comment_to_issue.assert_called_once()
-        mock_github_client.close_issue.assert_called_once()
+        assert len(result) == 3
+        assert "Gemini CLI analyzed and took action" in result[0]
+        assert "Added analysis comment" in result[1]
+        assert "Committed changes" in result[2]
     
     def test_take_pr_actions_success(self, mock_github_client, mock_gemini_client, sample_pr_data):
         """Test PR actions execution."""
         # Setup
-        pr_analysis = {'category': 'feature', 'risk_level': 'low'}
-        
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
-        engine._format_pr_analysis_comment = Mock(return_value="PR comment")
-        
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+
         # Execute
-        result = engine._take_pr_actions("test/repo", sample_pr_data, pr_analysis)
-        
+        result = engine._take_pr_actions("test/repo", sample_pr_data)
+
         # Assert
         assert len(result) == 1
-        assert "Added analysis comment to PR" in result[0]
-        mock_github_client.add_comment_to_issue.assert_called_once_with("test/repo", sample_pr_data['number'], "PR comment")
+        assert "[DRY RUN]" in result[0]
+        assert "456" in result[0]
     
     def test_get_repository_context_success(self, mock_github_client, mock_gemini_client):
         """Test successful repository context retrieval."""
@@ -259,49 +261,7 @@ class TestAutomationEngine:
         assert result['stars'] == 100
         assert result['forks'] == 20
     
-    def test_format_analysis_comment(self, mock_github_client, mock_gemini_client, sample_analysis_result):
-        """Test analysis comment formatting."""
-        # Setup
-        solution = {
-            'summary': 'Fix the bug',
-            'steps': [{'step': 1, 'description': 'Update code'}]
-        }
-        
-        engine = AutomationEngine(mock_github_client, mock_gemini_client)
-        
-        # Execute
-        result = engine._format_analysis_comment(sample_analysis_result, solution)
-        
-        # Assert
-        assert "🤖 Auto-Coder Analysis" in result
-        assert sample_analysis_result['category'] in result
-        assert sample_analysis_result['priority'] in result
-        assert solution['summary'] in result
-        assert "This analysis was generated automatically" in result
-    
-    def test_format_pr_analysis_comment(self, mock_github_client, mock_gemini_client):
-        """Test PR analysis comment formatting."""
-        # Setup
-        pr_analysis = {
-            'category': 'feature',
-            'risk_level': 'low',
-            'review_priority': 'medium',
-            'summary': 'New feature implementation',
-            'recommendations': [{'action': 'Review carefully'}],
-            'potential_issues': ['None identified']
-        }
-        
-        engine = AutomationEngine(mock_github_client, mock_gemini_client)
-        
-        # Execute
-        result = engine._format_pr_analysis_comment(pr_analysis)
-        
-        # Assert
-        assert "🤖 Auto-Coder PR Analysis" in result
-        assert pr_analysis['category'] in result
-        assert pr_analysis['risk_level'] in result
-        assert pr_analysis['summary'] in result
-        assert "This analysis was generated automatically" in result
+
     
     def test_format_feature_issue_body(self, mock_github_client, mock_gemini_client, sample_feature_suggestion):
         """Test feature issue body formatting."""
@@ -427,7 +387,7 @@ class TestAutomationEngine:
             ['bash', 'scripts/test.sh'],
             capture_output=True,
             text=True,
-            timeout=600
+            timeout=3600
         )
 
     @patch('subprocess.run')
@@ -467,3 +427,274 @@ class TestAutomationEngine:
         assert 'ERROR: Test failed' in result
         assert 'FAILED: assertion error' in result
         assert 'ImportError: module not found' in result
+
+    @patch('subprocess.run')
+    def test_check_github_actions_status_all_passed(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test GitHub Actions status check when all checks pass."""
+        # Setup
+        mock_run.return_value = Mock(
+            returncode=0,
+            stdout='✓ test-check\n✓ another-check'
+        )
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._check_github_actions_status("test/repo", pr_data)
+
+        # Assert
+        assert result['success'] is True
+        assert result['total_checks'] == 2
+        assert len(result['failed_checks']) == 0
+
+    @patch('subprocess.run')
+    def test_check_github_actions_status_some_failed(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test GitHub Actions status check when some checks fail."""
+        # Setup
+        mock_run.return_value = Mock(
+            returncode=0,
+            stdout='✓ passing-check\n✗ failing-check\n- pending-check'
+        )
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._check_github_actions_status("test/repo", pr_data)
+
+        # Assert
+        assert result['success'] is False
+        assert result['total_checks'] == 3
+        assert len(result['failed_checks']) == 2
+        assert result['failed_checks'][0]['name'] == 'failing-check'
+        assert result['failed_checks'][0]['conclusion'] == 'failure'
+        assert result['failed_checks'][1]['name'] == 'pending-check'
+        assert result['failed_checks'][1]['conclusion'] == 'pending'
+
+    @patch('subprocess.run')
+    def test_check_github_actions_status_tab_format_with_failures(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test GitHub Actions status check with tab-separated format and failures."""
+        # Setup - simulating the actual output format from gh CLI
+        mock_run.return_value = Mock(
+            returncode=1,  # Non-zero because some checks failed
+            stdout='test\tfail\t2m50s\thttps://github.com/example/repo/actions/runs/123\nformat\tpass\t27s\thttps://github.com/example/repo/actions/runs/124\nlink-pr-to-issue\tskipping\t0\thttps://github.com/example/repo/actions/runs/125'
+        )
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._check_github_actions_status("test/repo", pr_data)
+
+        # Assert
+        assert result['success'] is False  # Should be False because 'test' failed
+        assert result['total_checks'] == 3
+        assert len(result['failed_checks']) == 1  # Only 'test' failed, 'skipping' doesn't count as failure
+        assert result['failed_checks'][0]['name'] == 'test'
+        assert result['failed_checks'][0]['conclusion'] == 'failure'
+        assert result['failed_checks'][0]['details_url'] == 'https://github.com/example/repo/actions/runs/123'
+
+    @patch('subprocess.run')
+    def test_check_github_actions_status_tab_format_all_pass(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test GitHub Actions status check with tab-separated format and all passing."""
+        # Setup
+        mock_run.return_value = Mock(
+            returncode=0,
+            stdout='test\tpass\t2m50s\thttps://github.com/example/repo/actions/runs/123\nformat\tpass\t27s\thttps://github.com/example/repo/actions/runs/124\nlink-pr-to-issue\tskipping\t0\thttps://github.com/example/repo/actions/runs/125'
+        )
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._check_github_actions_status("test/repo", pr_data)
+
+        # Assert
+        assert result['success'] is True  # Should be True because all required checks passed
+        assert result['total_checks'] == 3
+        assert len(result['failed_checks']) == 0  # No failed checks
+
+    @patch('subprocess.run')
+    def test_checkout_pr_branch_success(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test successful PR branch checkout."""
+        # Setup
+        mock_run.return_value = Mock(returncode=0, stdout="Switched to branch", stderr="")
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._checkout_pr_branch("test/repo", pr_data)
+
+        # Assert
+        assert result is True
+        mock_run.assert_called_once_with(
+            ['gh', 'pr', 'checkout', '123'],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+
+    @patch('subprocess.run')
+    def test_checkout_pr_branch_failure(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test PR branch checkout failure."""
+        # Setup
+        mock_run.return_value = Mock(returncode=1, stdout="", stderr="Branch not found")
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._checkout_pr_branch("test/repo", pr_data)
+
+        # Assert
+        assert result is False
+
+    def test_apply_github_actions_fixes_directly(self, mock_github_client, mock_gemini_client):
+        """Test direct GitHub Actions fixes application using Gemini CLI."""
+        # Setup
+        mock_gemini_client._run_gemini_cli.return_value = "Fixed the GitHub Actions issues by updating the test configuration"
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {
+            'number': 123,
+            'title': 'Fix test issue',
+            'body': 'This PR fixes the test configuration'
+        }
+        github_logs = "Error: Test failed due to missing dependency"
+
+        # Execute
+        with patch.object(engine, '_commit_changes', return_value="Committed changes"):
+            result = engine._apply_github_actions_fixes_directly(pr_data, github_logs)
+
+        # Assert
+        assert len(result) == 2
+        assert "Gemini CLI applied GitHub Actions fixes" in result[0]
+        assert "Committed changes" in result[1]
+
+    def test_apply_local_test_fixes_directly(self, mock_github_client, mock_gemini_client):
+        """Test direct local test fixes application using Gemini CLI."""
+        # Setup
+        mock_gemini_client._run_gemini_cli.return_value = "Fixed the local test issues by updating the import statements"
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {
+            'number': 123,
+            'title': 'Fix import issue',
+            'body': 'This PR fixes the import statements'
+        }
+        error_summary = "ImportError: cannot import name 'helper' from 'utils'"
+
+        # Execute
+        with patch.object(engine, '_commit_changes', return_value="Committed changes"):
+            result = engine._apply_local_test_fixes_directly(pr_data, error_summary)
+
+        # Assert
+        assert len(result) == 2
+        assert "Gemini CLI applied local test fixes" in result[0]
+        assert "Committed changes" in result[1]
+
+    def test_format_direct_fix_comment(self, mock_github_client, mock_gemini_client):
+        """Test direct fix comment formatting."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {
+            'number': 123,
+            'title': 'Fix GitHub Actions',
+            'body': 'This PR fixes the CI issues'
+        }
+        github_logs = "Error: Test failed\nFailed to install dependencies\nBuild process failed"
+        fix_actions = ["Fixed configuration", "Updated dependencies"]
+
+        # Execute
+        result = engine._format_direct_fix_comment(pr_data, github_logs, fix_actions)
+
+        # Assert
+        assert "Auto-Coder Applied GitHub Actions Fixes" in result
+        assert "**PR:** #123 - Fix GitHub Actions" in result
+        assert "Error: Test failed" in result
+        assert "Fixed configuration" in result
+        assert "Updated dependencies" in result
+
+    @patch('subprocess.run')
+    def test_commit_changes_success(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test successful git commit."""
+        # Setup
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),  # git add
+            Mock(returncode=0, stdout="", stderr="")   # git commit
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        fix_suggestion = {'summary': 'Fix test issue'}
+
+        # Execute
+        result = engine._commit_changes(fix_suggestion)
+
+        # Assert
+        assert "Committed changes: Auto-Coder: Fix test issue" in result
+        assert mock_run.call_count == 2
+
+    def test_check_github_actions_status_in_progress(self, mock_github_client, mock_gemini_client):
+        """Test GitHub Actions status check with in-progress checks."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Mock gh CLI output for in-progress checks
+        with patch('subprocess.run') as mock_run:
+            mock_run.return_value = Mock(
+                returncode=1,
+                stdout="test\tin_progress\t2m30s\turl1\nbuild\tpending\t1m45s\turl2"
+            )
+
+            # Execute
+            result = engine._check_github_actions_status('test/repo', pr_data)
+
+            # Assert
+            assert result['success'] is False
+            assert result['in_progress'] is True
+            assert len(result['checks']) == 2
+
+    @patch('subprocess.run')
+    def test_update_with_main_branch_up_to_date(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test updating PR branch when already up to date."""
+        # Setup
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),  # git fetch
+            Mock(returncode=0, stdout="0", stderr="")   # git rev-list
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._update_with_main_branch('test/repo', pr_data)
+
+        # Assert
+        assert len(result) == 1
+        assert "up to date with main branch" in result[0]
+
+    @patch('subprocess.run')
+    def test_update_with_main_branch_merge_success(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test successful main branch merge."""
+        # Setup
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),  # git fetch
+            Mock(returncode=0, stdout="3", stderr=""),  # git rev-list
+            Mock(returncode=0, stdout="", stderr=""),  # git merge
+            Mock(returncode=0, stdout="", stderr="")   # git push
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        # Execute
+        result = engine._update_with_main_branch('test/repo', pr_data)
+
+        # Assert
+        assert len(result) == 3
+        assert "3 commits behind main" in result[0]
+        assert "Successfully merged main branch" in result[1]
+        assert "Pushed updated branch" in result[2]
