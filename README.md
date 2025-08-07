@@ -21,8 +21,8 @@ Gemini CLIを使用してアプリケーション開発を自動化するPython�
 
 ### 前提条件
 - Python 3.9以上
-- GitHub API トークン
-- Gemini API キー
+- [gh CLI](https://cli.github.com/) で事前に認証済みであること（`gh auth login`）
+- [Gemini CLI](https://ai.google.dev/gemini-api/docs/cli?hl=ja) で事前に認証済みであること（`gemini login`）
 
 ### セットアップ
 
@@ -32,26 +32,24 @@ git clone https://github.com/your-username/auto-coder.git
 cd auto-coder
 ```
 
-2. 依存関係をインストール:
+2. 依存関係をインストールして、任意のディレクトリから実行可能にします:
 ```bash
 pip install -e .
+# またはリポジトリをクローンせずに直接インストール
+pip install git+https://github.com/your-username/auto-coder.git
 ```
 
-3. 環境変数を設定:
+3. 必要に応じて設定ファイルを作成:
 ```bash
 cp .env.example .env
-# .envファイルを編集してAPIキーを設定
+# トークンはgh・geminiの認証情報が自動的に使用されるため空欄でも動作します
 ```
 
 ## 使用方法
 
-### 環境変数の設定
+### 認証
 
-必須の環境変数:
-```bash
-export GITHUB_TOKEN="your_github_token"
-export GEMINI_API_KEY="your_gemini_api_key"
-```
+`gh auth login` と `gemini login` を実行しておくことで、APIキーを環境変数に設定せずに利用できます。環境変数を手動で設定する必要はありません。
 
 ### CLIコマンド
 
@@ -74,14 +72,18 @@ auto-coder create-feature-issues --repo owner/repo
 
 #### `process-issues`
 - `--repo`: GitHubリポジトリ (owner/repo形式)
-- `--github-token`: GitHub APIトークン (環境変数でも設定可能)
-- `--gemini-api-key`: Gemini APIキー (環境変数でも設定可能)
 - `--dry-run`: ドライランモード（変更を行わない）
+
+オプション:
+- `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
+- `--gemini-api-key`: Gemini CLIの認証情報を使用しない場合に手動指定
 
 #### `create-feature-issues`
 - `--repo`: GitHubリポジトリ (owner/repo形式)
-- `--github-token`: GitHub APIトークン (環境変数でも設定可能)
-- `--gemini-api-key`: Gemini APIキー (環境変数でも設定可能)
+
+オプション:
+- `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
+- `--gemini-api-key`: Gemini CLIの認証情報を使用しない場合に手動指定
 
 ## 設定
 
@@ -89,14 +91,16 @@ auto-coder create-feature-issues --repo owner/repo
 
 | 変数名 | 説明 | デフォルト値 | 必須 |
 |--------|------|-------------|------|
-| `GITHUB_TOKEN` | GitHub APIトークン | - | ✅ |
-| `GEMINI_API_KEY` | Gemini APIキー | - | ✅ |
+| `GITHUB_TOKEN` | GitHub APIトークン (gh CLIの認証情報を上書きする場合) | - | ❌ |
+| `GEMINI_API_KEY` | Gemini APIキー (Gemini CLIの認証情報を上書きする場合) | - | ❌ |
 | `GITHUB_API_URL` | GitHub API URL | `https://api.github.com` | ❌ |
 | `GEMINI_MODEL` | 使用するGeminiモデル | `gemini-pro` | ❌ |
-| `MAX_ISSUES_PER_RUN` | 1回の実行で処理する最大issue数 | `10` | ❌ |
-| `MAX_PRS_PER_RUN` | 1回の実行で処理する最大PR数 | `5` | ❌ |
+| `MAX_ISSUES_PER_RUN` | 1回の実行で処理する最大issue数 | `-1` | ❌ |
+| `MAX_PRS_PER_RUN` | 1回の実行で処理する最大PR数 | `-1` | ❌ |
 | `DRY_RUN` | ドライランモード | `false` | ❌ |
 | `LOG_LEVEL` | ログレベル | `INFO` | ❌ |
+
+`MAX_ISSUES_PER_RUN` と `MAX_PRS_PER_RUN` はデフォルトで制限なし (`-1`) に設定されています。処理件数を制限したい場合は、正の整数を指定してください。
 
 ## 開発
 
