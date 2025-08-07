@@ -399,9 +399,9 @@ Issue #{issue_data['number']}: {issue_data['title']}
 Issue Description:
 {issue_data['body'][:1000]}...
 
-Issue Labels: {', '.join([label['name'] for label in issue_data.get('labels', [])])}
+Issue Labels: {', '.join(issue_data.get('labels', []))}
 Issue State: {issue_data.get('state', 'open')}
-Created by: {issue_data.get('user', {}).get('login', 'unknown')}
+Created by: {issue_data.get('author', 'unknown')}
 
 Please analyze this issue and determine the appropriate action:
 

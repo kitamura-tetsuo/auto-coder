@@ -422,9 +422,9 @@ class TestAutomationEngine:
             'number': 123,
             'title': 'Bug in login system',
             'body': 'The login system has a bug',
-            'labels': [{'name': 'bug'}],
+            'labels': ['bug'],
             'state': 'open',
-            'user': {'login': 'testuser'}
+            'author': 'testuser'
         }
 
         # Execute
