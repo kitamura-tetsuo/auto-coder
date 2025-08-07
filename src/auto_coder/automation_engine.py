@@ -1197,6 +1197,105 @@ After analyzing, apply the necessary fixes to the codebase.
         except Exception as e:
             return f"Error getting conflict info: {e}"
 
+    def _is_package_lock_only_conflict(self, conflict_info: str) -> bool:
+        """Check if conflicts are only in package-lock.json files."""
+        try:
+            # Parse git status output to find conflicted files
+            conflicted_files = []
+            for line in conflict_info.strip().split('\n'):
+                if line.strip():
+                    # Git status --porcelain format: XY filename
+                    # UU means both modified (merge conflict)
+                    if line.startswith('UU '):
+                        filename = line[3:].strip()
+                        conflicted_files.append(filename)
+
+            # Check if all conflicted files are package-lock.json or similar dependency files
+            if not conflicted_files:
+                return False
+
+            dependency_files = {'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'}
+            return all(any(dep_file in file for dep_file in dependency_files) for file in conflicted_files)
+
+        except Exception as e:
+            logger.error(f"Error checking package-lock conflict: {e}")
+            return False
+
+    def _resolve_package_lock_conflicts(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
+        """Resolve package-lock.json conflicts by deleting and regenerating the file."""
+        actions = []
+
+        try:
+            logger.info(f"Resolving package-lock.json conflicts for PR #{pr_data['number']}")
+            actions.append(f"Detected package-lock.json only conflicts for PR #{pr_data['number']}")
+
+            # Parse conflicted files
+            conflicted_files = []
+            for line in conflict_info.strip().split('\n'):
+                if line.strip() and line.startswith('UU '):
+                    filename = line[3:].strip()
+                    conflicted_files.append(filename)
+
+            # Remove conflicted dependency files
+            for file in conflicted_files:
+                if any(dep in file for dep in ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']):
+                    remove_result = self.cmd.run_command(['rm', '-f', file])
+                    if remove_result.success:
+                        actions.append(f"Removed conflicted file: {file}")
+                    else:
+                        actions.append(f"Failed to remove {file}: {remove_result.stderr}")
+
+            # Check if package.json exists to determine which package manager to use
+            package_json_exists = os.path.exists('package.json')
+
+            if package_json_exists:
+                # Try npm install first
+                npm_result = self.cmd.run_command(['npm', 'install'], timeout=300)
+                if npm_result.success:
+                    actions.append("Successfully ran npm install to regenerate package-lock.json")
+                else:
+                    # Try yarn if npm fails
+                    yarn_result = self.cmd.run_command(['yarn', 'install'], timeout=300)
+                    if yarn_result.success:
+                        actions.append("Successfully ran yarn install to regenerate lock file")
+                    else:
+                        actions.append(f"Failed to regenerate lock file with npm or yarn: {npm_result.stderr}")
+                        return actions
+            else:
+                actions.append("No package.json found, skipping dependency installation")
+
+            # Stage the regenerated files
+            add_result = self.cmd.run_command(['git', 'add', '.'])
+            if add_result.success:
+                actions.append("Staged regenerated dependency files")
+            else:
+                actions.append(f"Failed to stage files: {add_result.stderr}")
+                return actions
+
+            # Commit the changes
+            commit_result = self.cmd.run_command([
+                'git', 'commit', '-m',
+                f"Resolve package-lock.json conflicts for PR #{pr_data['number']}"
+            ])
+            if commit_result.success:
+                actions.append("Committed resolved dependency conflicts")
+            else:
+                actions.append(f"Failed to commit changes: {commit_result.stderr}")
+                return actions
+
+            # Push the changes
+            push_result = self.cmd.run_command(['git', 'push'])
+            if push_result.success:
+                actions.append(f"Successfully pushed resolved package-lock.json conflicts for PR #{pr_data['number']}")
+            else:
+                actions.append(f"Failed to push changes: {push_result.stderr}")
+
+        except Exception as e:
+            logger.error(f"Error resolving package-lock conflicts: {e}")
+            actions.append(f"Error resolving package-lock conflicts: {e}")
+
+        return actions
+
     def _resolve_merge_conflicts_with_gemini(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
         """Ask Gemini CLI to resolve merge conflicts using faster model."""
         actions = []
