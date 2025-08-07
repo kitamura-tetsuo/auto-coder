@@ -78,7 +78,7 @@ class TestGitHubClient:
         assert mock_issue1 in result
         assert mock_issue2 in result
         assert mock_pr not in result
-        mock_repo.get_issues.assert_called_once_with(state='open', sort='created', direction='desc')
+        mock_repo.get_issues.assert_called_once_with(state='open', sort='created', direction='asc')
     
     @patch('src.auto_coder.github_client.Github')
     def test_get_open_pull_requests_success(self, mock_github_class, mock_github_token):
@@ -101,8 +101,74 @@ class TestGitHubClient:
         # Assert
         assert len(result) == 1
         assert mock_pr1 in result
-        mock_repo.get_pulls.assert_called_once_with(state='open', sort='created', direction='desc')
-    
+        mock_repo.get_pulls.assert_called_once_with(state='open', sort='created', direction='asc')
+
+    def test_get_open_issues_sorted_oldest_first(self, mock_github_token):
+        """Test that issues are sorted by creation date (oldest first)."""
+        # Setup
+        with patch('src.auto_coder.github_client.Github') as mock_github_class:
+            mock_github = Mock()
+            mock_repo = Mock(spec=Repository.Repository)
+
+            # Create mock issues with different creation dates
+            mock_issue1 = Mock(spec=Issue.Issue)
+            mock_issue1.pull_request = None  # Not a PR
+            mock_issue1.created_at = Mock()
+            mock_issue1.created_at.isoformat.return_value = "2024-01-01T00:00:00Z"
+
+            mock_issue2 = Mock(spec=Issue.Issue)
+            mock_issue2.pull_request = None  # Not a PR
+            mock_issue2.created_at = Mock()
+            mock_issue2.created_at.isoformat.return_value = "2024-01-02T00:00:00Z"
+
+            # GitHub API should return in ascending order (oldest first)
+            mock_repo.get_issues.return_value = [mock_issue1, mock_issue2]
+            mock_github.get_repo.return_value = mock_repo
+            mock_github_class.return_value = mock_github
+
+            client = GitHubClient(mock_github_token)
+
+            # Execute
+            result = client.get_open_issues("test/repo")
+
+            # Assert
+            assert len(result) == 2
+            assert result[0] == mock_issue1  # Oldest first
+            assert result[1] == mock_issue2
+            mock_repo.get_issues.assert_called_once_with(state='open', sort='created', direction='asc')
+
+    def test_get_open_pull_requests_sorted_oldest_first(self, mock_github_token):
+        """Test that pull requests are sorted by creation date (oldest first)."""
+        # Setup
+        with patch('src.auto_coder.github_client.Github') as mock_github_class:
+            mock_github = Mock()
+            mock_repo = Mock(spec=Repository.Repository)
+
+            # Create mock PRs with different creation dates
+            mock_pr1 = Mock(spec=PullRequest.PullRequest)
+            mock_pr1.created_at = Mock()
+            mock_pr1.created_at.isoformat.return_value = "2024-01-01T00:00:00Z"
+
+            mock_pr2 = Mock(spec=PullRequest.PullRequest)
+            mock_pr2.created_at = Mock()
+            mock_pr2.created_at.isoformat.return_value = "2024-01-02T00:00:00Z"
+
+            # GitHub API should return in ascending order (oldest first)
+            mock_repo.get_pulls.return_value = [mock_pr1, mock_pr2]
+            mock_github.get_repo.return_value = mock_repo
+            mock_github_class.return_value = mock_github
+
+            client = GitHubClient(mock_github_token)
+
+            # Execute
+            result = client.get_open_pull_requests("test/repo")
+
+            # Assert
+            assert len(result) == 2
+            assert result[0] == mock_pr1  # Oldest first
+            assert result[1] == mock_pr2
+            mock_repo.get_pulls.assert_called_once_with(state='open', sort='created', direction='asc')
+
     def test_get_issue_details(self, mock_github_token):
         """Test issue details extraction."""
         # Setup

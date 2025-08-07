@@ -20,11 +20,11 @@ features:
             parameters: ["repo_name"]
             returns: "Repository object"
           - name: "get_open_issues"
-            description: "Fetch open issues from repository"
+            description: "Fetch open issues from repository, sorted by creation date (oldest first)"
             parameters: ["repo_name", "limit"]
             returns: "List of Issue objects"
           - name: "get_open_pull_requests"
-            description: "Fetch open pull requests from repository"
+            description: "Fetch open pull requests from repository, sorted by creation date (oldest first)"
             parameters: ["repo_name", "limit"]
             returns: "List of PullRequest objects"
           - name: "get_issue_details"
@@ -175,7 +175,7 @@ workflows:
     name: "Issue Processing Workflow"
     description: "Automated workflow for processing GitHub issues"
     steps:
-      1. "Fetch open issues from repository"
+      1. "Fetch open issues from repository (oldest first)"
       2. "Analyze each issue using Gemini AI"
       3. "Generate solutions for high-priority issues"
       4. "Add analysis comments to issues"
@@ -186,7 +186,7 @@ workflows:
     name: "Pull Request Processing Workflow"
     description: "Automated workflow for processing GitHub pull requests with two-loop priority order"
     steps:
-      1. "Fetch open pull requests from repository"
+      1. "Fetch open pull requests from repository (oldest first)"
       2. "First loop: Check GitHub Actions status and merge passing PRs"
       3. "Second loop: Process remaining PRs for issue resolution"
       4. "Generate automation report"

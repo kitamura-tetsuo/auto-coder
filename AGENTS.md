@@ -28,7 +28,7 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 - requirements.txtまたはpyproject.tomlを適切に管理する
 
 ## 主要機能
-1. GitHub APIを使用したissue/PR取得
+1. GitHub APIを使用したissue/PR取得（古い順でソート）
 2. Gemini CLIを使用した内容分析と自動処理
 3. 必要な機能の自動検出と issue作成
 4. 自動化されたコード修正と構築

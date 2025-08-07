@@ -29,18 +29,18 @@ class GitHubClient:
             raise
     
     def get_open_issues(self, repo_name: str, limit: Optional[int] = None) -> List[Issue.Issue]:
-        """Get open issues from repository."""
+        """Get open issues from repository, sorted by creation date (oldest first)."""
         try:
             repo = self.get_repository(repo_name)
-            issues = repo.get_issues(state='open', sort='created', direction='desc')
-            
+            issues = repo.get_issues(state='open', sort='created', direction='asc')
+
             # Filter out pull requests (GitHub API includes PRs in issues)
             issue_list = [issue for issue in issues if not issue.pull_request]
-            
+
             if limit:
                 issue_list = issue_list[:limit]
-                
-            logger.info(f"Retrieved {len(issue_list)} open issues from {repo_name}")
+
+            logger.info(f"Retrieved {len(issue_list)} open issues from {repo_name} (oldest first)")
             return issue_list
             
         except GithubException as e:
@@ -48,16 +48,16 @@ class GitHubClient:
             raise
     
     def get_open_pull_requests(self, repo_name: str, limit: Optional[int] = None) -> List[PullRequest.PullRequest]:
-        """Get open pull requests from repository."""
+        """Get open pull requests from repository, sorted by creation date (oldest first)."""
         try:
             repo = self.get_repository(repo_name)
-            prs = repo.get_pulls(state='open', sort='created', direction='desc')
-            
+            prs = repo.get_pulls(state='open', sort='created', direction='asc')
+
             pr_list = list(prs)
             if limit:
                 pr_list = pr_list[:limit]
-                
-            logger.info(f"Retrieved {len(pr_list)} open pull requests from {repo_name}")
+
+            logger.info(f"Retrieved {len(pr_list)} open pull requests from {repo_name} (oldest first)")
             return pr_list
             
         except GithubException as e:
