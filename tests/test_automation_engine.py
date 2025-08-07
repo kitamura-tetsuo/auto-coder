@@ -401,6 +401,69 @@ class TestAutomationEngine:
         assert result['actions_taken'] == ['Fixed issue']
         engine._take_pr_actions.assert_called_once_with("test/repo", sample_pr_data)
 
+    def test_process_prs_first_loop_actions_passing_and_mergeable(self, mock_github_client, mock_gemini_client):
+        """Test first loop processes PRs with passing Actions AND mergeable status."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+
+        # Mock PR data - Actions passing and mergeable
+        passing_mergeable_pr = Mock()
+        passing_mergeable_pr.number = 1
+        passing_mergeable_pr_data = {
+            'number': 1, 'title': 'Passing Mergeable PR', 'mergeable': True
+        }
+
+        # Mock PR data - Actions passing but not mergeable
+        passing_not_mergeable_pr = Mock()
+        passing_not_mergeable_pr.number = 2
+        passing_not_mergeable_pr_data = {
+            'number': 2, 'title': 'Passing Not Mergeable PR', 'mergeable': False
+        }
+
+        mock_github_client.get_open_pull_requests.return_value = [
+            passing_mergeable_pr, passing_not_mergeable_pr
+        ]
+        mock_github_client.get_pr_details.side_effect = [
+            passing_mergeable_pr_data, passing_not_mergeable_pr_data,
+            passing_not_mergeable_pr_data  # Second loop
+        ]
+
+        # Mock GitHub Actions status
+        engine._check_github_actions_status = Mock(return_value={'success': True})
+        engine._process_pr_for_merge = Mock(return_value={
+            'pr_data': passing_mergeable_pr_data,
+            'actions_taken': ['Successfully merged PR #1'],
+            'priority': 'merge'
+        })
+        engine._process_pr_for_fixes = Mock(return_value={
+            'pr_data': passing_not_mergeable_pr_data,
+            'actions_taken': ['Fixed PR #2'],
+            'priority': 'fix'
+        })
+
+        # Execute
+        result = engine._process_pull_requests("test/repo")
+
+        # Assert
+        # Should have at least 2 results (may have error entries)
+        assert len(result) >= 2
+
+        # First PR should be processed for merge (Actions passing AND mergeable)
+        engine._process_pr_for_merge.assert_called_once_with("test/repo", passing_mergeable_pr_data)
+
+        # Second PR should be processed for fixes in second loop (Actions passing but NOT mergeable)
+        engine._process_pr_for_fixes.assert_called_once_with("test/repo", passing_not_mergeable_pr_data)
+
+        # Check that the first result is the merge result
+        merge_result = next((r for r in result if r.get('priority') == 'merge'), None)
+        assert merge_result is not None
+        assert merge_result['pr_data']['number'] == 1
+
+        # Check that the second result is the fix result
+        fix_result = next((r for r in result if r.get('priority') == 'fix'), None)
+        assert fix_result is not None
+        assert fix_result['pr_data']['number'] == 2
+
     @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
     def test_merge_pr_with_conflict_resolution_success(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test PR merge with successful conflict resolution."""

@@ -334,21 +334,28 @@ class AutomationEngine:
             processed_prs = []
             merged_pr_numbers = set()
 
-            # First loop: Process PRs with passing GitHub Actions (merge them)
-            logger.info(f"First pass: Processing PRs with passing GitHub Actions for merging...")
+            # First loop: Process PRs with passing GitHub Actions AND mergeable status (merge them)
+            logger.info(f"First pass: Processing PRs with passing GitHub Actions and mergeable status for merging...")
             for pr in prs:
                 try:
                     pr_data = self.github.get_pr_details(pr)
                     github_checks = self._check_github_actions_status(repo_name, pr_data)
 
-                    if github_checks['success']:
-                        logger.info(f"PR #{pr_data['number']}: Actions PASSING - attempting merge")
+                    # Check both GitHub Actions success AND mergeable status
+                    if github_checks['success'] and pr_data.get('mergeable', False):
+                        logger.info(f"PR #{pr_data['number']}: Actions PASSING and MERGEABLE - attempting merge")
                         processed_pr = self._process_pr_for_merge(repo_name, pr_data)
                         processed_prs.append(processed_pr)
 
                         # Track if PR was successfully merged
                         if any("Successfully merged" in action for action in processed_pr.get('actions_taken', [])):
                             merged_pr_numbers.add(pr_data['number'])
+                    elif github_checks['success'] and not pr_data.get('mergeable', False):
+                        logger.info(f"PR #{pr_data['number']}: Actions PASSING but NOT MERGEABLE - deferring to second pass")
+                    elif not github_checks['success'] and pr_data.get('mergeable', False):
+                        logger.info(f"PR #{pr_data['number']}: MERGEABLE but Actions FAILING - deferring to second pass")
+                    else:
+                        logger.info(f"PR #{pr_data['number']}: Actions FAILING and NOT MERGEABLE - deferring to second pass")
 
                 except Exception as e:
                     logger.error(f"Failed to process PR #{pr.number} in merge pass: {e}")

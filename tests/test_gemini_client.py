@@ -315,3 +315,55 @@ class TestGeminiClient:
         # Switch to conflict model (should be no-op)
         client.switch_to_conflict_model()
         assert client.model_name == "gemini-2.5-flash"
+
+    @patch('subprocess.run')
+    def test_escape_prompt_basic(self, mock_subprocess):
+        """Test basic @ character escaping in prompts."""
+        # Mock subprocess for version check
+        mock_subprocess.return_value.returncode = 0
+
+        client = GeminiClient()
+
+        # Test basic @ escaping
+        prompt = "Please analyze @user's code"
+        escaped = client._escape_prompt(prompt)
+        assert escaped == "Please analyze \\@user's code"
+
+    @patch('subprocess.run')
+    def test_escape_prompt_multiple_at_symbols(self, mock_subprocess):
+        """Test escaping multiple @ characters in prompts."""
+        # Mock subprocess for version check
+        mock_subprocess.return_value.returncode = 0
+
+        client = GeminiClient()
+
+        # Test multiple @ escaping
+        prompt = "Check @user1 and @user2 mentions in @file"
+        escaped = client._escape_prompt(prompt)
+        assert escaped == "Check \\@user1 and \\@user2 mentions in \\@file"
+
+    @patch('subprocess.run')
+    def test_escape_prompt_no_at_symbols(self, mock_subprocess):
+        """Test prompt without @ characters remains unchanged."""
+        # Mock subprocess for version check
+        mock_subprocess.return_value.returncode = 0
+
+        client = GeminiClient()
+
+        # Test no @ symbols
+        prompt = "This is a normal prompt without special characters"
+        escaped = client._escape_prompt(prompt)
+        assert escaped == prompt
+
+    @patch('subprocess.run')
+    def test_escape_prompt_empty_string(self, mock_subprocess):
+        """Test escaping empty string."""
+        # Mock subprocess for version check
+        mock_subprocess.return_value.returncode = 0
+
+        client = GeminiClient()
+
+        # Test empty string
+        prompt = ""
+        escaped = client._escape_prompt(prompt)
+        assert escaped == ""

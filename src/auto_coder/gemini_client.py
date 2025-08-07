@@ -46,15 +46,22 @@ class GeminiClient:
             logger.info(f"Switching back from {self.model_name} to {self.default_model}")
             self.model_name = self.default_model
 
+    def _escape_prompt(self, prompt: str) -> str:
+        """Escape @ characters in prompt for Gemini."""
+        return prompt.replace('@', '\\@')
+
     def _run_gemini_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
         try:
+            # Escape @ characters in prompt for Gemini
+            escaped_prompt = self._escape_prompt(prompt)
+
             # Run gemini CLI with prompt via stdin and additional prompt parameter
             cmd = [
                 'gemini',
                 '--model', self.model_name,
                 '--force-model',
-                '--prompt', prompt
+                '--prompt', escaped_prompt
             ]
 
             logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")

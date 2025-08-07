@@ -87,6 +87,10 @@ features:
             description: "Switch back to default model"
             parameters: []
             returns: "None"
+          - name: "_escape_prompt"
+            description: "Escape @ characters in prompts for safe Gemini CLI usage"
+            parameters: ["prompt"]
+            returns: "String with escaped @ characters"
 
   automation_engine:
     name: "Automation Engine"
@@ -115,7 +119,7 @@ features:
             description: "Process open pull requests in the repository with two-loop priority order"
             parameters: ["repo_name"]
             returns: "List of processed PRs"
-            details: "First loop merges PRs with passing Actions, second loop fixes remaining PRs"
+            details: "First loop merges PRs with passing Actions AND mergeable status, second loop fixes remaining PRs"
           - name: "_take_issue_actions"
             description: "Take automated actions based on issue analysis"
             parameters: ["repo_name", "issue_data", "analysis", "solution"]
@@ -218,7 +222,7 @@ workflows:
     description: "Automated workflow for processing GitHub pull requests with two-loop priority order"
     steps:
       1. "Fetch open pull requests from repository (oldest first)"
-      2. "First loop: Check GitHub Actions status and merge passing PRs"
+      2. "First loop: Check GitHub Actions status AND mergeable status, merge qualifying PRs"
       3. "Second loop: Process remaining PRs for issue resolution"
       4. "Generate automation report"
 
@@ -242,6 +246,39 @@ workflows:
       5. "Generate automation report"
 
 special_features:
+  prompt_escaping:
+    name: "Gemini Prompt @ Character Escaping"
+    description: "Automatically escapes @ characters in prompts to prevent Gemini CLI parsing issues"
+    behavior:
+      - "Detects @ characters in prompts before sending to Gemini CLI"
+      - "Replaces @ with \\@ to prevent CLI argument parsing conflicts"
+      - "Ensures safe transmission of user mentions and email addresses in prompts"
+    benefits:
+      - "Prevents CLI parsing errors with @ characters"
+      - "Allows safe inclusion of user mentions and email addresses"
+      - "Maintains prompt integrity during Gemini CLI communication"
+    implementation:
+      - "Applied automatically in _run_gemini_cli method"
+      - "Uses simple string replacement: @ → \\@"
+      - "No user intervention required"
+
+  enhanced_pr_merge_criteria:
+    name: "Enhanced PR Merge Criteria"
+    description: "Improved first-loop PR processing with both GitHub Actions success AND mergeable status checks"
+    behavior:
+      - "First loop only processes PRs that have BOTH passing GitHub Actions AND mergeable status"
+      - "PRs with passing Actions but not mergeable are deferred to second loop"
+      - "PRs with mergeable status but failing Actions are deferred to second loop"
+      - "Only PRs meeting both criteria are processed for immediate merge"
+    benefits:
+      - "Reduces merge failures by checking mergeable status upfront"
+      - "Prevents wasted processing time on unmergeable PRs"
+      - "Improves automation reliability and success rate"
+    criteria:
+      - "GitHub Actions: success = true"
+      - "PR mergeable: mergeable = true"
+      - "Both conditions must be met for first-loop processing"
+
   conflict_resolution:
     name: "Automatic Model Switching for Conflicts"
     description: "Automatically switches to faster model (gemini-2.5-flash) when resolving PR merge conflicts"
