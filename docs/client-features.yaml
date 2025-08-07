@@ -92,9 +92,10 @@ features:
             parameters: ["repo_name"]
             returns: "List of processed issues"
           - name: "_process_pull_requests"
-            description: "Process open pull requests in the repository"
+            description: "Process open pull requests in the repository with two-loop priority order"
             parameters: ["repo_name"]
             returns: "List of processed PRs"
+            details: "First loop merges PRs with passing Actions, second loop fixes remaining PRs"
           - name: "_take_issue_actions"
             description: "Take automated actions based on issue analysis"
             parameters: ["repo_name", "issue_data", "analysis", "solution"]
@@ -103,6 +104,14 @@ features:
             description: "Take automated actions based on PR analysis"
             parameters: ["repo_name", "pr_data", "analysis"]
             returns: "List of actions taken"
+          - name: "_process_pr_for_merge"
+            description: "Process a PR for quick merging when GitHub Actions are passing"
+            parameters: ["repo_name", "pr_data"]
+            returns: "Dictionary with PR processing results"
+          - name: "_process_pr_for_fixes"
+            description: "Process a PR for issue resolution when GitHub Actions are failing or pending"
+            parameters: ["repo_name", "pr_data"]
+            returns: "Dictionary with PR processing results"
 
   cli_interface:
     name: "Command Line Interface"
@@ -175,11 +184,11 @@ workflows:
 
   pr_processing:
     name: "Pull Request Processing Workflow"
-    description: "Automated workflow for processing GitHub pull requests"
+    description: "Automated workflow for processing GitHub pull requests with two-loop priority order"
     steps:
       1. "Fetch open pull requests from repository"
-      2. "Analyze each PR using Gemini AI"
-      3. "Add analysis comments to PRs"
+      2. "First loop: Check GitHub Actions status and merge passing PRs"
+      3. "Second loop: Process remaining PRs for issue resolution"
       4. "Generate automation report"
 
   feature_suggestion:

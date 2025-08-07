@@ -269,28 +269,47 @@ class AutomationEngine:
             return []
     
     def _process_pull_requests(self, repo_name: str) -> List[Dict[str, Any]]:
-        """Process open pull requests in the repository."""
+        """Process open pull requests in the repository with priority order."""
         try:
             prs = self.github.get_open_pull_requests(repo_name, limit=settings.max_prs_per_run)
             processed_prs = []
+            merged_pr_numbers = set()
 
+            # First loop: Process PRs with passing GitHub Actions (merge them)
+            logger.info(f"First pass: Processing PRs with passing GitHub Actions for merging...")
+            for pr in prs:
+                try:
+                    pr_data = self.github.get_pr_details(pr)
+                    github_checks = self._check_github_actions_status(repo_name, pr_data)
+
+                    if github_checks['success']:
+                        logger.info(f"PR #{pr_data['number']}: Actions PASSING - attempting merge")
+                        processed_pr = self._process_pr_for_merge(repo_name, pr_data)
+                        processed_prs.append(processed_pr)
+
+                        # Track if PR was successfully merged
+                        if any("Successfully merged" in action for action in processed_pr.get('actions_taken', [])):
+                            merged_pr_numbers.add(pr_data['number'])
+
+                except Exception as e:
+                    logger.error(f"Failed to process PR #{pr.number} in merge pass: {e}")
+
+            # Second loop: Process remaining PRs (fix issues)
+            logger.info(f"Second pass: Processing remaining PRs for issue resolution...")
             for pr in prs:
                 try:
                     pr_data = self.github.get_pr_details(pr)
 
-                    processed_pr = {
-                        'pr_data': pr_data,
-                        'actions_taken': []
-                    }
+                    # Skip PRs that were already merged
+                    if pr_data['number'] in merged_pr_numbers:
+                        continue
 
-                    # Take automated actions using direct Gemini CLI
-                    actions = self._take_pr_actions(repo_name, pr_data)
-                    processed_pr['actions_taken'] = actions
-
+                    logger.info(f"PR #{pr_data['number']}: Processing for issue resolution")
+                    processed_pr = self._process_pr_for_fixes(repo_name, pr_data)
                     processed_prs.append(processed_pr)
 
                 except Exception as e:
-                    logger.error(f"Failed to process PR #{pr.number}: {e}")
+                    logger.error(f"Failed to process PR #{pr.number} in fix pass: {e}")
                     processed_prs.append({
                         'pr_number': pr.number,
                         'error': str(e)
@@ -301,7 +320,49 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Failed to process PRs for {repo_name}: {e}")
             return []
-    
+
+    def _process_pr_for_merge(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a PR for quick merging when GitHub Actions are passing."""
+        processed_pr = {
+            'pr_data': pr_data,
+            'actions_taken': [],
+            'priority': 'merge'
+        }
+
+        try:
+            if self.dry_run:
+                processed_pr['actions_taken'].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
+            else:
+                # Since Actions are passing, attempt direct merge
+                merge_result = self._merge_pr(repo_name, pr_data['number'], {})
+                if merge_result:
+                    processed_pr['actions_taken'].append(f"Successfully merged PR #{pr_data['number']}")
+                else:
+                    processed_pr['actions_taken'].append(f"Failed to merge PR #{pr_data['number']}")
+
+        except Exception as e:
+            processed_pr['actions_taken'].append(f"Error processing PR #{pr_data['number']} for merge: {str(e)}")
+
+        return processed_pr
+
+    def _process_pr_for_fixes(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a PR for issue resolution when GitHub Actions are failing or pending."""
+        processed_pr = {
+            'pr_data': pr_data,
+            'actions_taken': [],
+            'priority': 'fix'
+        }
+
+        try:
+            # Use the existing PR actions logic for fixing issues
+            actions = self._take_pr_actions(repo_name, pr_data)
+            processed_pr['actions_taken'] = actions
+
+        except Exception as e:
+            processed_pr['actions_taken'].append(f"Error processing PR #{pr_data['number']} for fixes: {str(e)}")
+
+        return processed_pr
+
     def _take_issue_actions(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
         """Take actions on an issue using direct Gemini CLI analysis and implementation."""
         actions = []

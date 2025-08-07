@@ -182,7 +182,107 @@ class TestAutomationEngine:
         
         mock_github_client.get_open_pull_requests.assert_called_once()
         mock_gemini_client.analyze_pull_request.assert_called_once_with(sample_pr_data)
-    
+
+    def test_process_pull_requests_two_loop_priority(self, mock_github_client, mock_gemini_client):
+        """Test that PRs are processed in two loops: merge first, then fix."""
+        # Setup - only one PR that passes Actions
+        passing_pr_data = {'number': 1, 'title': 'Passing PR'}
+
+        mock_pr1 = Mock()
+        mock_pr1.number = 1
+
+        mock_github_client.get_open_pull_requests.return_value = [mock_pr1]
+        mock_github_client.get_pr_details.return_value = passing_pr_data
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+
+        # Mock GitHub Actions status - PR passes
+        engine._check_github_actions_status = Mock(return_value={'success': True})
+
+        # Mock processing methods
+        engine._process_pr_for_merge = Mock(return_value={
+            'pr_data': passing_pr_data,
+            'actions_taken': ['Successfully merged PR #1'],
+            'priority': 'merge'
+        })
+
+        # Execute
+        result = engine._process_pull_requests("test/repo")
+
+        # Assert
+        assert len(result) == 1
+        assert result[0]['pr_data']['number'] == 1
+        assert result[0]['priority'] == 'merge'
+        assert 'Successfully merged' in result[0]['actions_taken'][0]
+
+        # Verify method calls
+        engine._process_pr_for_merge.assert_called_once_with("test/repo", passing_pr_data)
+
+    def test_process_pull_requests_failing_actions(self, mock_github_client, mock_gemini_client):
+        """Test that PRs with failing Actions are processed in second loop."""
+        # Setup - only one PR that fails Actions
+        failing_pr_data = {'number': 2, 'title': 'Failing PR'}
+
+        mock_pr2 = Mock()
+        mock_pr2.number = 2
+
+        mock_github_client.get_open_pull_requests.return_value = [mock_pr2]
+        mock_github_client.get_pr_details.return_value = failing_pr_data
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+
+        # Mock GitHub Actions status - PR fails
+        engine._check_github_actions_status = Mock(return_value={'success': False})
+
+        # Mock processing methods
+        engine._process_pr_for_fixes = Mock(return_value={
+            'pr_data': failing_pr_data,
+            'actions_taken': ['Fixed PR #2'],
+            'priority': 'fix'
+        })
+
+        # Execute
+        result = engine._process_pull_requests("test/repo")
+
+        # Assert
+        assert len(result) == 1
+        assert result[0]['pr_data']['number'] == 2
+        assert result[0]['priority'] == 'fix'
+
+        # Verify method calls
+        engine._process_pr_for_fixes.assert_called_once_with("test/repo", failing_pr_data)
+
+    def test_process_pr_for_merge_success(self, mock_github_client, mock_gemini_client, sample_pr_data):
+        """Test processing PR for merge when Actions are passing."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
+        engine._merge_pr = Mock(return_value=True)
+
+        # Execute
+        result = engine._process_pr_for_merge("test/repo", sample_pr_data)
+
+        # Assert
+        assert result['pr_data'] == sample_pr_data
+        assert result['priority'] == 'merge'
+        assert len(result['actions_taken']) == 1
+        assert "Successfully merged" in result['actions_taken'][0]
+        engine._merge_pr.assert_called_once_with("test/repo", sample_pr_data['number'], {})
+
+    def test_process_pr_for_fixes_success(self, mock_github_client, mock_gemini_client, sample_pr_data):
+        """Test processing PR for fixes when Actions are failing."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+        engine._take_pr_actions = Mock(return_value=['Fixed issue'])
+
+        # Execute
+        result = engine._process_pr_for_fixes("test/repo", sample_pr_data)
+
+        # Assert
+        assert result['pr_data'] == sample_pr_data
+        assert result['priority'] == 'fix'
+        assert result['actions_taken'] == ['Fixed issue']
+        engine._take_pr_actions.assert_called_once_with("test/repo", sample_pr_data)
+
     def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test issue actions in dry run mode."""
         # Setup
