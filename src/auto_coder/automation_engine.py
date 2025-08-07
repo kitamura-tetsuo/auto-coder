@@ -952,21 +952,67 @@ After analyzing, apply the necessary fixes to the codebase.
             return f"Error committing and pushing changes: {e}"
 
     def _checkout_pr_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
-        """Checkout the PR branch for local testing."""
+        """Checkout the PR branch for local testing, forcefully discarding any local changes."""
         pr_number = pr_data['number']
 
         try:
+            # Step 1: Reset any local changes and clean untracked files
+            self._log_action(f"Forcefully cleaning workspace before checkout PR #{pr_number}")
+
+            # Reset any staged/unstaged changes
+            reset_result = self.cmd.run_command(['git', 'reset', '--hard', 'HEAD'])
+            if not reset_result.success:
+                self._log_action(f"Warning: git reset failed for PR #{pr_number}", False, reset_result.stderr)
+
+            # Clean untracked files and directories
+            clean_result = self.cmd.run_command(['git', 'clean', '-fd'])
+            if not clean_result.success:
+                self._log_action(f"Warning: git clean failed for PR #{pr_number}", False, clean_result.stderr)
+
+            # Step 2: Attempt to checkout the PR
             result = self.cmd.run_command(['gh', 'pr', 'checkout', str(pr_number)])
 
             if result.success:
                 self._log_action(f"Successfully checked out PR #{pr_number}")
                 return True
             else:
-                self._log_action(f"Failed to checkout PR #{pr_number}", False, result.stderr)
-                return False
+                # If gh pr checkout fails, try alternative approach
+                self._log_action(f"gh pr checkout failed for PR #{pr_number}, trying alternative approach", False, result.stderr)
+
+                # Step 3: Try manual fetch and checkout
+                return self._force_checkout_pr_manually(repo_name, pr_data)
 
         except Exception as e:
             self._handle_error("checking out PR", e, f"#{pr_number}")
+            return False
+
+    def _force_checkout_pr_manually(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
+        """Manually fetch and checkout PR branch as fallback."""
+        pr_number = pr_data['number']
+
+        try:
+            # Get PR branch information
+            branch_name = pr_data.get('head', {}).get('ref', f'pr-{pr_number}')
+
+            self._log_action(f"Attempting manual checkout of branch '{branch_name}' for PR #{pr_number}")
+
+            # Fetch the PR branch
+            fetch_result = self.cmd.run_command(['git', 'fetch', 'origin', f'pull/{pr_number}/head:{branch_name}'])
+            if not fetch_result.success:
+                self._log_action(f"Failed to fetch PR #{pr_number} branch", False, fetch_result.stderr)
+                return False
+
+            # Force checkout the branch
+            checkout_result = self.cmd.run_command(['git', 'checkout', '-B', branch_name])
+            if checkout_result.success:
+                self._log_action(f"Successfully manually checked out PR #{pr_number}")
+                return True
+            else:
+                self._log_action(f"Failed to manually checkout PR #{pr_number}", False, checkout_result.stderr)
+                return False
+
+        except Exception as e:
+            self._handle_error("manually checking out PR", e, f"#{pr_number}")
             return False
 
     def _update_with_main_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:

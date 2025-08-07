@@ -10,7 +10,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src/outliner",
+            "cwd": "/home/ubuntu/src2/outliner",
             "args": [
                 "process-issues",
                 "--dry-run"
@@ -26,7 +26,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src/outliner",
+            "cwd": "/home/ubuntu/src2/outliner",
             "args": [
                 "create-feature-issues"
             ],
@@ -41,7 +41,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src/outliner",
+            "cwd": "/home/ubuntu/src2/outliner",
             "args": [
                 "auth-status"
             ],
@@ -56,7 +56,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src/outliner",
+            "cwd": "/home/ubuntu/src2/outliner",
             "args": [
                 "process-issues"
             ],

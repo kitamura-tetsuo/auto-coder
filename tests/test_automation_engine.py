@@ -898,3 +898,58 @@ class TestAutomationEngineExtended:
             mock_github_fix.assert_called_once()
             assert mock_test.call_count == 2
             mock_local_fix.assert_called_once()
+
+    def test_checkout_pr_branch_force_cleanup(self, mock_github_client, mock_gemini_client):
+        """Test PR branch checkout with force cleanup."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+
+        # Mock successful force cleanup and checkout
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            # Mock git reset, git clean, and gh pr checkout success
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout="", stderr=""),  # git reset --hard HEAD
+                Mock(success=True, stdout="", stderr=""),  # git clean -fd
+                Mock(success=True, stdout="", stderr="")   # gh pr checkout
+            ]
+
+            # Execute
+            result = engine._checkout_pr_branch('test/repo', pr_data)
+
+            # Assert
+            assert result is True
+            assert mock_cmd.call_count == 3
+            mock_cmd.assert_any_call(['git', 'reset', '--hard', 'HEAD'])
+            mock_cmd.assert_any_call(['git', 'clean', '-fd'])
+            mock_cmd.assert_any_call(['gh', 'pr', 'checkout', '123'])
+
+    def test_checkout_pr_branch_manual_fallback(self, mock_github_client, mock_gemini_client):
+        """Test PR branch checkout with manual fallback."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {
+            'number': 123,
+            'title': 'Test PR',
+            'head': {'ref': 'feature-branch'}
+        }
+
+        # Mock gh pr checkout failure, then manual success
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            # Mock git reset, git clean success, gh pr checkout failure, then manual success
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout="", stderr=""),   # git reset --hard HEAD
+                Mock(success=True, stdout="", stderr=""),   # git clean -fd
+                Mock(success=False, stdout="", stderr="checkout failed"),  # gh pr checkout (fails)
+                Mock(success=True, stdout="", stderr=""),   # git fetch (manual)
+                Mock(success=True, stdout="", stderr="")    # git checkout -B (manual)
+            ]
+
+            # Execute
+            result = engine._checkout_pr_branch('test/repo', pr_data)
+
+            # Assert
+            assert result is True
+            assert mock_cmd.call_count == 5
+            mock_cmd.assert_any_call(['git', 'fetch', 'origin', 'pull/123/head:feature-branch'])
+            mock_cmd.assert_any_call(['git', 'checkout', '-B', 'feature-branch'])
