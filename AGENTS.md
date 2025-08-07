@@ -38,9 +38,10 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 2. **Jules Mode（オプション）**: issueに'jules'ラベルを追加、PRは通常通りGemini CLIで処理
 3. **通常モード（デフォルト）**: Gemini CLIを使用したissue/PR両方の内容分析と自動処理
 4. **自動モデル切り替え**: PRコンフリクト時にgemini-2.5-flashに自動切り替えで高速解決
-5. 必要な機能の自動検出と issue作成
-6. 自動化されたコード修正と構築
-7. PR処理の優先順位付け（GitHub Actionsパス→マージ、失敗→修正）
+5. **Package-lock.jsonコンフリクト特別処理**: package-lock.json、yarn.lock、pnpm-lock.yamlのコンフリクトを自動削除・再生成で解決
+6. 必要な機能の自動検出と issue作成
+7. 自動化されたコード修正と構築
+8. PR処理の優先順位付け（GitHub Actionsパス→マージ、失敗→修正）
 
 ## テスト戦略
 - ユニットテスト: 各モジュールの個別機能をテスト

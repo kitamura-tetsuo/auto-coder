@@ -722,7 +722,8 @@ class TestAutomationEngine:
             ['bash', 'scripts/test.sh'],
             capture_output=True,
             text=True,
-            timeout=3600
+            timeout=3600,
+            cwd=None
         )
 
     @patch('subprocess.run')
