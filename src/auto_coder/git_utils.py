@@ -4,7 +4,6 @@ Git utilities for Auto-Coder.
 
 import os
 import re
-import logging
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -14,7 +13,9 @@ try:
 except ImportError:
     GIT_AVAILABLE = False
 
-logger = logging.getLogger(__name__)
+from .logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:

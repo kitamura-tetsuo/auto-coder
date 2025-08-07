@@ -12,9 +12,13 @@ from .gemini_client import GeminiClient
 from .automation_engine import AutomationEngine
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
+from .logger_config import setup_logger, get_logger
 
 # Load environment variables
 load_dotenv()
+
+# Initialize logger
+logger = get_logger(__name__)
 
 
 def get_repo_or_detect(repo: Optional[str]) -> str:
@@ -95,19 +99,31 @@ def main() -> None:
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
 @click.option('--model', default='gemini-2.5-pro', help='Gemini model to use')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
+@click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
+@click.option('--log-file', help='Log file path (optional)')
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
     model: str,
-    dry_run: bool
+    dry_run: bool,
+    log_level: str,
+    log_file: Optional[str]
 ) -> None:
     """Process GitHub issues and PRs using Gemini CLI."""
+    # Setup logger with specified options
+    setup_logger(log_level=log_level, log_file=log_file)
+
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
     check_gemini_cli_or_fail()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
+
+    logger.info(f"Processing repository: {repo_name}")
+    logger.info(f"Using model: {model}")
+    logger.info(f"Dry run mode: {dry_run}")
+    logger.info(f"Log level: {log_level}")
 
     click.echo(f"Processing repository: {repo_name}")
     click.echo(f"Using model: {model}")
@@ -126,18 +142,29 @@ def process_issues(
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
 @click.option('--model', default='gemini-2.5-pro', help='Gemini model to use')
+@click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
+@click.option('--log-file', help='Log file path (optional)')
 def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
-    model: str
+    model: str,
+    log_level: str,
+    log_file: Optional[str]
 ) -> None:
     """Analyze repository and create feature enhancement issues."""
+    # Setup logger with specified options
+    setup_logger(log_level=log_level, log_file=log_file)
+
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
     check_gemini_cli_or_fail()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
+
+    logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
+    logger.info(f"Using model: {model}")
+    logger.info(f"Log level: {log_level}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
     click.echo(f"Using model: {model}")

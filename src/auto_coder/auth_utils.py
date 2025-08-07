@@ -4,13 +4,14 @@ Authentication utilities for Auto-Coder.
 
 import os
 import subprocess
-import logging
 import json
 import yaml
 from typing import Optional
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from .logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def get_github_token() -> Optional[str]:

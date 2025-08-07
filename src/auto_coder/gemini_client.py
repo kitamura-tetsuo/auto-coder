@@ -2,12 +2,13 @@
 Gemini CLI client for Auto-Coder.
 """
 
-import logging
 import json
 import subprocess
 from typing import Dict, Any, List
 
-logger = logging.getLogger(__name__)
+from .logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class GeminiClient:
@@ -43,8 +44,8 @@ class GeminiClient:
             ]
 
             logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
-            print(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
-            print("=" * 60)
+            logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
+            logger.info("=" * 60)
 
             # Run with real-time output
             process = subprocess.Popen(
@@ -61,13 +62,13 @@ class GeminiClient:
             # Read output line by line and display in real-time
             for line in process.stdout:
                 line = line.rstrip('\n')
-                print(line)  # Display in real-time
+                logger.info(line)  # Display in real-time
                 output_lines.append(line)
 
             # Wait for process to complete
             return_code = process.wait()
 
-            print("=" * 60)
+            logger.info("=" * 60)
 
             if return_code != 0:
                 raise RuntimeError(f"Gemini CLI failed with return code {return_code}")

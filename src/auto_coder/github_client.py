@@ -2,14 +2,14 @@
 GitHub API client for Auto-Coder.
 """
 
-import logging
 from typing import List, Dict, Any, Optional
 from github import Github, Repository, Issue, PullRequest
 from github.GithubException import GithubException
 
 from .config import settings
+from .logger_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class GitHubClient:

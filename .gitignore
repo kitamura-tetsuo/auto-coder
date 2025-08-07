@@ -210,3 +210,6 @@ __marimo__/
 test-results/
 playwright-report/
 playwright/.cache/
+
+
+<MagicMock name='stdout' id='140500164923744'>

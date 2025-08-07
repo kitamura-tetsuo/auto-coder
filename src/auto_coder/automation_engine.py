@@ -2,7 +2,6 @@
 Automation engine for Auto-Coder.
 """
 
-import logging
 from typing import Dict, Any, List, Optional
 import json
 import os
@@ -13,8 +12,9 @@ from dataclasses import dataclass
 from .github_client import GitHubClient
 from .gemini_client import GeminiClient
 from .config import settings
+from .logger_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -141,12 +141,14 @@ class AutomationEngine:
 
     def _log_action(self, action: str, success: bool = True, details: str = "") -> str:
         """Standardized action logging."""
-        level = logging.INFO if success else logging.ERROR
         message = action
         if details:
             message += f": {details}"
 
-        logger.log(level, message)
+        if success:
+            logger.info(message)
+        else:
+            logger.error(message)
         return message
     
     def run(self, repo_name: str) -> Dict[str, Any]:
