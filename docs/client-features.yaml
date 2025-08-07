@@ -92,7 +92,7 @@ features:
             parameters: ["repo_name"]
             returns: "Dictionary with automation results"
           - name: "run_jules_mode"
-            description: "Execute jules mode - only add 'jules' label to issues without AI analysis"
+            description: "Execute jules mode - add 'jules' label to issues, process PRs with Gemini if available"
             parameters: ["repo_name"]
             returns: "Dictionary with automation results"
           - name: "create_feature_issues"
@@ -222,12 +222,13 @@ workflows:
 
   jules_mode:
     name: "Jules Mode Workflow"
-    description: "Simple workflow for adding 'jules' label to issues without AI analysis"
+    description: "Hybrid workflow - simple label addition for issues, full AI analysis for PRs"
     steps:
       1. "Fetch open issues from repository (oldest first)"
       2. "Check if 'jules' label already exists on each issue"
       3. "Add 'jules' label to issues that don't have it"
-      4. "Generate jules mode report"
+      4. "If Gemini CLI is available, process PRs with full AI analysis"
+      5. "Generate jules mode report"
 
 testing:
   unit_tests:
@@ -273,7 +274,7 @@ deployment:
   usage:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
-        description: "Process issues in default jules mode - only add 'jules' label"
+        description: "Process issues in default jules mode - add 'jules' label to issues, process PRs with AI if available"
       - command: "auto-coder process-issues --repo owner/repo --dry-run"
         description: "Process issues in jules mode with dry-run"
       - command: "auto-coder process-issues --repo owner/repo --gemini-mode"

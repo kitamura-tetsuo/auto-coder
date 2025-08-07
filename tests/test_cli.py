@@ -76,19 +76,68 @@ class TestCLI:
         )
         mock_automation_engine.run.assert_called_once_with("test/repo")
 
+    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.GeminiClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_process_issues_default_jules_mode_with_gemini(
+        self,
+        mock_github_client_class,
+        mock_gemini_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        """Test process-issues command with default jules mode when Gemini CLI is available."""
+        mock_github_client = Mock()
+        mock_gemini_client = Mock()
+        mock_automation_engine = Mock()
+
+        mock_github_client_class.return_value = mock_github_client
+        mock_gemini_client_class.return_value = mock_gemini_client
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None  # Gemini CLI available
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo", "test/repo",
+                "--github-token", "test-token"
+                # No explicit mode specified - should default to jules mode
+            ]
+        )
+
+        assert result.exit_code == 0
+        assert "Mode: Jules" in result.output
+
+        # Verify clients were initialized correctly
+        mock_github_client_class.assert_called_once_with("test-token")
+        mock_gemini_client_class.assert_called_once_with(model_name="gemini-2.5-pro")
+
+        # Verify automation engine was initialized with gemini_client for PR processing
+        mock_automation_engine_class.assert_called_once_with(
+            mock_github_client, mock_gemini_client, dry_run=False
+        )
+
+        # Verify jules mode was called
+        mock_automation_engine.run_jules_mode.assert_called_once_with("test/repo")
+
+    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_default_jules_mode(
+    def test_process_issues_default_jules_mode_no_gemini(
         self,
         mock_github_client_class,
         mock_automation_engine_class,
+        mock_check_cli,
     ):
-        """Test process-issues command with default jules mode."""
+        """Test process-issues command with default jules mode when Gemini CLI is not available."""
         mock_github_client = Mock()
         mock_automation_engine = Mock()
 
         mock_github_client_class.return_value = mock_github_client
         mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.side_effect = Exception("Gemini CLI not available")  # Gemini CLI not available
 
         runner = CliRunner()
         result = runner.invoke(

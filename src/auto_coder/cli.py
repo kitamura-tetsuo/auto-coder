@@ -123,9 +123,22 @@ def process_issues(
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
 
-    # Only check Gemini CLI if not in jules mode
+    # Check Gemini CLI availability
+    # In jules mode, we still need Gemini for PR processing, but it's optional
+    gemini_available = False
     if not use_jules_mode:
+        # Gemini mode requires Gemini CLI
         check_gemini_cli_or_fail()
+        gemini_available = True
+    else:
+        # Jules mode: check if Gemini CLI is available for PR processing
+        try:
+            check_gemini_cli_or_fail()
+            gemini_available = True
+            logger.info("Gemini CLI available - will process PRs with AI analysis")
+        except Exception:
+            logger.warning("Gemini CLI not available - will skip PR processing in jules mode")
+            gemini_available = False
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
@@ -146,15 +159,18 @@ def process_issues(
     # Initialize clients
     github_client = GitHubClient(github_token_final)
 
+    # Initialize Gemini client if available
+    gemini_client = None
+    if gemini_available:
+        gemini_client = GeminiClient(model_name=model)
+
+    automation_engine = AutomationEngine(github_client, gemini_client, dry_run=dry_run)
+
     if use_jules_mode:
-        # Jules mode: only add labels to issues
-        gemini_client = None
-        automation_engine = AutomationEngine(github_client, gemini_client, dry_run=dry_run)
+        # Jules mode: add labels to issues, process PRs with Gemini if available
         automation_engine.run_jules_mode(repo_name)
     else:
-        # Gemini mode: use Gemini AI
-        gemini_client = GeminiClient(model_name=model)
-        automation_engine = AutomationEngine(github_client, gemini_client, dry_run=dry_run)
+        # Gemini mode: use Gemini AI for everything
         automation_engine.run(repo_name)
 
 

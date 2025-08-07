@@ -186,7 +186,7 @@ class AutomationEngine:
             return results
 
     def run_jules_mode(self, repo_name: str) -> Dict[str, Any]:
-        """Run jules mode - only add 'jules' label to issues without AI analysis."""
+        """Run jules mode - add 'jules' label to issues, but process PRs normally with Gemini if available."""
         logger.info(f"Starting jules mode for repository: {repo_name}")
 
         results = {
@@ -195,13 +195,23 @@ class AutomationEngine:
             'dry_run': self.dry_run,
             'mode': 'jules',
             'issues_processed': [],
+            'prs_processed': [],
             'errors': []
         }
 
         try:
-            # Process issues in jules mode
+            # Process issues in jules mode (simple label addition)
             issues_result = self._process_issues_jules_mode(repo_name)
             results['issues_processed'] = issues_result
+
+            # Process PRs normally if Gemini client is available
+            if self.gemini:
+                logger.info("Processing PRs with Gemini analysis in jules mode")
+                prs_result = self._process_pull_requests(repo_name)
+                results['prs_processed'] = prs_result
+            else:
+                logger.warning("Skipping PR processing in jules mode - Gemini client not available")
+                results['prs_processed'] = []
 
             # Save results report
             self._save_report(results, f"jules_report_{repo_name.replace('/', '_')}")
