@@ -151,31 +151,36 @@ class AutomationEngine:
             logger.error(message)
         return message
     
-    def run(self, repo_name: str) -> Dict[str, Any]:
+    def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
-        
+
         results = {
             'repository': repo_name,
             'timestamp': datetime.now().isoformat(),
             'dry_run': self.dry_run,
+            'jules_mode': jules_mode,
             'issues_processed': [],
             'prs_processed': [],
             'errors': []
         }
-        
+
         try:
-            # Process issues
-            issues_result = self._process_issues(repo_name)
+            # Process issues (with jules_mode parameter)
+            if jules_mode:
+                issues_result = self._process_issues_jules_mode(repo_name)
+            else:
+                issues_result = self._process_issues(repo_name)
             results['issues_processed'] = issues_result
-            
-            # Process pull requests
+
+            # Process pull requests (always use normal processing)
             prs_result = self._process_pull_requests(repo_name)
             results['prs_processed'] = prs_result
-            
+
             # Save results report
-            self._save_report(results, f"automation_report_{repo_name.replace('/', '_')}")
-            
+            report_name = f"{'jules_' if jules_mode else ''}automation_report_{repo_name.replace('/', '_')}"
+            self._save_report(results, report_name)
+
             logger.info(f"Automation completed for {repo_name}")
             return results
 
@@ -185,45 +190,7 @@ class AutomationEngine:
             results['errors'].append(error_msg)
             return results
 
-    def run_jules_mode(self, repo_name: str) -> Dict[str, Any]:
-        """Run jules mode - add 'jules' label to issues, but process PRs normally with Gemini if available."""
-        logger.info(f"Starting jules mode for repository: {repo_name}")
 
-        results = {
-            'repository': repo_name,
-            'timestamp': datetime.now().isoformat(),
-            'dry_run': self.dry_run,
-            'mode': 'jules',
-            'issues_processed': [],
-            'prs_processed': [],
-            'errors': []
-        }
-
-        try:
-            # Process issues in jules mode (simple label addition)
-            issues_result = self._process_issues_jules_mode(repo_name)
-            results['issues_processed'] = issues_result
-
-            # Process PRs normally if Gemini client is available
-            if self.gemini:
-                logger.info("Processing PRs with Gemini analysis in jules mode")
-                prs_result = self._process_pull_requests(repo_name)
-                results['prs_processed'] = prs_result
-            else:
-                logger.warning("Skipping PR processing in jules mode - Gemini client not available")
-                results['prs_processed'] = []
-
-            # Save results report
-            self._save_report(results, f"jules_report_{repo_name.replace('/', '_')}")
-
-            logger.info(f"Jules mode completed for {repo_name}")
-            return results
-
-        except Exception as e:
-            error_msg = f"Jules mode failed for {repo_name}: {e}"
-            logger.error(error_msg)
-            results['errors'].append(error_msg)
-            return results
     
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""

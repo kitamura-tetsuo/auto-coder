@@ -97,11 +97,7 @@ features:
         methods:
           - name: "run"
             description: "Execute the main automation process for a repository"
-            parameters: ["repo_name"]
-            returns: "Dictionary with automation results"
-          - name: "run_jules_mode"
-            description: "Execute jules mode - add 'jules' label to issues, process PRs with Gemini if available"
-            parameters: ["repo_name"]
+            parameters: ["repo_name", "jules_mode (optional)"]
             returns: "Dictionary with automation results"
           - name: "create_feature_issues"
             description: "Analyze repository and create feature enhancement issues"
@@ -145,14 +141,13 @@ features:
         file: "src/auto_coder/cli.py"
         commands:
           - name: "process-issues"
-            description: "Process GitHub issues and PRs using jules mode (default) or Gemini CLI"
+            description: "Process GitHub issues and PRs using Gemini CLI"
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
               - "--model": "Gemini model to use (default: gemini-2.5-pro)"
               - "--dry-run": "Run in dry-run mode without making changes"
-              - "--jules-mode": "Run in jules mode - only add 'jules' label to issues without AI analysis (default)"
-              - "--gemini-mode": "Run in gemini mode - use AI analysis for issues"
+              - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
               - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
               - "--log-file": "Log file path (optional)"
           - name: "create-feature-issues"
@@ -235,8 +230,8 @@ workflows:
       1. "Fetch open issues from repository (oldest first)"
       2. "Check if 'jules' label already exists on each issue"
       3. "Add 'jules' label to issues that don't have it"
-      4. "If Gemini CLI is available, process PRs with full AI analysis"
-      5. "Generate jules mode report"
+      4. "Process PRs with full AI analysis (same as normal mode)"
+      5. "Generate automation report"
 
 special_features:
   conflict_resolution:
@@ -296,12 +291,10 @@ deployment:
   usage:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
-        description: "Process issues in default jules mode - add 'jules' label to issues, process PRs with AI if available"
-      - command: "auto-coder process-issues --repo owner/repo --dry-run"
-        description: "Process issues in jules mode with dry-run"
-      - command: "auto-coder process-issues --repo owner/repo --gemini-mode"
-        description: "Run in gemini mode - use AI analysis for issues"
-      - command: "auto-coder process-issues --repo owner/repo --gemini-mode --dry-run"
-        description: "Run gemini mode in dry-run mode"
+        description: "Process issues and PRs with full AI analysis"
+      - command: "auto-coder process-issues --repo owner/repo --jules-mode"
+        description: "Process issues with jules mode (label only), PRs with AI analysis"
+      - command: "auto-coder process-issues --repo owner/repo --jules-mode --dry-run"
+        description: "Run jules mode in dry-run mode"
       - command: "auto-coder create-feature-issues --repo owner/repo"
         description: "Create feature enhancement issues"

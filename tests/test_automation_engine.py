@@ -51,49 +51,25 @@ class TestAutomationEngine:
         engine._save_report.assert_called_once()
 
     @patch('src.auto_coder.automation_engine.datetime')
-    def test_run_jules_mode_success_no_gemini(self, mock_datetime, mock_github_client, test_repo_name):
-        """Test successful jules mode run without gemini client."""
+    def test_run_jules_mode_success(self, mock_datetime, mock_github_client, mock_gemini_client, test_repo_name):
+        """Test successful run with jules mode."""
         # Setup
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
 
-        engine = AutomationEngine(mock_github_client, None, dry_run=True)  # No gemini client
-        engine._process_issues_jules_mode = Mock(return_value=[{'issue': 'labeled'}])
-        engine._save_report = Mock()
-
-        # Execute
-        result = engine.run_jules_mode(test_repo_name)
-
-        # Assert
-        assert result['repository'] == test_repo_name
-        assert result['dry_run'] is True
-        assert result['mode'] == 'jules'
-        assert result['issues_processed'] == [{'issue': 'labeled'}]
-        assert result['prs_processed'] == []  # No PRs processed without Gemini
-        assert len(result['errors']) == 0
-
-        engine._process_issues_jules_mode.assert_called_once_with(test_repo_name)
-        engine._save_report.assert_called_once()
-
-    @patch('src.auto_coder.automation_engine.datetime')
-    def test_run_jules_mode_success_with_gemini(self, mock_datetime, mock_github_client, mock_gemini_client, test_repo_name):
-        """Test successful jules mode run with gemini client for PR processing."""
-        # Setup
-        mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
-
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)  # With gemini client
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
         engine._process_issues_jules_mode = Mock(return_value=[{'issue': 'labeled'}])
         engine._process_pull_requests = Mock(return_value=[{'pr': 'processed'}])
         engine._save_report = Mock()
 
         # Execute
-        result = engine.run_jules_mode(test_repo_name)
+        result = engine.run(test_repo_name, jules_mode=True)
 
         # Assert
         assert result['repository'] == test_repo_name
         assert result['dry_run'] is True
-        assert result['mode'] == 'jules'
+        assert result['jules_mode'] is True
         assert result['issues_processed'] == [{'issue': 'labeled'}]
-        assert result['prs_processed'] == [{'pr': 'processed'}]  # PRs processed with Gemini
+        assert result['prs_processed'] == [{'pr': 'processed'}]  # PRs still processed normally
         assert len(result['errors']) == 0
 
         engine._process_issues_jules_mode.assert_called_once_with(test_repo_name)
