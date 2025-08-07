@@ -386,3 +386,70 @@ class TestGitHubClient:
         mock_repo.get_issue.assert_called_once_with(123)
         mock_issue.create_comment.assert_called_once_with("Closing comment")
         mock_issue.edit.assert_called_once_with(state='closed')
+
+    @patch('src.auto_coder.github_client.Github')
+    def test_add_labels_to_issue_success(self, mock_github_class, mock_github_token):
+        """Test successful label addition to issue."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+        mock_issue = Mock(spec=Issue.Issue)
+
+        # Mock existing labels
+        mock_label1 = Mock()
+        mock_label1.name = "bug"
+        mock_label2 = Mock()
+        mock_label2.name = "high-priority"
+        mock_issue.labels = [mock_label1, mock_label2]
+
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        client.add_labels_to_issue("test/repo", 123, ["jules", "enhancement"])
+
+        # Assert
+        mock_repo.get_issue.assert_called_once_with(123)
+        # Should call edit with all labels (existing + new, no duplicates)
+        # Check that edit was called once and contains all expected labels
+        mock_issue.edit.assert_called_once()
+        call_args = mock_issue.edit.call_args
+        actual_labels = call_args[1]['labels']  # Get labels from kwargs
+        expected_labels = {"bug", "high-priority", "jules", "enhancement"}
+        assert set(actual_labels) == expected_labels
+
+    @patch('src.auto_coder.github_client.Github')
+    def test_add_labels_to_issue_no_duplicates(self, mock_github_class, mock_github_token):
+        """Test that duplicate labels are not added."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+        mock_issue = Mock(spec=Issue.Issue)
+
+        # Mock existing labels including one we'll try to add
+        mock_label1 = Mock()
+        mock_label1.name = "bug"
+        mock_label2 = Mock()
+        mock_label2.name = "jules"  # Already exists
+        mock_issue.labels = [mock_label1, mock_label2]
+
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute - try to add "jules" again and "enhancement"
+        client.add_labels_to_issue("test/repo", 123, ["jules", "enhancement"])
+
+        # Assert
+        mock_repo.get_issue.assert_called_once_with(123)
+        # Should call edit with all labels (no duplicates)
+        mock_issue.edit.assert_called_once()
+        call_args = mock_issue.edit.call_args
+        actual_labels = call_args[1]['labels']  # Get labels from kwargs
+        expected_labels = {"bug", "jules", "enhancement"}
+        assert set(actual_labels) == expected_labels

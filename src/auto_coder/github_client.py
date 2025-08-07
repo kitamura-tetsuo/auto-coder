@@ -144,13 +144,33 @@ class GitHubClient:
         try:
             repo = self.get_repository(repo_name)
             issue = repo.get_issue(issue_number)
-            
+
             if comment:
                 issue.create_comment(comment)
-            
+
             issue.edit(state='closed')
             logger.info(f"Closed issue #{issue_number}")
-            
+
         except GithubException as e:
             logger.error(f"Failed to close issue #{issue_number}: {e}")
+            raise
+
+    def add_labels_to_issue(self, repo_name: str, issue_number: int, labels: List[str]) -> None:
+        """Add labels to an existing issue."""
+        try:
+            repo = self.get_repository(repo_name)
+            issue = repo.get_issue(issue_number)
+
+            # Get current labels
+            current_labels = [label.name for label in issue.labels]
+
+            # Add new labels to current ones (avoid duplicates)
+            all_labels = list(set(current_labels + labels))
+
+            # Update issue with all labels
+            issue.edit(labels=all_labels)
+            logger.info(f"Added labels {labels} to issue #{issue_number}")
+
+        except GithubException as e:
+            logger.error(f"Failed to add labels to issue #{issue_number}: {e}")
             raise

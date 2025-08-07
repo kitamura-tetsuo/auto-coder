@@ -51,6 +51,10 @@ features:
             description: "Close an issue with optional comment"
             parameters: ["repo_name", "issue_number", "comment"]
             returns: "None"
+          - name: "add_labels_to_issue"
+            description: "Add labels to an existing issue (avoids duplicates)"
+            parameters: ["repo_name", "issue_number", "labels"]
+            returns: "None"
 
   gemini_integration:
     name: "Gemini AI Integration"
@@ -87,12 +91,20 @@ features:
             description: "Execute the main automation process for a repository"
             parameters: ["repo_name"]
             returns: "Dictionary with automation results"
+          - name: "run_jules_mode"
+            description: "Execute jules mode - only add 'jules' label to issues without AI analysis"
+            parameters: ["repo_name"]
+            returns: "Dictionary with automation results"
           - name: "create_feature_issues"
             description: "Analyze repository and create feature enhancement issues"
             parameters: ["repo_name"]
             returns: "List of created issues"
           - name: "_process_issues"
             description: "Process open issues in the repository"
+            parameters: ["repo_name"]
+            returns: "List of processed issues"
+          - name: "_process_issues_jules_mode"
+            description: "Process open issues in jules mode - only add 'jules' label"
             parameters: ["repo_name"]
             returns: "List of processed issues"
           - name: "_process_pull_requests"
@@ -125,12 +137,16 @@ features:
         file: "src/auto_coder/cli.py"
         commands:
           - name: "process-issues"
-            description: "Process GitHub issues and PRs using Gemini CLI"
+            description: "Process GitHub issues and PRs using jules mode (default) or Gemini CLI"
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
-              - "--gemini-api-key": "Gemini API key"
+              - "--model": "Gemini model to use (default: gemini-2.5-pro)"
               - "--dry-run": "Run in dry-run mode without making changes"
+              - "--jules-mode": "Run in jules mode - only add 'jules' label to issues without AI analysis (default)"
+              - "--gemini-mode": "Run in gemini mode - use AI analysis for issues"
+              - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
+              - "--log-file": "Log file path (optional)"
           - name: "create-feature-issues"
             description: "Analyze repository and create feature enhancement issues"
             options:
@@ -204,6 +220,15 @@ workflows:
       3. "Create feature issues in repository"
       4. "Generate feature suggestions report"
 
+  jules_mode:
+    name: "Jules Mode Workflow"
+    description: "Simple workflow for adding 'jules' label to issues without AI analysis"
+    steps:
+      1. "Fetch open issues from repository (oldest first)"
+      2. "Check if 'jules' label already exists on each issue"
+      3. "Add 'jules' label to issues that don't have it"
+      4. "Generate jules mode report"
+
 testing:
   unit_tests:
     description: "Unit tests for individual components"
@@ -247,7 +272,13 @@ deployment:
 
   usage:
     examples:
+      - command: "auto-coder process-issues --repo owner/repo"
+        description: "Process issues in default jules mode - only add 'jules' label"
       - command: "auto-coder process-issues --repo owner/repo --dry-run"
-        description: "Process issues in dry-run mode"
+        description: "Process issues in jules mode with dry-run"
+      - command: "auto-coder process-issues --repo owner/repo --gemini-mode"
+        description: "Run in gemini mode - use AI analysis for issues"
+      - command: "auto-coder process-issues --repo owner/repo --gemini-mode --dry-run"
+        description: "Run gemini mode in dry-run mode"
       - command: "auto-coder create-feature-issues --repo owner/repo"
         description: "Create feature enhancement issues"

@@ -49,6 +49,29 @@ class TestAutomationEngine:
         engine._process_issues.assert_called_once_with(test_repo_name)
         engine._process_pull_requests.assert_called_once_with(test_repo_name)
         engine._save_report.assert_called_once()
+
+    @patch('src.auto_coder.automation_engine.datetime')
+    def test_run_jules_mode_success(self, mock_datetime, mock_github_client, test_repo_name):
+        """Test successful jules mode run."""
+        # Setup
+        mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
+
+        engine = AutomationEngine(mock_github_client, None, dry_run=True)  # No gemini client
+        engine._process_issues_jules_mode = Mock(return_value=[{'issue': 'labeled'}])
+        engine._save_report = Mock()
+
+        # Execute
+        result = engine.run_jules_mode(test_repo_name)
+
+        # Assert
+        assert result['repository'] == test_repo_name
+        assert result['dry_run'] is True
+        assert result['mode'] == 'jules'
+        assert result['issues_processed'] == [{'issue': 'labeled'}]
+        assert len(result['errors']) == 0
+
+        engine._process_issues_jules_mode.assert_called_once_with(test_repo_name)
+        engine._save_report.assert_called_once()
     
     def test_run_with_error(self, mock_github_client, mock_gemini_client, test_repo_name):
         """Test automation run with error."""
@@ -135,7 +158,65 @@ class TestAutomationEngine:
         
         mock_github_client.get_open_issues.assert_called_once()
         mock_gemini_client.analyze_issue.assert_called_once_with(sample_issue_data)
-        mock_gemini_client.generate_solution.assert_called_once()
+
+    def test_process_issues_jules_mode(self, mock_github_client):
+        """Test processing issues in jules mode."""
+        # Setup
+        mock_issue = Mock()
+        mock_issue.number = 1
+
+        sample_issue_data = {
+            'number': 1,
+            'title': 'Test Issue',
+            'labels': ['bug']  # No 'jules' label initially
+        }
+
+        mock_github_client.get_open_issues.return_value = [mock_issue]
+        mock_github_client.get_issue_details.return_value = sample_issue_data
+
+        engine = AutomationEngine(mock_github_client, None, dry_run=False)  # No gemini client
+
+        # Execute
+        result = engine._process_issues_jules_mode("test/repo")
+
+        # Assert
+        assert len(result) == 1
+        assert result[0]['issue_data'] == sample_issue_data
+        assert len(result[0]['actions_taken']) == 1
+        assert "Added 'jules' label to issue #1" in result[0]['actions_taken'][0]
+
+        mock_github_client.get_open_issues.assert_called_once()
+        mock_github_client.add_labels_to_issue.assert_called_once_with("test/repo", 1, ['jules'])
+
+    def test_process_issues_jules_mode_already_labeled(self, mock_github_client):
+        """Test processing issues in jules mode when jules label already exists."""
+        # Setup
+        mock_issue = Mock()
+        mock_issue.number = 1
+
+        sample_issue_data = {
+            'number': 1,
+            'title': 'Test Issue',
+            'labels': ['bug', 'jules']  # Already has 'jules' label
+        }
+
+        mock_github_client.get_open_issues.return_value = [mock_issue]
+        mock_github_client.get_issue_details.return_value = sample_issue_data
+
+        engine = AutomationEngine(mock_github_client, None, dry_run=False)  # No gemini client
+
+        # Execute
+        result = engine._process_issues_jules_mode("test/repo")
+
+        # Assert
+        assert len(result) == 1
+        assert result[0]['issue_data'] == sample_issue_data
+        assert len(result[0]['actions_taken']) == 1
+        assert "already has 'jules' label" in result[0]['actions_taken'][0]
+
+        mock_github_client.get_open_issues.assert_called_once()
+        # Should not call add_labels_to_issue since label already exists
+        mock_github_client.add_labels_to_issue.assert_not_called()
     
     def test_process_issues_low_priority_no_solution(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test processing low priority issues without solution generation."""

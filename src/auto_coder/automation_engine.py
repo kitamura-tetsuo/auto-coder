@@ -115,7 +115,7 @@ class AutomationEngine:
     def __init__(
         self,
         github_client: GitHubClient,
-        gemini_client: GeminiClient,
+        gemini_client: Optional[GeminiClient],
         dry_run: bool = False,
         config: Optional[AutomationConfig] = None
     ):
@@ -178,9 +178,39 @@ class AutomationEngine:
             
             logger.info(f"Automation completed for {repo_name}")
             return results
-            
+
         except Exception as e:
             error_msg = f"Automation failed for {repo_name}: {e}"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            return results
+
+    def run_jules_mode(self, repo_name: str) -> Dict[str, Any]:
+        """Run jules mode - only add 'jules' label to issues without AI analysis."""
+        logger.info(f"Starting jules mode for repository: {repo_name}")
+
+        results = {
+            'repository': repo_name,
+            'timestamp': datetime.now().isoformat(),
+            'dry_run': self.dry_run,
+            'mode': 'jules',
+            'issues_processed': [],
+            'errors': []
+        }
+
+        try:
+            # Process issues in jules mode
+            issues_result = self._process_issues_jules_mode(repo_name)
+            results['issues_processed'] = issues_result
+
+            # Save results report
+            self._save_report(results, f"jules_report_{repo_name.replace('/', '_')}")
+
+            logger.info(f"Jules mode completed for {repo_name}")
+            return results
+
+        except Exception as e:
+            error_msg = f"Jules mode failed for {repo_name}: {e}"
             logger.error(error_msg)
             results['errors'].append(error_msg)
             return results
@@ -188,11 +218,15 @@ class AutomationEngine:
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
         logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
-        
+
+        if not self.gemini:
+            logger.error("Gemini client is required for feature issue creation")
+            return []
+
         try:
             # Get repository context
             repo_context = self._get_repository_context(repo_name)
-            
+
             # Generate feature suggestions
             suggestions = self.gemini.suggest_features(repo_context)
             
@@ -268,6 +302,52 @@ class AutomationEngine:
 
         except Exception as e:
             logger.error(f"Failed to process issues for {repo_name}: {e}")
+            return []
+
+    def _process_issues_jules_mode(self, repo_name: str) -> List[Dict[str, Any]]:
+        """Process open issues in jules mode - only add 'jules' label."""
+        try:
+            issues = self.github.get_open_issues(repo_name, limit=settings.max_issues_per_run)
+            processed_issues = []
+
+            for issue in issues:
+                try:
+                    issue_data = self.github.get_issue_details(issue)
+                    issue_number = issue_data['number']
+
+                    processed_issue = {
+                        'issue_data': issue_data,
+                        'actions_taken': []
+                    }
+
+                    # Check if 'jules' label already exists
+                    current_labels = issue_data.get('labels', [])
+                    if 'jules' not in current_labels:
+                        if not self.dry_run:
+                            # Add 'jules' label to the issue
+                            self.github.add_labels_to_issue(repo_name, issue_number, ['jules'])
+                            processed_issue['actions_taken'].append(f"Added 'jules' label to issue #{issue_number}")
+                            logger.info(f"Added 'jules' label to issue #{issue_number}")
+                        else:
+                            processed_issue['actions_taken'].append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+                            logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+                    else:
+                        processed_issue['actions_taken'].append(f"Issue #{issue_number} already has 'jules' label")
+                        logger.info(f"Issue #{issue_number} already has 'jules' label")
+
+                    processed_issues.append(processed_issue)
+
+                except Exception as e:
+                    logger.error(f"Failed to process issue #{issue.number} in jules mode: {e}")
+                    processed_issues.append({
+                        'issue_number': issue.number,
+                        'error': str(e)
+                    })
+
+            return processed_issues
+
+        except Exception as e:
+            logger.error(f"Failed to process issues in jules mode for {repo_name}: {e}")
             return []
     
     def _process_pull_requests(self, repo_name: str) -> List[Dict[str, Any]]:
@@ -425,6 +505,10 @@ Please proceed with analyzing and taking action on this issue now.
 """
 
             # Use Gemini CLI to analyze and take actions
+            if not self.gemini:
+                actions.append("Gemini client not available for issue analysis")
+                return actions
+
             logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
             response = self.gemini._run_gemini_cli(action_prompt)
 
