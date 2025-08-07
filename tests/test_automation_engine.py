@@ -283,6 +283,73 @@ class TestAutomationEngine:
         assert result['actions_taken'] == ['Fixed issue']
         engine._take_pr_actions.assert_called_once_with("test/repo", sample_pr_data)
 
+    @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
+    def test_merge_pr_with_conflict_resolution_success(self, mock_run_command, mock_github_client, mock_gemini_client):
+        """Test PR merge with successful conflict resolution."""
+        # Setup
+        config = AutomationConfig()
+        config.MERGE_AUTO = False
+        config.MERGE_METHOD = "--squash"
+        config.MAIN_BRANCH = "main"
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, config=config)
+
+        # Mock PR data
+        pr_data = {'number': 123, 'title': 'Test PR', 'body': 'Test description'}
+        mock_github_client.get_pr_details.return_value = pr_data
+
+        # Mock merge failure due to conflicts, then success after resolution
+        mock_run_command.side_effect = [
+            Mock(success=False, stderr="not mergeable: the merge commit cannot be cleanly created"),  # Initial merge fails
+            Mock(success=True, stdout="", stderr=""),  # gh pr checkout
+            Mock(success=True, stdout="", stderr=""),  # git fetch
+            Mock(success=True, stdout="", stderr=""),  # git merge (no conflicts)
+            Mock(success=True, stdout="", stderr=""),  # git push
+            Mock(success=True, stdout="Merged successfully", stderr="")  # Retry merge
+        ]
+
+        # Mock conflict resolution
+        engine._get_merge_conflict_info = Mock(return_value="")
+        engine._resolve_merge_conflicts_with_gemini = Mock(return_value=["Resolved conflicts"])
+
+        # Execute
+        result = engine._merge_pr("test/repo", 123, {})
+
+        # Assert
+        assert result is True
+        assert mock_run_command.call_count == 6
+
+        # Verify the sequence of commands
+        calls = [call[0][0] for call in mock_run_command.call_args_list]
+        assert calls[0] == ['gh', 'pr', 'merge', '123', '--squash']  # Initial merge attempt
+        assert calls[1] == ['gh', 'pr', 'checkout', '123']  # Checkout PR
+        assert calls[2] == ['git', 'fetch', 'origin', 'main']  # Fetch main
+        assert calls[3] == ['git', 'merge', 'origin/main']  # Merge main
+        assert calls[4] == ['git', 'push']  # Push changes
+        assert calls[5] == ['gh', 'pr', 'merge', '123', '--squash']  # Retry merge
+
+    @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
+    def test_merge_pr_with_conflict_resolution_failure(self, mock_run_command, mock_github_client, mock_gemini_client):
+        """Test PR merge with failed conflict resolution."""
+        # Setup
+        config = AutomationConfig()
+        config.MERGE_AUTO = False
+        config.MERGE_METHOD = "--squash"
+        config.MAIN_BRANCH = "main"
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, config=config)
+
+        # Mock merge failure due to conflicts, then checkout failure
+        mock_run_command.side_effect = [
+            Mock(success=False, stderr="not mergeable: the merge commit cannot be cleanly created"),  # Initial merge fails
+            Mock(success=False, stderr="Failed to checkout PR")  # Checkout fails
+        ]
+
+        # Execute
+        result = engine._merge_pr("test/repo", 123, {})
+
+        # Assert
+        assert result is False
+        assert mock_run_command.call_count == 2
+
     def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test issue actions in dry run mode."""
         # Setup

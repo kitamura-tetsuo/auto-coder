@@ -1263,24 +1263,120 @@ Please proceed with resolving these merge conflicts now.
             }
 
     def _merge_pr(self, repo_name: str, pr_number: int, analysis: Dict[str, Any]) -> bool:
-        """Merge a PR using GitHub CLI."""
+        """Merge a PR using GitHub CLI with conflict resolution."""
         try:
             cmd = ['gh', 'pr', 'merge', str(pr_number)]
-            if self.config.MERGE_AUTO:
-                cmd.append('--auto')
-            cmd.append(self.config.MERGE_METHOD)
 
-            result = self.cmd.run_command(cmd)
+            # Try with --auto first if enabled, but fallback to direct merge if it fails
+            if self.config.MERGE_AUTO:
+                auto_cmd = cmd + ['--auto', self.config.MERGE_METHOD]
+                result = self.cmd.run_command(auto_cmd)
+
+                if result.success:
+                    self._log_action(f"Successfully auto-merged PR #{pr_number}")
+                    return True
+                else:
+                    # Log the auto-merge failure but continue with direct merge
+                    logger.warning(f"Auto-merge failed for PR #{pr_number}: {result.stderr}")
+                    self._log_action(f"Auto-merge failed for PR #{pr_number}, attempting direct merge")
+
+            # Direct merge without --auto flag
+            direct_cmd = cmd + [self.config.MERGE_METHOD]
+            result = self.cmd.run_command(direct_cmd)
 
             if result.success:
                 self._log_action(f"Successfully merged PR #{pr_number}")
                 return True
             else:
-                self._log_action(f"Failed to merge PR #{pr_number}", False, result.stderr)
-                return False
+                # Check if the failure is due to merge conflicts
+                if "not mergeable" in result.stderr.lower() or "merge commit cannot be cleanly created" in result.stderr.lower():
+                    logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
+                    self._log_action(f"PR #{pr_number} has merge conflicts, attempting resolution")
+
+                    # Try to resolve merge conflicts
+                    if self._resolve_pr_merge_conflicts(repo_name, pr_number):
+                        # Retry merge after conflict resolution
+                        retry_result = self.cmd.run_command(direct_cmd)
+                        if retry_result.success:
+                            self._log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
+                            return True
+                        else:
+                            self._log_action(f"Failed to merge PR #{pr_number} even after conflict resolution", False, retry_result.stderr)
+                            return False
+                    else:
+                        self._log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                        return False
+                else:
+                    self._log_action(f"Failed to merge PR #{pr_number}", False, result.stderr)
+                    return False
 
         except Exception as e:
             self._handle_error("merging PR", e, f"#{pr_number}")
+            return False
+
+    def _resolve_pr_merge_conflicts(self, repo_name: str, pr_number: int) -> bool:
+        """Resolve merge conflicts for a PR by checking it out and merging with main."""
+        try:
+            # Step 1: Checkout the PR branch
+            logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
+            checkout_result = self.cmd.run_command(['gh', 'pr', 'checkout', str(pr_number)])
+
+            if not checkout_result.success:
+                logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
+                return False
+
+            # Step 2: Fetch the latest main branch
+            logger.info(f"Fetching latest main branch")
+            fetch_result = self.cmd.run_command(['git', 'fetch', 'origin', self.config.MAIN_BRANCH])
+
+            if not fetch_result.success:
+                logger.error(f"Failed to fetch main branch: {fetch_result.stderr}")
+                return False
+
+            # Step 3: Attempt to merge main branch
+            logger.info(f"Merging origin/{self.config.MAIN_BRANCH} into PR #{pr_number}")
+            merge_result = self.cmd.run_command(['git', 'merge', f'origin/{self.config.MAIN_BRANCH}'])
+
+            if merge_result.success:
+                # No conflicts, push the updated branch
+                logger.info(f"Successfully merged main into PR #{pr_number}, pushing changes")
+                push_result = self.cmd.run_command(['git', 'push'])
+
+                if push_result.success:
+                    logger.info(f"Successfully pushed updated branch for PR #{pr_number}")
+                    return True
+                else:
+                    logger.error(f"Failed to push updated branch: {push_result.stderr}")
+                    return False
+            else:
+                # Merge conflicts detected, use Gemini to resolve them
+                logger.info(f"Merge conflicts detected for PR #{pr_number}, using Gemini to resolve")
+
+                # Get PR data for context
+                pr_data = self.github.get_pr_details({'number': pr_number})
+
+                # Get conflict information
+                conflict_info = self._get_merge_conflict_info()
+
+                # Use Gemini to resolve conflicts
+                resolve_actions = self._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
+
+                # Log the resolution actions
+                for action in resolve_actions:
+                    logger.info(f"Conflict resolution action: {action}")
+
+                # Check if conflicts were resolved successfully
+                status_result = self.cmd.run_command(['git', 'status', '--porcelain'])
+
+                if status_result.success and not status_result.stdout.strip():
+                    logger.info(f"Merge conflicts resolved for PR #{pr_number}")
+                    return True
+                else:
+                    logger.error(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                    return False
+
+        except Exception as e:
+            logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
             return False
 
 
