@@ -244,6 +244,40 @@ class TestAutomationEngine:
         mock_github_client.get_open_issues.assert_called_once()
         # Should not call add_labels_to_issue since label already exists
         mock_github_client.add_labels_to_issue.assert_not_called()
+
+    def test_resolve_merge_conflicts_with_gemini_model_switching(self, mock_github_client, mock_gemini_client):
+        """Test that model switching occurs during conflict resolution."""
+        # Setup
+        pr_data = {
+            'number': 1,
+            'title': 'Test PR',
+            'body': 'Test PR description'
+        }
+        conflict_info = "Conflict in file.py"
+
+        # Setup mock gemini client attributes
+        mock_gemini_client.model_name = "gemini-2.5-flash"
+        mock_gemini_client._run_gemini_cli.return_value = "Conflicts resolved successfully"
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
+
+        # Execute
+        result = engine._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
+
+        # Assert
+        assert len(result) >= 3  # Should have switch to conflict, resolution, and switch back actions
+
+        # Verify model switching methods were called
+        mock_gemini_client.switch_to_conflict_model.assert_called_once()
+        mock_gemini_client.switch_to_default_model.assert_called_once()
+
+        # Verify Gemini CLI was called
+        mock_gemini_client._run_gemini_cli.assert_called_once()
+
+        # Check that actions include model switching
+        action_text = ' '.join(result)
+        assert "Switched to" in action_text
+        assert "Switched back to" in action_text
     
     def test_process_issues_low_priority_no_solution(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test processing low priority issues without solution generation."""

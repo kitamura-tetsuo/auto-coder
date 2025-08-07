@@ -79,6 +79,14 @@ features:
             description: "Generate a solution for a specific issue"
             parameters: ["issue_data", "analysis"]
             returns: "Dictionary with solution details"
+          - name: "switch_to_conflict_model"
+            description: "Switch to faster model (gemini-2.5-flash) for conflict resolution"
+            parameters: []
+            returns: "None"
+          - name: "switch_to_default_model"
+            description: "Switch back to default model"
+            parameters: []
+            returns: "None"
 
   automation_engine:
     name: "Automation Engine"
@@ -229,6 +237,20 @@ workflows:
       3. "Add 'jules' label to issues that don't have it"
       4. "If Gemini CLI is available, process PRs with full AI analysis"
       5. "Generate jules mode report"
+
+special_features:
+  conflict_resolution:
+    name: "Automatic Model Switching for Conflicts"
+    description: "Automatically switches to faster model (gemini-2.5-flash) when resolving PR merge conflicts"
+    behavior:
+      - "Detects merge conflicts in PRs"
+      - "Switches from default model to gemini-2.5-flash for faster conflict resolution"
+      - "Resolves conflicts using AI analysis"
+      - "Switches back to default model after resolution"
+    benefits:
+      - "Faster conflict resolution with optimized model"
+      - "Cost-effective processing for conflict scenarios"
+      - "Maintains quality while improving speed"
 
 testing:
   unit_tests:

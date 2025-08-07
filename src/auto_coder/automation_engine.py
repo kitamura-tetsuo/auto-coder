@@ -1231,10 +1231,15 @@ After analyzing, apply the necessary fixes to the codebase.
             return f"Error getting conflict info: {e}"
 
     def _resolve_merge_conflicts_with_gemini(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
-        """Ask Gemini CLI to resolve merge conflicts."""
+        """Ask Gemini CLI to resolve merge conflicts using faster model."""
         actions = []
 
         try:
+            # Switch to faster model for conflict resolution
+            if self.gemini:
+                self.gemini.switch_to_conflict_model()
+                actions.append(f"Switched to {self.gemini.model_name} for conflict resolution")
+
             # Create a prompt for Gemini CLI to resolve conflicts
             resolve_prompt = f"""
 There are merge conflicts when trying to merge main branch into PR #{pr_data['number']}: {pr_data['title']}
@@ -1258,7 +1263,7 @@ Please proceed with resolving these merge conflicts now.
 """
 
             # Use Gemini CLI to resolve conflicts
-            logger.info(f"Asking Gemini to resolve merge conflicts for PR #{pr_data['number']}")
+            logger.info(f"Asking Gemini ({self.gemini.model_name}) to resolve merge conflicts for PR #{pr_data['number']}")
             response = self.gemini._run_gemini_cli(resolve_prompt)
 
             # Parse the response
@@ -1296,6 +1301,11 @@ Please proceed with resolving these merge conflicts now.
         except Exception as e:
             logger.error(f"Error resolving merge conflicts with Gemini: {e}")
             actions.append(f"Error resolving merge conflicts: {e}")
+        finally:
+            # Switch back to default model after conflict resolution
+            if self.gemini:
+                self.gemini.switch_to_default_model()
+                actions.append(f"Switched back to {self.gemini.model_name}")
 
         return actions
 

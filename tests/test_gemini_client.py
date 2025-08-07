@@ -279,3 +279,39 @@ class TestGeminiClient:
         assert 'Invalid JSON' in result['summary']
         assert result['steps'] == []
         assert result['code_changes'] == []
+
+    @patch('subprocess.run')
+    def test_switch_to_conflict_model(self, mock_subprocess):
+        """Test switching to conflict resolution model."""
+        # Mock subprocess for version check
+        mock_subprocess.return_value.returncode = 0
+
+        client = GeminiClient("gemini-2.5-pro")
+
+        # Initially should be using default model
+        assert client.model_name == "gemini-2.5-pro"
+        assert client.default_model == "gemini-2.5-pro"
+        assert client.conflict_model == "gemini-2.5-flash"
+
+        # Switch to conflict model
+        client.switch_to_conflict_model()
+        assert client.model_name == "gemini-2.5-flash"
+
+        # Switch back to default
+        client.switch_to_default_model()
+        assert client.model_name == "gemini-2.5-pro"
+
+    @patch('subprocess.run')
+    def test_switch_to_conflict_model_no_change_if_already_conflict(self, mock_subprocess):
+        """Test that switching to conflict model when already using it doesn't change anything."""
+        # Mock subprocess for version check
+        mock_subprocess.return_value.returncode = 0
+
+        client = GeminiClient("gemini-2.5-flash")
+
+        # Should already be using conflict model
+        assert client.model_name == "gemini-2.5-flash"
+
+        # Switch to conflict model (should be no-op)
+        client.switch_to_conflict_model()
+        assert client.model_name == "gemini-2.5-flash"

@@ -17,6 +17,8 @@ class GeminiClient:
     def __init__(self, model_name: str = "gemini-2.5-pro"):
         """Initialize Gemini CLI client."""
         self.model_name = model_name
+        self.default_model = model_name
+        self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
         self.timeout = None  # No timeout - let gemini CLI run as long as needed
 
         # Check if gemini CLI is available
@@ -31,6 +33,18 @@ class GeminiClient:
                 raise RuntimeError("Gemini CLI not available or not working")
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError) as e:
             raise RuntimeError(f"Gemini CLI not available: {e}")
+
+    def switch_to_conflict_model(self) -> None:
+        """Switch to faster model for conflict resolution."""
+        if self.model_name != self.conflict_model:
+            logger.info(f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution")
+            self.model_name = self.conflict_model
+
+    def switch_to_default_model(self) -> None:
+        """Switch back to default model."""
+        if self.model_name != self.default_model:
+            logger.info(f"Switching back from {self.model_name} to {self.default_model}")
+            self.model_name = self.default_model
 
     def _run_gemini_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""

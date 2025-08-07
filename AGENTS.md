@@ -37,9 +37,10 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 1. GitHub APIを使用したissue/PR取得（古い順でソート）
 2. **Jules Mode（デフォルト）**: issueに'jules'ラベルを追加、PRはGemini CLIで処理（利用可能な場合）
 3. **Gemini Mode**: Gemini CLIを使用したissue/PR両方の内容分析と自動処理
-4. 必要な機能の自動検出と issue作成
-5. 自動化されたコード修正と構築
-6. PR処理の優先順位付け（GitHub Actionsパス→マージ、失敗→修正）
+4. **自動モデル切り替え**: PRコンフリクト時にgemini-2.5-flashに自動切り替えで高速解決
+5. 必要な機能の自動検出と issue作成
+6. 自動化されたコード修正と構築
+7. PR処理の優先順位付け（GitHub Actionsパス→マージ、失敗→修正）
 
 ## テスト戦略
 - ユニットテスト: 各モジュールの個別機能をテスト
