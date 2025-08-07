@@ -37,6 +37,7 @@ def mock_gemini_client(mock_gemini_api_key):
     """Mock Gemini client for testing."""
     client = Mock(spec=GeminiClient)
     client.api_key = mock_gemini_api_key
+    client.model_name = "gemini-2.5-pro"
     return client
 
 

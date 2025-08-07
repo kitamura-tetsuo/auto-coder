@@ -1292,3 +1292,213 @@ class TestAutomationEngineExtended:
             assert mock_cmd.call_count == 5
             mock_cmd.assert_any_call(['git', 'fetch', 'origin', 'pull/123/head:feature-branch'])
             mock_cmd.assert_any_call(['git', 'checkout', '-B', 'feature-branch'])
+
+
+class TestPackageLockConflictResolution:
+    """Test cases for package-lock.json conflict resolution functionality."""
+
+    def test_is_package_lock_only_conflict_true(self, mock_github_client, mock_gemini_client):
+        """Test detection of package-lock.json only conflicts."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = "UU package-lock.json\n"
+
+        # Execute
+        result = engine._is_package_lock_only_conflict(conflict_info)
+
+        # Assert
+        assert result is True
+
+    def test_is_package_lock_only_conflict_yarn_lock(self, mock_github_client, mock_gemini_client):
+        """Test detection of yarn.lock only conflicts."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = "UU yarn.lock\n"
+
+        # Execute
+        result = engine._is_package_lock_only_conflict(conflict_info)
+
+        # Assert
+        assert result is True
+
+    def test_is_package_lock_only_conflict_pnpm_lock(self, mock_github_client, mock_gemini_client):
+        """Test detection of pnpm-lock.yaml only conflicts."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = "UU pnpm-lock.yaml\n"
+
+        # Execute
+        result = engine._is_package_lock_only_conflict(conflict_info)
+
+        # Assert
+        assert result is True
+
+    def test_is_package_lock_only_conflict_mixed_false(self, mock_github_client, mock_gemini_client):
+        """Test detection returns false when other files are also conflicted."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = "UU package-lock.json\nUU src/main.js\n"
+
+        # Execute
+        result = engine._is_package_lock_only_conflict(conflict_info)
+
+        # Assert
+        assert result is False
+
+    def test_is_package_lock_only_conflict_no_conflicts(self, mock_github_client, mock_gemini_client):
+        """Test detection returns false when no conflicts exist."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = ""
+
+        # Execute
+        result = engine._is_package_lock_only_conflict(conflict_info)
+
+        # Assert
+        assert result is False
+
+    @patch('os.path.exists')
+    def test_resolve_package_lock_conflicts_npm_success(self, mock_exists, mock_github_client, mock_gemini_client):
+        """Test successful resolution of package-lock.json conflicts using npm."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+        conflict_info = "UU package-lock.json\n"
+
+        # Mock package.json exists
+        mock_exists.return_value = True
+
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            # Mock successful command execution
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout="", stderr=""),  # rm -f package-lock.json
+                Mock(success=True, stdout="", stderr=""),  # npm install
+                Mock(success=True, stdout="", stderr=""),  # git add .
+                Mock(success=True, stdout="", stderr=""),  # git commit
+                Mock(success=True, stdout="", stderr="")   # git push
+            ]
+
+            # Execute
+            result = engine._resolve_package_lock_conflicts(pr_data, conflict_info)
+
+            # Assert
+            assert len(result) == 6  # Expected number of action messages
+            assert "Detected package-lock.json only conflicts" in result[0]
+            assert "Removed conflicted file: package-lock.json" in result[1]
+            assert "Successfully ran npm install" in result[2]
+            assert "Staged regenerated dependency files" in result[3]
+            assert "Committed resolved dependency conflicts" in result[4]
+            assert "Successfully pushed resolved package-lock.json conflicts" in result[5]
+
+            # Verify command calls
+            mock_cmd.assert_any_call(['rm', '-f', 'package-lock.json'])
+            mock_cmd.assert_any_call(['npm', 'install'], timeout=300)
+            mock_cmd.assert_any_call(['git', 'add', '.'])
+            mock_cmd.assert_any_call(['git', 'commit', '-m', 'Resolve package-lock.json conflicts for PR #123'])
+            mock_cmd.assert_any_call(['git', 'push'])
+
+    @patch('os.path.exists')
+    def test_resolve_package_lock_conflicts_yarn_fallback(self, mock_exists, mock_github_client, mock_gemini_client):
+        """Test resolution falls back to yarn when npm fails."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+        conflict_info = "UU package-lock.json\n"
+
+        # Mock package.json exists
+        mock_exists.return_value = True
+
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            # Mock npm failure, yarn success
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout="", stderr=""),   # rm -f package-lock.json
+                Mock(success=False, stdout="", stderr="npm failed"),  # npm install (fails)
+                Mock(success=True, stdout="", stderr=""),   # yarn install (succeeds)
+                Mock(success=True, stdout="", stderr=""),   # git add .
+                Mock(success=True, stdout="", stderr=""),   # git commit
+                Mock(success=True, stdout="", stderr="")    # git push
+            ]
+
+            # Execute
+            result = engine._resolve_package_lock_conflicts(pr_data, conflict_info)
+
+            # Assert
+            assert "Successfully ran yarn install" in result[2]
+
+            # Verify yarn was called after npm failed
+            mock_cmd.assert_any_call(['npm', 'install'], timeout=300)
+            mock_cmd.assert_any_call(['yarn', 'install'], timeout=300)
+
+    @patch('os.path.exists')
+    def test_resolve_package_lock_conflicts_no_package_json(self, mock_exists, mock_github_client, mock_gemini_client):
+        """Test resolution when package.json doesn't exist."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123, 'title': 'Test PR'}
+        conflict_info = "UU package-lock.json\n"
+
+        # Mock package.json doesn't exist
+        mock_exists.return_value = False
+
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            # Mock only file removal
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout="", stderr="")   # rm -f package-lock.json
+            ]
+
+            # Execute
+            result = engine._resolve_package_lock_conflicts(pr_data, conflict_info)
+
+            # Assert
+            assert "No package.json found, skipping dependency installation" in result[2]
+
+            # Verify npm/yarn were not called
+            calls = [call[0][0] for call in mock_cmd.call_args_list]
+            assert 'npm' not in calls
+            assert 'yarn' not in calls
+
+    def test_resolve_merge_conflicts_with_gemini_package_lock_priority(self, mock_github_client, mock_gemini_client):
+        """Test that package-lock conflicts are handled with specialized resolution."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123, 'title': 'Test PR', 'body': 'Test description'}
+        conflict_info = "UU package-lock.json\n"
+
+        # Mock the specialized resolution method
+        with patch.object(engine, '_is_package_lock_only_conflict', return_value=True) as mock_check:
+            with patch.object(engine, '_resolve_package_lock_conflicts', return_value=['resolved']) as mock_resolve:
+
+                # Execute
+                result = engine._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
+
+                # Assert
+                assert result == ['resolved']
+                mock_check.assert_called_once_with(conflict_info)
+                mock_resolve.assert_called_once_with(pr_data, conflict_info)
+
+    def test_resolve_merge_conflicts_with_gemini_normal_flow(self, mock_github_client, mock_gemini_client):
+        """Test that non-package-lock conflicts use normal Gemini resolution."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123, 'title': 'Test PR', 'body': 'Test description'}
+        conflict_info = "UU src/main.js\n"
+
+        # Mock the check to return false (not package-lock only)
+        with patch.object(engine, '_is_package_lock_only_conflict', return_value=False):
+            with patch.object(engine.gemini, 'switch_to_conflict_model'):
+                with patch.object(engine.gemini, 'switch_to_default_model'):
+                    with patch.object(engine.gemini, '_run_gemini_cli', return_value="Conflicts resolved"):
+                        with patch('subprocess.run') as mock_subprocess:
+                            # Mock git status and push commands
+                            mock_subprocess.side_effect = [
+                                Mock(returncode=0, stdout="", stderr=""),  # git status
+                                Mock(returncode=0, stdout="", stderr="")   # git push
+                            ]
+
+                            # Execute
+                            result = engine._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
+
+                            # Assert
+                            assert len(result) > 0
+                            assert any("Switched to" in action for action in result)
+                            assert any("Gemini CLI resolved merge conflicts" in action for action in result)
