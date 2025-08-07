@@ -1301,6 +1301,11 @@ After analyzing, apply the necessary fixes to the codebase.
         actions = []
 
         try:
+            # Check if conflicts are only in package-lock.json files
+            if self._is_package_lock_only_conflict(conflict_info):
+                logger.info(f"Detected package-lock.json only conflicts for PR #{pr_data['number']}, using specialized resolution")
+                return self._resolve_package_lock_conflicts(pr_data, conflict_info)
+
             # Switch to faster model for conflict resolution
             if self.gemini:
                 self.gemini.switch_to_conflict_model()
