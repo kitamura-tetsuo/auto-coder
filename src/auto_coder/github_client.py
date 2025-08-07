@@ -104,6 +104,16 @@ class GitHubClient:
             'deletions': pr.deletions,
             'changed_files': pr.changed_files,
         }
+
+    def get_pr_details_by_number(self, repo_name: str, pr_number: int) -> Dict[str, Any]:
+        """Get PR details by repository name and PR number."""
+        try:
+            repo = self.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+            return self.get_pr_details(pr)
+        except GithubException as e:
+            logger.error(f"Failed to get PR #{pr_number} from {repo_name}: {e}")
+            raise
     
     def create_issue(self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None) -> Issue.Issue:
         """Create a new issue in the repository."""

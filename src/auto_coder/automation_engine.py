@@ -1317,6 +1317,24 @@ Please proceed with resolving these merge conflicts now.
     def _resolve_pr_merge_conflicts(self, repo_name: str, pr_number: int) -> bool:
         """Resolve merge conflicts for a PR by checking it out and merging with main."""
         try:
+            # Step 0: Clean up any existing git state
+            logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
+
+            # Reset any uncommitted changes
+            reset_result = self.cmd.run_command(['git', 'reset', '--hard'])
+            if not reset_result.success:
+                logger.warning(f"Failed to reset git state: {reset_result.stderr}")
+
+            # Clean untracked files
+            clean_result = self.cmd.run_command(['git', 'clean', '-fd'])
+            if not clean_result.success:
+                logger.warning(f"Failed to clean untracked files: {clean_result.stderr}")
+
+            # Abort any ongoing merge
+            abort_result = self.cmd.run_command(['git', 'merge', '--abort'])
+            if abort_result.success:
+                logger.info("Aborted ongoing merge")
+
             # Step 1: Checkout the PR branch
             logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
             checkout_result = self.cmd.run_command(['gh', 'pr', 'checkout', str(pr_number)])
@@ -1353,7 +1371,7 @@ Please proceed with resolving these merge conflicts now.
                 logger.info(f"Merge conflicts detected for PR #{pr_number}, using Gemini to resolve")
 
                 # Get PR data for context
-                pr_data = self.github.get_pr_details({'number': pr_number})
+                pr_data = self.github.get_pr_details_by_number(repo_name, pr_number)
 
                 # Get conflict information
                 conflict_info = self._get_merge_conflict_info()

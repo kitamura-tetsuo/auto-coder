@@ -295,11 +295,14 @@ class TestAutomationEngine:
 
         # Mock PR data
         pr_data = {'number': 123, 'title': 'Test PR', 'body': 'Test description'}
-        mock_github_client.get_pr_details.return_value = pr_data
+        mock_github_client.get_pr_details_by_number.return_value = pr_data
 
         # Mock merge failure due to conflicts, then success after resolution
         mock_run_command.side_effect = [
             Mock(success=False, stderr="not mergeable: the merge commit cannot be cleanly created"),  # Initial merge fails
+            Mock(success=True, stdout="", stderr=""),  # git reset --hard
+            Mock(success=True, stdout="", stderr=""),  # git clean -fd
+            Mock(success=True, stdout="", stderr=""),  # git merge --abort
             Mock(success=True, stdout="", stderr=""),  # gh pr checkout
             Mock(success=True, stdout="", stderr=""),  # git fetch
             Mock(success=True, stdout="", stderr=""),  # git merge (no conflicts)
@@ -316,16 +319,19 @@ class TestAutomationEngine:
 
         # Assert
         assert result is True
-        assert mock_run_command.call_count == 6
+        assert mock_run_command.call_count == 9
 
         # Verify the sequence of commands
         calls = [call[0][0] for call in mock_run_command.call_args_list]
         assert calls[0] == ['gh', 'pr', 'merge', '123', '--squash']  # Initial merge attempt
-        assert calls[1] == ['gh', 'pr', 'checkout', '123']  # Checkout PR
-        assert calls[2] == ['git', 'fetch', 'origin', 'main']  # Fetch main
-        assert calls[3] == ['git', 'merge', 'origin/main']  # Merge main
-        assert calls[4] == ['git', 'push']  # Push changes
-        assert calls[5] == ['gh', 'pr', 'merge', '123', '--squash']  # Retry merge
+        assert calls[1] == ['git', 'reset', '--hard']  # Reset git state
+        assert calls[2] == ['git', 'clean', '-fd']  # Clean untracked files
+        assert calls[3] == ['git', 'merge', '--abort']  # Abort ongoing merge
+        assert calls[4] == ['gh', 'pr', 'checkout', '123']  # Checkout PR
+        assert calls[5] == ['git', 'fetch', 'origin', 'main']  # Fetch main
+        assert calls[6] == ['git', 'merge', 'origin/main']  # Merge main
+        assert calls[7] == ['git', 'push']  # Push changes
+        assert calls[8] == ['gh', 'pr', 'merge', '123', '--squash']  # Retry merge
 
     @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
     def test_merge_pr_with_conflict_resolution_failure(self, mock_run_command, mock_github_client, mock_gemini_client):
@@ -340,6 +346,9 @@ class TestAutomationEngine:
         # Mock merge failure due to conflicts, then checkout failure
         mock_run_command.side_effect = [
             Mock(success=False, stderr="not mergeable: the merge commit cannot be cleanly created"),  # Initial merge fails
+            Mock(success=True, stdout="", stderr=""),  # git reset --hard
+            Mock(success=True, stdout="", stderr=""),  # git clean -fd
+            Mock(success=True, stdout="", stderr=""),  # git merge --abort
             Mock(success=False, stderr="Failed to checkout PR")  # Checkout fails
         ]
 
@@ -348,7 +357,47 @@ class TestAutomationEngine:
 
         # Assert
         assert result is False
-        assert mock_run_command.call_count == 2
+        assert mock_run_command.call_count == 5
+
+    @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
+    def test_resolve_pr_merge_conflicts_git_cleanup(self, mock_run_command, mock_github_client, mock_gemini_client):
+        """Test that git cleanup commands are executed before PR checkout."""
+        # Setup
+        config = AutomationConfig()
+        config.MAIN_BRANCH = "main"
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, config=config)
+
+        # Mock PR data
+        pr_data = {'number': 123, 'title': 'Test PR', 'body': 'Test description'}
+        mock_github_client.get_pr_details_by_number.return_value = pr_data
+
+        # Mock all commands to succeed
+        mock_run_command.side_effect = [
+            Mock(success=True, stdout="", stderr=""),  # git reset --hard
+            Mock(success=True, stdout="", stderr=""),  # git clean -fd
+            Mock(success=True, stdout="", stderr=""),  # git merge --abort
+            Mock(success=True, stdout="", stderr=""),  # gh pr checkout
+            Mock(success=True, stdout="", stderr=""),  # git fetch
+            Mock(success=True, stdout="", stderr=""),  # git merge (no conflicts)
+            Mock(success=True, stdout="", stderr=""),  # git push
+        ]
+
+        # Execute
+        result = engine._resolve_pr_merge_conflicts("test/repo", 123)
+
+        # Assert
+        assert result is True
+        assert mock_run_command.call_count == 7
+
+        # Verify the sequence of commands includes git cleanup
+        calls = [call[0][0] for call in mock_run_command.call_args_list]
+        assert calls[0] == ['git', 'reset', '--hard']  # Reset git state
+        assert calls[1] == ['git', 'clean', '-fd']  # Clean untracked files
+        assert calls[2] == ['git', 'merge', '--abort']  # Abort ongoing merge
+        assert calls[3] == ['gh', 'pr', 'checkout', '123']  # Checkout PR
+        assert calls[4] == ['git', 'fetch', 'origin', 'main']  # Fetch main
+        assert calls[5] == ['git', 'merge', 'origin/main']  # Merge main
+        assert calls[6] == ['git', 'push']  # Push changes
 
     def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test issue actions in dry run mode."""
@@ -683,11 +732,15 @@ class TestAutomationEngine:
         assert result['total_checks'] == 3
         assert len(result['failed_checks']) == 0  # No failed checks
 
-    @patch('subprocess.run')
-    def test_checkout_pr_branch_success(self, mock_run, mock_github_client, mock_gemini_client):
+    @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
+    def test_checkout_pr_branch_success(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test successful PR branch checkout."""
         # Setup
-        mock_run.return_value = Mock(returncode=0, stdout="Switched to branch", stderr="")
+        mock_run_command.side_effect = [
+            Mock(success=True, stdout="", stderr=""),  # git reset --hard HEAD
+            Mock(success=True, stdout="", stderr=""),  # git clean -fd
+            Mock(success=True, stdout="Switched to branch", stderr="")  # gh pr checkout
+        ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
         pr_data = {'number': 123}
@@ -697,12 +750,13 @@ class TestAutomationEngine:
 
         # Assert
         assert result is True
-        mock_run.assert_called_once_with(
-            ['gh', 'pr', 'checkout', '123'],
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        assert mock_run_command.call_count == 3
+
+        # Verify the sequence of commands
+        calls = [call[0][0] for call in mock_run_command.call_args_list]
+        assert calls[0] == ['git', 'reset', '--hard', 'HEAD']
+        assert calls[1] == ['git', 'clean', '-fd']
+        assert calls[2] == ['gh', 'pr', 'checkout', '123']
 
     @patch('subprocess.run')
     def test_checkout_pr_branch_failure(self, mock_run, mock_github_client, mock_gemini_client):

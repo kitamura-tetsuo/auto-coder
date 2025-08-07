@@ -270,6 +270,53 @@ class TestGitHubClient:
             'changed_files': 2
         }
         assert result == expected
+
+    @patch('src.auto_coder.github_client.Github')
+    def test_get_pr_details_by_number_success(self, mock_github_class, mock_github_token):
+        """Test successful PR details retrieval by number."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+
+        # Configure mock PR
+        mock_pr.number = 123
+        mock_pr.title = "Test PR"
+        mock_pr.body = "Test PR body"
+        mock_pr.state = "open"
+        mock_pr.labels = []
+        mock_pr.assignees = []
+        mock_pr.created_at = Mock()
+        mock_pr.created_at.isoformat.return_value = "2024-01-01T00:00:00Z"
+        mock_pr.updated_at = Mock()
+        mock_pr.updated_at.isoformat.return_value = "2024-01-01T00:00:00Z"
+        mock_pr.html_url = "https://github.com/test/repo/pull/123"
+        mock_pr.user = Mock(login="author")
+        mock_pr.head = Mock(ref="feature-branch")
+        mock_pr.base = Mock(ref="main")
+        mock_pr.mergeable = True
+        mock_pr.draft = False
+        mock_pr.comments = 0
+        mock_pr.review_comments = 0
+        mock_pr.commits = 1
+        mock_pr.additions = 10
+        mock_pr.deletions = 5
+        mock_pr.changed_files = 1
+
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.get_pr_details_by_number("test/repo", 123)
+
+        # Assert
+        assert result['number'] == 123
+        assert result['title'] == "Test PR"
+        assert result['body'] == "Test PR body"
+        mock_repo.get_pull.assert_called_once_with(123)
     
     @patch('src.auto_coder.github_client.Github')
     def test_create_issue_success(self, mock_github_class, mock_github_token):

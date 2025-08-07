@@ -35,6 +35,10 @@ features:
             description: "Extract detailed information from a pull request"
             parameters: ["pr"]
             returns: "Dictionary with PR details"
+          - name: "get_pr_details_by_number"
+            description: "Get PR details by repository name and PR number"
+            parameters: ["repo_name", "pr_number"]
+            returns: "Dictionary with PR details"
           - name: "create_issue"
             description: "Create a new issue in the repository"
             parameters: ["repo_name", "title", "body", "labels"]
