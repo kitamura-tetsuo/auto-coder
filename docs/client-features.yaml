@@ -144,6 +144,11 @@ features:
             description: "Resolve package-lock.json conflicts by deleting and regenerating dependency files"
             parameters: ["pr_data", "conflict_info"]
             returns: "List of actions taken during resolution"
+          - name: "_get_github_actions_logs"
+            description: "Use gh api to fetch failed job logs (ZIP) for the latest failed run on the PR branch and extract error snippets"
+            parameters: ["repo_name", "pr_data", "failed_checks"]
+            returns: "String containing extracted error snippets per failed job"
+
 
   cli_interface:
     name: "Command Line Interface"

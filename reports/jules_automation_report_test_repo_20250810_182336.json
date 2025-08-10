@@ -1,0 +1,9 @@
+{
+  "repository": "test/repo",
+  "timestamp": "2025-08-10T18:23:35.968546",
+  "dry_run": false,
+  "jules_mode": true,
+  "issues_processed": [],
+  "prs_processed": [],
+  "errors": []
+}

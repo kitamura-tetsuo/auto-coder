@@ -6,6 +6,8 @@ from typing import Dict, Any, List, Optional
 import json
 import os
 import subprocess
+import tempfile
+import zipfile
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -795,54 +797,133 @@ Please proceed with analyzing and taking action on this PR now.
                 'checks': []
             }
 
-    def _get_github_actions_logs(self, repo_name: str, failed_checks: List[Dict[str, Any]]) -> str:
-        """Get GitHub Actions logs for failed checks."""
-        logs = []
+    def _get_github_actions_logs(self, repo_name: str, pr_data: Dict[str, Any], failed_checks: List[Dict[str, Any]]) -> str:
+        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+
+        手順:
+        - PR の head ブランチを特定
+        - そのブランチの最新の失敗 run を取得 (gh run list --branch … --json …)
+        - run の jobs を列挙し、失敗した job を抽出 (gh run view <run_id> --json jobs)
+        - 各失敗 job のログを gh api repos/<owner>/<repo>/actions/jobs/<job_id>/logs で取得 (zip)
+        - zip 内の .txt を読み取り、_extract_important_errors でエラー抜粋
+        - 6000 行超のログでも抜粋のみを返す
+        - 失敗時はフォールバックとして failed_checks の簡易情報を返す
+        """
+        logs: List[str] = []
 
         try:
-            # Get the latest workflow runs for this PR
-            cmd = ['gh', 'run', 'list', '--limit', '5']
+            # 1) ブランチを決定
+            branch = pr_data.get('head_branch') or pr_data.get('head', {}).get('ref')
+            if not branch:
+                # ローカルの現在ブランチをフォールバックとして使用
+                try:
+                    res_branch = subprocess.run(
+                        ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if res_branch.returncode == 0:
+                        branch = res_branch.stdout.strip()
+                except Exception:
+                    branch = None
 
-            result = subprocess.run(
-                cmd,
+            # 2) 失敗した最新 run を取得（Python 側で JSON をフィルタリング）
+            run_list = subprocess.run(
+                [
+                    'gh', 'run', 'list',
+                    '--branch', branch if branch else '',
+                    '--limit', '50',
+                    '--json', 'databaseId,headBranch,conclusion,createdAt,status,displayTitle,url'
+                ],
                 capture_output=True,
                 text=True,
                 timeout=60
             )
 
-            if result.returncode == 0:
-                # Parse the run list to find failed runs
-                lines = result.stdout.strip().split('\n')
-                for line in lines[1:]:  # Skip header
-                    if 'failure' in line.lower() or 'cancelled' in line.lower():
-                        # Extract run ID (first column)
-                        parts = line.split('\t')
-                        if len(parts) > 0:
-                            run_id = parts[0].strip()
+            run_id: Optional[str] = None
+            if run_list.returncode == 0 and run_list.stdout.strip():
+                try:
+                    runs = json.loads(run_list.stdout)
+                    # 失敗のみ抽出し、createdAt 降順
+                    failed_runs = [r for r in runs if (r.get('conclusion') == 'failure')]
+                    failed_runs.sort(key=lambda r: r.get('createdAt', ''), reverse=True)
+                    if failed_runs:
+                        run_id = str(failed_runs[0].get('databaseId'))
+                except Exception as e:
+                    logger.debug(f"Failed to parse gh run list JSON: {e}")
 
-                            # Get logs for this run
-                            log_cmd = ['gh', 'run', 'view', run_id, '--log-failed']
-
-                            log_result = subprocess.run(
-                                log_cmd,
-                                capture_output=True,
-                                text=True,
-                                timeout=120
-                            )
-
-                            if log_result.returncode == 0:
-                                log_content = log_result.stdout
-                                # Extract important error information
-                                important_logs = self._extract_important_errors({
-                                    'success': False,
-                                    'output': log_content,
-                                    'errors': ''
+            # 3) run の失敗ジョブを抽出
+            failed_jobs: List[Dict[str, Any]] = []
+            if run_id:
+                jobs_res = subprocess.run(
+                    ['gh', 'run', 'view', run_id, '--json', 'jobs'],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if jobs_res.returncode == 0 and jobs_res.stdout.strip():
+                    try:
+                        jobs_json = json.loads(jobs_res.stdout)
+                        jobs = jobs_json.get('jobs', [])
+                        for job in jobs:
+                            conc = job.get('conclusion')
+                            if conc and conc.lower() != 'success':
+                                failed_jobs.append({
+                                    'id': job.get('databaseId'),
+                                    'name': job.get('name'),
+                                    'conclusion': conc
                                 })
+                    except Exception as e:
+                        logger.debug(f"Failed to parse gh run view JSON: {e}")
 
-                                logs.append(f"=== Run {run_id} ===\n{important_logs}")
-                            break  # Only get logs from the most recent failed run
+            # 4) 失敗ジョブごとに gh api でログ(zip)取得→解凍→エラー抜粋
+            owner_repo = repo_name  # 'owner/repo'
+            for job in failed_jobs:
+                job_id = job.get('id')
+                job_name = job.get('name') or f"job-{job_id}"
+                if not job_id:
+                    continue
 
-            # If no logs found from runs, try to get general error info
+                api_cmd = ['gh', 'api', f'repos/{owner_repo}/actions/jobs/{job_id}/logs']
+                # バイナリ ZIP を取得するため text=False で実行
+                api_res = subprocess.run(api_cmd, capture_output=True, timeout=120)
+                if api_res.returncode != 0 or not api_res.stdout:
+                    # 失敗時は簡易情報
+                    logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nNo detailed logs available")
+                    continue
+
+                # 一時ファイルに保存して zip 解凍
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    zip_path = os.path.join(tmpdir, 'job_logs.zip')
+                    with open(zip_path, 'wb') as f:
+                        f.write(api_res.stdout)
+
+                    try:
+                        with zipfile.ZipFile(zip_path, 'r') as zf:
+                            # 全ての .txt を読み、結合
+                            all_text = []
+                            for name in zf.namelist():
+                                if name.lower().endswith('.txt'):
+                                    with zf.open(name, 'r') as fp:
+                                        try:
+                                            content = fp.read().decode('utf-8', errors='ignore')
+                                        except Exception:
+                                            content = ''
+                                        all_text.append(content)
+                            combined = '\n'.join(all_text)
+
+                            # エラー抜粋（6000行超でも短縮される）
+                            important = self._extract_important_errors({
+                                'success': False,
+                                'output': combined,
+                                'errors': ''
+                            })
+                            logs.append(f"=== Job {job_name} ({job_id}) ===\n{important}")
+                    except zipfile.BadZipFile:
+                        logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nFailed to read zip logs")
+
+            # 5) フォールバック: run/job が取れない場合は failed_checks をそのまま整形
             if not logs:
                 for check in failed_checks:
                     check_name = check.get('name', 'Unknown')
@@ -910,7 +991,7 @@ Please proceed with analyzing and taking action on this PR now.
 
                 # Fix PR issues using GitHub Actions logs first, then local tests
                 if failed_checks:
-                    github_logs = self._get_github_actions_logs(repo_name, failed_checks)
+                    github_logs = self._get_github_actions_logs(repo_name, pr_data, failed_checks)
                     fix_actions = self._fix_pr_issues_with_testing(repo_name, pr_data, github_logs)
                     actions.extend(fix_actions)
                 else:
