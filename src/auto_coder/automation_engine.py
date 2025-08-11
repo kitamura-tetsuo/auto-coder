@@ -888,9 +888,73 @@ Please proceed with analyzing and taking action on this PR now.
                 api_cmd = ['gh', 'api', f'repos/{owner_repo}/actions/jobs/{job_id}/logs']
                 # バイナリ ZIP を取得するため text=False で実行
                 api_res = subprocess.run(api_cmd, capture_output=True, timeout=120)
+
+                def _append_from_text_output(text_output: str) -> None:
+                    important = self._extract_important_errors({
+                        'success': False,
+                        'output': text_output or '',
+                        'errors': ''
+                    })
+                    logs.append(f"=== Job {job_name} ({job_id}) ===\n{important}")
+
+                def _fallback_fetch_text_logs() -> bool:
+                    # 1) ジョブ単位のテキストログ
+                    try:
+                        job_txt = subprocess.run(
+                            ['gh', 'run', 'view', run_id, '--job', str(job_id), '--log'],
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        if job_txt.returncode == 0 and job_txt.stdout.strip():
+                            _append_from_text_output(job_txt.stdout)
+                            return True
+                    except Exception:
+                        pass
+                    # 2) run 全体の失敗ログ
+                    try:
+                        run_failed = subprocess.run(
+                            ['gh', 'run', 'view', run_id, '--log-failed'],
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        if run_failed.returncode == 0 and run_failed.stdout.strip():
+                            _append_from_text_output(run_failed.stdout)
+                            return True
+                    except Exception:
+                        pass
+                    # 3) run レベルの ZIP（最後の手段）
+                    try:
+                        run_zip = subprocess.run(
+                            ['gh', 'api', f'repos/{owner_repo}/actions/runs/{run_id}/logs'],
+                            capture_output=True,
+                            timeout=120
+                        )
+                        if run_zip.returncode == 0 and run_zip.stdout:
+                            with tempfile.TemporaryDirectory() as t2:
+                                zp = os.path.join(t2, 'run_logs.zip')
+                                with open(zp, 'wb') as wf:
+                                    wf.write(run_zip.stdout)
+                                with zipfile.ZipFile(zp, 'r') as zf2:
+                                    texts = []
+                                    for nm in zf2.namelist():
+                                        if nm.lower().endswith('.txt'):
+                                            with zf2.open(nm, 'r') as fp2:
+                                                try:
+                                                    texts.append(fp2.read().decode('utf-8', errors='ignore'))
+                                                except Exception:
+                                                    pass
+                                    _append_from_text_output('\n'.join(texts))
+                                    return True
+                    except Exception:
+                        pass
+                    return False
+
                 if api_res.returncode != 0 or not api_res.stdout:
-                    # 失敗時は簡易情報
-                    logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nNo detailed logs available")
+                    # ZIP 取得に失敗→フォールバックで UI 相当のテキストログを取得
+                    if not _fallback_fetch_text_logs():
+                        logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nNo detailed logs available")
                     continue
 
                 # 一時ファイルに保存して zip 解凍
@@ -921,7 +985,9 @@ Please proceed with analyzing and taking action on this PR now.
                             })
                             logs.append(f"=== Job {job_name} ({job_id}) ===\n{important}")
                     except zipfile.BadZipFile:
-                        logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nFailed to read zip logs")
+                        # ZIP 解凍失敗時もフォールバック
+                        if not _fallback_fetch_text_logs():
+                            logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nFailed to read zip logs")
 
             # 5) フォールバック: run/job が取れない場合は failed_checks をそのまま整形
             if not logs:
@@ -1684,15 +1750,21 @@ Please proceed with resolving these merge conflicts now.
 
         # Keywords that indicate important error information
         error_keywords = [
-            'error:', 'Error:', 'ERROR:',
-            'failed:', 'Failed:', 'FAILED:',
+            # error detection
+            'error:', 'Error:', 'ERROR:', 'error',
+            # failed detection
+            'failed:', 'Failed:', 'FAILED:', 'failed',
+            # exceptions and traces
             'exception:', 'Exception:', 'EXCEPTION:',
             'traceback:', 'Traceback:', 'TRACEBACK:',
+            # assertions and common python errors
             'assertion', 'Assertion', 'ASSERTION',
             'syntax error', 'SyntaxError',
             'import error', 'ImportError',
             'module not found', 'ModuleNotFoundError',
-            'test failed', 'Test failed', 'TEST FAILED'
+            'test failed', 'Test failed', 'TEST FAILED',
+            # e2e / Playwright related
+            'e2e/', '.spec.ts', 'playwright'
         ]
 
         for i, line in enumerate(lines):

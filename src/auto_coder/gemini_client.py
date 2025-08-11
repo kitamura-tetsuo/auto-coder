@@ -48,7 +48,7 @@ class GeminiClient:
 
     def _escape_prompt(self, prompt: str) -> str:
         """Escape @ characters in prompt for Gemini."""
-        return prompt.replace('@', '\\@')
+        return prompt.replace('@', '\\@').strip()
 
     def _run_gemini_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
