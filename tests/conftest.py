@@ -147,3 +147,102 @@ def temp_reports_dir(tmp_path):
     reports_dir = tmp_path / "reports"
     reports_dir.mkdir()
     return str(reports_dir)
+
+
+# 実際の git/gh コマンドをテスト中に実行しないようにスタブする
+@pytest.fixture(autouse=True)
+def stub_git_and_gh_commands(monkeypatch):
+    import subprocess
+    import types
+
+    orig_run = subprocess.run
+    orig_popen = subprocess.Popen
+
+    def _as_text_or_bytes(text_output: str, text: bool):
+        if text:
+            return text_output, ""
+        # bytes 出力
+        return text_output.encode("utf-8"), b""
+
+    def fake_run(cmd, capture_output=False, text=False, timeout=None, cwd=None, check=False, input=None, env=None):
+        try:
+            program = None
+            if isinstance(cmd, (list, tuple)) and cmd:
+                program = cmd[0]
+            elif isinstance(cmd, str):
+                program = cmd.split()[0]
+
+            if program not in ("git", "gh", "gemini", "codex"):
+                return orig_run(cmd, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, check=check, input=input, env=env)
+
+            # デフォルトの成功レスポンス
+            out_text = ""
+
+            if program == "git":
+                # 代表的な呼び出しに対する最小限の正常系出力
+                if isinstance(cmd, (list, tuple)) and "status" in cmd and "--porcelain" in cmd:
+                    out_text = ""  # 変更なし
+                elif isinstance(cmd, (list, tuple)) and "rev-parse" in cmd:
+                    out_text = "main"
+                elif isinstance(cmd, (list, tuple)) and "merge-base" in cmd:
+                    out_text = "abc123"
+                else:
+                    out_text = ""
+            elif program == "gh":
+                if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "auth" and cmd[2] == "status":
+                    # 認証なしをシミュレーション（トークン未設定のテストを通すため）
+                    return types.SimpleNamespace(stdout="", stderr="not logged in", returncode=1)
+                if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "pr" and cmd[2] == "checks":
+                    # タブ区切り形式の一例（PASS）
+                    out_text = "CI / build\tPASS\t1m\thttps://example/check\n"
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "list":
+                    out_text = "[]"
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "view" and "--json" in cmd:
+                    out_text = "{\"jobs\":[]}"
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "api":
+                    # zip ログ取得など。text=False の呼び出しにも対応
+                    pass  # 出力は下で text フラグに応じて生成
+                else:
+                    out_text = ""
+            else:  # gemini/codex
+                # --version チェックや exec をダミー成功
+                out_text = ""
+
+            if isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == "gh" and cmd[1] == "api":
+                # API 呼び出しはバイナリ or テキスト空出力でOK
+                if text:
+                    stdout, stderr = _as_text_or_bytes("", True)
+                else:
+                    stdout, stderr = _as_text_or_bytes("", False)
+            else:
+                if text:
+                    stdout, stderr = _as_text_or_bytes(out_text, True)
+                else:
+                    stdout, stderr = _as_text_or_bytes(out_text, False)
+
+            return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
+        except Exception as e:
+            # 想定外は元の run にフォールバック
+            return orig_run(cmd, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, check=check, input=input, env=env)
+
+    def fake_popen(cmd, stdout=None, stderr=None, text=False, bufsize=1, universal_newlines=None, cwd=None, env=None):
+        try:
+            program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
+            if program in ("git", "gh", "gemini", "codex"):
+                class DummyPopen:
+                    def __init__(self):
+                        # stdout をイテレータにして、逐次読み取りを安全に終了
+                        self._lines = [""]
+                        self.stdout = iter(self._lines)
+                    def wait(self):
+                        return 0
+                return DummyPopen()
+            # universal_newlines は Python3.12 で text と同義。両方指定の齟齬を避ける
+            if universal_newlines is not None and text is None:
+                text = bool(universal_newlines)
+            return orig_popen(cmd, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
+        except Exception:
+            return orig_popen(cmd, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
