@@ -5,7 +5,7 @@
 application:
   name: "Auto-Coder"
   version: "0.1.0"
-  description: "Automated application development using Gemini CLI and GitHub integration"
+  description: "Automated application development using AI CLI backends (Codex default, Gemini optional) and GitHub integration"
 
 features:
   github_integration:
@@ -158,11 +158,12 @@ features:
         file: "src/auto_coder/cli.py"
         commands:
           - name: "process-issues"
-            description: "Process GitHub issues and PRs using Gemini CLI"
+            description: "Process GitHub issues and PRs using AI CLI (codex or gemini)"
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
-              - "--model": "Gemini model to use (default: gemini-2.5-pro)"
+              - "--backend": "AI backend to use (codex|gemini). Default: codex"
+              - "--model": "Model to use (Gemini only; default: gemini-2.5-pro)"
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
               - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
@@ -360,7 +361,9 @@ deployment:
   usage:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
-        description: "Process issues and PRs with full AI analysis"
+        description: "Process issues and PRs with codex backend (default)"
+      - command: "auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro"
+        description: "Process issues and PRs using Gemini backend"
       - command: "auto-coder process-issues --repo owner/repo --jules-mode"
         description: "Process issues with jules mode (label only), PRs with AI analysis"
       - command: "auto-coder process-issues --repo owner/repo --jules-mode --dry-run"

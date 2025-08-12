@@ -309,10 +309,11 @@ class TestE2E:
                 'process-issues',
                 '--repo', 'test/repo',
                 '--github-token', 'test_token',
+                '--backend', 'gemini',
                 '--gemini-api-key', 'test_key',
                 '--dry-run'
             ])
-            
+
             # Verify CLI execution
             assert result.exit_code == 0
             assert "Processing repository: test/repo" in result.output
@@ -320,7 +321,7 @@ class TestE2E:
             
             # Verify that automation engine was called
             mock_automation_engine.run.assert_called_once_with('test/repo')
-    
+
     def test_cli_integration_create_feature_issues(self, mock_github_responses, mock_gemini_responses):
         """Test CLI integration for create-feature-issues command."""
         runner = CliRunner()

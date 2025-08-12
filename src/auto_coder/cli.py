@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 from .github_client import GitHubClient
 from .gemini_client import GeminiClient
+from .codex_client import CodexClient
 from .automation_engine import AutomationEngine
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
@@ -87,6 +88,28 @@ def check_gemini_cli_or_fail() -> None:
     )
 
 
+def check_codex_cli_or_fail() -> None:
+    """Check if codex CLI is available and working."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['codex', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            click.echo("Using codex CLI")
+            return
+    except Exception:
+        pass
+
+    raise click.ClickException(
+        "Codex CLI is required. Please install it from:\n"
+        "https://github.com/openai/codex"
+    )
+
+
 @click.group()
 @click.version_option(version="0.1.0", package_name="auto-coder")
 def main() -> None:
@@ -97,8 +120,9 @@ def main() -> None:
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
-@click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional)')
-@click.option('--model', default='gemini-2.5-pro', help='Gemini model to use')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only)')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode', is_flag=True, default=False, help='Run in jules mode - only add "jules" label to issues without AI analysis')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
@@ -106,6 +130,7 @@ def main() -> None:
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
+    backend: str,
     gemini_api_key: Optional[str],
     model: str,
     dry_run: bool,
@@ -113,35 +138,44 @@ def process_issues(
     log_level: str,
     log_file: Optional[str]
 ) -> None:
-    """Process GitHub issues and PRs using Gemini CLI."""
+    """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
     # Setup logger with specified options
     setup_logger(log_level=log_level, log_file=log_file)
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
-    check_gemini_cli_or_fail()
+    if backend == 'codex':
+        check_codex_cli_or_fail()
+    else:
+        check_gemini_cli_or_fail()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
     logger.info(f"Processing repository: {repo_name}")
+    logger.info(f"Using backend: {backend}")
     logger.info(f"Using model: {model}")
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
     logger.info(f"Log level: {log_level}")
 
     click.echo(f"Processing repository: {repo_name}")
+    click.echo(f"Using backend: {backend}")
     click.echo(f"Using model: {model}")
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
-    gemini_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
-    automation_engine = AutomationEngine(github_client, gemini_client, dry_run=dry_run)
+    ai_client = None
+    if backend == 'gemini':
+        ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    else:
+        ai_client = CodexClient(model_name='codex')
+    automation_engine = AutomationEngine(github_client, ai_client, dry_run=dry_run)
 
     # Run automation
-    if gemini_api_key is not None:
+    if backend == 'gemini' and gemini_api_key is not None:
         automation_engine.run(repo_name)
     else:
         automation_engine.run(repo_name, jules_mode=jules_mode)
@@ -150,13 +184,15 @@ def process_issues(
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
-@click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional)')
-@click.option('--model', default='gemini-2.5-pro', help='Gemini model to use')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
+    backend: str,
     gemini_api_key: Optional[str],
     model: str,
     log_level: str,
@@ -168,22 +204,30 @@ def create_feature_issues(
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
-    check_gemini_cli_or_fail()
+    if backend == 'codex':
+        check_codex_cli_or_fail()
+    else:
+        check_gemini_cli_or_fail()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
+    logger.info(f"Using backend: {backend}")
     logger.info(f"Using model: {model}")
     logger.info(f"Log level: {log_level}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
+    click.echo(f"Using backend: {backend}")
     click.echo(f"Using model: {model}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
-    gemini_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
-    automation_engine = AutomationEngine(github_client, gemini_client)
+    if backend == 'gemini':
+        ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    else:
+        ai_client = CodexClient(model_name='codex')
+    automation_engine = AutomationEngine(github_client, ai_client)
 
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)

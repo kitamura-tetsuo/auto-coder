@@ -28,24 +28,24 @@ class TestCLI:
 
         assert result.exit_code == 0
 
-    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
-    @patch("src.auto_coder.cli.GeminiClient")
+    @patch("src.auto_coder.cli.CodexClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_success_normal_mode(
+    def test_process_issues_success_default_codex(
         self,
         mock_github_client_class,
-        mock_gemini_client_class,
+        mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
     ):
-        """Test successful process-issues command with normal mode (default)."""
+        """Default backend is codex and runs successfully in dry-run."""
         mock_github_client = Mock()
-        mock_gemini_client = Mock()
+        mock_codex_client = Mock()
         mock_automation_engine = Mock()
 
         mock_github_client_class.return_value = mock_github_client
-        mock_gemini_client_class.return_value = mock_gemini_client
+        mock_codex_client_class.return_value = mock_codex_client
         mock_automation_engine_class.return_value = mock_automation_engine
         mock_check_cli.return_value = None
 
@@ -63,36 +63,35 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert "Processing repository: test/repo" in result.output
+        assert "Using backend: codex" in result.output
         assert "Jules mode: False" in result.output
         assert "Dry run mode: True" in result.output
 
         mock_github_client_class.assert_called_once_with("test_token")
-        mock_gemini_client_class.assert_called_once_with(
-            model_name="gemini-2.5-pro"
-        )
+        mock_codex_client_class.assert_called_once_with(model_name="codex")
         mock_automation_engine_class.assert_called_once_with(
-            mock_github_client, mock_gemini_client, dry_run=True
+            mock_github_client, mock_codex_client, dry_run=True
         )
         mock_automation_engine.run.assert_called_once_with("test/repo", jules_mode=False)
 
-    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
-    @patch("src.auto_coder.cli.GeminiClient")
+    @patch("src.auto_coder.cli.CodexClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_jules_mode(
+    def test_process_issues_jules_mode_default_codex(
         self,
         mock_github_client_class,
-        mock_gemini_client_class,
+        mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
     ):
-        """Test process-issues command with jules mode."""
+        """process-issues with jules mode using default codex backend."""
         mock_github_client = Mock()
-        mock_gemini_client = Mock()
+        mock_codex_client = Mock()
         mock_automation_engine = Mock()
 
         mock_github_client_class.return_value = mock_github_client
-        mock_gemini_client_class.return_value = mock_gemini_client
+        mock_codex_client_class.return_value = mock_codex_client
         mock_automation_engine_class.return_value = mock_automation_engine
         mock_check_cli.return_value = None
 
@@ -107,15 +106,16 @@ class TestCLI:
         )
 
         assert result.exit_code == 0
+        assert "Using backend: codex" in result.output
         assert "Jules mode: True" in result.output
 
         # Verify clients were initialized correctly
         mock_github_client_class.assert_called_once_with("test-token")
-        mock_gemini_client_class.assert_called_once_with(model_name="gemini-2.5-pro")
+        mock_codex_client_class.assert_called_once_with(model_name="codex")
 
         # Verify automation engine was initialized correctly
         mock_automation_engine_class.assert_called_once_with(
-            mock_github_client, mock_gemini_client, dry_run=False
+            mock_github_client, mock_codex_client, dry_run=False
         )
 
         # Verify run was called with jules_mode=True
@@ -130,10 +130,10 @@ class TestCLI:
         assert result.exit_code != 0
         assert "GitHub token is required" in result.output
 
-    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
-    def test_process_issues_missing_gemini_cli(self, mock_check_cli):
-        """Test process-issues command when gemini CLI is not available."""
-        mock_check_cli.side_effect = click.ClickException("Gemini CLI missing")
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    def test_process_issues_missing_codex_cli(self, mock_check_cli):
+        """Default backend codex missing should error."""
+        mock_check_cli.side_effect = click.ClickException("Codex CLI missing")
         runner = CliRunner()
 
         result = runner.invoke(
@@ -142,53 +142,20 @@ class TestCLI:
         )
 
         assert result.exit_code != 0
-        assert "Gemini CLI" in result.output
+        assert "Codex CLI" in result.output
 
-    @patch.dict("os.environ", {"GITHUB_TOKEN": "env_github_token"})
     @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
     @patch("src.auto_coder.cli.GeminiClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_with_env_vars(
+    def test_process_issues_backend_gemini_custom_model(
         self,
         mock_github_client_class,
         mock_gemini_client_class,
         mock_automation_engine_class,
         mock_check_cli,
     ):
-        """Test process-issues command using environment variables."""
-        # Setup
-        mock_github_client = Mock()
-        mock_gemini_client = Mock()
-        mock_automation_engine = Mock()
-
-        mock_github_client_class.return_value = mock_github_client
-        mock_gemini_client_class.return_value = mock_gemini_client
-        mock_automation_engine_class.return_value = mock_automation_engine
-        mock_check_cli.return_value = None
-
-        runner = CliRunner()
-
-        # Execute
-        result = runner.invoke(process_issues, ["--repo", "test/repo"])
-
-        # Assert
-        assert result.exit_code == 0
-        mock_github_client_class.assert_called_once_with("env_github_token")
-        mock_gemini_client_class.assert_called_once()
-
-    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
-    @patch("src.auto_coder.cli.AutomationEngine")
-    @patch("src.auto_coder.cli.GeminiClient")
-    @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_custom_model(
-        self,
-        mock_github_client_class,
-        mock_gemini_client_class,
-        mock_automation_engine_class,
-        mock_check_cli,
-    ):
-        """Custom model name is passed to GeminiClient for process-issues."""
+        """When backend=gemini, model is passed to GeminiClient."""
         mock_github_client_class.return_value = Mock()
         mock_gemini_client_class.return_value = Mock()
         mock_automation_engine_class.return_value = Mock()
@@ -202,6 +169,7 @@ class TestCLI:
                 "test/repo",
                 "--github-token",
                 "test_token",
+                "--backend", "gemini",
                 "--model",
                 "gemini-custom",
             ],
@@ -212,20 +180,89 @@ class TestCLI:
             model_name="gemini-custom"
         )
 
+    @patch.dict("os.environ", {"GITHUB_TOKEN": "env_github_token"})
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_process_issues_with_env_vars(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        """Test process-issues command using environment variables with default codex backend."""
+        # Setup
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_automation_engine = Mock()
+
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+
+        # Execute
+        result = runner.invoke(process_issues, ["--repo", "test/repo"])
+
+        # Assert
+        assert result.exit_code == 0
+        mock_github_client_class.assert_called_once_with("env_github_token")
+        mock_codex_client_class.assert_called_once()
+
     @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
     @patch("src.auto_coder.cli.GeminiClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_create_feature_issues_success(
+    def test_process_issues_custom_model(
         self,
         mock_github_client_class,
         mock_gemini_client_class,
         mock_automation_engine_class,
         mock_check_cli,
     ):
-        """Test successful create-feature-issues command with default model."""
+        """When backend=gemini, custom model is passed to GeminiClient for process-issues."""
+        mock_github_client_class.return_value = Mock()
+        mock_gemini_client_class.return_value = Mock()
+        mock_automation_engine_class.return_value = Mock()
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+                "--backend", "gemini",
+                "--model",
+                "gemini-custom",
+            ],
+        )
+
+        assert result.exit_code == 0
+        mock_gemini_client_class.assert_called_once_with(
+            model_name="gemini-custom"
+        )
+
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_create_feature_issues_success_default_codex(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        """create-feature-issues uses codex by default."""
         mock_github_client = Mock()
-        mock_gemini_client = Mock()
+        mock_codex_client = Mock()
         mock_automation_engine = Mock()
         mock_automation_engine.create_feature_issues.return_value = [
             {
@@ -236,7 +273,7 @@ class TestCLI:
         ]
 
         mock_github_client_class.return_value = mock_github_client
-        mock_gemini_client_class.return_value = mock_gemini_client
+        mock_codex_client_class.return_value = mock_codex_client
         mock_automation_engine_class.return_value = mock_automation_engine
         mock_check_cli.return_value = None
 
@@ -256,13 +293,12 @@ class TestCLI:
             "Analyzing repository for feature opportunities: "
             "test/repo" in result.output
         )
+        assert "Using backend: codex" in result.output
 
         mock_github_client_class.assert_called_once_with("test_token")
-        mock_gemini_client_class.assert_called_once_with(
-            model_name="gemini-2.5-pro"
-        )
+        mock_codex_client_class.assert_called_once_with(model_name="codex")
         mock_automation_engine_class.assert_called_once_with(
-            mock_github_client, mock_gemini_client
+            mock_github_client, mock_codex_client
         )
         mock_automation_engine.create_feature_issues.assert_called_once_with(
             "test/repo"
@@ -278,10 +314,10 @@ class TestCLI:
         assert result.exit_code != 0
         assert "GitHub token is required" in result.output
 
-    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
-    def test_create_feature_issues_missing_gemini_cli(self, mock_check_cli):
-        """Test create-feature-issues when gemini CLI is not available."""
-        mock_check_cli.side_effect = click.ClickException("Gemini CLI missing")
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    def test_create_feature_issues_missing_codex_cli(self, mock_check_cli):
+        """Default backend codex missing should error."""
+        mock_check_cli.side_effect = click.ClickException("Codex CLI missing")
         runner = CliRunner()
 
         result = runner.invoke(
@@ -290,29 +326,29 @@ class TestCLI:
         )
 
         assert result.exit_code != 0
-        assert "Gemini CLI" in result.output
+        assert "Codex CLI" in result.output
 
     @patch.dict("os.environ", {"GITHUB_TOKEN": "env_github_token"})
-    @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
-    @patch("src.auto_coder.cli.GeminiClient")
+    @patch("src.auto_coder.cli.CodexClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_create_feature_issues_with_env_vars(
+    def test_create_feature_issues_with_env_vars_default_codex(
         self,
         mock_github_client_class,
-        mock_gemini_client_class,
+        mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
     ):
-        """Test create-feature-issues command using environment variables."""
+        """create-feature-issues uses env GITHUB_TOKEN and default codex backend."""
         # Setup
         mock_github_client = Mock()
-        mock_gemini_client = Mock()
+        mock_codex_client = Mock()
         mock_automation_engine = Mock()
         mock_automation_engine.create_feature_issues.return_value = []
 
         mock_github_client_class.return_value = mock_github_client
-        mock_gemini_client_class.return_value = mock_gemini_client
+        mock_codex_client_class.return_value = mock_codex_client
         mock_automation_engine_class.return_value = mock_automation_engine
         mock_check_cli.return_value = None
 
@@ -324,20 +360,20 @@ class TestCLI:
         # Assert
         assert result.exit_code == 0
         mock_github_client_class.assert_called_once_with("env_github_token")
-        mock_gemini_client_class.assert_called_once()
+        mock_codex_client_class.assert_called_once()
 
     @patch("src.auto_coder.cli.check_gemini_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
     @patch("src.auto_coder.cli.GeminiClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_create_feature_issues_custom_model(
+    def test_create_feature_issues_backend_gemini_custom_model(
         self,
         mock_github_client_class,
         mock_gemini_client_class,
         mock_automation_engine_class,
         mock_check_cli,
     ):
-        """Custom model name is passed to GeminiClient for create-feature-issues."""
+        """When backend=gemini, model is passed for create-feature-issues."""
         mock_github_client_class.return_value = Mock()
         mock_gemini_client_class.return_value = Mock()
         automation_engine = Mock()
@@ -353,6 +389,7 @@ class TestCLI:
                 "test/repo",
                 "--github-token",
                 "test_token",
+                "--backend", "gemini",
                 "--model",
                 "gemini-custom",
             ],
@@ -370,10 +407,11 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert (
-            "Process GitHub issues and PRs using Gemini CLI" in result.output
+            "Process GitHub issues and PRs using AI CLI (codex or gemini)" in result.output
         )
         assert "--repo" in result.output
         assert "--github-token" in result.output
+        assert "--backend" in result.output
         assert "--model" in result.output
         assert "--dry-run" in result.output
 
@@ -389,4 +427,5 @@ class TestCLI:
         )
         assert "--repo" in result.output
         assert "--github-token" in result.output
+        assert "--backend" in result.output
         assert "--model" in result.output
