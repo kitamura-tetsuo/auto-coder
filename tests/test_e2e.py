@@ -197,48 +197,38 @@ class TestE2E:
         mock_model = Mock()
         mock_genai.GenerativeModel.return_value = mock_model
         
-        # Mock responses for different calls
-        mock_responses = [
-            Mock(text=json.dumps(mock_gemini_responses['issue_analysis'])),
-            Mock(text=json.dumps(mock_gemini_responses['solution'])),
-            Mock(text=json.dumps(mock_gemini_responses['pr_analysis']))
-        ]
-        mock_model.generate_content.side_effect = mock_responses
-        
         # Create automation engine
         github_client = GitHubClient("test_token")
         gemini_client = GeminiClient("test_key")
-        
+
         automation_engine = AutomationEngine(github_client, gemini_client, dry_run=True)
         automation_engine.reports_dir = temp_reports_dir
 
         # Run automation
         result = automation_engine.run("test/repo")
-        
+
         # Verify results
         assert result['repository'] == "test/repo"
         assert result['dry_run'] is True
         assert len(result['issues_processed']) == 1
         assert len(result['prs_processed']) == 1
         assert len(result['errors']) == 0
-        
-        # Verify issue processing
+
+        # Verify issue processing (no analysis-only phase)
         issue_result = result['issues_processed'][0]
         assert issue_result['issue_data']['number'] == 1
-        assert issue_result['analysis']['category'] == 'bug'
-        assert issue_result['analysis']['priority'] == 'high'
-        assert issue_result['solution']['solution_type'] == 'code_fix'
-        assert len(issue_result['actions_taken']) > 0
+        assert issue_result['analysis'] is None
+        assert issue_result['solution'] is None
+        assert len(issue_result['actions_taken']) >= 1
         assert any("[DRY RUN]" in action for action in issue_result['actions_taken'])
-        
-        # Verify PR processing
+
+        # Verify PR processing (no analysis-only phase)
         pr_result = result['prs_processed'][0]
         assert pr_result['pr_data']['number'] == 2
-        assert pr_result['analysis']['category'] == 'bugfix'
-        assert pr_result['analysis']['risk_level'] == 'low'
-        assert len(pr_result['actions_taken']) > 0
+        assert pr_result['analysis'] is None
+        assert len(pr_result['actions_taken']) >= 1
         assert any("[DRY RUN]" in action for action in pr_result['actions_taken'])
-    
+
     @patch('src.auto_coder.automation_engine.os.makedirs')
     @patch('src.auto_coder.github_client.Github')
     @patch('src.auto_coder.gemini_client.genai')

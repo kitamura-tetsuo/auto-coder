@@ -138,29 +138,26 @@ class TestAutomationEngine:
         mock_github_client.create_issue.assert_not_called()
     
     def test_process_issues_success(self, mock_github_client, mock_gemini_client, sample_issue_data, sample_analysis_result):
-        """Test successful issues processing."""
+        """Test successful issues processing with single-run direct actions (no analysis phase)."""
         # Setup
         mock_issue = Mock()
         mock_github_client.get_open_issues.return_value = [mock_issue]
         mock_github_client.get_issue_details.return_value = sample_issue_data
-        mock_gemini_client.analyze_issue.return_value = sample_analysis_result
-        mock_gemini_client.generate_solution.return_value = {'solution': 'test'}
-        
+
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
         engine._take_issue_actions = Mock(return_value=['action1', 'action2'])
-        
+
         # Execute
         result = engine._process_issues("test/repo")
-        
+
         # Assert
         assert len(result) == 1
         assert result[0]['issue_data'] == sample_issue_data
-        assert result[0]['analysis'] == sample_analysis_result
-        assert result[0]['solution'] == {'solution': 'test'}
+        assert result[0]['analysis'] is None
+        assert result[0]['solution'] is None
         assert result[0]['actions_taken'] == ['action1', 'action2']
-        
+
         mock_github_client.get_open_issues.assert_called_once()
-        mock_gemini_client.analyze_issue.assert_called_once_with(sample_issue_data)
 
     def test_process_issues_jules_mode(self, mock_github_client):
         """Test processing issues in jules mode."""
@@ -255,51 +252,46 @@ class TestAutomationEngine:
         assert "Switched to" in action_text
         assert "Switched back to" in action_text
     
-    def test_process_issues_low_priority_no_solution(self, mock_github_client, mock_gemini_client, sample_issue_data):
-        """Test processing low priority issues without solution generation."""
+    def test_process_issues_no_analysis_phase(self, mock_github_client, mock_gemini_client, sample_issue_data):
+        """Ensure no analysis or solution generation occurs in issue processing."""
         # Setup
         mock_issue = Mock()
-        low_priority_analysis = {'priority': 'low', 'category': 'question'}
-        
+
         mock_github_client.get_open_issues.return_value = [mock_issue]
         mock_github_client.get_issue_details.return_value = sample_issue_data
-        mock_gemini_client.analyze_issue.return_value = low_priority_analysis
-        
+
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
         engine._take_issue_actions = Mock(return_value=[])
-        
+
         # Execute
         result = engine._process_issues("test/repo")
-        
+
         # Assert
         assert len(result) == 1
+        assert result[0]['analysis'] is None
         assert result[0]['solution'] is None
-        mock_gemini_client.generate_solution.assert_not_called()
-    
+
     def test_process_pull_requests_success(self, mock_github_client, mock_gemini_client, sample_pr_data):
-        """Test successful pull requests processing."""
+        """Test successful pull requests processing with single-run direct actions (no analysis phase)."""
         # Setup
         mock_pr = Mock()
-        pr_analysis = {'category': 'feature', 'risk_level': 'low'}
-        
+
         mock_github_client.get_open_pull_requests.return_value = [mock_pr]
         mock_github_client.get_pr_details.return_value = sample_pr_data
-        mock_gemini_client.analyze_pull_request.return_value = pr_analysis
-        
+
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
         engine._take_pr_actions = Mock(return_value=['pr_action'])
-        
+
         # Execute
         result = engine._process_pull_requests("test/repo")
-        
+
         # Assert
         assert len(result) == 1
         assert result[0]['pr_data'] == sample_pr_data
-        assert result[0]['analysis'] == pr_analysis
+        assert result[0]['analysis'] is None
         assert result[0]['actions_taken'] == ['pr_action']
-        
+
         mock_github_client.get_open_pull_requests.assert_called_once()
-        mock_gemini_client.analyze_pull_request.assert_called_once_with(sample_pr_data)
 
     def test_process_pull_requests_two_loop_priority(self, mock_github_client, mock_gemini_client):
         """Test that PRs are processed in two loops: merge first, then fix."""

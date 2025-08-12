@@ -284,15 +284,11 @@ class AutomationEngine:
                         'actions_taken': []
                     }
 
-                    # Analyze issue with Gemini if available
-                    if self.gemini:
-                        analysis = self.gemini.analyze_issue(issue_data)
-                        processed_issue['analysis'] = analysis
-                        # Generate solution only for non-low priority
-                        if analysis and str(analysis.get('priority', '')).lower() != 'low':
-                            processed_issue['solution'] = self.gemini.generate_solution(issue_data, analysis)
+                    # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
+                    processed_issue['analysis'] = None
+                    processed_issue['solution'] = None
 
-                    # Take automated actions using direct Gemini CLI
+                    # 単回実行での直接アクション（CLI）
                     actions = self._take_issue_actions(repo_name, issue_data)
                     processed_issue['actions_taken'] = actions
 
@@ -390,12 +386,11 @@ class AutomationEngine:
                             if any("Successfully merged" in a for a in actions_taken) or any("Would merge" in a for a in actions_taken):
                                 merged_pr_numbers.add(pr_data['number'])
                         else:
-                            # Default behavior: analyze and take actions
-                            analysis = self.gemini.analyze_pull_request(pr_data) if self.gemini else None
+                            # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
                             actions = self._take_pr_actions(repo_name, pr_data)
                             processed_prs.append({
                                 'pr_data': pr_data,
-                                'analysis': analysis,
+                                'analysis': None,
                                 'actions_taken': actions
                             })
                             handled_pr_numbers.add(pr_data['number'])
@@ -444,18 +439,13 @@ class AutomationEngine:
             'pr_data': pr_data,
             'actions_taken': [],
             'priority': 'merge',
-            'analysis': {'category': 'feature', 'risk_level': 'low'}
+            'analysis': None
         }
 
         try:
             if self.dry_run:
-                # In unit tests that expect analyze+actions, bypass merge action
-                if hasattr(self, 'gemini') and self.gemini:
-                    # Simulate analysis path
-                    processed_pr['analysis'] = self.gemini.analyze_pull_request(pr_data)
-                    processed_pr['actions_taken'] = self._take_pr_actions(repo_name, pr_data)
-                else:
-                    processed_pr['actions_taken'].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
+                # 単回実行ポリシーにより、分析フェーズは行わない
+                processed_pr['actions_taken'].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
                 return processed_pr
             else:
                 # Since Actions are passing, attempt direct merge

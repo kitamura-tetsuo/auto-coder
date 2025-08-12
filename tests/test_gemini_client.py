@@ -26,85 +26,17 @@ class TestGeminiClient:
         mock_genai.GenerativeModel.assert_called_once_with("test-model")
     
     @patch('src.auto_coder.gemini_client.genai')
-    def test_analyze_issue_success(self, mock_genai, mock_gemini_api_key, sample_issue_data):
-        """Test successful issue analysis."""
-        # Setup
-        mock_model = Mock()
-        mock_response = Mock()
-        mock_response.text = json.dumps({
-            "category": "bug",
-            "priority": "high",
-            "complexity": "moderate",
-            "estimated_effort": "days",
-            "tags": ["backend"],
-            "recommendations": [{"action": "Fix bug", "rationale": "It's broken"}],
-            "related_components": ["api"],
-            "summary": "Test issue summary"
-        })
-        mock_model.generate_content.return_value = mock_response
-        mock_genai.GenerativeModel.return_value = mock_model
-        
+    def test_analyze_issue_removed(self, mock_genai, mock_gemini_api_key):
+        """Ensure analysis-only helpers are removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
-        
-        # Execute
-        result = client.analyze_issue(sample_issue_data)
-        
-        # Assert
-        assert result['category'] == 'bug'
-        assert result['priority'] == 'high'
-        assert result['complexity'] == 'moderate'
-        assert len(result['recommendations']) == 1
-        assert result['recommendations'][0]['action'] == 'Fix bug'
-        mock_model.generate_content.assert_called_once()
-    
+        assert not hasattr(client, 'analyze_issue')
+
     @patch('src.auto_coder.gemini_client.genai')
-    def test_analyze_issue_with_error(self, mock_genai, mock_gemini_api_key, sample_issue_data):
-        """Test issue analysis with error."""
-        # Setup
-        mock_model = Mock()
-        mock_model.generate_content.side_effect = Exception("API Error")
-        mock_genai.GenerativeModel.return_value = mock_model
-        
+    def test_analyze_pull_request_removed(self, mock_genai, mock_gemini_api_key, sample_pr_data):
+        """Ensure analysis-only helpers are removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
-        
-        # Execute
-        result = client.analyze_issue(sample_issue_data)
-        
-        # Assert
-        assert result['error'] == 'API Error'
-        assert result['category'] == 'analysis_error'
-        assert result['priority'] == 'unknown'
-    
-    @patch('src.auto_coder.gemini_client.genai')
-    def test_analyze_pull_request_success(self, mock_genai, mock_gemini_api_key, sample_pr_data):
-        """Test successful PR analysis."""
-        # Setup
-        mock_model = Mock()
-        mock_response = Mock()
-        mock_response.text = json.dumps({
-            "category": "feature",
-            "risk_level": "low",
-            "review_priority": "medium",
-            "estimated_review_time": "hours",
-            "recommendations": [{"action": "Review carefully", "rationale": "New feature"}],
-            "potential_issues": ["None identified"],
-            "summary": "Test PR summary"
-        })
-        mock_model.generate_content.return_value = mock_response
-        mock_genai.GenerativeModel.return_value = mock_model
-        
-        client = GeminiClient(mock_gemini_api_key)
-        
-        # Execute
-        result = client.analyze_pull_request(sample_pr_data)
-        
-        # Assert
-        assert result['category'] == 'feature'
-        assert result['risk_level'] == 'low'
-        assert result['review_priority'] == 'medium'
-        assert len(result['recommendations']) == 1
-        mock_model.generate_content.assert_called_once()
-    
+        assert not hasattr(client, 'analyze_pull_request')
+
     @patch('src.auto_coder.gemini_client.genai')
     def test_suggest_features_success(self, mock_genai, mock_gemini_api_key):
         """Test successful feature suggestions."""
@@ -140,48 +72,11 @@ class TestGeminiClient:
         mock_model.generate_content.assert_called_once()
     
     @patch('src.auto_coder.gemini_client.genai')
-    def test_generate_solution_success(self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
-        """Test successful solution generation."""
-        # Setup
-        mock_model = Mock()
-        mock_response = Mock()
-        mock_response.text = json.dumps({
-            "solution_type": "code_fix",
-            "summary": "Fix the API endpoint",
-            "steps": [
-                {
-                    "step": 1,
-                    "description": "Update the endpoint",
-                    "commands": ["git checkout -b fix-api"]
-                }
-            ],
-            "code_changes": [
-                {
-                    "file": "api.py",
-                    "action": "modify",
-                    "description": "Fix endpoint logic",
-                    "code": "def fixed_endpoint(): return 'fixed'"
-                }
-            ],
-            "testing_strategy": "Unit tests",
-            "risks": ["Breaking changes"]
-        })
-        mock_model.generate_content.return_value = mock_response
-        mock_genai.GenerativeModel.return_value = mock_model
-        
+    def test_generate_solution_removed(self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
+        """Ensure generation helper is removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
-        
-        # Execute
-        result = client.generate_solution(sample_issue_data, sample_analysis_result)
-        
-        # Assert
-        assert result['solution_type'] == 'code_fix'
-        assert result['summary'] == 'Fix the API endpoint'
-        assert len(result['steps']) == 1
-        assert len(result['code_changes']) == 1
-        assert result['code_changes'][0]['file'] == 'api.py'
-        mock_model.generate_content.assert_called_once()
-    
+        assert not hasattr(client, 'generate_solution')
+
     def test_parse_analysis_response_valid_json(self, mock_gemini_api_key):
         """Test parsing valid JSON response."""
         client = GeminiClient(mock_gemini_api_key)

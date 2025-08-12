@@ -209,54 +209,9 @@ Please provide feature suggestions in the following JSON format:
 """
 
 
-    # ===== SDK-based analysis helpers (used by tests) =====
-    def analyze_issue(self, issue_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze a GitHub issue using genai model in tests; return structured dict."""
-        try:
-            if getattr(self, 'model', None) is None:
-                raise RuntimeError("Model not initialized")
-            prompt = json.dumps(issue_data)
-            resp = self.model.generate_content(prompt)
-            return self._parse_analysis_response(getattr(resp, 'text', ''))
-        except Exception as e:
-            return {
-                'category': 'analysis_error',
-                'priority': 'unknown',
-                'error': str(e),
-            }
-
-    def analyze_pull_request(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            if getattr(self, 'model', None) is None:
-                raise RuntimeError("Model not initialized")
-            prompt = self._create_pr_analysis_prompt(pr_data)
-            resp = self.model.generate_content(prompt)
-            text = getattr(resp, 'text', '')
-            # Direct JSON expected in tests
-            return json.loads(text)
-        except Exception as e:
-            return {
-                'category': 'analysis_error',
-                'risk_level': 'unknown',
-                'review_priority': 'low',
-                'error': str(e),
-            }
-
-    def generate_solution(self, issue_data: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            if getattr(self, 'model', None) is None:
-                raise RuntimeError("Model not initialized")
-            prompt = json.dumps({'issue': issue_data, 'analysis': analysis})
-            resp = self.model.generate_content(prompt)
-            text = getattr(resp, 'text', '')
-            return self._parse_solution_response(text)
-        except Exception as e:
-            return {
-                'solution_type': 'generation_error',
-                'summary': str(e),
-                'steps': [],
-                'code_changes': [],
-            }
+    # ===== SDK-based analysis helpers (disabled per LLM execution policy) =====
+    # analyze_issue / analyze_pull_request / generate_solution are intentionally removed.
+    # The system must not perform analysis-only LLM calls. Single-run direct actions are used instead.
 
     # ===== Parsing helpers expected by tests =====
     def _parse_analysis_response(self, response_text: str) -> Dict[str, Any]:

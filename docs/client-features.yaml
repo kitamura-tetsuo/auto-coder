@@ -58,27 +58,15 @@ features:
 
   gemini_integration:
     name: "Gemini AI Integration"
-    description: "Integration with Gemini AI for analyzing issues and generating solutions"
+    description: "Integration with Gemini AI for single-run direct actions (no analysis-only calls)"
     components:
       - name: "GeminiClient"
         file: "src/auto_coder/gemini_client.py"
         methods:
-          - name: "analyze_issue"
-            description: "Analyze a GitHub issue and provide recommendations"
-            parameters: ["issue_data"]
-            returns: "Dictionary with analysis results"
-          - name: "analyze_pull_request"
-            description: "Analyze a GitHub pull request and provide recommendations"
-            parameters: ["pr_data"]
-            returns: "Dictionary with analysis results"
           - name: "suggest_features"
             description: "Suggest new features based on repository analysis"
             parameters: ["repo_context"]
             returns: "List of feature suggestions"
-          - name: "generate_solution"
-            description: "Generate a solution for a specific issue"
-            parameters: ["issue_data", "analysis"]
-            returns: "Dictionary with solution details"
           - name: "switch_to_conflict_model"
             description: "Switch to faster model (gemini-2.5-flash) for conflict resolution"
             parameters: []
@@ -216,14 +204,12 @@ features:
 workflows:
   issue_processing:
     name: "Issue Processing Workflow"
-    description: "Automated workflow for processing GitHub issues"
+    description: "Automated workflow for processing GitHub issues (single-run, no analysis phase)"
     steps:
       1. "Fetch open issues from repository (oldest first)"
-      2. "Analyze each issue using Gemini AI"
-      3. "Generate solutions for high-priority issues"
-      4. "Add analysis comments to issues"
-      5. "Auto-close duplicate or invalid issues"
-      6. "Generate automation report"
+      2. "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
+      3. "Add comments or close issues as appropriate"
+      4. "Generate automation report"
 
   pr_processing:
     name: "Pull Request Processing Workflow"
@@ -245,12 +231,12 @@ workflows:
 
   jules_mode:
     name: "Jules Mode Workflow"
-    description: "Hybrid workflow - simple label addition for issues, full AI analysis for PRs"
+    description: "Jules mode - simple label addition for issues; PRs processed without analysis-only phase"
     steps:
       1. "Fetch open issues from repository (oldest first)"
       2. "Check if 'jules' label already exists on each issue"
       3. "Add 'jules' label to issues that don't have it"
-      4. "Process PRs with full AI analysis (same as normal mode)"
+      4. "Process PRs with single-run direct actions (no analysis-only phase)"
       5. "Generate automation report"
 
 special_features:
