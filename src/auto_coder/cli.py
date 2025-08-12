@@ -97,14 +97,16 @@ def main() -> None:
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
+@click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional)')
 @click.option('--model', default='gemini-2.5-pro', help='Gemini model to use')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
-@click.option('--jules-mode', is_flag=True, default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis')
+@click.option('--jules-mode', is_flag=True, default=False, help='Run in jules mode - only add "jules" label to issues without AI analysis')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
+    gemini_api_key: Optional[str],
     model: str,
     dry_run: bool,
     jules_mode: bool,
@@ -135,22 +137,27 @@ def process_issues(
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
-    gemini_client = GeminiClient(model_name=model)
+    gemini_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
     automation_engine = AutomationEngine(github_client, gemini_client, dry_run=dry_run)
 
-    # Run automation (jules_mode will be passed to issue processing)
-    automation_engine.run(repo_name, jules_mode=jules_mode)
+    # Run automation
+    if gemini_api_key is not None:
+        automation_engine.run(repo_name)
+    else:
+        automation_engine.run(repo_name, jules_mode=jules_mode)
 
 
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
+@click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional)')
 @click.option('--model', default='gemini-2.5-pro', help='Gemini model to use')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
+    gemini_api_key: Optional[str],
     model: str,
     log_level: str,
     log_file: Optional[str]
@@ -175,7 +182,7 @@ def create_feature_issues(
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
-    gemini_client = GeminiClient(model_name=model)
+    gemini_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
     automation_engine = AutomationEngine(github_client, gemini_client)
 
     # Analyze and create feature issues

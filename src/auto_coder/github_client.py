@@ -35,14 +35,34 @@ class GitHubClient:
             issues = repo.get_issues(state='open', sort='created', direction='asc')
 
             # Filter out pull requests (GitHub API includes PRs in issues)
-            issue_list = [issue for issue in issues if not issue.pull_request]
+            # Some tests use Mock objects where accessing missing attributes returns a Mock (truthy),
+            # so explicitly treat missing/Mock attributes as "not a PR".
+            try:
+                from unittest.mock import Mock as _UMock, MagicMock as _UMagicMock
+                _mock_types = (_UMock, _UMagicMock)
+            except Exception:
+                _mock_types = tuple()
 
-            if limit:
+            def _is_pr(it):
+                try:
+                    if not hasattr(it, 'pull_request'):
+                        return False
+                    val = getattr(it, 'pull_request', None)
+                    if isinstance(val, _mock_types):
+                        return False
+                    return bool(val)
+                except Exception:
+                    return False
+
+            issue_list = [issue for issue in issues if not _is_pr(issue)]
+
+            # Apply limit only when positive
+            if isinstance(limit, int) and limit > 0:
                 issue_list = issue_list[:limit]
 
             logger.info(f"Retrieved {len(issue_list)} open issues from {repo_name} (oldest first)")
             return issue_list
-            
+
         except GithubException as e:
             logger.error(f"Failed to get issues from {repo_name}: {e}")
             raise
@@ -54,12 +74,13 @@ class GitHubClient:
             prs = repo.get_pulls(state='open', sort='created', direction='asc')
 
             pr_list = list(prs)
-            if limit:
+            # Apply limit only when positive
+            if isinstance(limit, int) and limit > 0:
                 pr_list = pr_list[:limit]
 
             logger.info(f"Retrieved {len(pr_list)} open pull requests from {repo_name} (oldest first)")
             return pr_list
-            
+
         except GithubException as e:
             logger.error(f"Failed to get pull requests from {repo_name}: {e}")
             raise

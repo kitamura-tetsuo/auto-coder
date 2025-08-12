@@ -1141,6 +1141,7 @@ class TestCommandExecutor:
     def test_run_command_timeout(self, mock_run):
         """Test command timeout handling."""
         # Setup
+        import subprocess
         mock_run.side_effect = subprocess.TimeoutExpired(['sleep', '10'], 5)
 
         # Execute

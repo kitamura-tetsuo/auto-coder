@@ -12,6 +12,18 @@ from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.automation_engine import AutomationEngine
 
 
+# テストの安定化: 外部環境変数とユーザホームの影響を排除（CLIの挙動を一定にするため）
+@pytest.fixture(autouse=True)
+def _clear_sensitive_env(monkeypatch):
+    import tempfile
+    # 影響のある環境変数をクリア
+    for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    # ホームディレクトリを一時ディレクトリに切り替え、~/.config/gh/hosts.yml 等の実ファイル影響を遮断
+    tmp_home = tempfile.mkdtemp(prefix="ac_test_home_")
+    monkeypatch.setenv("HOME", tmp_home)
+
+
 @pytest.fixture
 def mock_github_token():
     """Mock GitHub token for testing."""
