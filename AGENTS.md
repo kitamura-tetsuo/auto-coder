@@ -1,7 +1,7 @@
 # Auto-Coder Agent Guidelines
 
 ## プロジェクト概要
-このプロジェクトは、Gemini CLIを使用してアプリケーション開発を自動化するPythonアプリケーションです。
+このプロジェクトは、AI CLIバックエンド（デフォルト: codex、--backendでgeminiに切替可）を使用してアプリケーション開発を自動化するPythonアプリケーションです。
 GitHubからissueやエラーのPRを取得して構築・修正を行い、必要に応じて機能追加issueを自動作成します。
 
 ## 開発ガイドライン
@@ -35,8 +35,8 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 
 ## 主要機能
 1. GitHub APIを使用したissue/PR取得（古い順でソート）
-2. **Jules Mode（オプション）**: issueに'jules'ラベルを追加、PRは通常通りGemini CLIで処理
-3. **通常モード（デフォルト）**: Gemini CLIを使用したissue/PR両方の内容分析と自動処理
+2. **Jules Mode（オプション）**: issueに'jules'ラベルを追加、PRは通常通りAIバックエンドで処理（デフォルトは codex）
+3. **通常モード（デフォルト）**: デフォルトの codex または --backend 指定の Gemini を使用したissue/PR両方の内容分析と自動処理
 4. **自動モデル切り替え**: PRコンフリクト時にgemini-2.5-flashに自動切り替えで高速解決
 5. **Package-lock.jsonコンフリクト特別処理**: package-lock.json、yarn.lock、pnpm-lock.yamlのコンフリクトを自動削除・再生成で解決
 6. **Geminiプロンプトエスケープ**: プロンプト内の@文字を\@に自動エスケープしてGemini CLIに安全に渡す

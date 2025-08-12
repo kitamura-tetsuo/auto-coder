@@ -1,12 +1,12 @@
 # Auto-Coder
 
-Gemini CLIを使用してアプリケーション開発を自動化するPythonアプリケーションです。GitHubからissueやエラーのPRを取得して構築・修正を行い、必要に応じて機能追加issueを自動作成します。
+AI CLIバックエンド（デフォルト: codex、--backendでgeminiに切替可）を用いてアプリケーション開発を自動化するPythonアプリケーションです。GitHubからissueやエラーのPRを取得して構築・修正を行い、必要に応じて機能追加issueを自動作成します。
 
 ## 機能
 
 ### 🔧 主要機能
 - **GitHub API統合**: issueとPRの自動取得・管理
-- **Gemini AI分析**: issueとPRの内容を自動分析
+- **AI分析（codexデフォルト／Gemini切替可）**: issueとPRの内容を自動分析
 - **自動化処理**: 分析結果に基づく自動アクション
 - **機能提案**: リポジトリ分析による新機能の自動提案
 - **レポート生成**: 処理結果の詳細レポート
@@ -22,7 +22,8 @@ Gemini CLIを使用してアプリケーション開発を自動化するPython�
 ### 前提条件
 - Python 3.9以上
 - [gh CLI](https://cli.github.com/) で事前に認証済みであること（`gh auth login`）
-- [Gemini CLI](https://ai.google.dev/gemini-api/docs/cli?hl=ja) で事前に認証済みであること（`gemini login`）
+- [Codex CLI](https://github.com/openai/codex) がインストール済み（デフォルトのバックエンド）
+- [Gemini CLI](https://ai.google.dev/gemini-api/docs/cli?hl=ja) は Gemini バックエンドを使用する場合に必要（`gemini login`）
 
 ### セットアップ
 
@@ -49,41 +50,51 @@ cp .env.example .env
 
 ### 認証
 
-`gh auth login` と `gemini login` を実行しておくことで、APIキーを環境変数に設定せずに利用できます。環境変数を手動で設定する必要はありません。
+基本的には `gh auth login` を実施してください。Gemini バックエンドを使用する場合は `gemini login` を行うことで、APIキーを環境変数に設定せずに利用できます（codex バックエンドでは --model は無視されます）。
 
 ### CLIコマンド
 
 #### issueとPRの処理
 ```bash
+# デフォルト（codex バックエンド）で実行
+auto-coder process-issues --repo owner/repo
+
+# バックエンドを gemini に切替してモデル指定
+auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro
+
 # ドライランモードで実行（変更を行わない）
 auto-coder process-issues --repo owner/repo --dry-run
-
-# 実際に処理を実行
-auto-coder process-issues --repo owner/repo
 ```
 
 #### 機能提案issueの作成
 ```bash
-# リポジトリを分析して機能提案issueを作成
+# デフォルト（codex バックエンド）で実行
 auto-coder create-feature-issues --repo owner/repo
+
+# バックエンドを gemini に切替してモデル指定
+auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemini-2.5-pro
 ```
 
 ### コマンドオプション
 
 #### `process-issues`
 - `--repo`: GitHubリポジトリ (owner/repo形式)
+- `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
+- `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
 - `--dry-run`: ドライランモード（変更を行わない）
 
 オプション:
 - `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
-- `--gemini-api-key`: Gemini CLIの認証情報を使用しない場合に手動指定
+- `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
 
 #### `create-feature-issues`
 - `--repo`: GitHubリポジトリ (owner/repo形式)
+- `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
+- `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
 
 オプション:
 - `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
-- `--gemini-api-key`: Gemini CLIの認証情報を使用しない場合に手動指定
+- `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
 
 ## 設定
 

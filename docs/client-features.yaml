@@ -5,7 +5,7 @@
 application:
   name: "Auto-Coder"
   version: "0.1.0"
-  description: "Automated application development using AI CLI backends (Codex default, Gemini optional) and GitHub integration"
+  description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
 features:
   github_integration:
@@ -163,7 +163,7 @@ features:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
               - "--backend": "AI backend to use (codex|gemini). Default: codex"
-              - "--model": "Model to use (Gemini only; default: gemini-2.5-pro)"
+              - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
               - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
@@ -173,7 +173,9 @@ features:
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
-              - "--gemini-api-key": "Gemini API key"
+              - "--backend": "AI backend to use (codex|gemini). Default: codex"
+              - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
+              - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
 
   configuration:
     name: "Configuration Management"
@@ -363,7 +365,7 @@ deployment:
       - command: "auto-coder process-issues --repo owner/repo"
         description: "Process issues and PRs with codex backend (default)"
       - command: "auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro"
-        description: "Process issues and PRs using Gemini backend"
+        description: "Process issues and PRs using Gemini backend (model required for Gemini; --model is ignored when backend=codex)"
       - command: "auto-coder process-issues --repo owner/repo --jules-mode"
         description: "Process issues with jules mode (label only), PRs with AI analysis"
       - command: "auto-coder process-issues --repo owner/repo --jules-mode --dry-run"

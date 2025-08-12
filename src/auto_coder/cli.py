@@ -122,7 +122,7 @@ def main() -> None:
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
 @click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode', is_flag=True, default=False, help='Run in jules mode - only add "jules" label to issues without AI analysis')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
@@ -152,16 +152,30 @@ def process_issues(
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
+    # Warn if model is specified but backend is codex (model will be ignored)
+    try:
+        ctx = click.get_current_context(silent=True)
+        if ctx is not None and backend == 'codex':
+            source = ctx.get_parameter_source('model')
+            if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
+                logger.warning("--model is ignored when backend=codex")
+                click.echo("Warning: --model is ignored when backend=codex")
+    except Exception:
+        # Non-fatal: proceed without warning if context/source not available
+        pass
+
     logger.info(f"Processing repository: {repo_name}")
     logger.info(f"Using backend: {backend}")
-    logger.info(f"Using model: {model}")
+    if backend == 'gemini':
+        logger.info(f"Using model: {model}")
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
     logger.info(f"Log level: {log_level}")
 
     click.echo(f"Processing repository: {repo_name}")
     click.echo(f"Using backend: {backend}")
-    click.echo(f"Using model: {model}")
+    if backend == 'gemini':
+        click.echo(f"Using model: {model}")
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
 
@@ -186,7 +200,7 @@ def process_issues(
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
 @click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def create_feature_issues(
@@ -212,14 +226,27 @@ def create_feature_issues(
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
+    # Warn if model is specified but backend is codex (model will be ignored)
+    try:
+        ctx = click.get_current_context(silent=True)
+        if ctx is not None and backend == 'codex':
+            source = ctx.get_parameter_source('model')
+            if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
+                logger.warning("--model is ignored when backend=codex")
+                click.echo("Warning: --model is ignored when backend=codex")
+    except Exception:
+        pass
+
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
     logger.info(f"Using backend: {backend}")
-    logger.info(f"Using model: {model}")
+    if backend == 'gemini':
+        logger.info(f"Using model: {model}")
     logger.info(f"Log level: {log_level}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
     click.echo(f"Using backend: {backend}")
-    click.echo(f"Using model: {model}")
+    if backend == 'gemini':
+        click.echo(f"Using model: {model}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)

@@ -12,6 +12,78 @@ from src.auto_coder.cli import main, process_issues, create_feature_issues
 class TestCLI:
     """Test cases for CLI functionality."""
 
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_process_issues_codex_with_model_warns_and_ignores(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        """When backend=codex and --model is provided, warn and do not print Using model."""
+        mock_github_client_class.return_value = Mock()
+        mock_codex_client_class.return_value = Mock()
+        mock_automation_engine_class.return_value = Mock()
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+                "--model",
+                "some-model",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Using backend: codex" in result.output
+        assert "Warning: --model is ignored when backend=codex" in result.output
+        assert "Using model:" not in result.output
+
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_create_feature_issues_codex_with_model_warns_and_ignores(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        """When backend=codex and --model is provided for create-feature-issues, warn and do not print Using model."""
+        mock_github_client_class.return_value = Mock()
+        mock_codex_client_class.return_value = Mock()
+        automation_engine = Mock()
+        automation_engine.create_feature_issues.return_value = []
+        mock_automation_engine_class.return_value = automation_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            create_feature_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+                "--model",
+                "some-model",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Using backend: codex" in result.output
+        assert "Warning: --model is ignored when backend=codex" in result.output
+        assert "Using model:" not in result.output
+
     def test_main_command_help(self):
         """Test main command help output."""
         runner = CliRunner()
@@ -413,6 +485,9 @@ class TestCLI:
         assert "--github-token" in result.output
         assert "--backend" in result.output
         assert "--model" in result.output
+        # help text wraps, so check parts to avoid line-break brittleness
+        assert "ignored when" in result.output
+        assert "backend=codex" in result.output
         assert "--dry-run" in result.output
 
     def test_create_feature_issues_help(self):
@@ -429,3 +504,5 @@ class TestCLI:
         assert "--github-token" in result.output
         assert "--backend" in result.output
         assert "--model" in result.output
+        assert "ignored when" in result.output
+        assert "backend=codex" in result.output
