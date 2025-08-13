@@ -305,6 +305,43 @@ special_features:
       - "yarn.lock"
       - "pnpm-lock.yaml"
 
+  package_json_dependency_conflict_resolution:
+    name: "package.json Dependency-only Conflict Resolver"
+    description: "When conflicts in package.json affect only dependency sections, automatically merge by preferring newer versions and the side with more dependencies."
+    behavior:
+      - "Detects conflicts limited to package.json where non-dependency fields are identical between sides"
+      - "For dependency sections, merges keys (union)"
+      - "On version mismatch, selects newer semver; if indeterminable or equal, prefers the side with more entries"
+      - "Writes merged package.json, commits, and pushes changes"
+      - "Skips further LLM analysis after successful push"
+    benefits:
+      - "Resolves common dependency bumps without manual intervention"
+      - "Prefers safer, newer dependency versions when possible"
+      - "Consistent and deterministic merging policy"
+    sections:
+      - "dependencies"
+      - "devDependencies"
+      - "peerDependencies"
+      - "optionalDependencies"
+    implementation:
+      - "AutomationEngine._is_package_json_deps_only_conflict"
+      - "AutomationEngine._resolve_package_json_dependency_conflicts"
+      - "AutomationEngine._resolve_merge_conflicts_with_gemini updated to use specialized resolver"
+
+
+  github_actions_fix_commit_push:
+    name: "GitHub Actions Fix with Commit/Push"
+    description: "When applying fixes from GitHub Actions logs, the LLM is instructed to stage, commit, and push changes to the PR branch within the single-run action."
+    behavior:
+      - "_apply_github_actions_fix constructs a prompt that includes explicit git add/commit/push commands"
+      - "The LLM applies minimal fixes and then executes the git commands to update the PR branch"
+      - "The output should summarize changes and include commit/push results for logging"
+    benefits:
+      - "Ensures fixes are not only generated but also persisted to the PR branch"
+      - "Aligns with single-run LLM policy (no analysis-only steps)"
+    implementation:
+      - "AutomationEngine._apply_github_actions_fix updated to include commit/push instructions"
+
   simple_merge_fallbacks:
     name: "Simple Non-LLM Merge Fallbacks"
     description: "When gh pr merge fails after conflict resolution, try non-AI simple strategies"

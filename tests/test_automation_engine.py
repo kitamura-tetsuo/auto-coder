@@ -991,6 +991,34 @@ class TestAutomationEngine:
         assert "Gemini CLI applied local test fixes" in result[0]
         assert "Committed changes" in result[1]
 
+
+    def test_apply_github_actions_fix_instructs_commit_push(self, mock_github_client, mock_gemini_client):
+        """_apply_github_actions_fix should instruct the LLM to commit and push changes."""
+        # Setup
+        mock_gemini_client._run_gemini_cli.return_value = "OK: changes applied and pushed"
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
+        pr_data = {
+            'number': 123,
+            'title': 'Fix CI failures',
+            'body': 'This PR fixes CI issues'
+        }
+        github_logs = "Error: Some CI failure details"
+
+        # Execute
+        result_actions = engine._apply_github_actions_fix('test/repo', pr_data, github_logs)
+
+        # Assert
+        # Ensure Gemini CLI was invoked once with a prompt containing git add/commit/push
+        assert mock_gemini_client._run_gemini_cli.call_count == 1
+        called_prompt = mock_gemini_client._run_gemini_cli.call_args[0][0]
+        assert 'git add .' in called_prompt
+        assert 'git commit -m "Auto-Coder: Fix GitHub Actions failures for PR #123"' in called_prompt
+        assert 'git push' in called_prompt
+
+        # Ensure actions contain applied fix summary
+        assert any("Applied GitHub Actions fix" in a for a in result_actions)
+
     def test_format_direct_fix_comment(self, mock_github_client, mock_gemini_client):
         """Test direct fix comment formatting."""
         # Setup
@@ -1611,6 +1639,136 @@ class TestPackageLockConflictResolution:
         assert ['git', 'add', '.'] in cmd_lists
         assert any(cmd[:2] == ['git', 'commit'] for cmd in cmd_lists)
         assert ['git', 'push'] in cmd_lists
+
+
+class TestPackageJsonDependencyConflictResolution:
+    """package.json の依存関係のみのコンフリクトに対する解決ロジックのテスト"""
+
+    def test_is_package_json_deps_only_conflict_true(self, mock_github_client, mock_gemini_client):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = "UU package.json\n"
+
+        ours_json = {"name": "app", "version": "1.0.0", "dependencies": {"a": "1.0.0"}}
+        theirs_json = {"name": "app", "version": "1.0.0", "dependencies": {"a": "1.1.0"}}
+
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout=json.dumps(ours_json), stderr=""),
+                Mock(success=True, stdout=json.dumps(theirs_json), stderr=""),
+            ]
+            assert engine._is_package_json_deps_only_conflict(conflict_info) is True
+
+    def test_is_package_json_deps_only_conflict_false_due_to_other_file(self, mock_github_client, mock_gemini_client):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = "UU src/index.js\n"
+        assert engine._is_package_json_deps_only_conflict(conflict_info) is False
+
+    def test_is_package_json_deps_only_conflict_false_non_dep_diff(self, mock_github_client, mock_gemini_client):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        conflict_info = "UU package.json\n"
+
+        ours_json = {"name": "app", "version": "1.0.0", "dependencies": {"a": "1.0.0"}}
+        theirs_json = {"name": "app2", "version": "1.0.0", "dependencies": {"a": "1.1.0"}}
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout=json.dumps(ours_json), stderr=""),
+                Mock(success=True, stdout=json.dumps(theirs_json), stderr=""),
+            ]
+            assert engine._is_package_json_deps_only_conflict(conflict_info) is False
+
+    def test_resolve_package_json_dependency_conflicts_merge_and_push(self, mock_github_client, mock_gemini_client):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 777}
+        path = 'tmp_pkg/package.json'
+        conflict_info = f"UU {path}\n"
+
+        ours_json = {"name": "app", "dependencies": {"a": "1.0.0", "b": "2.0.0"}}
+        theirs_json = {"name": "app", "dependencies": {"a": "1.1.0", "c": "1.0.0"}}
+
+        try:
+            with patch.object(engine.cmd, 'run_command') as mock_cmd:
+                # git show :2:path, :3:path, git add, git commit, git push
+                mock_cmd.side_effect = [
+                    Mock(success=True, stdout=json.dumps(ours_json), stderr=""),
+                    Mock(success=True, stdout=json.dumps(theirs_json), stderr=""),
+                    Mock(success=True, stdout="", stderr=""),
+                    Mock(success=True, stdout="", stderr=""),
+                    Mock(success=True, stdout="", stderr=""),
+                ]
+
+                actions = engine._resolve_package_json_dependency_conflicts(pr_data, conflict_info)
+
+                # 確認: ファイル内容が期待通り
+                assert os.path.exists(path)
+                with open(path, 'r', encoding='utf-8') as f:
+                    merged = json.load(f)
+                assert merged['dependencies']['a'] == '1.1.0'  # 新しい方
+                assert merged['dependencies']['b'] == '2.0.0'  # ours only
+                assert merged['dependencies']['c'] == '1.0.0'  # theirs only
+
+                # git add に path が渡される
+                add_called = any(args[0] == ['git', 'add', path] for args, _ in mock_cmd.call_args_list)
+                assert add_called
+
+                # コミットとプッシュが行われる
+                assert any(args[0][:2] == ['git', 'commit'] for args, _ in mock_cmd.call_args_list)
+                assert any(args[0] == ['git', 'push'] for args, _ in mock_cmd.call_args_list)
+
+                # アクションにスキップフラグが含まれる
+                assert AutomationEngine.FLAG_SKIP_ANALYSIS in actions
+        finally:
+            # 後始末
+            if os.path.exists(path):
+                os.remove(path)
+            if os.path.exists('tmp_pkg'):
+                os.rmdir('tmp_pkg')
+
+    def test_resolve_package_json_dependency_conflicts_prefer_more_when_unknown(self, mock_github_client, mock_gemini_client):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 778}
+        path = 'tmp_pkg2/package.json'
+        conflict_info = f"UU {path}\n"
+
+        ours_json = {"name": "app", "dependencies": {"x": "*"}}  # 1件
+        theirs_json = {"name": "app", "dependencies": {"x": "latest", "y": "1.0.0"}}  # 2件（多い）
+
+        try:
+            with patch.object(engine.cmd, 'run_command') as mock_cmd:
+                mock_cmd.side_effect = [
+                    Mock(success=True, stdout=json.dumps(ours_json), stderr=""),
+                    Mock(success=True, stdout=json.dumps(theirs_json), stderr=""),
+                    Mock(success=True, stdout="", stderr=""),
+                    Mock(success=True, stdout="", stderr=""),
+                    Mock(success=True, stdout="", stderr=""),
+                ]
+
+                actions = engine._resolve_package_json_dependency_conflicts(pr_data, conflict_info)
+
+                assert os.path.exists(path)
+                with open(path, 'r', encoding='utf-8') as f:
+                    merged = json.load(f)
+                # x のバージョン比較は不可 → より多い方(theirs)を採用
+                assert merged['dependencies']['x'] == 'latest'
+                assert 'y' in merged['dependencies']
+
+                assert AutomationEngine.FLAG_SKIP_ANALYSIS in actions
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+            if os.path.exists('tmp_pkg2'):
+                os.rmdir('tmp_pkg2')
+
+    def test_resolve_merge_conflicts_with_gemini_package_json_priority(self, mock_github_client, mock_gemini_client):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 999, 'title': 'Test', 'body': 'desc'}
+        conflict_info = 'UU package.json\n'
+
+        with patch.object(engine, '_is_package_json_deps_only_conflict', return_value=True) as mock_check:
+            with patch.object(engine, '_resolve_package_json_dependency_conflicts', return_value=['deps-resolved']) as mock_resolve:
+                result = engine._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
+                assert result == ['deps-resolved']
+                mock_check.assert_called_once_with(conflict_info)
+                mock_resolve.assert_called_once_with(pr_data, conflict_info)
 
     @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
     def test_merge_pr_fallback_to_alternative_method(self, mock_run_command, mock_github_client, mock_gemini_client):

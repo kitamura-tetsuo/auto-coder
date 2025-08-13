@@ -42,18 +42,19 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 - 実装注意: CodexClient 等のクライアントに analyze_issue などのメソッドを追加・使用しない。既存コードに存在する場合は呼び出しを削除し、単回実行フローに統一する
 
 ## 主要機能
-1. GitHub APIを使用したissue/PR取得（古い順でソート）
-2. **Jules Mode（オプション）**: issueに'jules'ラベルを追加、PRは通常通りAIバックエンドで処理（デフォルトは codex）
-3. **通常モード（デフォルト）**: デフォルトの codex または --backend 指定の Gemini を使用した単回実行の自動処理（分析のみの呼び出しは禁止）
-4. **自動モデル切り替え**: PRコンフリクト時にgemini-2.5-flashに自動切り替えで高速解決
-5. **Package-lock.jsonコンフリクト特別処理**: package-lock.json、yarn.lock、pnpm-lock.yamlのコンフリクトを自動削除・再生成で解決
-6. **Geminiプロンプトエスケープ**: プロンプト内の@文字を\@に自動エスケープしてGemini CLIに安全に渡す
-7. 必要な機能の自動検出と issue作成
-8. 自動化されたコード修正と構築
-9. PR処理の優先順位付け（GitHub Actionsパス且つマージ可能→マージ、その他→修正）
+- GitHub APIを使用したissue/PR取得（古い順でソート）
+- **Jules Mode（オプション）**: issueに'jules'ラベルを追加、PRは通常通りAIバックエンドで処理（デフォルトは codex）
+- **通常モード（デフォルト）**: デフォルトの codex または --backend 指定の Gemini を使用した単回実行の自動処理（分析のみの呼び出しは禁止）
+- **自動モデル切り替え**: PRコンフリクト時にgemini-2.5-flashに自動切り替えで高速解決
+- **Package-lock.jsonコンフリクト特別処理**: package-lock.json、yarn.lock、pnpm-lock.yamlのコンフリクトを自動削除・再生成で解決
+- **package.json 依存関係のみのコンフリクト自動解消**: package.jsonの非依存セクションが一致し、依存セクションのみの差分である場合に、より新しいバージョン／より多い方を優先して自動マージ
+- **Geminiプロンプトエスケープ**: プロンプト内の@文字を\@に自動エスケープしてGemini CLIに安全に渡す
+- 必要な機能の自動検出と issue作成
+- 自動化されたコード修正と構築
+- PR処理の優先順位付け（GitHub Actionsパス且つマージ可能→マージ、その他→修正）
 
-10. LLMスキップ用フラグ導入: package-lock.json等の自動解消やマージ解決後にpush完了した場合、フラグで後続のLLM分析を明示的にスキップ
-11. Jules ModeはデフォルトON: CLIの --jules-mode/--no-jules-mode で切替（既定はON）
+- LLMスキップ用フラグ導入: package-lock.json等の自動解消やマージ解決後にpush完了した場合、フラグで後続のLLM分析を明示的にスキップ
+- Jules ModeはデフォルトON: CLIの --jules-mode/--no-jules-mode で切替（既定はON）
 
 ## テスト戦略
 - ユニットテスト: 各モジュールの個別機能をテスト

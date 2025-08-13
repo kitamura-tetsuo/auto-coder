@@ -1182,25 +1182,39 @@ Please proceed with analyzing and taking action on this PR now.
         return actions
 
     def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
-        """Apply initial fix using GitHub Actions error logs."""
-        actions = []
+        """Apply initial fix using GitHub Actions error logs.
+
+        This prompt explicitly instructs the LLM to not only apply code fixes but also
+        stage, commit, and push the changes to the current PR branch.
+        """
+        actions: List[str] = []
         pr_number = pr_data['number']
 
         try:
-            # Create prompt for GitHub Actions error fix
+            # Create prompt for GitHub Actions error fix with commit/push instructions
             fix_prompt = f"""
 Fix the following GitHub Actions test failures for PR #{pr_number}:
 
 Repository: {repo_name}
 PR Title: {pr_data.get('title', 'Unknown')}
 
-GitHub Actions Error Logs:
+GitHub Actions Error Logs (truncated):
 {github_logs[:self.config.MAX_PROMPT_SIZE]}
 
-Please analyze the errors and provide specific code fixes to resolve the test failures.
-Focus on the root cause of the failures and provide complete, working code solutions.
+Your task:
+1) Identify the root cause(s) of the failing checks based on the logs.
+2) Apply the minimal necessary code changes directly in the repository to fix them.
+3) After applying changes, run the appropriate quick checks if available (linters/unit tests) to sanity-verify.
+4) Stage and commit the changes, then push to the current PR branch.
 
-After analyzing, apply the necessary fixes to the codebase.
+Git commands to execute after edits:
+- git add .
+- git commit -m "Auto-Coder: Fix GitHub Actions failures for PR #{pr_number}"
+- git push
+
+Output requirements:
+- First, provide a concise summary of what you changed and why.
+- Then, include the final git commit result and push result (or any errors) so the automation can log them.
 """
 
             if not self.dry_run:
@@ -1214,6 +1228,8 @@ After analyzing, apply the necessary fixes to the codebase.
 
         except Exception as e:
             actions.append(self._handle_error("applying GitHub Actions fix", e, f"PR #{pr_number}"))
+
+        return actions
 
     def _apply_github_actions_fixes_directly(self, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
         """Use Gemini CLI to apply fixes based on GitHub Actions logs and commit changes.
@@ -1507,6 +1523,218 @@ After analyzing, apply the necessary fixes to the codebase.
         except Exception as e:
             logger.error(f"Error checking package-lock conflict: {e}")
             return False
+            
+    def _is_package_json_deps_only_conflict(self, conflict_info: str) -> bool:
+        """Detect if conflicts only affect package.json dependency sections.
+
+        Strategy:
+        - From git status --porcelain output, pick conflicted package.json files (UU .../package.json)
+        - For each, read stage 2 (ours) and stage 3 (theirs) JSON via `git show :2:path` and `git show :3:path`
+        - Compare both dicts with dependency sections removed; if any non-dependency part differs, return False
+        - If all such files differ only in dependency sections, return True
+        """
+        try:
+            conflicted_files: List[str] = []
+            for line in conflict_info.strip().split('\n'):
+                if line.strip() and line.startswith('UU '):
+                    filename = line[3:].strip()
+                    if filename.endswith('package.json'):
+                        conflicted_files.append(filename)
+                    else:
+                        # Any non-package.json conflict disqualifies this specialized resolver
+                        return False
+
+            if not conflicted_files:
+                return False
+
+            dep_keys = {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
+
+            for path in conflicted_files:
+                ours = self.cmd.run_command(['git', 'show', f':2:{path}'])
+                theirs = self.cmd.run_command(['git', 'show', f':3:{path}'])
+                if not (ours.success and theirs.success):
+                    return False
+                try:
+                    ours_json = json.loads(ours.stdout or '{}')
+                    theirs_json = json.loads(theirs.stdout or '{}')
+                except Exception:
+                    return False
+
+                def strip_dep_sections(d: Dict[str, Any]) -> Dict[str, Any]:
+                    return {k: v for k, v in d.items() if k not in dep_keys}
+
+                if strip_dep_sections(ours_json) != strip_dep_sections(theirs_json):
+                    return False
+
+            return True
+        except Exception as e:
+            logger.error(f"Error checking package.json deps-only conflict: {e}")
+            return False
+
+    @staticmethod
+    def _parse_semver_to_tuple(v: str) -> Optional[tuple]:
+        """Parse a semver-ish string to a comparable tuple of ints.
+        - Strips common range operators (^, ~, >=, <=, >, <, =)
+        - Ignores pre-release/build metadata
+        - Returns None if parsing fails
+        """
+        if not isinstance(v, str) or not v:
+            return None
+        # Strip range operators and spaces
+        s = v.strip()
+        while s and s[0] in ('^', '~', '>', '<', '=', 'v'):
+            s = s[1:]
+        # Remove leading = if any remain
+        s = s.lstrip('=')
+        # Split on hyphen (prerelease) and plus (build)
+        s = s.split('+', 1)[0].split('-', 1)[0]
+        parts = s.split('.')
+        nums: List[int] = []
+        for p in parts:
+            if p.isdigit():
+                nums.append(int(p))
+            else:
+                # Stop at first non-numeric segment
+                break
+        if not nums:
+            return None
+        while len(nums) < 3:
+            nums.append(0)
+        return tuple(nums[:3])
+
+    @classmethod
+    def _compare_semver(cls, a: str, b: str) -> int:
+        """Compare two version strings. Return 1 if a>b, -1 if a<b, 0 if equal/unknown.
+        Best-effort for common semver patterns.
+        """
+        ta = cls._parse_semver_to_tuple(a)
+        tb = cls._parse_semver_to_tuple(b)
+        if ta is None or tb is None:
+            # Unknown comparison
+            return 0
+        if ta > tb:
+            return 1
+        if ta < tb:
+            return -1
+        return 0
+
+    @classmethod
+    def _merge_dep_maps(cls, ours: Dict[str, str], theirs: Dict[str, str], prefer_side: str) -> Dict[str, str]:
+        """Merge two dependency maps choosing newer version when conflict.
+        prefer_side: 'ours' or 'theirs' used as tie-breaker when versions equal/unknown.
+        """
+        result: Dict[str, str] = {}
+        keys = set(ours.keys()) | set(theirs.keys())
+        for k in sorted(keys):
+            va = ours.get(k)
+            vb = theirs.get(k)
+            if va is None:
+                result[k] = vb  # type: ignore
+            elif vb is None:
+                result[k] = va
+            else:
+                cmp = cls._compare_semver(va, vb)
+                if cmp > 0:
+                    result[k] = va
+                elif cmp < 0:
+                    result[k] = vb
+                else:
+                    # Equal or unknown: prefer side with "more" deps overall
+                    if prefer_side == 'ours':
+                        result[k] = va
+                    else:
+                        result[k] = vb
+        return result
+
+    def _resolve_package_json_dependency_conflicts(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
+        """Resolve package.json dependency-only conflicts by merging dependency sections.
+
+        Rules:
+        - For dependencies/devDependencies/peerDependencies/optionalDependencies:
+          - Union of packages
+          - When versions differ: pick newer semver if determinable; otherwise prefer the side that has more deps in that section overall
+        - Non-dependency sections follow 'ours' (since they are identical by detection)
+        """
+        actions: List[str] = []
+        try:
+            pr_number = pr_data['number']
+            actions.append(f"Detected package.json dependency-only conflicts for PR #{pr_number}")
+
+            conflicted_paths: List[str] = []
+            for line in conflict_info.strip().split('\n'):
+                if line.strip() and line.startswith('UU '):
+                    p = line[3:].strip()
+                    if p.endswith('package.json'):
+                        conflicted_paths.append(p)
+
+            updated_files: List[str] = []
+            for path in conflicted_paths:
+                ours = self.cmd.run_command(['git', 'show', f':2:{path}'])
+                theirs = self.cmd.run_command(['git', 'show', f':3:{path}'])
+                if not (ours.success and theirs.success):
+                    actions.append(f"Failed to read staged versions for {path}")
+                    continue
+                try:
+                    ours_json = json.loads(ours.stdout or '{}')
+                    theirs_json = json.loads(theirs.stdout or '{}')
+                except Exception as e:
+                    actions.append(f"Invalid JSON in staged package.json for {path}: {e}")
+                    continue
+
+                dep_keys = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
+
+                # Decide tie-breaker side per section by larger map size
+                prefer_map = {}
+                for k in dep_keys:
+                    oa = ours_json.get(k) or {}
+                    ob = theirs_json.get(k) or {}
+                    prefer_map[k] = 'ours' if len(oa) >= len(ob) else 'theirs'
+
+                merged = dict(ours_json)  # start from ours
+                for k in dep_keys:
+                    oa = ours_json.get(k) or {}
+                    ob = theirs_json.get(k) or {}
+                    if not isinstance(oa, dict) or not isinstance(ob, dict):
+                        # Unexpected structure; fallback to ours
+                        continue
+                    merged[k] = self._merge_dep_maps(oa, ob, prefer_map[k])
+
+                # Write merged JSON back to file
+                os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(merged, f, ensure_ascii=False, indent=2, sort_keys=True)
+                    f.write('\n')
+                updated_files.append(path)
+                actions.append(f"Merged dependency sections in {path}")
+
+            if not updated_files:
+                actions.append("No package.json files updated; skipping commit")
+                return actions
+
+            add = self.cmd.run_command(['git', 'add'] + updated_files)
+            if not add.success:
+                actions.append(f"Failed to stage merged package.json files: {add.stderr}")
+                return actions
+            actions.append("Staged merged package.json files")
+
+            commit = self.cmd.run_command(['git', 'commit', '-m', f"Resolve package.json dependency-only conflicts for PR #{pr_number} by preferring newer versions and union"])
+            if not commit.success:
+                actions.append(f"Failed to commit merged package.json: {commit.stderr}")
+                return actions
+            actions.append("Committed merged package.json changes")
+
+            push = self.cmd.run_command(['git', 'push'])
+            if push.success:
+                actions.append(f"Successfully pushed package.json conflict resolution for PR #{pr_number}")
+                actions.append(self.FLAG_SKIP_ANALYSIS)
+            else:
+                actions.append(f"Failed to push changes: {push.stderr}")
+
+        except Exception as e:
+            logger.error(f"Error resolving package.json dependency conflicts: {e}")
+            actions.append(f"Error resolving package.json dependency conflicts: {e}")
+        return actions
+
 
     def _resolve_package_lock_conflicts(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
         """Resolve package-lock.json conflicts by deleting and regenerating the file.
@@ -1621,10 +1849,15 @@ After analyzing, apply the necessary fixes to the codebase.
         actions = []
 
         try:
-            # Check if conflicts are only in package-lock.json files
+            # Specialized fast paths
+            # 1) package-lock / yarn.lock / pnpm-lock.yaml only
             if self._is_package_lock_only_conflict(conflict_info):
                 logger.info(f"Detected package-lock.json only conflicts for PR #{pr_data['number']}, using specialized resolution")
                 return self._resolve_package_lock_conflicts(pr_data, conflict_info)
+            # 2) package.json dependency-only conflicts
+            if self._is_package_json_deps_only_conflict(conflict_info):
+                logger.info(f"Detected package.json dependency-only conflicts for PR #{pr_data['number']}, using dependency merge strategy")
+                return self._resolve_package_json_dependency_conflicts(pr_data, conflict_info)
 
             # Switch to faster model for conflict resolution
             if self.gemini:
