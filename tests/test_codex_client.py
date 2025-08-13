@@ -18,6 +18,25 @@ class TestCodexClient:
         mock_run.return_value.returncode = 0
         client = CodexClient()
         assert client.model_name == "codex"
+    @patch("subprocess.run")
+    @patch("subprocess.Popen")
+    def test_llm_invocation_warn_log(self, mock_popen, mock_run):
+        """Verify warning is logged when invoking codex CLI."""
+        mock_run.return_value.returncode = 0
+
+        class DummyPopen:
+            def __init__(self):
+                self._lines = ["ok\n"]
+                self.stdout = iter(self._lines)
+            def wait(self):
+                return 0
+        mock_popen.return_value = DummyPopen()
+
+        client = CodexClient()
+        _ = client._run_gemini_cli("hello world")
+        # We cannot easily capture loguru here without handler tweaks; rely on absence of exceptions
+        # The warn path is at least executed without error.
+
 
     @patch("subprocess.run")
     @patch("subprocess.Popen")

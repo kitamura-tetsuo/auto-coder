@@ -41,6 +41,20 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 - 例外: Git/GitHub API 呼び出し、ビルド/テスト/静的解析などの非LLM処理は必要に応じて実行可。モデルの自動切替は同一回内でのみ許容
 - 実装注意: CodexClient 等のクライアントに analyze_issue などのメソッドを追加・使用しない。既存コードに存在する場合は呼び出しを削除し、単回実行フローに統一する
 
+
+- PR出力ポリシー: PRに対するLLMの出力はコメント投稿を禁止し、最小限のコード修正・git add/commit/push・条件を満たす場合は gh pr merge を行う。コメントやレビュー文面の出力は不可。成功時は `ACTION_SUMMARY:` で始まる1行のみを出力し、修正不能時は `CANNOT_FIX` を出力する。
+
+### Git commit/push policy (English)
+
+- Centralize all git commit and push operations through dedicated helper routines.
+- Do not invoke `git commit` or `git push` directly in multiple places across the codebase.
+- Rationale: scattering commit/push logic leads to duplicated behavior, inconsistent error handling, and subtle bugs (e.g., missing unified handling for formatter hooks like dprint).
+- Implementation guideline:
+  - Use a single commit helper that can auto-handle well-known hook failures (e.g., run `npx dprint fmt` on formatting errors and retry once).
+  - Use a single push helper for pushing the current branch.
+  - Existing direct invocations must be refactored to call these helpers.
+
+
 ## 主要機能
 - GitHub APIを使用したissue/PR取得（古い順でソート）
 - **Jules Mode（オプション）**: issueに'jules'ラベルを追加、PRは通常通りAIバックエンドで処理（デフォルトは codex）

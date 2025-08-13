@@ -1,3 +1,41 @@
+import types
+from unittest.mock import Mock, patch
+
+from src.auto_coder.automation_engine import AutomationEngine
+
+
+def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
+    engine = AutomationEngine(mock_github_client, mock_gemini_client)
+    prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
+
+    assert "Do NOT post any comments" in prompt
+    assert "git commit -m \"Auto-Coder: Apply minimal fix for PR #" in prompt
+    assert "ACTION_SUMMARY:" in prompt
+    assert "CANNOT_FIX" in prompt
+    assert f"gh pr merge {sample_pr_data['number']} --repo {test_repo_name}" in prompt
+
+
+def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
+    engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+    # Stub diff generation
+    with patch.object(engine, "_get_pr_diff", return_value="diff..."):
+        # Replace gemini client with a simple stub that returns a narrative (no ACTION_SUMMARY)
+        class _GemStub:
+            def _run_gemini_cli(self, prompt: str) -> str:
+                return "This looks good. Thanks for the contribution! I reviewed the changes and here is my analysis."
+        engine.gemini = _GemStub()
+
+        # Ensure add_comment_to_issue is tracked
+        mock_github_client.add_comment_to_issue.reset_mock()
+
+        actions = engine._apply_pr_actions_directly(test_repo_name, sample_pr_data)
+
+        # No comment should be posted
+        mock_github_client.add_comment_to_issue.assert_not_called()
+        # Actions should record LLM response in a non-commenting way
+        assert any(a.startswith("LLM response:") or a.startswith("ACTION_SUMMARY:") for a in actions)
+
 """
 Tests for automation engine functionality.
 """
@@ -1202,6 +1240,30 @@ class TestAutomationConfig:
         assert config.MERGE_AUTO is True
 
 
+
+    @patch('subprocess.run')
+    def test_commit_changes_runs_dprint_on_format_failure(self, mock_run, mock_github_client, mock_gemini_client):
+        """When commit fails due to dprint formatting, run 'npx dprint fmt' and retry commit."""
+        # Sequence: git add (ok), git commit (fail with dprint), npx dprint fmt (ok), git add (ok), git commit (ok)
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),  # git add
+            Mock(
+                returncode=1,
+                stdout="Check formatting with dprint... Failed\nFormatting issues detected. Run 'npx dprint fmt' to fix.",
+                stderr="pre-commit hook failed: dprint-format"
+            ),  # git commit fails due to dprint
+            Mock(returncode=0, stdout="Formatted 3 files", stderr=""),  # npx dprint fmt
+            Mock(returncode=0, stdout="", stderr=""),  # git add after fmt
+            Mock(returncode=0, stdout="[commit] done", stderr=""),  # git commit success
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        res = engine._commit_changes({'summary': 'Fix style'})
+
+        assert "Committed changes: Auto-Coder: Fix style" in res
+        # Ensure subprocess.run was called at least 5 times according to the sequence
+        assert mock_run.call_count == 5
+
 class TestAutomationEngineExtended:
     """Extended test cases for AutomationEngine."""
 
@@ -1769,6 +1831,28 @@ class TestPackageJsonDependencyConflictResolution:
                 assert result == ['deps-resolved']
                 mock_check.assert_called_once_with(conflict_info)
                 mock_resolve.assert_called_once_with(pr_data, conflict_info)
+
+    def test_resolve_merge_conflicts_with_gemini_sequential_package_json_then_lock(self, mock_github_client, mock_gemini_client):
+        """Both deps-only package.json and lockfile conflicts are resolved sequentially without model switching."""
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 321, 'title': 'Seq', 'body': 'desc'}
+        conflict_info = 'UU package.json\nUU package-lock.json\n'
+
+        with patch.object(engine, '_get_deps_only_conflicted_package_json_paths', return_value=['package.json']) as mock_paths, \
+             patch.object(engine, '_resolve_package_json_dependency_conflicts', return_value=['deps-merged']) as mock_pkg, \
+             patch.object(engine, '_resolve_package_lock_conflicts', return_value=['lock-regenerated']) as mock_lock, \
+             patch.object(engine.gemini, 'switch_to_conflict_model') as mock_switch_fast, \
+             patch.object(engine.gemini, 'switch_to_default_model') as mock_switch_back:
+            actions = engine._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
+
+        assert actions == ['deps-merged', 'lock-regenerated']
+        mock_paths.assert_called_once()
+        mock_pkg.assert_called_once()
+        mock_lock.assert_called_once()
+        # モデル切替は行われない（専用ルーチンのみ）
+        mock_switch_fast.assert_not_called()
+        mock_switch_back.assert_not_called()
+
 
     @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
     def test_merge_pr_fallback_to_alternative_method(self, mock_run_command, mock_github_client, mock_gemini_client):

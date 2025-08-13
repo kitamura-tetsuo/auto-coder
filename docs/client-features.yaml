@@ -314,6 +314,7 @@ special_features:
       - "On version mismatch, selects newer semver; if indeterminable or equal, prefers the side with more entries"
       - "Writes merged package.json, commits, and pushes changes"
       - "Skips further LLM analysis after successful push"
+      - "When both package.json (deps-only) and lockfiles are conflicted, resolves package.json first and then regenerates lockfiles sequentially"
     benefits:
       - "Resolves common dependency bumps without manual intervention"
       - "Prefers safer, newer dependency versions when possible"
@@ -325,8 +326,47 @@ special_features:
       - "optionalDependencies"
     implementation:
       - "AutomationEngine._is_package_json_deps_only_conflict"
+      - "AutomationEngine._get_deps_only_conflicted_package_json_paths"
       - "AutomationEngine._resolve_package_json_dependency_conflicts"
-      - "AutomationEngine._resolve_merge_conflicts_with_gemini updated to use specialized resolver"
+
+  commit_formatting_auto_fix:
+    name: "Commit auto-fix for dprint formatting"
+    description: "When git commit fails due to dprint pre-commit formatting errors, the tool automatically runs 'npx dprint fmt', stages changes, and retries commit once."
+    behavior:
+      - "Detects dprint-related failures from commit stdout/stderr (e.g., 'Formatting issues detected. Run \'npx dprint fmt\' to fix.')"
+      - "Runs 'npx dprint fmt' and stages files, then retries 'git commit'"
+      - "If formatting still fails, the commit is reported as failed with the original error"
+    tests:
+      - "tests/test_automation_engine.py::TestAutomationEngine::test_commit_changes_runs_dprint_on_format_failure"
+
+  llm_invocation_warn_logging:
+    name: "Warn log for LLM invocations"
+    description: "Emit warning logs whenever an LLM backend (Gemini or Codex CLI) is invoked, to keep LLM calls minimized."
+    behavior:
+      - "GeminiClient._run_gemini_cli emits warning before invoking gemini CLI"
+      - "CodexClient._run_gemini_cli emits warning before invoking codex CLI"
+    tests:
+      - "tests/test_gemini_client.py::TestGeminiClient::test_llm_invocation_warn_log"
+      - "tests/test_codex_client.py::TestCodexClient::test_llm_invocation_warn_log"
+
+
+  pr_action_oriented_prompt:
+    name: "PR Action-Oriented Prompt (No Comments)"
+    description: "LLM prompt for PRs forbids posting comments and enforces direct minimal code changes, git add/commit/push, and optional gh pr merge."
+    behavior:
+      - "Prohibits PR comments or narrative outputs from LLM"
+      - "Instructs minimal, safe edits to make CI pass"
+      - "Requires git add/commit/push to the PR branch"
+      - "If mergeable and CI passing, performs gh pr merge"
+      - "Standardizes output to a single line starting with ACTION_SUMMARY: or CANNOT_FIX"
+    implementation:
+      - "AutomationEngine._create_pr_analysis_prompt updated to action-oriented style"
+      - "AutomationEngine._apply_pr_actions_directly updated to avoid posting comments and parse ACTION_SUMMARY/CANNOT_FIX"
+    tests:
+      - "tests/test_automation_engine.py::test_create_pr_prompt_is_action_oriented_no_comments"
+      - "tests/test_automation_engine.py::test_apply_pr_actions_directly_does_not_post_comments"
+
+      - "AutomationEngine._resolve_merge_conflicts_with_gemini updated to use specialized resolver and sequential handling"
 
 
   github_actions_fix_commit_push:

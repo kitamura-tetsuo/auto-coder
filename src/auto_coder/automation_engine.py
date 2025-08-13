@@ -614,34 +614,48 @@ Please proceed with analyzing and taking action on this issue now.
         return actions
 
     def _apply_pr_actions_directly(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
-        """Ask Gemini CLI to analyze a PR and take appropriate actions directly."""
+        """Ask LLM CLI to apply PR fixes directly; avoid posting PR comments.
+
+        Expected LLM output formats:
+        - "ACTION_SUMMARY: ..." single line when actions were taken
+        - "CANNOT_FIX" when it cannot deterministically fix
+        """
         actions = []
 
         try:
             # Get PR diff for analysis
             pr_diff = self._get_pr_diff(repo_name, pr_data['number'])
 
-            # Create analysis prompt
+            # Create action-oriented prompt (no comments)
             action_prompt = self._create_pr_analysis_prompt(repo_name, pr_data, pr_diff)
 
-            # Use Gemini CLI to analyze and take actions
+            # Use LLM CLI to analyze and take actions
             self._log_action(f"Applying PR actions directly for PR #{pr_data['number']}")
             response = self.gemini._run_gemini_cli(action_prompt)
 
             # Process the response
             if response and len(response.strip()) > 0:
-                actions.append(f"Gemini CLI analyzed and took action on PR: {response[:self.config.MAX_RESPONSE_SIZE]}...")
-
-                # Check if Gemini indicated the PR should be merged
-                if "merged" in response.lower() or "auto-merge" in response.lower():
-                    actions.append(f"Auto-merged PR #{pr_data['number']} based on analysis")
+                resp = response.strip()
+                # Prefer ACTION_SUMMARY line if present
+                summary_line = None
+                for line in resp.splitlines():
+                    if line.startswith("ACTION_SUMMARY:"):
+                        summary_line = line
+                        break
+                if summary_line:
+                    actions.append(summary_line[: self.config.MAX_RESPONSE_SIZE])
+                elif "CANNOT_FIX" in resp:
+                    actions.append(f"LLM reported CANNOT_FIX for PR #{pr_data['number']}")
                 else:
-                    # Add analysis comment
-                    comment = f"## 🤖 Auto-Coder PR Analysis\n\n{response}"
-                    self.github.add_comment_to_issue(repo_name, pr_data['number'], comment)
-                    actions.append(f"Added analysis comment to PR #{pr_data['number']}")
+                    # Fallback: record truncated raw response without posting comments
+                    actions.append(f"LLM response: {resp[: self.config.MAX_RESPONSE_SIZE]}...")
+
+                # Detect self-merged indication in summary/response
+                lower = resp.lower()
+                if "merged" in lower or "auto-merge" in lower:
+                    actions.append(f"Auto-merged PR #{pr_data['number']} based on LLM action")
             else:
-                actions.append("Gemini CLI did not provide a clear response for PR analysis")
+                actions.append("LLM CLI did not provide a clear response for PR actions")
 
         except Exception as e:
             actions.append(self._handle_error("applying PR actions directly", e))
@@ -657,14 +671,35 @@ Please proceed with analyzing and taking action on this issue now.
             return "Could not retrieve PR diff"
 
     def _create_pr_analysis_prompt(self, repo_name: str, pr_data: Dict[str, Any], pr_diff: str) -> str:
-        """Create a comprehensive prompt for PR analysis."""
+        """Create a PR prompt that prioritizes direct code changes over comments."""
         return f"""
-Analyze the following GitHub Pull Request and take appropriate actions:
+You are operating directly in the repository workspace with write access and the git and gh CLIs available.
 
+Task: For the following GitHub Pull Request, apply minimal, safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+STRICT DIRECTIVES (follow exactly):
+- Do NOT post any comments to the PR, reviews, or issues.
+- Do NOT write narrative explanations as output; take actions in the workspace instead.
+- Prefer minimal, targeted edits that make CI pass while preserving intent.
+- After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+- Stage, commit, and push changes to the PR branch.
+- If CI is already passing and the PR is mergeable, perform: gh pr merge {pr_data['number']} --repo {repo_name} {self.config.MERGE_METHOD}
+- If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
+
+Suggested git commands after applying edits:
+- git add -A
+- git commit -m "Auto-Coder: Apply minimal fix for PR #{pr_data['number']}"
+- git push
+
+Return format:
+- Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+- No greetings, no multi-paragraph analysis.
+
+Context:
 Repository: {repo_name}
 PR #{pr_data['number']}: {pr_data['title']}
 
-PR Description:
+PR Description (truncated):
 {pr_data['body'][:self.config.MAX_PROMPT_SIZE]}...
 
 PR Author: {pr_data.get('user', {}).get('login', 'unknown')}
@@ -674,35 +709,6 @@ Mergeable: {pr_data.get('mergeable', False)}
 
 PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
 {pr_diff}
-
-Please analyze this PR and determine the appropriate action:
-
-1. Analyze the code changes for:
-   - Risk level (low/medium/high)
-   - Category (bugfix/feature/documentation/dependency/etc.)
-   - Code quality and best practices
-   - Potential issues or improvements
-
-2. Based on the analysis, take appropriate action:
-   - For low-risk, well-written changes (bugfixes, documentation, dependencies): Consider auto-merging
-   - For higher-risk or complex changes: Add analysis comment only
-   - For problematic PRs: Add feedback and suggestions
-
-3. Auto-merge criteria (all must be true):
-   - Low risk level
-   - Category is bugfix, documentation, or dependency
-   - Code follows best practices
-
-
-   - No obvious issues
-   - Not a draft PR
-   - Is mergeable
-
-If auto-merging, use: gh pr merge {pr_data['number']} --repo {repo_name} {self.config.MERGE_METHOD}
-
-After taking action, respond with a summary of what you did and why.
-
-Please proceed with analyzing and taking action on this PR now.
 """
 
     def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1348,30 +1354,30 @@ After analyzing, apply the necessary fixes to the codebase.
         return actions
 
     def _commit_and_push_fix(self, pr_data: Dict[str, Any], commit_message: str) -> str:
-        """Commit and push the applied fixes."""
+        """Commit and push the applied fixes (common routine)."""
         try:
             # Add all modified files
             add_result = self.cmd.run_command(['git', 'add', '.'])
             if not add_result.success:
                 return f"Failed to add files to git: {add_result.stderr}"
 
-            # Commit the changes
+            # Commit the changes via common helper (auto-run dprint fmt on failure)
             full_commit_message = f"Auto-Coder: {commit_message}"
-            commit_result = self.cmd.run_command(['git', 'commit', '-m', full_commit_message])
+            commit_result = self._commit_with_message(full_commit_message)
 
             if commit_result.success:
-                # Push the changes
-                push_result = self.cmd.run_command(['git', 'push'])
+                # Push the changes via common helper
+                push_result = self._push_current_branch()
                 if push_result.success:
                     return f"Successfully committed and pushed: {commit_message}"
                 else:
                     return f"Committed but failed to push: {push_result.stderr}"
             else:
                 # Check if there were no changes to commit
-                if 'nothing to commit' in commit_result.stdout:
+                if 'nothing to commit' in (commit_result.stdout or ''):
                     return "No changes to commit"
                 else:
-                    return f"Failed to commit changes: {commit_result.stderr}"
+                    return f"Failed to commit changes: {commit_result.stderr or commit_result.stdout}"
 
         except Exception as e:
             return f"Error committing and pushing changes: {e}"
@@ -1523,7 +1529,7 @@ After analyzing, apply the necessary fixes to the codebase.
         except Exception as e:
             logger.error(f"Error checking package-lock conflict: {e}")
             return False
-            
+
     def _is_package_json_deps_only_conflict(self, conflict_info: str) -> bool:
         """Detect if conflicts only affect package.json dependency sections.
 
@@ -1570,6 +1576,47 @@ After analyzing, apply the necessary fixes to the codebase.
         except Exception as e:
             logger.error(f"Error checking package.json deps-only conflict: {e}")
             return False
+
+    def _get_deps_only_conflicted_package_json_paths(self, conflict_info: str) -> List[str]:
+        """Return list of conflicted package.json paths whose diffs are limited to dependency sections.
+
+        This is similar to _is_package_json_deps_only_conflict but operates per-file and
+        returns only those package.json files that are safe to auto-merge dependencies for,
+        regardless of other conflicted files present.
+        """
+        try:
+            conflicted_paths: List[str] = []
+            for line in conflict_info.strip().split('\n'):
+                if line.strip() and line.startswith('UU '):
+                    filename = line[3:].strip()
+                    if filename.endswith('package.json'):
+                        conflicted_paths.append(filename)
+
+            if not conflicted_paths:
+                return []
+
+            dep_keys = {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
+            eligible: List[str] = []
+            for path in conflicted_paths:
+                ours = self.cmd.run_command(['git', 'show', f':2:{path}'])
+                theirs = self.cmd.run_command(['git', 'show', f':3:{path}'])
+                if not (ours.success and theirs.success):
+                    continue
+                try:
+                    ours_json = json.loads(ours.stdout or '{}')
+                    theirs_json = json.loads(theirs.stdout or '{}')
+                except Exception:
+                    continue
+
+                def strip_dep_sections(d: Dict[str, Any]) -> Dict[str, Any]:
+                    return {k: v for k, v in d.items() if k not in dep_keys}
+
+                if strip_dep_sections(ours_json) == strip_dep_sections(theirs_json):
+                    eligible.append(path)
+            return eligible
+        except Exception as e:
+            logger.error(f"Error collecting deps-only package.json conflicts: {e}")
+            return []
 
     @staticmethod
     def _parse_semver_to_tuple(v: str) -> Optional[tuple]:
@@ -1646,7 +1693,7 @@ After analyzing, apply the necessary fixes to the codebase.
                         result[k] = vb
         return result
 
-    def _resolve_package_json_dependency_conflicts(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
+    def _resolve_package_json_dependency_conflicts(self, pr_data: Dict[str, Any], conflict_info: str, eligible_paths: Optional[List[str]] = None) -> List[str]:
         """Resolve package.json dependency-only conflicts by merging dependency sections.
 
         Rules:
@@ -1654,6 +1701,8 @@ After analyzing, apply the necessary fixes to the codebase.
           - Union of packages
           - When versions differ: pick newer semver if determinable; otherwise prefer the side that has more deps in that section overall
         - Non-dependency sections follow 'ours' (since they are identical by detection)
+
+        When eligible_paths is provided, only those package.json files are processed.
         """
         actions: List[str] = []
         try:
@@ -1661,11 +1710,14 @@ After analyzing, apply the necessary fixes to the codebase.
             actions.append(f"Detected package.json dependency-only conflicts for PR #{pr_number}")
 
             conflicted_paths: List[str] = []
-            for line in conflict_info.strip().split('\n'):
-                if line.strip() and line.startswith('UU '):
-                    p = line[3:].strip()
-                    if p.endswith('package.json'):
-                        conflicted_paths.append(p)
+            if eligible_paths is not None:
+                conflicted_paths = list(eligible_paths)
+            else:
+                for line in conflict_info.strip().split('\n'):
+                    if line.strip() and line.startswith('UU '):
+                        p = line[3:].strip()
+                        if p.endswith('package.json'):
+                            conflicted_paths.append(p)
 
             updated_files: List[str] = []
             for path in conflicted_paths:
@@ -1818,19 +1870,17 @@ After analyzing, apply the necessary fixes to the codebase.
                 actions.append(f"Failed to stage files: {add_result.stderr}")
                 return actions
 
-            # Commit the changes
-            commit_result = self.cmd.run_command([
-                'git', 'commit', '-m',
-                f"Resolve package-lock.json conflicts for PR #{pr_data['number']}"
-            ])
+            # Commit the changes (via common helper which auto-runs dprint fmt)
+            commit_message = f"Resolve package-lock.json conflicts for PR #{pr_data['number']}"
+            commit_result = self._commit_with_message(commit_message)
             if commit_result.success:
                 actions.append("Committed resolved dependency conflicts")
             else:
-                actions.append(f"Failed to commit changes: {commit_result.stderr}")
+                actions.append(f"Failed to commit changes: {commit_result.stderr or commit_result.stdout}")
                 return actions
 
-            # Push the changes
-            push_result = self.cmd.run_command(['git', 'push'])
+            # Push the changes (via common helper)
+            push_result = self._push_current_branch()
             if push_result.success:
                 actions.append(f"Successfully pushed resolved package-lock.json conflicts for PR #{pr_data['number']}")
                 # Signal to skip further LLM analysis for this PR in this run
@@ -1845,11 +1895,31 @@ After analyzing, apply the necessary fixes to the codebase.
         return actions
 
     def _resolve_merge_conflicts_with_gemini(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
-        """Ask Gemini CLI to resolve merge conflicts using faster model."""
-        actions = []
+        """Ask Gemini CLI to resolve merge conflicts using faster model.
+
+        Enhancement: When both package.json (deps-only) and lockfiles are conflicted,
+        resolve sequentially: first package.json deps merge, then lockfile regeneration.
+        """
+        actions: List[str] = []
+        did_switch_model = False
 
         try:
             # Specialized fast paths
+            # 0) Sequential handling when BOTH deps-only package.json and lockfiles are conflicted
+            dep_pkg_paths = self._get_deps_only_conflicted_package_json_paths(conflict_info)
+            dependency_files = {'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'}
+            has_lock_conflicts = any(
+                line.strip().startswith('UU ') and any(dep in line for dep in dependency_files)
+                for line in conflict_info.strip().split('\n') if line.strip()
+            )
+            if dep_pkg_paths and has_lock_conflicts:
+                logger.info(f"Detected both package.json (deps-only) and lockfile conflicts for PR #{pr_data['number']}, resolving sequentially")
+                # 1) Resolve package.json deps-only conflicts for the eligible files
+                actions.extend(self._resolve_package_json_dependency_conflicts(pr_data, conflict_info, eligible_paths=dep_pkg_paths))
+                # 2) Resolve lockfile conflicts by regenerating
+                actions.extend(self._resolve_package_lock_conflicts(pr_data, conflict_info))
+                return actions
+
             # 1) package-lock / yarn.lock / pnpm-lock.yaml only
             if self._is_package_lock_only_conflict(conflict_info):
                 logger.info(f"Detected package-lock.json only conflicts for PR #{pr_data['number']}, using specialized resolution")
@@ -1863,6 +1933,7 @@ After analyzing, apply the necessary fixes to the codebase.
             if self.gemini:
                 self.gemini.switch_to_conflict_model()
                 actions.append(f"Switched to {self.gemini.model_name} for conflict resolution")
+                did_switch_model = True
 
             # Create a prompt for Gemini CLI to resolve conflicts
             resolve_prompt = f"""
@@ -1928,15 +1999,61 @@ Please proceed with resolving these merge conflicts now.
             logger.error(f"Error resolving merge conflicts with Gemini: {e}")
             actions.append(f"Error resolving merge conflicts: {e}")
         finally:
-            # Switch back to default model after conflict resolution
-            if self.gemini:
+            # Switch back to default model after conflict resolution only if we switched
+            if self.gemini and did_switch_model:
                 self.gemini.switch_to_default_model()
                 actions.append(f"Switched back to {self.gemini.model_name}")
 
         return actions
 
+    def _is_dprint_formatting_error(self, stdout: str, stderr: str) -> bool:
+        """Detect if commit failed due to dprint formatting hook.
+        Heuristics based on typical pre-commit hook outputs.
+        """
+        combined = f"{stdout}\n{stderr}".lower()
+        return (
+            "dprint" in combined or
+            "dprint-format" in combined or
+            "formatting issues detected" in combined or
+            "run 'npx dprint fmt'" in combined or
+            'run "npx dprint fmt"' in combined
+        )
+
+    def _run_dprint_fmt(self) -> CommandResult:
+        """Run repository formatter to fix dprint formatting issues."""
+        logger.info("Running formatter: npx dprint fmt")
+        return self.cmd.run_command(['npx', 'dprint', 'fmt'])
+
+    def _commit_with_message(self, commit_message: str) -> CommandResult:
+        """Commit changes with a given message, auto-fixing dprint formatting if needed.
+        Returns CommandResult of the final commit attempt.
+        """
+        # First attempt
+        result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
+        if result.success:
+            return result
+        # Nothing to commit is a non-error outcome for some flows
+        if 'nothing to commit' in (result.stdout or ''):
+            return result
+        # If formatting failure is detected, run dprint fmt, re-add, and retry once
+        if self._is_dprint_formatting_error(result.stdout, result.stderr):
+            fmt_res = self._run_dprint_fmt()
+            if not fmt_res.success:
+                return result  # keep original commit failure context
+            add_res = self.cmd.run_command(['git', 'add', '.'])
+            if not add_res.success:
+                return result
+            result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
+        return result
+
+    def _push_current_branch(self) -> CommandResult:
+        """Push current branch to remote."""
+        return self.cmd.run_command(['git', 'push'])
+
+
+
     def _commit_changes(self, fix_suggestion: Dict[str, Any]) -> str:
-        """Commit the applied changes to git."""
+        """Commit the applied changes to git. Automatically runs dprint fmt on formatting failure and retries once."""
         try:
             # Add all modified files
             add_result = self.cmd.run_command(['git', 'add', '.'])
@@ -1947,17 +2064,28 @@ Please proceed with resolving these merge conflicts now.
             summary = fix_suggestion.get('summary', 'Auto-Coder fix')
             commit_message = f"Auto-Coder: {summary}"
 
-            # Commit the changes
+            # First commit attempt
             commit_result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
+
+            if not commit_result.success:
+                # If nothing to commit, return early
+                if 'nothing to commit' in commit_result.stdout:
+                    return "No changes to commit"
+                # If formatting error, auto-run dprint and retry once
+                if self._is_dprint_formatting_error(commit_result.stdout, commit_result.stderr):
+                    fmt_res = self._run_dprint_fmt()
+                    if not fmt_res.success:
+                        return f"Failed to format with dprint: {fmt_res.stderr}"
+                    # Re-add and retry commit
+                    add_result2 = self.cmd.run_command(['git', 'add', '.'])
+                    if not add_result2.success:
+                        return f"Failed to add files after formatting: {add_result2.stderr}"
+                    commit_result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
 
             if commit_result.success:
                 return f"Committed changes: {commit_message}"
             else:
-                # Check if there were no changes to commit
-                if 'nothing to commit' in commit_result.stdout:
-                    return "No changes to commit"
-                else:
-                    return f"Failed to commit changes: {commit_result.stderr}"
+                return f"Failed to commit changes: {commit_result.stderr or commit_result.stdout}"
 
         except Exception as e:
             return f"Error committing changes: {e}"

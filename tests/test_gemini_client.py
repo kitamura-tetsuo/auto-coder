@@ -10,21 +10,41 @@ from src.auto_coder.gemini_client import GeminiClient
 
 
 class TestGeminiClient:
+    @patch('src.auto_coder.gemini_client.logger')
+    @patch('subprocess.run')
+    @patch('subprocess.Popen')
+    def test_llm_invocation_warn_log(self, mock_popen, mock_run, mock_logger, mock_gemini_api_key):
+        """Verify that LLM invocation emits a warning log before running CLI."""
+        mock_run.return_value.returncode = 0
+
+        class DummyPopen:
+            def __init__(self):
+                self._lines = ["ok\n"]
+                self.stdout = iter(self._lines)
+            def wait(self):
+                return 0
+        mock_popen.return_value = DummyPopen()
+
+        client = GeminiClient(mock_gemini_api_key)
+        _ = client._run_gemini_cli("hello")
+        assert mock_logger.warning.called
+        assert "LLM invocation" in str(mock_logger.warning.call_args[0][0])
+
     """Test cases for GeminiClient class."""
-    
+
     @patch('src.auto_coder.gemini_client.genai')
     def test_init(self, mock_genai, mock_gemini_api_key):
         """Test GeminiClient initialization."""
         mock_model = Mock()
         mock_genai.GenerativeModel.return_value = mock_model
-        
+
         client = GeminiClient(mock_gemini_api_key, "test-model")
-        
+
         assert client.api_key == mock_gemini_api_key
         assert client.model == mock_model
         mock_genai.configure.assert_called_once_with(api_key=mock_gemini_api_key)
         mock_genai.GenerativeModel.assert_called_once_with("test-model")
-    
+
     @patch('src.auto_coder.gemini_client.genai')
     def test_analyze_issue_removed(self, mock_genai, mock_gemini_api_key):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
@@ -57,20 +77,20 @@ class TestGeminiClient:
         ])
         mock_model.generate_content.return_value = mock_response
         mock_genai.GenerativeModel.return_value = mock_model
-        
+
         client = GeminiClient(mock_gemini_api_key)
         repo_context = {"name": "test-repo", "description": "Test repository"}
-        
+
         # Execute
         result = client.suggest_features(repo_context)
-        
+
         # Assert
         assert len(result) == 1
         assert result[0]['title'] == 'Add authentication'
         assert result[0]['priority'] == 'high'
         assert 'security' in result[0]['labels']
         mock_model.generate_content.assert_called_once()
-    
+
     @patch('src.auto_coder.gemini_client.genai')
     def test_generate_solution_removed(self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
         """Ensure generation helper is removed per LLM execution policy."""
@@ -80,7 +100,7 @@ class TestGeminiClient:
     def test_parse_analysis_response_valid_json(self, mock_gemini_api_key):
         """Test parsing valid JSON response."""
         client = GeminiClient(mock_gemini_api_key)
-        
+
         response_text = '''
         Here is the analysis:
         {
@@ -90,29 +110,29 @@ class TestGeminiClient:
         }
         Additional text after JSON.
         '''
-        
+
         result = client._parse_analysis_response(response_text)
-        
+
         assert result['category'] == 'bug'
         assert result['priority'] == 'high'
         assert result['summary'] == 'Test summary'
-    
+
     def test_parse_analysis_response_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid JSON response."""
         client = GeminiClient(mock_gemini_api_key)
-        
+
         response_text = "This is not JSON at all."
-        
+
         result = client._parse_analysis_response(response_text)
-        
+
         assert result['category'] == 'unknown'
         assert result['priority'] == 'medium'
         assert 'This is not JSON' in result['summary']
-    
+
     def test_parse_feature_suggestions_valid_json(self, mock_gemini_api_key):
         """Test parsing valid feature suggestions JSON."""
         client = GeminiClient(mock_gemini_api_key)
-        
+
         response_text = '''
         [
             {
@@ -125,27 +145,27 @@ class TestGeminiClient:
             }
         ]
         '''
-        
+
         result = client._parse_feature_suggestions(response_text)
-        
+
         assert len(result) == 2
         assert result[0]['title'] == 'Feature 1'
         assert result[1]['title'] == 'Feature 2'
-    
+
     def test_parse_feature_suggestions_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid feature suggestions JSON."""
         client = GeminiClient(mock_gemini_api_key)
-        
+
         response_text = "Not a JSON array"
-        
+
         result = client._parse_feature_suggestions(response_text)
-        
+
         assert result == []
-    
+
     def test_parse_solution_response_valid_json(self, mock_gemini_api_key):
         """Test parsing valid solution response JSON."""
         client = GeminiClient(mock_gemini_api_key)
-        
+
         response_text = '''
         {
             "solution_type": "code_fix",
@@ -154,22 +174,22 @@ class TestGeminiClient:
             "code_changes": []
         }
         '''
-        
+
         result = client._parse_solution_response(response_text)
-        
+
         assert result['solution_type'] == 'code_fix'
         assert result['summary'] == 'Fix the bug'
         assert result['steps'] == []
         assert result['code_changes'] == []
-    
+
     def test_parse_solution_response_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid solution response JSON."""
         client = GeminiClient(mock_gemini_api_key)
-        
+
         response_text = "Invalid JSON response"
-        
+
         result = client._parse_solution_response(response_text)
-        
+
         assert result['solution_type'] == 'investigation'
         assert 'Invalid JSON' in result['summary']
         assert result['steps'] == []

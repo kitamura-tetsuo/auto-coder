@@ -62,6 +62,8 @@ class CodexClient:
                 escaped_prompt,
             ]
 
+            # Warn that we are invoking an LLM (minimize calls)
+            logger.warning("LLM invocation: codex CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running codex CLI with prompt length: {len(prompt)} characters")
             logger.info("🤖 Running: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]")
             logger.info("=" * 60)

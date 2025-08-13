@@ -90,6 +90,8 @@ class GeminiClient:
                 '--prompt', escaped_prompt
             ]
 
+            # Warn that we are invoking an LLM (keep calls minimized)
+            logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
             logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
             logger.info("=" * 60)
