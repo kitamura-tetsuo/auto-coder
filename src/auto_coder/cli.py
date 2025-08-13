@@ -124,7 +124,7 @@ def main() -> None:
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
 @click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
-@click.option('--jules-mode', is_flag=True, default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis')
+@click.option('--jules-mode/--no-jules-mode', default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def process_issues(

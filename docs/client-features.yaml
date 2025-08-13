@@ -305,6 +305,22 @@ special_features:
       - "yarn.lock"
       - "pnpm-lock.yaml"
 
+  simple_merge_fallbacks:
+    name: "Simple Non-LLM Merge Fallbacks"
+    description: "When gh pr merge fails after conflict resolution, try non-AI simple strategies"
+    behavior:
+      - "Poll mergeable state briefly via gh pr view --json mergeable"
+      - "Fallback to alternative merge methods allowed by repository settings (--merge/--rebase/--squash)"
+      - "Do not invoke LLM for these fallbacks"
+    benefits:
+      - "Avoids unnecessary LLM calls for operational merge issues"
+      - "Improves success rate by adapting to repo settings"
+      - "Handles delayed mergeability on GitHub side"
+    implementation:
+      - "AutomationEngine._poll_pr_mergeable"
+      - "AutomationEngine._get_allowed_merge_methods"
+      - "AutomationEngine._merge_pr updated to use these fallbacks"
+
 testing:
   unit_tests:
     description: "Unit tests for individual components"
@@ -349,11 +365,11 @@ deployment:
   usage:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
-        description: "Process issues and PRs with codex backend (default)"
+        description: "Process issues and PRs with codex backend (default); jules mode is ON by default"
       - command: "auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro"
         description: "Process issues and PRs using Gemini backend (model required for Gemini; --model is ignored when backend=codex)"
-      - command: "auto-coder process-issues --repo owner/repo --jules-mode"
-        description: "Process issues with jules mode (label only), PRs with AI analysis"
+      - command: "auto-coder process-issues --repo owner/repo --no-jules-mode"
+        description: "Disable jules mode and process issues with AI analysis"
       - command: "auto-coder process-issues --repo owner/repo --jules-mode --dry-run"
         description: "Run jules mode in dry-run mode"
       - command: "auto-coder create-feature-issues --repo owner/repo"

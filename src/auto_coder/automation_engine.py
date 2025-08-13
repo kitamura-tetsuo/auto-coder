@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 import zipfile
+import time
 from datetime import datetime
 from dataclasses import dataclass
 
@@ -113,6 +114,9 @@ class CommandExecutor:
 
 class AutomationEngine:
     """Main automation engine that orchestrates GitHub and Gemini integration."""
+
+    # Action flags to communicate control flow decisions without brittle string matching
+    FLAG_SKIP_ANALYSIS = "ACTION_FLAG:SKIP_ANALYSIS"
 
     def __init__(
         self,
@@ -597,7 +601,7 @@ Please proceed with analyzing and taking action on this issue now.
                 # If merge process completed successfully (PR was merged), skip analysis
                 if any("Successfully merged" in action for action in merge_actions):
                     actions.append(f"PR #{pr_number} was merged, skipping further analysis")
-                elif any("skipping to next PR" in action for action in merge_actions):
+                elif self.FLAG_SKIP_ANALYSIS in merge_actions or any("skipping to next PR" in action for action in merge_actions):
                     actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
                 else:
                     # Only do Gemini analysis if merge process didn't complete
@@ -1107,7 +1111,7 @@ Please proceed with analyzing and taking action on this PR now.
             actions.extend(update_actions)
 
             # Step 6: If main branch update required pushing changes, skip to next PR
-            if any("Pushed updated branch" in action for action in update_actions):
+            if self.FLAG_SKIP_ANALYSIS in update_actions or any("Pushed updated branch" in action for action in update_actions):
                 actions.append(f"Updated PR #{pr_number} with main branch, skipping to next PR for GitHub Actions check")
                 return actions
 
@@ -1454,6 +1458,8 @@ After analyzing, apply the necessary fixes to the codebase.
                 push_result = self.cmd.run_command(['git', 'push'])
                 if push_result.success:
                     actions.append(f"Pushed updated branch for PR #{pr_number}")
+                    # Signal to skip further LLM analysis for this PR in this run
+                    actions.append(self.FLAG_SKIP_ANALYSIS)
                 else:
                     actions.append(f"Failed to push updated branch: {push_result.stderr}")
             else:
@@ -1503,7 +1509,11 @@ After analyzing, apply the necessary fixes to the codebase.
             return False
 
     def _resolve_package_lock_conflicts(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
-        """Resolve package-lock.json conflicts by deleting and regenerating the file."""
+        """Resolve package-lock.json conflicts by deleting and regenerating the file.
+
+        Monorepo-friendly: for each conflicted lockfile, if a sibling package.json exists,
+        run package manager commands in that directory to regenerate the lock file.
+        """
         actions = []
 
         try:
@@ -1518,32 +1528,59 @@ After analyzing, apply the necessary fixes to the codebase.
                     conflicted_files.append(filename)
 
             # Remove conflicted dependency files
+            lockfile_names = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']
+            lockfile_dirs: List[str] = []
             for file in conflicted_files:
-                if any(dep in file for dep in ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']):
+                if any(dep in file for dep in lockfile_names):
                     remove_result = self.cmd.run_command(['rm', '-f', file])
                     if remove_result.success:
                         actions.append(f"Removed conflicted file: {file}")
                     else:
                         actions.append(f"Failed to remove {file}: {remove_result.stderr}")
+                    # Track directory for regeneration attempts
+                    lockfile_dirs.append(os.path.dirname(file) or '.')
 
-            # Check if package.json exists to determine which package manager to use
-            package_json_exists = os.path.exists('package.json')
+            # Deduplicate directories while preserving order
+            seen = set()
+            unique_dirs = []
+            for d in lockfile_dirs:
+                if d not in seen:
+                    seen.add(d)
+                    unique_dirs.append(d)
 
-            if package_json_exists:
-                # Try npm install first
-                npm_result = self.cmd.run_command(['npm', 'install'], timeout=300)
-                if npm_result.success:
-                    actions.append("Successfully ran npm install to regenerate package-lock.json")
-                else:
-                    # Try yarn if npm fails
-                    yarn_result = self.cmd.run_command(['yarn', 'install'], timeout=300)
-                    if yarn_result.success:
-                        actions.append("Successfully ran yarn install to regenerate lock file")
+            # For each directory, if package.json exists there, try to regenerate lock files
+            any_regenerated = False
+            for d in unique_dirs:
+                pkg_path = os.path.join(d, 'package.json') if d not in ('', '.') else 'package.json'
+                if os.path.exists(pkg_path):
+                    # Try npm install first in that directory
+                    if d in ('', '.'):
+                        npm_result = self.cmd.run_command(['npm', 'install'], timeout=300)
                     else:
-                        actions.append(f"Failed to regenerate lock file with npm or yarn: {npm_result.stderr}")
-                        return actions
-            else:
-                actions.append("No package.json found, skipping dependency installation")
+                        npm_result = self.cmd.run_command(['npm', 'install'], timeout=300, cwd=d)
+                    if npm_result.success:
+                        actions.append(f"Successfully ran npm install in {d or '.'} to regenerate lock file")
+                        any_regenerated = True
+                    else:
+                        # Try yarn if npm fails
+                        if d in ('', '.'):
+                            yarn_result = self.cmd.run_command(['yarn', 'install'], timeout=300)
+                        else:
+                            yarn_result = self.cmd.run_command(['yarn', 'install'], timeout=300, cwd=d)
+                        if yarn_result.success:
+                            actions.append(f"Successfully ran yarn install in {d or '.'} to regenerate lock file")
+                            any_regenerated = True
+                        else:
+                            actions.append(f"Failed to regenerate lock file in {d or '.'} with npm or yarn: {npm_result.stderr}")
+                else:
+                    if d in ('', '.'):
+                        actions.append("No package.json found, skipping dependency installation")
+                    else:
+                        actions.append(f"No package.json found in {d or '.'}, skipping dependency installation for this path")
+
+            if not any_regenerated and not unique_dirs:
+                # Fallback message when no lockfile dirs were identified (shouldn't happen)
+                actions.append("No lockfile directories identified, skipping dependency installation")
 
             # Stage the regenerated files
             add_result = self.cmd.run_command(['git', 'add', '.'])
@@ -1568,6 +1605,8 @@ After analyzing, apply the necessary fixes to the codebase.
             push_result = self.cmd.run_command(['git', 'push'])
             if push_result.success:
                 actions.append(f"Successfully pushed resolved package-lock.json conflicts for PR #{pr_data['number']}")
+                # Signal to skip further LLM analysis for this PR in this run
+                actions.append(self.FLAG_SKIP_ANALYSIS)
             else:
                 actions.append(f"Failed to push changes: {push_result.stderr}")
 
@@ -1643,6 +1682,8 @@ Please proceed with resolving these merge conflicts now.
 
                     if result.returncode == 0:
                         actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
+                        # Signal to skip further LLM analysis for this PR in this run
+                        actions.append(self.FLAG_SKIP_ANALYSIS)
                     else:
                         actions.append(f"Failed to push resolved merge: {result.stderr}")
                 else:
@@ -1721,7 +1762,12 @@ Please proceed with resolving these merge conflicts now.
             }
 
     def _merge_pr(self, repo_name: str, pr_number: int, analysis: Dict[str, Any]) -> bool:
-        """Merge a PR using GitHub CLI with conflict resolution."""
+        """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
+
+        Fallbacks (no LLM):
+        - After conflict resolution and retry failure, poll mergeable state briefly
+        - Try alternative merge methods allowed by repo settings (--merge/--rebase/--squash)
+        """
         try:
             cmd = ['gh', 'pr', 'merge', str(pr_number)]
 
@@ -1759,7 +1805,26 @@ Please proceed with resolving these merge conflicts now.
                             self._log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
                             return True
                         else:
+                            # Simple non-LLM fallbacks
                             self._log_action(f"Failed to merge PR #{pr_number} even after conflict resolution", False, retry_result.stderr)
+                            # 1) Poll mergeable briefly (e.g., GitHub may still be computing)
+                            if self._poll_pr_mergeable(repo_name, pr_number, timeout_seconds=60, interval=5):
+                                retry_after_poll = self.cmd.run_command(direct_cmd)
+                                if retry_after_poll.success:
+                                    self._log_action(f"Successfully merged PR #{pr_number} after waiting for mergeable state")
+                                    return True
+                            # 2) Try alternative merge methods allowed by repo
+                            allowed = self._get_allowed_merge_methods(repo_name)
+                            # Preserve order preference: configured first, then others
+                            methods_order = [self.config.MERGE_METHOD] + [m for m in ['--squash', '--merge', '--rebase'] if m != self.config.MERGE_METHOD]
+                            for m in methods_order:
+                                if m not in allowed or m == self.config.MERGE_METHOD:
+                                    continue
+                                alt_cmd = cmd + [m]
+                                alt_result = self.cmd.run_command(alt_cmd)
+                                if alt_result.success:
+                                    self._log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
+                                    return True
                             return False
                     else:
                         self._log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
@@ -1771,6 +1836,53 @@ Please proceed with resolving these merge conflicts now.
         except Exception as e:
             self._handle_error("merging PR", e, f"#{pr_number}")
             return False
+
+
+    def _poll_pr_mergeable(self, repo_name: str, pr_number: int, timeout_seconds: int = 60, interval: int = 5) -> bool:
+        """Poll PR mergeable state for a short period. Returns True if becomes mergeable.
+        Uses: gh pr view <num> --repo <repo> --json mergeable,mergeStateStatus
+        """
+        try:
+            deadline = datetime.now().timestamp() + timeout_seconds
+            while datetime.now().timestamp() < deadline:
+                result = self.cmd.run_command(['gh', 'pr', 'view', str(pr_number), '--repo', repo_name, '--json', 'mergeable,mergeStateStatus'], check_success=False)
+                if result.stdout:
+                    try:
+                        data = json.loads(result.stdout)
+                        # GitHub may return mergeable true/false/null
+                        mergeable = data.get('mergeable')
+                        if mergeable is True:
+                            return True
+                    except Exception:
+                        pass
+                # Sleep before next poll
+                time.sleep(max(1, interval))
+            return False
+        except Exception:
+            return False
+
+    def _get_allowed_merge_methods(self, repo_name: str) -> List[str]:
+        """Return list of allowed merge method flags for the repository.
+        Maps GitHub repo settings to gh merge flags.
+        """
+        try:
+            # gh repo view --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed
+            result = self.cmd.run_command(['gh', 'repo', 'view', repo_name, '--json', 'mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed'], check_success=False)
+            allowed: List[str] = []
+            if result.stdout:
+                try:
+                    data = json.loads(result.stdout)
+                    if data.get('squashMergeAllowed'):
+                        allowed.append('--squash')
+                    if data.get('mergeCommitAllowed'):
+                        allowed.append('--merge')
+                    if data.get('rebaseMergeAllowed'):
+                        allowed.append('--rebase')
+                except Exception:
+                    pass
+            return allowed
+        except Exception:
+            return []
 
     def _resolve_pr_merge_conflicts(self, repo_name: str, pr_number: int) -> bool:
         """Resolve merge conflicts for a PR by checking it out and merging with main."""

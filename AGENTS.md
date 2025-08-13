@@ -52,6 +52,9 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 8. 自動化されたコード修正と構築
 9. PR処理の優先順位付け（GitHub Actionsパス且つマージ可能→マージ、その他→修正）
 
+10. LLMスキップ用フラグ導入: package-lock.json等の自動解消やマージ解決後にpush完了した場合、フラグで後続のLLM分析を明示的にスキップ
+11. Jules ModeはデフォルトON: CLIの --jules-mode/--no-jules-mode で切替（既定はON）
+
 ## テスト戦略
 - ユニットテスト: 各モジュールの個別機能をテスト
 - 統合テスト: API統合とCLI統合をテスト

@@ -136,7 +136,7 @@ class TestCLI:
         assert result.exit_code == 0
         assert "Processing repository: test/repo" in result.output
         assert "Using backend: codex" in result.output
-        assert "Jules mode: False" in result.output
+        assert "Jules mode: True" in result.output
         assert "Dry run mode: True" in result.output
 
         mock_github_client_class.assert_called_once_with("test_token")
@@ -144,7 +144,7 @@ class TestCLI:
         mock_automation_engine_class.assert_called_once_with(
             mock_github_client, mock_codex_client, dry_run=True
         )
-        mock_automation_engine.run.assert_called_once_with("test/repo", jules_mode=False)
+        mock_automation_engine.run.assert_called_once_with("test/repo", jules_mode=True)
 
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
