@@ -944,6 +944,24 @@ class TestAutomationEngine:
         assert result['total_checks'] == 3
         assert len(result['failed_checks']) == 0  # No failed checks
 
+    @patch('subprocess.run')
+    def test_check_github_actions_status_no_checks_reported(self, mock_run, mock_github_client, mock_gemini_client):
+        """Handle gh CLI message when no checks are reported."""
+        mock_run.return_value = Mock(
+            returncode=1,
+            stdout='',
+            stderr="no checks reported on the 'feat/global-search' branch"
+        )
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 123}
+
+        result = engine._check_github_actions_status("test/repo", pr_data)
+
+        assert result['success'] is True
+        assert result['total_checks'] == 0
+        assert result['failed_checks'] == []
+
     @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
     def test_checkout_pr_branch_success(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test successful PR branch checkout."""
