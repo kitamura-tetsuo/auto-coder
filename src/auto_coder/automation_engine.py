@@ -716,7 +716,15 @@ Please proceed with analyzing and taking action on this PR now.
             # Note: gh pr checks returns non-zero exit code when some checks fail
             # This is expected behavior, not an error
             if result.returncode != 0 and not result.stdout.strip():
-                # Only treat as error if there's no output (real failure)
+                stderr_msg = (result.stderr or "").strip().lower()
+                if "no checks reported" in stderr_msg:
+                    return {
+                        'success': True,
+                        'checks': [],
+                        'failed_checks': [],
+                        'total_checks': 0
+                    }
+                # Only treat as error if there's no output and no known informational message
                 self._log_action(f"Failed to get PR checks for #{pr_number}", False, result.stderr)
                 return {
                     'success': False,
