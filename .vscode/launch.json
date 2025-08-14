@@ -5,7 +5,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Auto-Coder: Process Issues (Dry Run)",
+            "name": "Process Issues (Dry Run)",
             "type": "debugpy",
             "request": "launch",
             "module": "auto_coder.cli",
@@ -21,7 +21,7 @@
             }
         },
         {
-            "name": "Auto-Coder: Create Feature Issues",
+            "name": "Create Feature Issues",
             "type": "debugpy",
             "request": "launch",
             "module": "auto_coder.cli",
@@ -36,7 +36,24 @@
             }
         },
         {
-            "name": "Auto-Coder: Auth Status",
+            "name": "Get Actions Logs",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/home/ubuntu/src2/outliner",
+            "args": [
+                "get-actions-logs",
+                "--url",
+                "https://github.com/kitamura-tetsuo/outliner/actions/runs/16949853465/job/48039894437?pr=496"
+            ],
+            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "env": {
+                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+            }
+        },
+        {
+            "name": "Auth Status",
             "type": "debugpy",
             "request": "launch",
             "module": "auto_coder.cli",
@@ -51,7 +68,22 @@
             }
         },
         {
-            "name": "Auto-Coder: Process Issues (Live)",
+            "name": "Process Issues (Live)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "process-issues"
+            ],
+            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "env": {
+                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+            }
+        },
+        {
+            "name": "Process Issues (Live) - Outliner",
             "type": "debugpy",
             "request": "launch",
             "module": "auto_coder.cli",
