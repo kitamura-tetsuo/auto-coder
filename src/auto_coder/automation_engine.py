@@ -37,6 +37,11 @@ class AutomationConfig:
     # Git settings
     MAIN_BRANCH: str = "main"
 
+    # Behavior flags
+    # When GitHub Actions checks fail for a PR, skip merging main into the PR branch before LLM fixes.
+    # This changes previous behavior to default-skipping to reduce noisy rebases.
+    SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: bool = True
+
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True
@@ -1112,31 +1117,45 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
 
             actions.append(f"Checked out PR #{pr_number} branch")
 
-            # Step 5: Update with latest main branch commits
-            update_actions = self._update_with_main_branch(repo_name, pr_data)
-            actions.extend(update_actions)
+            # Step 5: Optionally update with latest main branch commits (configurable)
+            if self.config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
+                actions.append(f"[Policy] Skipping main branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
 
-            # Step 6: If main branch update required pushing changes, skip to next PR
-            if self.FLAG_SKIP_ANALYSIS in update_actions or any("Pushed updated branch" in action for action in update_actions):
-                actions.append(f"Updated PR #{pr_number} with main branch, skipping to next PR for GitHub Actions check")
-                return actions
-
-            # Step 7: If no main branch updates were needed, the test failures are due to PR content
-            # Get GitHub Actions error logs and ask Gemini to fix
-            if any("up to date with" in action for action in update_actions):
-                actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
-
-                # Fix PR issues using GitHub Actions logs first, then local tests
+                # Proceed directly to extracting GitHub Actions logs and attempting fixes
                 if failed_checks:
-                    # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
                     github_logs = self._get_github_actions_logs(repo_name, failed_checks)
                     fix_actions = self._fix_pr_issues_with_testing(repo_name, pr_data, github_logs)
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
+
+                return actions
             else:
-                # If we reach here, some other update action occurred
-                actions.append(f"PR #{pr_number} processing completed")
+                actions.append(f"[Policy] Performing main branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
+                update_actions = self._update_with_main_branch(repo_name, pr_data)
+                actions.extend(update_actions)
+
+                # Step 6: If main branch update required pushing changes, skip to next PR
+                if self.FLAG_SKIP_ANALYSIS in update_actions or any("Pushed updated branch" in action for action in update_actions):
+                    actions.append(f"Updated PR #{pr_number} with main branch, skipping to next PR for GitHub Actions check")
+                    return actions
+
+                # Step 7: If no main branch updates were needed, the test failures are due to PR content
+                # Get GitHub Actions error logs and ask Gemini to fix
+                if any("up to date with" in action for action in update_actions):
+                    actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
+
+                    # Fix PR issues using GitHub Actions logs first, then local tests
+                    if failed_checks:
+                        # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
+                        github_logs = self._get_github_actions_logs(repo_name, failed_checks)
+                        fix_actions = self._fix_pr_issues_with_testing(repo_name, pr_data, github_logs)
+                        actions.extend(fix_actions)
+                    else:
+                        actions.append(f"No specific failed checks found for PR #{pr_number}")
+                else:
+                    # If we reach here, some other update action occurred
+                    actions.append(f"PR #{pr_number} processing completed")
 
         except Exception as e:
             actions.append(self._handle_error("handling PR merge", e, f"PR #{pr_number}"))

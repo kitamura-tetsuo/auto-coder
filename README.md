@@ -82,6 +82,9 @@ auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemi
 - `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
 - `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
 - `--dry-run`: ドライランモード（変更を行わない）
+- `--skip-main-update/--no-skip-main-update`: PRのチェックが失敗している場合に、修正を試みる前に main ブランチをPRブランチへ取り込むかの挙動を切替（デフォルト: main取り込みをスキップ）。
+  - 既定値: `--skip-main-update`（スキップ）
+  - 明示的に main 取り込みを行いたい場合は `--no-skip-main-update` を指定
 
 オプション:
 - `--github-token`: gh CLIの認証情報を使用しない場合に手動指定

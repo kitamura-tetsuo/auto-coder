@@ -141,10 +141,53 @@ class TestCLI:
 
         mock_github_client_class.assert_called_once_with("test_token")
         mock_codex_client_class.assert_called_once_with(model_name="codex")
-        mock_automation_engine_class.assert_called_once_with(
-            mock_github_client, mock_codex_client, dry_run=True
-        )
+        # Capture AutomationEngine init call and verify config flag default (skip=True)
+        assert mock_automation_engine_class.call_count == 1
+        args, kwargs = mock_automation_engine_class.call_args
+        assert args[0] is mock_github_client
+        assert args[1] is mock_codex_client
+        assert kwargs.get('dry_run') is True
+        assert 'config' in kwargs
+        assert getattr(kwargs['config'], 'SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL') is True
+
         mock_automation_engine.run.assert_called_once_with("test/repo", jules_mode=True)
+
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_process_issues_no_skip_main_update_flag(self, mock_github_client_class, mock_codex_client_class, mock_automation_engine_class, mock_check_cli):
+        """--no-skip-main-update should set config flag to False."""
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_automation_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo", "test/repo",
+                "--github-token", "test_token",
+                "--dry-run",
+                "--no-skip-main-update",
+            ],
+        )
+        assert result.exit_code == 0
+        # Verify config flag is False
+        args, kwargs = mock_automation_engine_class.call_args
+        assert getattr(kwargs['config'], 'SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL') is False
+
+    def test_process_issues_help_includes_skip_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(process_issues, ["--help"])
+        assert result.exit_code == 0
+        # Click help may split flag across lines; check presence of at least one alias
+        assert "--skip-main-update" in result.output
+
 
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
@@ -185,10 +228,14 @@ class TestCLI:
         mock_github_client_class.assert_called_once_with("test-token")
         mock_codex_client_class.assert_called_once_with(model_name="codex")
 
-        # Verify automation engine was initialized correctly
-        mock_automation_engine_class.assert_called_once_with(
-            mock_github_client, mock_codex_client, dry_run=False
-        )
+        # Verify automation engine was initialized with proper args and config
+        assert mock_automation_engine_class.call_count == 1
+        args, kwargs = mock_automation_engine_class.call_args
+        assert args[0] is mock_github_client
+        assert args[1] is mock_codex_client
+        assert kwargs.get('dry_run') is False
+        assert 'config' in kwargs
+        assert getattr(kwargs['config'], 'SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL') is True
 
         # Verify run was called with jules_mode=True
         mock_automation_engine.run.assert_called_once_with("test/repo", jules_mode=True)

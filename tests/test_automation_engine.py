@@ -1324,7 +1324,9 @@ class TestAutomationEngineExtended:
     def test_handle_pr_merge_with_integrated_fix(self, mock_github_client, mock_gemini_client):
         """Test PR merge handling with integrated GitHub Actions and local test fixing."""
         # Setup
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+        config = AutomationConfig()
+        config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = False  # Explicitly test main update path
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True, config=config)
         pr_data = {'number': 123, 'title': 'Test PR'}
         failed_checks = [{'name': 'test', 'status': 'failed'}]
 
@@ -1353,6 +1355,34 @@ class TestAutomationEngineExtended:
     def test_fix_pr_issues_with_testing_success(self, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with successful local tests."""
         # Setup
+
+        def test_handle_pr_merge_skips_main_update_when_flag_true(self, mock_github_client, mock_gemini_client):
+            """When SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL is True, _handle_pr_merge should not call _update_with_main_branch and proceed to fixes."""
+            # Setup engine with flag True
+            config = AutomationConfig()
+            config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
+            engine = AutomationEngine(mock_github_client, mock_gemini_client, config=config)
+            pr_data = {'number': 555, 'title': 'Failing PR'}
+
+            failed_checks = [{'name': 'ci', 'status': 'failed'}]
+            with patch.object(engine, '_check_github_actions_status') as mock_check, \
+                 patch.object(engine, '_checkout_pr_branch') as mock_checkout, \
+                 patch.object(engine, '_update_with_main_branch') as mock_update, \
+                 patch.object(engine, '_get_github_actions_logs') as mock_logs, \
+                 patch.object(engine, '_fix_pr_issues_with_testing') as mock_fix:
+                mock_check.return_value = {'success': False, 'in_progress': False, 'failed_checks': failed_checks}
+                mock_checkout.return_value = True
+                mock_logs.return_value = "Err log"
+                mock_fix.return_value = ["Applied fix", "Committed and pushed fix"]
+
+                result = engine._handle_pr_merge('test/repo', pr_data, {})
+
+                # Should have skipped _update_with_main_branch
+                mock_update.assert_not_called()
+                mock_logs.assert_called_once()
+                mock_fix.assert_called_once()
+                assert any("Skipping main branch update" in a for a in result)
+
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
         pr_data = {'number': 123, 'title': 'Test PR'}
         github_logs = "Test failed: assertion error"

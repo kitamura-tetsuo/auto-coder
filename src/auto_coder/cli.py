@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from .github_client import GitHubClient
 from .gemini_client import GeminiClient
 from .codex_client import CodexClient
-from .automation_engine import AutomationEngine
+from .automation_engine import AutomationEngine, AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
 from .logger_config import setup_logger, get_logger
@@ -125,6 +125,7 @@ def main() -> None:
 @click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode/--no-jules-mode', default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)')
+@click.option('--skip-main-update/--no-skip-main-update', default=True, help='When PR checks fail, skip merging main into the PR before attempting fixes (default: skip)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def process_issues(
@@ -135,6 +136,7 @@ def process_issues(
     model: str,
     dry_run: bool,
     jules_mode: bool,
+    skip_main_update: bool,
     log_level: str,
     log_file: Optional[str]
 ) -> None:
@@ -172,12 +174,17 @@ def process_issues(
     logger.info(f"Dry run mode: {dry_run}")
     logger.info(f"Log level: {log_level}")
 
+    # Explicitly show main update policy for PR checks failure
+    policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
+    logger.info(f"Main update before fixes when PR checks fail: {policy_str}")
+
     click.echo(f"Processing repository: {repo_name}")
     click.echo(f"Using backend: {backend}")
     if backend == 'gemini':
         click.echo(f"Using model: {model}")
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
+    click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -186,7 +193,12 @@ def process_issues(
         ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
     else:
         ai_client = CodexClient(model_name='codex')
-    automation_engine = AutomationEngine(github_client, ai_client, dry_run=dry_run)
+
+    # Configure engine behavior flags
+    engine_config = AutomationConfig()
+    engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
+
+    automation_engine = AutomationEngine(github_client, ai_client, dry_run=dry_run, config=engine_config)
 
     # Run automation
     if backend == 'gemini' and gemini_api_key is not None:

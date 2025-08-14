@@ -154,6 +154,7 @@ features:
               - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
+              - "--skip-main-update/--no-skip-main-update": "When PR checks fail, skip merging main into PR before attempting fixes (default: skip)"
               - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
               - "--log-file": "Log file path (optional)"
           - name: "create-feature-issues"
@@ -396,6 +397,23 @@ special_features:
     implementation:
       - "AutomationEngine._poll_pr_mergeable"
       - "AutomationEngine._get_allowed_merge_methods"
+
+  pr_checks_fail_skip_main_update:
+    name: "Skip Main Update When PR Checks Fail"
+    description: "Adds a CLI option to skip merging main into PR branches when CI checks are failing; default is to skip."
+    behavior:
+      - "On failing CI checks, the engine skips updating PR branch with main and proceeds directly to GitHub Actions log extraction and fix attempts."
+      - "If --no-skip-main-update is provided, the engine will attempt to merge main into PR branch first (previous behavior)."
+    implementation:
+      - "AutomationConfig.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL (default True)"
+      - "AutomationEngine._handle_pr_merge respects the flag and branches logic accordingly"
+      - "CLI flag --skip-main-update/--no-skip-main-update wires to the config"
+      - "CLI and AutomationEngine log the main-update policy explicitly at runtime"
+    tests:
+      - "tests/test_cli.py::TestCLI::test_process_issues_no_skip_main_update_flag"
+      - "tests/test_cli.py::TestCLI::test_process_issues_success_default_codex (verifies default True)"
+      - "tests/test_automation_engine.py::TestAutomationEngineExtended::test_handle_pr_merge_skips_main_update_when_flag_true"
+
       - "AutomationEngine._merge_pr updated to use these fallbacks"
 
 testing:
