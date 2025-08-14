@@ -33,6 +33,18 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 - コンソール出力は色付きで見やすく表示する
 - ファイル出力はローテーション機能付きで保存する
 
+
+### CI/PR チェック
+- GitHub Actions によるPRチェックを必須化する。
+- ワークフロー: .github/workflows/ci.yml（name: CI）
+- 必須ジョブ:
+  - Lint & Type Check（black/isort/flake8/mypy）
+  - Tests (pytest)（Python 3.11/3.12 マトリクス）
+- ブランチ保護で required status checks に以下のチェック名を登録する想定：
+  - "CI / Lint & Type Check"
+  - "CI / Tests (pytest) (3.11)"
+  - "CI / Tests (pytest) (3.12)"
+
 ### LLM実行ポリシー（重要）
 
 ## 仕様メモ（運用上の重要点）

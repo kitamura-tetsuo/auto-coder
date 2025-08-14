@@ -457,6 +457,33 @@ deployment:
         - "DRY_RUN"
         - "LOG_LEVEL"
 
+  ci:
+    github_actions_pr_checks:
+      name: "GitHub Actions PR Checks"
+      description: "Run lint, type-check, and tests on every push/PR; gate merges on required checks."
+      workflow_file: ".github/workflows/ci.yml"
+      jobs:
+        - id: "lint"
+          name: "Lint & Type Check"
+          steps:
+            - "actions/checkout@v4"
+            - "actions/setup-python@v5 (python=3.12)"
+            - "pip install -e .[dev]"
+            - "black --check src/ tests/"
+            - "isort --check-only src/ tests/"
+            - "flake8 src/ tests/"
+            - "mypy src/"
+        - id: "tests"
+          name: "Tests (pytest)"
+          matrix: ["3.11", "3.12"]
+          steps:
+            - "actions/checkout@v4"
+            - "actions/setup-python@v5 (python=${{ matrix.python-version }})"
+            - "pip install -e .[dev,test]"
+            - "pytest -v"
+      tests:
+        - "tests/test_ci_workflow.py::test_github_actions_ci_workflow_exists_and_has_required_jobs"
+
   usage:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
