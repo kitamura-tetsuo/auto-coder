@@ -1078,6 +1078,81 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
 
         return '\n\n'.join(logs) if logs else "No detailed logs available"
 
+    def get_github_actions_logs_from_url(self, url: str) -> str:
+        """Fetch GitHub Actions error logs from a job URL.
+
+        This helper is used for debugging purposes. It accepts a URL of the form:
+        ``https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>`` and
+        returns the same extracted error log text that would be passed to the LLM.
+        """
+
+        try:
+            import re
+
+            m = re.match(
+                r"https://github\.com/([^/]+)/([^/]+)/actions/runs/([0-9]+)/job/([0-9]+)",
+                url,
+            )
+            if not m:
+                return "Invalid GitHub Actions job URL"
+
+            owner, repo, _run_id, job_id = m.groups()
+            repo_name = f"{owner}/{repo}"
+
+            # Fetch job name for nicer output (best-effort)
+            job_name = f"job-{job_id}"
+            job_meta = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{repo_name}/actions/jobs/{job_id}",
+                    "--json",
+                    "name",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if job_meta.returncode == 0 and job_meta.stdout.strip():
+                try:
+                    job_name = json.loads(job_meta.stdout).get("name", job_name)
+                except Exception:
+                    pass
+
+            api_res = subprocess.run(
+                ["gh", "api", f"repos/{repo_name}/actions/jobs/{job_id}/logs"],
+                capture_output=True,
+                timeout=120,
+            )
+
+            if api_res.returncode != 0 or not api_res.stdout:
+                return "No detailed logs available"
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                zip_path = os.path.join(tmpdir, "job_logs.zip")
+                with open(zip_path, "wb") as f:
+                    f.write(api_res.stdout)
+
+                with zipfile.ZipFile(zip_path, "r") as zf:
+                    texts: List[str] = []
+                    for name in zf.namelist():
+                        if name.lower().endswith(".txt"):
+                            with zf.open(name, "r") as fp:
+                                try:
+                                    texts.append(fp.read().decode("utf-8", errors="ignore"))
+                                except Exception:
+                                    pass
+                    combined = "\n".join(texts)
+
+            important = self._extract_important_errors(
+                {"success": False, "output": combined, "errors": ""}
+            )
+            return f"=== Job {job_name} ({job_id}) ===\n{important}" if important else "No detailed logs available"
+
+        except Exception as e:
+            logger.error(f"Error fetching GitHub Actions logs from URL: {e}")
+            return f"Error getting logs: {e}"
+
     def _handle_pr_merge(self, repo_name: str, pr_data: Dict[str, Any], analysis: Dict[str, Any]) -> List[str]:
         """Handle PR merge process following the intended flow."""
         actions = []

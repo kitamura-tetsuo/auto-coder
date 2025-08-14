@@ -273,6 +273,19 @@ def create_feature_issues(
 
 
 @main.command()
+@click.option('--url', 'actions_url', required=True, help='GitHub Actions job URL')
+@click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
+def get_actions_logs(actions_url: str, github_token: Optional[str]) -> None:
+    """Fetch error logs from a GitHub Actions job URL for debugging."""
+    setup_logger()
+    github_token_final = get_github_token_or_fail(github_token)
+    github_client = GitHubClient(github_token_final)
+    engine = AutomationEngine(github_client, None, dry_run=True)
+    logs = engine.get_github_actions_logs_from_url(actions_url)
+    click.echo(logs)
+
+
+@main.command()
 def auth_status() -> None:
     """Check authentication status for GitHub and Gemini."""
     click.echo("Checking authentication status...")
