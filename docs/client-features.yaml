@@ -358,6 +358,17 @@ special_features:
       - "AutomationEngine._get_allowed_merge_methods"
       - "AutomationEngine._merge_pr updated to use these fallbacks"
 
+  actions_log_fetcher:
+    name: "GitHub Actions URL Log Fetcher"
+    description: "Fetch error logs from a GitHub Actions job URL for debugging"
+    components:
+      - name: "AutomationEngine.get_github_actions_logs_from_url"
+        file: "src/auto_coder/automation_engine.py"
+        description: "Retrieve error logs from a GitHub Actions job URL"
+      - name: "CLI command get-actions-logs"
+        file: "src/auto_coder/cli.py"
+        description: "CLI command to fetch GitHub Actions job logs for debugging"
+
 testing:
   unit_tests:
     description: "Unit tests for individual components"
