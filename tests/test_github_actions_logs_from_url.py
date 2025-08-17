@@ -38,5 +38,4 @@ def test_get_github_actions_logs_from_url_fetches_job_zip_and_extracts_errors(mo
     assert '=== Job test (48039894437) ===' in out
     assert '--- Step 5_Run tests ---' in out
     assert 'Expected substring: "<a href="https://example.com"' in out
-    # Summary が末尾に含まれること
-    assert '--- Summary ---' in out
+    # サマリは本文に含まれない行のみ付与されるため、ZIP内の要約行が本文に含まれている場合は省略され得る

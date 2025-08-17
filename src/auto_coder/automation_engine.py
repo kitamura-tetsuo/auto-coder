@@ -1189,17 +1189,27 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
                                             timeout=120
                                         )
                                         if job_txt2.returncode == 0 and job_txt2.stdout.strip():
+                                            # 失敗ステップ名でフィルタした行のみからサマリ抽出
                                             for ln in job_txt2.stdout.split('\n'):
-                                                ll = ln.lower()
-                                                if ((' failed' in ll) or (' passed' in ll) or (' skipped' in ll) or (' did not run' in ll)
-                                                    or ('notice' in ll) or ('error was not a part of any test' in ll)
-                                                    or ('command failed with exit code' in ll) or ('process completed with exit code' in ll)):
-                                                    summary_lines.append(ln)
+                                                parts = ln.split('\t', 2)
+                                                if len(parts) >= 3:
+                                                    step_field = parts[1].strip().lower()
+                                                    if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
+                                                        ll = ln.lower()
+                                                        if ((' failed' in ll) or (' passed' in ll) or (' skipped' in ll) or (' did not run' in ll)
+                                                            or ('notice' in ll) or ('error was not a part of any test' in ll)
+                                                            or ('command failed with exit code' in ll) or ('process completed with exit code' in ll)):
+                                                            summary_lines.append(ln)
                                     except Exception:
                                         pass
+                                body_str = "\n\n".join(step_snippets)
                                 if summary_lines:
-                                    summary_block = "\n\n--- Summary ---\n" + "\n".join(summary_lines[-15:])
-                                body = "\n\n".join(step_snippets) + summary_block
+                                    # 本文に含まれる行はサマリから除外
+                                    filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
+                                    summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
+                                else:
+                                    summary_block = ""
+                                body = body_str + summary_block
                                 body = self._slice_relevant_error_window(body)
                                 return f"=== Job {job_name} ({job_id}) ===\n" + body
                             # 従来どおり結合で抽出（ただし長大出力は _extract_important_errors が抑制）
@@ -1256,6 +1266,41 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
                     except Exception:
                         pass
 
+                    # 失敗ステップごとにブロックを分割して出力（テキストログ経路）
+                    blocks = []
+                    if norm_fail_names:
+                        step_to_lines = {}
+                        for ln in text_for_extract.split('\n'):
+                            parts = ln.split('\t', 2)
+                            if len(parts) >= 3:
+                                step_field = parts[1].strip()
+                                step_key = step_field
+                                step_to_lines.setdefault(step_key, []).append(ln)
+                        if step_to_lines:
+                            for step_key in sorted(step_to_lines.keys()):
+                                body_lines = step_to_lines[step_key]
+                                # 各ブロックについて重要部分抽出＆期待/受領補強
+                                body_text = '\n'.join(body_lines)
+                                blk_imp = self._extract_important_errors({'success': False, 'output': body_text, 'errors': ''})
+                                if (("Expected substring:" in body_text) or ("Received string:" in body_text) or ("expect(received)" in body_text)):
+                                    extra = []
+                                    src_lines = body_text.split('\n')
+                                    for i, ln2 in enumerate(src_lines):
+                                        if ('Expected substring:' in ln2) or ('Received string:' in ln2) or ('expect(received)' in ln2):
+                                            s2 = max(0, i - 2)
+                                            e2 = min(len(src_lines), i + 8)
+                                            extra.extend(src_lines[s2:e2])
+                                    if extra:
+                                        norm_extra = [ln2.replace('\"', '"') for ln2 in extra]
+                                        if '--- Expectation Details ---' not in blk_imp:
+                                            blk_imp = (blk_imp + ('\n\n--- Expectation Details ---\n' if blk_imp else '')) + '\n'.join(norm_extra)
+                                        else:
+                                            blk_imp = blk_imp + '\n' + '\n'.join(norm_extra)
+                                if blk_imp and blk_imp.strip():
+                                    blocks.append(f"--- Step {step_key} ---\n{blk_imp}")
+                    if blocks:
+                        important = '\n\n'.join(blocks)
+
                     # 期待/受領行を欠落させない
                     important = self._extract_important_errors({'success': False, 'output': text_for_extract, 'errors': ''})
                     if (('Expected substring:' in text_for_extract) or ('Received string:' in text_for_extract) or ('expect(received)' in text_for_extract)):
@@ -1284,7 +1329,23 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
                             or ('command failed with exit code' in ll) or ('process completed with exit code' in ll)):
                             summary_lines.append(ln)
                     if summary_lines:
-                        important = important + ('\n\n--- Summary ---\n' if '--- Summary ---' not in important else '\n') + '\n'.join(summary_lines[-15:])
+                        # 末尾にプレイライトの集計（数行）を補足（失敗ステップ行のみ、本文に含まれる行は除外）
+                        summary_lines = []
+                        for ln in text_output.split('\n'):
+                            parts = ln.split('\t', 2)
+                            if len(parts) >= 3:
+                                step_field = parts[1].strip().lower()
+                                if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
+                                    ll = ln.lower()
+                                    if ((' failed' in ll) or (' passed' in ll) or (' skipped' in ll) or (' did not run' in ll)
+                                        or ('notice:' in ll) or ('error was not a part of any test' in ll)
+                                        or ('command failed with exit code' in ll) or ('process completed with exit code' in ll)):
+                                        summary_lines.append(ln)
+                        if summary_lines:
+                            body_now = important
+                            filtered = [ln for ln in summary_lines[-15:] if ln not in body_now]
+                            if filtered:
+                                important = important + ('\n\n--- Summary ---\n' if '--- Summary ---' not in important else '\n') + '\n'.join(filtered)
                     # プレリュード切り捨て（最終整形）
                     important = self._slice_relevant_error_window(important)
                     return f"=== Job {job_name} ({job_id}) ===\n{important}"
