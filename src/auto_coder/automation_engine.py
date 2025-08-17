@@ -110,6 +110,7 @@ class CommandExecutor:
         except Exception as e:
             logger.error(f"Command execution failed: {' '.join(cmd)}: {e}")
             return CommandResult(
+
                 success=False,
                 stdout="",
                 stderr=str(e),
@@ -156,17 +157,68 @@ class AutomationEngine:
         - pr_data.draft is False
         - pr_data.mergeable is True (defaults to True if not provided)
         """
-        if not analysis:
+        try:
+            analysis = analysis or {}
+            pr_data = pr_data or {}
+
+            risk = str(analysis.get('risk_level', '')).lower()
+            category = str(analysis.get('category', '')).lower()
+            allowed_categories = {'bugfix', 'documentation', 'dependency'}
+
+            is_draft = bool(pr_data.get('draft', False))
+            mergeable = pr_data.get('mergeable')
+            if mergeable is None:
+                mergeable = True
+
+            if is_draft:
+                return False
+            if not mergeable:
+                return False
+
+            if risk == 'low' and category in allowed_categories:
+                return True
+
             return False
-        if pr_data.get('draft', False):
+        except Exception as e:
+            # Be safe by default: do not auto-merge on unexpected errors
+            self._handle_error("deciding auto-merge eligibility", e)
             return False
-        if not pr_data.get('mergeable', True):
-            return False
-        risk = str(analysis.get('risk_level', '')).lower()
-        category = str(analysis.get('category', '')).lower()
-        if risk != 'low':
-            return False
-        return category in ('bugfix', 'documentation', 'dependency')
+
+    def _slice_relevant_error_window(self, text: str) -> str:
+        """エラー関連の必要部分のみを返す（プレリュード切捨て＋後半重視・短縮）。
+        方針:
+        - 末尾側から優先トリガを探索し、その少し前から末尾までを返す
+        - 見つからない場合は末尾の数百行に限定
+        """
+        if not text:
+            return text
+        lines = text.split('\n')
+        # 優先度の高い順でグルーピング
+        priority_groups = [
+            ['Expected substring:', 'Received string:', 'expect(received)'],
+            ['Error:   ', '.spec.ts', '##[error]'],
+            ['Command failed with exit code', 'Process completed with exit code'],
+            ['error was not a part of any test', 'Notice:', '##[notice]', 'notice'],
+        ]
+        start_idx = None
+        # 末尾から優先トリガを探索
+        for group in priority_groups:
+            for i in range(len(lines) - 1, -1, -1):
+                low = lines[i].lower()
+                if any(g.lower() in low for g in group):
+                    start_idx = max(0, i - 30)
+                    break
+            if start_idx is not None:
+                break
+        if start_idx is None:
+            # トリガが無ければ、末尾のみ（最大300行）
+            return '\n'.join(lines[-300:])
+        # 末尾はそのまま。さらに最大800行に制限
+        sliced = lines[start_idx:]
+        if len(sliced) > 800:
+            sliced = sliced[:800]
+        return '\n'.join(sliced)
+
 
     def _log_action(self, action: str, success: bool = True, details: str = "") -> str:
         """Standardized action logging."""
@@ -961,117 +1013,17 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
                     except Exception as e:
                         logger.debug(f"Failed to parse gh run view JSON: {e}")
 
-            # 4) 失敗ジョブごとに gh api でログ(zip)取得→解凍→エラー抜粋
+            # 4) 失敗ジョブごとに URL 経由の統一実装でログを取得
             owner_repo = repo_name  # 'owner/repo'
             for job in failed_jobs:
                 job_id = job.get('id')
-                job_name = job.get('name') or f"job-{job_id}"
                 if not job_id:
                     continue
 
-                api_cmd = ['gh', 'api', f'repos/{owner_repo}/actions/jobs/{job_id}/logs']
-                # バイナリ ZIP を取得するため text=False で実行
-                api_res = subprocess.run(api_cmd, capture_output=True, timeout=120)
-
-                def _append_from_text_output(text_output: str) -> None:
-                    important = self._extract_important_errors({
-                        'success': False,
-                        'output': text_output or '',
-                        'errors': ''
-                    })
-                    logs.append(f"=== Job {job_name} ({job_id}) ===\n{important}")
-
-                def _fallback_fetch_text_logs() -> bool:
-                    # 1) ジョブ単位のテキストログ
-                    try:
-                        job_txt = subprocess.run(
-                            ['gh', 'run', 'view', run_id, '--job', str(job_id), '--log'],
-                            capture_output=True,
-                            text=True,
-                            timeout=120
-                        )
-                        if job_txt.returncode == 0 and job_txt.stdout.strip():
-                            _append_from_text_output(job_txt.stdout)
-                            return True
-                    except Exception:
-                        pass
-                    # 2) run 全体の失敗ログ
-                    try:
-                        run_failed = subprocess.run(
-                            ['gh', 'run', 'view', run_id, '--log-failed'],
-                            capture_output=True,
-                            text=True,
-                            timeout=120
-                        )
-                        if run_failed.returncode == 0 and run_failed.stdout.strip():
-                            _append_from_text_output(run_failed.stdout)
-                            return True
-                    except Exception:
-                        pass
-                    # 3) run レベルの ZIP（最後の手段）
-                    try:
-                        run_zip = subprocess.run(
-                            ['gh', 'api', f'repos/{owner_repo}/actions/runs/{run_id}/logs'],
-                            capture_output=True,
-                            timeout=120
-                        )
-                        if run_zip.returncode == 0 and run_zip.stdout:
-                            with tempfile.TemporaryDirectory() as t2:
-                                zp = os.path.join(t2, 'run_logs.zip')
-                                with open(zp, 'wb') as wf:
-                                    wf.write(run_zip.stdout)
-                                with zipfile.ZipFile(zp, 'r') as zf2:
-                                    texts = []
-                                    for nm in zf2.namelist():
-                                        if nm.lower().endswith('.txt'):
-                                            with zf2.open(nm, 'r') as fp2:
-                                                try:
-                                                    texts.append(fp2.read().decode('utf-8', errors='ignore'))
-                                                except Exception:
-                                                    pass
-                                    _append_from_text_output('\n'.join(texts))
-                                    return True
-                    except Exception:
-                        pass
-                    return False
-
-                if api_res.returncode != 0 or not api_res.stdout:
-                    # ZIP 取得に失敗→フォールバックで UI 相当のテキストログを取得
-                    if not _fallback_fetch_text_logs():
-                        logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nNo detailed logs available")
-                    continue
-
-                # 一時ファイルに保存して zip 解凍
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    zip_path = os.path.join(tmpdir, 'job_logs.zip')
-                    with open(zip_path, 'wb') as f:
-                        f.write(api_res.stdout)
-
-                    try:
-                        with zipfile.ZipFile(zip_path, 'r') as zf:
-                            # 全ての .txt を読み、結合
-                            all_text = []
-                            for name in zf.namelist():
-                                if name.lower().endswith('.txt'):
-                                    with zf.open(name, 'r') as fp:
-                                        try:
-                                            content = fp.read().decode('utf-8', errors='ignore')
-                                        except Exception:
-                                            content = ''
-                                        all_text.append(content)
-                            combined = '\n'.join(all_text)
-
-                            # エラー抜粋（6000行超でも短縮される）
-                            important = self._extract_important_errors({
-                                'success': False,
-                                'output': combined,
-                                'errors': ''
-                            })
-                            logs.append(f"=== Job {job_name} ({job_id}) ===\n{important}")
-                    except zipfile.BadZipFile:
-                        # ZIP 解凍失敗時もフォールバック
-                        if not _fallback_fetch_text_logs():
-                            logs.append(f"=== Job {job_name} ({job_id}) ===\nStatus: {job.get('conclusion', 'unknown')}\nFailed to read zip logs")
+                # URLルートの実装へ委譲（統一）
+                url = f"https://github.com/{owner_repo}/actions/runs/{run_id}/job/{job_id}"
+                unified = self.get_github_actions_logs_from_url(url)
+                logs.append(unified)
 
             # 5) フォールバック: run/job が取れない場合は failed_checks をそのまま整形
             if not logs:
@@ -1087,15 +1039,10 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
         return '\n\n'.join(logs) if logs else "No detailed logs available"
 
     def get_github_actions_logs_from_url(self, url: str) -> str:
-        """GitHub Actions のジョブURLから、既存のログ取得ルーチンでエラーログを取得するデバッグ用ヘルパ。
+        """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。
 
         受け付けるURL形式:
         https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
-
-        実装方針:
-        - URL から owner/repo を抽出
-        - 既存の _get_github_actions_logs(repo, failed_checks) を呼び出して、通常ルートでログ抽出
-          （特定の job_id 直接取得は行わず、既存処理の run/job 列挙に委譲）
         """
         try:
             import re
@@ -1104,11 +1051,288 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
             if not m:
                 return "Invalid GitHub Actions job URL"
 
-            owner, repo, _run_id, _job_id = m.groups()
-            repo_name = f"{owner}/{repo}"
+            owner, repo, run_id, job_id = m.groups()
+            owner_repo = f"{owner}/{repo}"
 
-            # 既存のログ取得処理に委譲（failed_checks は空で渡す）
-            return self._get_github_actions_logs(repo_name, [])
+            # 1) 可能ならジョブ名を取得
+            job_name = f"job-{job_id}"
+            try:
+                jobs_res = subprocess.run(
+                    ['gh', 'run', 'view', run_id, '-R', owner_repo, '--json', 'jobs'],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if jobs_res.returncode == 0 and jobs_res.stdout.strip():
+                    jobs_json = json.loads(jobs_res.stdout)
+                    for job in jobs_json.get('jobs', []):
+                        if str(job.get('databaseId')) == str(job_id):
+                            job_name = job.get('name') or job_name
+                            break
+            except Exception:
+                pass
+
+
+            # 1.5) 失敗ステップ名の特定（可能なら）
+            failing_step_names: set = set()
+            try:
+                job_detail = subprocess.run(
+                    ['gh', 'api', f'repos/{owner_repo}/actions/jobs/{job_id}'],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                if job_detail.returncode == 0 and job_detail.stdout.strip():
+                    job_json = json.loads(job_detail.stdout)
+                    steps = job_json.get('steps', []) or []
+                    for st in steps:
+                        # steps[].conclusion: success|failure|cancelled|skipped|None
+                        if (st.get('conclusion') == 'failure') or (st.get('conclusion') is None and st.get('status') == 'completed' and job_json.get('conclusion') == 'failure'):
+                            nm = st.get('name')
+                            if nm:
+                                failing_step_names.add(nm)
+            except Exception:
+                # 取得できなくても先へ（従来のヒューリスティクスで抽出）
+                pass
+
+            def _norm(s: str) -> str:
+                import re as _re
+                return _re.sub(r"[^a-z0-9]+", " ", (s or "").lower()).strip()
+
+            norm_fail_names = {_norm(n) for n in failing_step_names}
+
+            def _file_matches_fail(step_file_label: str, content: str) -> bool:
+                if not norm_fail_names:
+                    return True  # フィルタ情報がない場合は全て許可（従来動作）
+                lbl = _norm(step_file_label)
+                if any(n and (n in lbl or lbl in n) for n in norm_fail_names):
+                    return True
+                # コンテンツ先頭付近の見出しにステップ名が含まれていないか簡易チェック
+                head = "\n".join(content.split('\n')[:8]).lower()
+                return any(n and (n in head) for n in norm_fail_names)
+
+            # 2) まずは job ZIP ログを直接取得
+            api_cmd = ['gh', 'api', f'repos/{owner_repo}/actions/jobs/{job_id}/logs']
+            api_res = subprocess.run(api_cmd, capture_output=True, timeout=120)
+            if api_res.returncode == 0 and api_res.stdout:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    zip_path = os.path.join(tmpdir, 'job_logs.zip')
+                    with open(zip_path, 'wb') as f:
+                        f.write(api_res.stdout)
+                    try:
+                        with zipfile.ZipFile(zip_path, 'r') as zf:
+                            step_snippets = []
+                            job_summary_lines = []
+                            for name in zf.namelist():
+                                if name.lower().endswith('.txt'):
+                                    with zf.open(name, 'r') as fp:
+                                        try:
+                                            content = fp.read().decode('utf-8', errors='ignore')
+                                        except Exception:
+                                            content = ''
+                                    if not content:
+                                        continue
+                                    step_file_label = os.path.splitext(os.path.basename(name))[0]
+                                    # ステップフィルタ：失敗ステップのファイルのみ対象
+                                    if not _file_matches_fail(step_file_label, content):
+                                        continue
+                                    # ジョブ全体のサマリ候補を収集（順序保持）
+                                    for ln in content.split('\n'):
+                                        ll = ln.lower()
+                                        if ((' failed' in ll) or (' passed' in ll) or (' skipped' in ll) or (' did not run' in ll)) and any(ch.isdigit() for ch in ln):
+                                            job_summary_lines.append(ln)
+                                    step_name = step_file_label
+                                    snippet = self._extract_important_errors({
+                                        'success': False,
+                                        'output': content,
+                                        'errors': ''
+                                    })
+                                    # 期待/受領の原文行を補強（厳密一致のため）
+                                    exp_lines = []
+                                    for ln in content.split('\n'):
+                                        if ('Expected substring:' in ln) or ('Received string:' in ln):
+                                            exp_lines.append(ln)
+                                    if exp_lines:
+                                        # バックスラッシュエスケープを除去した正規化行も付加
+                                        norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
+                                        if '--- Expectation Details ---' not in snippet:
+                                            snippet = (snippet + '\n\n--- Expectation Details ---\n' if snippet else '') + '\n'.join(norm_lines)
+                                        else:
+                                            snippet = snippet + '\n' + '\n'.join(norm_lines)
+                                    # エラーがないステップは出力しない（さらに厳格化）
+                                    if snippet and snippet.strip():
+                                        s = snippet
+                                        if ('.spec.ts' in s or 'expect(received)' in s or 'Expected substring:' in s
+                                            or 'error was not a part of any test' in s
+                                            or 'Command failed with exit code' in s or 'Process completed with exit code' in s):
+                                            step_snippets.append(f"--- Step {step_name} ---\n{s}")
+                            if step_snippets:
+                                # ジョブ全体のサマリを末尾に追加（最後に出現した順で最大数行）
+                                summary_block = ''
+                                summary_lines = []
+                                if job_summary_lines:
+                                    # 後方から重複排除し、最新の並びを再現
+                                    seen = set()
+                                    uniq_rev = []
+                                    for ln in reversed(job_summary_lines):
+                                        if ln not in seen:
+                                            seen.add(ln)
+                                            uniq_rev.append(ln)
+                                    summary_lines = list(reversed(uniq_rev))
+                                # ZIPから拾えなければ、テキストログからサマリを補完
+                                if not summary_lines:
+                                    try:
+                                        job_txt2 = subprocess.run(
+                                            ['gh', 'run', 'view', run_id, '-R', owner_repo, '--job', str(job_id), '--log'],
+                                            capture_output=True,
+                                            text=True,
+                                            timeout=120
+                                        )
+                                        if job_txt2.returncode == 0 and job_txt2.stdout.strip():
+                                            for ln in job_txt2.stdout.split('\n'):
+                                                ll = ln.lower()
+                                                if ((' failed' in ll) or (' passed' in ll) or (' skipped' in ll) or (' did not run' in ll)
+                                                    or ('notice' in ll) or ('error was not a part of any test' in ll)
+                                                    or ('command failed with exit code' in ll) or ('process completed with exit code' in ll)):
+                                                    summary_lines.append(ln)
+                                    except Exception:
+                                        pass
+                                if summary_lines:
+                                    summary_block = "\n\n--- Summary ---\n" + "\n".join(summary_lines[-15:])
+                                body = "\n\n".join(step_snippets) + summary_block
+                                body = self._slice_relevant_error_window(body)
+                                return f"=== Job {job_name} ({job_id}) ===\n" + body
+                            # 従来どおり結合で抽出（ただし長大出力は _extract_important_errors が抑制）
+                            all_text = []
+                            for name in zf.namelist():
+                                if name.lower().endswith('.txt'):
+                                    with zf.open(name, 'r') as fp:
+                                        try:
+                                            content = fp.read().decode('utf-8', errors='ignore')
+                                        except Exception:
+                                            content = ''
+                                        all_text.append(content)
+                            combined = '\n'.join(all_text)
+                            important = self._extract_important_errors({
+                                'success': False,
+                                'output': combined,
+                                'errors': ''
+                            })
+                            important = self._slice_relevant_error_window(important)
+                            return f"=== Job {job_name} ({job_id}) ===\n{important}"
+                    except zipfile.BadZipFile:
+                        pass
+
+            # 3) フォールバック: ジョブのテキストログ
+            try:
+                job_txt = subprocess.run(
+                    ['gh', 'run', 'view', run_id, '-R', owner_repo, '--job', str(job_id), '--log'],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if job_txt.returncode == 0 and job_txt.stdout.strip():
+                    text_output = job_txt.stdout
+                    # フォールバック（テキストログ）でも失敗ステップの行だけに絞り込む（タブ区切り形式に対応）
+                    text_for_extract = text_output
+                    try:
+                        if norm_fail_names:
+                            kept = []
+                            parsed = 0
+                            for ln in text_output.split('\n'):
+                                parts = ln.split('\t', 2)
+                                if len(parts) >= 3:
+                                    parsed += 1
+                                    step_field = parts[1].strip().lower()
+                                    if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
+                                        kept.append(ln)
+                            # ある程度の行がタブ形式でパースでき、かつフィルタ結果が得られた場合のみ適用
+                            if parsed > 10 and kept:
+                                text_for_extract = '\n'.join(kept)
+                                # 見出しを付与（複数失敗ステップの場合は連結）
+                                if failing_step_names:
+                                    hdr = f"--- Step {', '.join(sorted(failing_step_names))} ---\n"
+                                    text_for_extract = hdr + text_for_extract
+                    except Exception:
+                        pass
+
+                    # 期待/受領行を欠落させない
+                    important = self._extract_important_errors({'success': False, 'output': text_for_extract, 'errors': ''})
+                    if (('Expected substring:' in text_for_extract) or ('Received string:' in text_for_extract) or ('expect(received)' in text_for_extract)):
+                        extra = []
+                        src_lines = text_for_extract.split('\n')
+                        for i, ln in enumerate(src_lines):
+                            if ('Expected substring:' in ln) or ('Received string:' in ln) or ('expect(received)' in ln):
+                                s = max(0, i - 2)
+                                e = min(len(src_lines), i + 8)
+                                extra.extend(src_lines[s:e])
+                        if extra:
+                            norm_extra = [ln.replace('\\"', '"') for ln in extra]
+                            if '--- Expectation Details ---' not in important:
+                                important = (important + ('\n\n--- Expectation Details ---\n' if important else '')) + '\n'.join(norm_extra)
+                            else:
+                                important = important + '\n' + '\n'.join(norm_extra)
+                    else:
+                        # 期待/受領が見つからない場合はフィルタ済みテキストからエラー近傍を抽出
+                        important = self._slice_relevant_error_window(text_for_extract)
+                    # 末尾にプレイライトの集計（数行）を補足（全文走査し、順序を保つ）
+                    summary_lines = []
+                    for ln in text_output.split('\n'):
+                        ll = ln.lower()
+                        if ((' failed' in ll) or (' passed' in ll) or (' skipped' in ll) or (' did not run' in ll)
+                            or ('notice:' in ll) or ('error was not a part of any test' in ll)
+                            or ('command failed with exit code' in ll) or ('process completed with exit code' in ll)):
+                            summary_lines.append(ln)
+                    if summary_lines:
+                        important = important + ('\n\n--- Summary ---\n' if '--- Summary ---' not in important else '\n') + '\n'.join(summary_lines[-15:])
+                    # プレリュード切り捨て（最終整形）
+                    important = self._slice_relevant_error_window(important)
+                    return f"=== Job {job_name} ({job_id}) ===\n{important}"
+            except Exception:
+                pass
+
+            # 4) さらにフォールバック: run 全体の失敗ログ
+            try:
+                run_failed = subprocess.run(
+                    ['gh', 'run', 'view', run_id, '-R', owner_repo, '--log-failed'],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                if run_failed.returncode == 0 and run_failed.stdout.strip():
+                    important = self._extract_important_errors({'success': False, 'output': run_failed.stdout, 'errors': ''})
+                    return f"=== Job {job_name} ({job_id}) ===\n{important}"
+            except Exception:
+                pass
+
+            # 5) 最後の手段: run ZIP
+            try:
+                run_zip = subprocess.run(
+                    ['gh', 'api', f'repos/{owner_repo}/actions/runs/{run_id}/logs'],
+                    capture_output=True,
+                    timeout=120
+                )
+                if run_zip.returncode == 0 and run_zip.stdout:
+                    with tempfile.TemporaryDirectory() as t2:
+                        zp = os.path.join(t2, 'run_logs.zip')
+                        with open(zp, 'wb') as wf:
+                            wf.write(run_zip.stdout)
+                        with zipfile.ZipFile(zp, 'r') as zf2:
+                            texts = []
+                            for nm in zf2.namelist():
+                                if nm.lower().endswith('.txt'):
+                                    with zf2.open(nm, 'r') as fp2:
+                                        try:
+                                            texts.append(fp2.read().decode('utf-8', errors='ignore'))
+                                        except Exception:
+                                            pass
+                            imp = self._extract_important_errors({'success': False, 'output': '\n'.join(texts), 'errors': ''})
+                            imp = self._slice_relevant_error_window(imp)
+                            return f"=== Job {job_name} ({job_id}) ===\n{imp}"
+            except Exception:
+                pass
+
+            return f"=== Job {job_name} ({job_id}) ===\nNo detailed logs available"
 
         except Exception as e:
             logger.error(f"Error fetching GitHub Actions logs from URL: {e}")
@@ -2383,7 +2607,12 @@ Please proceed with resolving these merge conflicts now.
             logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
             return False
     def _extract_important_errors(self, test_result: Dict[str, Any]) -> str:
-        """Extract important error information from test output."""
+        """Extract important error information from test output.
+
+        改良点:
+        - Playwright 形式の失敗ブロック（"Error:   1) [suite] › ... .spec.ts ..."）を優先的に広めのコンテキストで抽出
+        - 期待/受領や該当 expect 行、"X failed" サマリを含めやすくする
+        """
         if test_result['success']:
             return ""
 
@@ -2396,11 +2625,79 @@ Please proceed with resolving these merge conflicts now.
         if not full_output:
             return "Tests failed but no error output available"
 
-        # Extract important lines (errors, failures, etc.)
-
-        important_lines = []
         lines = full_output.split('\n')
 
+        # 0) 期待/受領（Playwright/Jest）の詳細行が含まれていれば、見出しからその周辺を優先抽出
+        if ('Expected substring:' in full_output) or ('Received string:' in full_output) or ('expect(received)' in full_output):
+            try:
+                import re
+                # 見出し候補を後方に向かって探す
+                hdr_pat = re.compile(r"^Error:\s+\d+\).*\.spec\.ts:.*")
+                idx_expect = None
+                for i, ln in enumerate(lines):
+                    if ('Expected substring:' in ln) or ('Received string:' in ln) or ('expect(received)' in ln):
+                        idx_expect = i
+                        break
+                if idx_expect is not None:
+                    start = 0
+                    for j in range(idx_expect, -1, -1):
+                        if hdr_pat.search(lines[j]):
+                            start = j
+                            break
+                    end = min(len(lines), idx_expect + 60)
+                    block = '\n'.join(lines[start:end])
+                    if block:
+                        return block
+            except Exception:
+                pass
+
+        # 1) Playwright の典型パターンを優先抽出
+        try:
+            import re
+            # 失敗見出し: "Error:   1) [suite] › e2e/... .spec.ts:line:col › ..."
+            header_indices = []
+            header_regex = re.compile(r"^Error:\s+\d+\)\s+\[[^\]]+\]\s+\u203a\s+.*\.spec\.ts:\d+:\d+\s+\u203a\s+.*|^Error:\s+\d+\)\s+.*\.spec\.ts:.*", re.UNICODE)
+            for idx, ln in enumerate(lines):
+                if header_regex.search(ln):
+                    header_indices.append(idx)
+            # 期待/受領の典型
+            expect_regex = re.compile(r"expect\(received\).*|Expected substring:|Received string:")
+
+            blocks = []
+            for start_idx in header_indices:
+                end_idx = min(len(lines), start_idx + 120)  # 広めに120行
+                # 次のエラー見出しで打ち切り（空行では打ち切らない）
+                for j in range(start_idx + 1, min(len(lines), start_idx + 300)):
+                    if j >= len(lines):
+                        break
+                    s = lines[j]
+                    if header_regex.search(s):
+                        end_idx = j
+                        break
+                block = lines[start_idx:end_idx]
+                # 期待/受領や該当 expect 行が含まれているかチェック
+                if any(expect_regex.search(b) for b in block) or any('.spec.ts' in b for b in block):
+                    blocks.append('\n'.join(block))
+            if blocks:
+                result = '\n\n'.join(blocks)
+                # 期待/受領の行が含まれていなければ追補する
+                if 'Expected substring:' not in result or 'Received string:' not in result:
+                    extra_lines = []
+                    for i, ln in enumerate(lines):
+                        if 'Expected substring:' in ln or 'Received string:' in ln or 'expect(received)' in ln:
+                            start = max(0, i - 2)
+                            end = min(len(lines), i + 4)
+                            extra_lines.extend(lines[start:end])
+                    if extra_lines:
+                        result = result + "\n\n--- Expectation Details ---\n" + '\n'.join(extra_lines)
+                if len(result) > 3000:
+                    result = result[:3000] + "\n... (output truncated)"
+                return result
+        except Exception:
+            pass
+
+        # 2) キーワードベースのフォールバック抽出（従来ロジックを改善）
+        important_lines = []
         # Keywords that indicate important error information
         error_keywords = [
             # error detection
@@ -2422,12 +2719,10 @@ Please proceed with resolving these merge conflicts now.
 
         for i, line in enumerate(lines):
             line_lower = line.lower()
-
-            # Include lines with error keywords
             if any(keyword.lower() in line_lower for keyword in error_keywords):
-                # Include some context around error lines
-                start = max(0, i - 2)
-                end = min(len(lines), i + 3)
+                # もう少し広めに文脈を抽出
+                start = max(0, i - 5)
+                end = min(len(lines), i + 8)
                 context_lines = lines[start:end]
                 important_lines.extend(context_lines)
 
@@ -2441,7 +2736,7 @@ Please proceed with resolving these merge conflicts now.
 
         # Limit output length
         result = '\n'.join(unique_lines)
-        if len(result) > 2000:  # Limit to 2000 characters
+        if len(result) > 2000:
             result = result[:2000] + "\n... (output truncated)"
 
         return result if result else "Tests failed but no specific error information found"

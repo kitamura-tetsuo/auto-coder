@@ -37,8 +37,18 @@ def test_get_github_actions_logs_fallback_to_text_when_zip_fails(mock_github_cli
         if cmd[:3] == ['gh', 'run', 'view'] and '--job' in cmd and '--log' in cmd:
             ui_log = (
                 'INFO ok\n'
-                'Error:   1) [new] \u203a e2e/new/cnt-shared-container-store-12ee98aa.spec.ts:14:5 \u203a '
-                'CNT-12ee98aa: Shared Container Store \u203a container selector lists projects from store\n'
+                'Error:   1) [core] \u203a e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 \u203a '
+                'URL label links \u203a converts plain URL to clickable link \n\n'
+                '    Error: expect(received).toContain(expected) // indexOf\n\n'
+                '    Expected substring: "<a href=\\"https://example.com\\""\n'
+                '    Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"\n\n'
+                '      47 |\n'
+                '      48 |         const firstItemHtml = await page.locator(".outliner-item").first().locator(".item-text").innerHTML();\n'
+                '    > 49 |         expect(firstItemHtml).toContain(\'<a href="https://example.com"\');\n'
+                '         |                               ^\n'
+                '      50 |         expect(firstItemHtml).toContain(">https://example.com</a>");\n'
+                '      51 |     });\n'
+                '      52 | });\n'
             )
             return Mock(returncode=0, stdout=ui_log, stderr='')
         return Mock(returncode=1, stdout='', stderr='unknown')
@@ -48,5 +58,8 @@ def test_get_github_actions_logs_fallback_to_text_when_zip_fails(mock_github_cli
 
     assert '=== Job test (47639576037) ===' in out
     # 具体的な Playwright の失敗見出し行が抽出されること
-    assert '[new] › e2e/new/cnt-shared-container-store-12ee98aa.spec.ts:14:5 › CNT-12ee98aa' in out
+    assert '[core] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links' in out
+    # 期待/受領メッセージが含まれること
+    assert 'Expected substring: "<a href="https://example.com"' in out
+    assert 'Received string:' in out
 

@@ -45,7 +45,7 @@
             "args": [
                 "get-actions-logs",
                 "--url",
-                "https://github.com/kitamura-tetsuo/outliner/actions/runs/16949853465/job/48039894437?pr=496"
+                "https://github.com/kitamura-tetsuo/outliner/actions/runs/17006383413/job/48216559181?pr=502"
             ],
             "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
             "env": {

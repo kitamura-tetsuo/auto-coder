@@ -184,7 +184,7 @@ def stub_git_and_gh_commands(monkeypatch):
             elif isinstance(cmd, str):
                 program = cmd.split()[0]
 
-            if program not in ("git", "gh", "gemini", "codex"):
+            if program not in ("git", "gh", "gemini", "codex", "uv"):
                 return orig_run(cmd, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, check=check, input=input, env=env)
 
             # デフォルトの成功レスポンス
@@ -216,7 +216,7 @@ def stub_git_and_gh_commands(monkeypatch):
                     pass  # 出力は下で text フラグに応じて生成
                 else:
                     out_text = ""
-            else:  # gemini/codex
+            else:  # gemini/codex/uv
                 # --version チェックや exec をダミー成功
                 out_text = ""
 
@@ -240,7 +240,7 @@ def stub_git_and_gh_commands(monkeypatch):
     def fake_popen(cmd, stdout=None, stderr=None, text=False, bufsize=1, universal_newlines=None, cwd=None, env=None):
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
-            if program in ("git", "gh", "gemini", "codex"):
+            if program in ("git", "gh", "gemini", "codex", "uv"):
                 class DummyPopen:
                     def __init__(self):
                         # stdout をイテレータにして、逐次読み取りを安全に終了

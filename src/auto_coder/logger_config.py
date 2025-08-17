@@ -13,32 +13,34 @@ from .config import settings
 def setup_logger(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
-    include_file_info: bool = True
+    include_file_info: bool = True,
+    stream = sys.stdout,
 ) -> None:
     """
     Setup loguru logger with file and line information.
-    
+
     Args:
         log_level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_file: Optional log file path
         include_file_info: Whether to include file and line information in logs
-    
+        stream: Stream to write console logs to (default: sys.stdout). Use sys.stderr to avoid polluting stdout.
+
     Raises:
         ValueError: If an invalid log level is provided
     """
     # Remove default handler
     logger.remove()
-    
+
     # Use provided log level or fall back to settings
     level = log_level or settings.log_level
-    
+
     # Validate log level
     valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
     if level.upper() not in valid_levels:
         raise ValueError(f"Invalid log level '{level}'. Must be one of: {', '.join(valid_levels)}")
-    
+
     level = level.upper()
-    
+
     # Format with file and line information
     if include_file_info:
         format_string = (
@@ -54,22 +56,22 @@ def setup_logger(
             "<cyan>{name}</cyan> - "
             "<level>{message}</level>"
         )
-    
-    # Add console handler
+
+    # Add console handler (to specified stream)
     logger.add(
-        sys.stdout,
+        stream,
         format=format_string,
         level=level,
         colorize=True,
         enqueue=True
     )
-    
+
     # Add file handler if specified
     if log_file:
         # Ensure log directory exists
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # File format without colors
         file_format = (
             "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
@@ -77,7 +79,7 @@ def setup_logger(
             "{name}:{function}:{line} - "
             "{message}"
         )
-        
+
         logger.add(
             log_file,
             format=file_format,

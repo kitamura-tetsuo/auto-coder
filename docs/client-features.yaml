@@ -133,9 +133,9 @@ features:
             parameters: ["pr_data", "conflict_info"]
             returns: "List of actions taken during resolution"
           - name: "_get_github_actions_logs"
-            description: "Use gh api to fetch failed job logs (ZIP) for the latest failed run on the PR branch and extract error snippets"
+            description: "Use gh api to fetch failed job logs (ZIP) for the latest failed run on the PR branch and extract error snippets. Detect failing steps and extract Playwright-style failure blocks including expectation details. Fallback to gh run view --job --log when ZIP is unavailable."
             parameters: ["repo_name", "pr_data", "failed_checks"]
-            returns: "String containing extracted error snippets per failed job"
+            returns: "String containing extracted error snippets per failed job (with step headings and expectation details when available)"
 
 
   cli_interface:
@@ -165,6 +165,12 @@ features:
               - "--backend": "AI backend to use (codex|gemini). Default: codex"
               - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
+          - name: "mcp-pdb"
+            description: "Helpers to set up and verify mcp-pdb (Model Context Protocol PDB server)"
+            options:
+              - "print-config --target [windsurf|claude]": "Print configuration snippet for Windsurf or Claude; optionally write to file"
+              - "status": "Check prerequisites (uv availability) and show setup tips"
+
 
   configuration:
     name: "Configuration Management"
@@ -422,10 +428,31 @@ special_features:
     components:
       - name: "AutomationEngine.get_github_actions_logs_from_url"
         file: "src/auto_coder/automation_engine.py"
-        description: "Retrieve error logs from a GitHub Actions job URL"
+        description: |
+          Retrieve error logs from a GitHub Actions job URL, focusing on:
+          - Filter to only include failing steps when step metadata is available via `gh api repos/{owner}/{repo}/actions/jobs/{job_id}`
+          - Match step logs by normalized step names against step log filenames and headers
+          - Preserve Playwright/Jest expectation blocks (Expected/Received) verbatim
+          - Strict prelude trimming via _slice_relevant_error_window with triggers including:
+            - Expected substring / Received string / expect(received)
+            - Error headers / .spec.ts / ##[error]
+            - Command failed/Process completed exit code
+            - notice/##[notice] and "error was not a part of any test"
+          - ZIP and text log paths both ensure slicing is applied at the end.
+          - Step snippets include only error-bearing content (e2e .spec.ts/expect/exit code markers), non-error steps are excluded.
+          - Appends a --- Summary --- block when failure summary lines are present.
       - name: "CLI command get-actions-logs"
         file: "src/auto_coder/cli.py"
-        description: "CLI command to fetch GitHub Actions job logs for debugging"
+        description: |
+          CLI command to fetch GitHub Actions job logs for debugging.
+          - Logger output is routed to stderr to avoid polluting stdout (which is intended to be piped to files).
+          - Token source messages are logged (stderr) instead of echoed to stdout.
+    tests:
+      - "tests/test_actions_log_cli_e2e.py::test_get_actions_logs_cli"
+      - "tests/test_github_actions_logs_from_url.py::test_get_github_actions_logs_from_url_fetches_job_zip_and_extracts_errors"
+      - "tests/test_github_actions_logs.py::test_get_github_actions_logs_uses_gh_api_and_extracts_errors"
+      - "tests/test_github_actions_logs_fallback.py::test_get_github_actions_logs_fallback_to_text_when_zip_fails"
+      - "tests/test_actions_log_prelude_strip.py::test_cli_get_actions_logs_strips_prelude_and_is_compact"
 
 testing:
   unit_tests:

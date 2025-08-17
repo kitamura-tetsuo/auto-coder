@@ -70,6 +70,13 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
   - Use a single push helper for pushing the current branch.
   - Existing direct invocations must be refactored to call these helpers.
 
+### MCP-PDB セットアップ支援
+- CLI `auto-coder mcp-pdb` グループを追加
+  - `print-config --target [windsurf|claude]` で設定スニペットを出力
+  - `status` で前提コマンド（uv）の存在チェックとセットアップ手順のヒントを表示
+- 実環境へのインストールは行わず、ユーザの開発環境（Windsurf/Claude）での設定支援のみを行う
+
+
 
 ## 主要機能
 - GitHub APIを使用したissue/PR取得（古い順でソート）
