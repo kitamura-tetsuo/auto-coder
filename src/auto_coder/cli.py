@@ -131,6 +131,7 @@ def main() -> None:
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode/--no-jules-mode', default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)')
 @click.option('--skip-main-update/--no-skip-main-update', default=True, help='When PR checks fail, skip merging main into the PR before attempting fixes (default: skip)')
+@click.option('--only', 'only_target', help='Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def process_issues(
@@ -142,6 +143,7 @@ def process_issues(
     dry_run: bool,
     jules_mode: bool,
     skip_main_update: bool,
+    only_target: Optional[str],
     log_level: str,
     log_file: Optional[str]
 ) -> None:
@@ -204,6 +206,34 @@ def process_issues(
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
 
     automation_engine = AutomationEngine(github_client, ai_client, dry_run=dry_run, config=engine_config)
+
+    # If only_target is provided, parse and process a single item
+    if only_target:
+        import re
+        target_type = 'auto'
+        number = None
+        # If URL, extract number and type
+        m = re.search(r"/issues/(\d+)$", only_target)
+        if m:
+            target_type = 'issue'
+            number = int(m.group(1))
+        else:
+            m = re.search(r"/pull/(\d+)$", only_target)
+            if m:
+                target_type = 'pr'
+                number = int(m.group(1))
+        if number is None:
+            # Try plain number
+            try:
+                number = int(only_target.strip())
+                target_type = 'auto'
+            except ValueError:
+                raise click.ClickException("--only must be a PR/Issue URL or a number")
+        # Run single-item processing
+        result = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
+        # Print brief summary to stdout
+        click.echo(f"Processed single {target_type} #{number}")
+        return
 
     # Run automation
     if backend == 'gemini' and gemini_api_key is not None:

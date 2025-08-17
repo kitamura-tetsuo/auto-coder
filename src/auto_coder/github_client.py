@@ -14,12 +14,12 @@ logger = get_logger(__name__)
 
 class GitHubClient:
     """GitHub API client for managing issues and pull requests."""
-    
+
     def __init__(self, token: str):
         """Initialize GitHub client with API token."""
         self.github = Github(token)
         self.token = token
-        
+
     def get_repository(self, repo_name: str) -> Repository.Repository:
         """Get repository object by name (owner/repo)."""
         try:
@@ -27,7 +27,7 @@ class GitHubClient:
         except GithubException as e:
             logger.error(f"Failed to get repository {repo_name}: {e}")
             raise
-    
+
     def get_open_issues(self, repo_name: str, limit: Optional[int] = None) -> List[Issue.Issue]:
         """Get open issues from repository, sorted by creation date (oldest first)."""
         try:
@@ -135,7 +135,17 @@ class GitHubClient:
         except GithubException as e:
             logger.error(f"Failed to get PR #{pr_number} from {repo_name}: {e}")
             raise
-    
+
+    def get_issue_details_by_number(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
+        """Get Issue details by repository name and issue number."""
+        try:
+            repo = self.get_repository(repo_name)
+            issue = repo.get_issue(issue_number)
+            return self.get_issue_details(issue)
+        except GithubException as e:
+            logger.error(f"Failed to get Issue #{issue_number} from {repo_name}: {e}")
+            raise
+
     def create_issue(self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None) -> Issue.Issue:
         """Create a new issue in the repository."""
         try:
@@ -143,11 +153,11 @@ class GitHubClient:
             issue = repo.create_issue(title=title, body=body, labels=labels or [])
             logger.info(f"Created issue #{issue.number}: {title}")
             return issue
-            
+
         except GithubException as e:
             logger.error(f"Failed to create issue in {repo_name}: {e}")
             raise
-    
+
     def add_comment_to_issue(self, repo_name: str, issue_number: int, comment: str) -> None:
         """Add a comment to an existing issue."""
         try:

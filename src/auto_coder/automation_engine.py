@@ -273,6 +273,79 @@ class AutomationEngine:
 
 
 
+    def process_single(self, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]:
+        """Process a single issue or PR by number.
+
+        target_type: 'issue' | 'pr' | 'auto'
+        When 'auto', try PR first then fall back to issue.
+        """
+        logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
+        result = {
+            'repository': repo_name,
+            'timestamp': datetime.now().isoformat(),
+            'dry_run': self.dry_run,
+            'jules_mode': jules_mode,
+            'issues_processed': [],
+            'prs_processed': [],
+            'errors': []
+        }
+        try:
+            resolved_type = target_type
+            if target_type == 'auto':
+                # Prefer PR to avoid mislabeling PR issues
+                try:
+                    pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                    resolved_type = 'pr'
+                except Exception:
+                    resolved_type = 'issue'
+            if resolved_type == 'pr':
+                try:
+                    pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                    actions = self._take_pr_actions(repo_name, pr_data)
+                    processed_pr = {
+                        'pr_data': pr_data,
+                        'actions_taken': actions,
+                        'priority': 'single'
+                    }
+                    result['prs_processed'].append(processed_pr)
+                except Exception as e:
+                    msg = f"Failed to process PR #{number}: {e}"
+                    logger.error(msg)
+                    result['errors'].append(msg)
+            else:
+                try:
+                    issue_data = self.github.get_issue_details_by_number(repo_name, number)
+                    processed_issue = {
+                        'issue_data': issue_data,
+                        'analysis': None,
+                        'solution': None,
+                        'actions_taken': []
+                    }
+                    if jules_mode:
+                        # Mimic jules mode behavior
+                        current_labels = issue_data.get('labels', [])
+                        if 'jules' not in current_labels:
+                            if not self.dry_run:
+                                self.github.add_labels_to_issue(repo_name, number, ['jules'])
+                                processed_issue['actions_taken'].append(f"Added 'jules' label to issue #{number}")
+                            else:
+                                processed_issue['actions_taken'].append(f"[DRY RUN] Would add 'jules' label to issue #{number}")
+                        else:
+                            processed_issue['actions_taken'].append(f"Issue #{number} already has 'jules' label")
+                    else:
+                        actions = self._take_issue_actions(repo_name, issue_data)
+                        processed_issue['actions_taken'] = actions
+                    result['issues_processed'].append(processed_issue)
+                except Exception as e:
+                    msg = f"Failed to process issue #{number}: {e}"
+                    logger.error(msg)
+                    result['errors'].append(msg)
+        except Exception as e:
+            msg = f"Error in process_single: {e}"
+            logger.error(msg)
+            result['errors'].append(msg)
+        return result
+
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
         logger.info(f"Analyzing repository for feature opportunities: {repo_name}")

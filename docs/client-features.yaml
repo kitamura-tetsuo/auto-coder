@@ -39,6 +39,10 @@ features:
             description: "Get PR details by repository name and PR number"
             parameters: ["repo_name", "pr_number"]
             returns: "Dictionary with PR details"
+          - name: "get_issue_details_by_number"
+            description: "Get Issue details by repository name and issue number"
+            parameters: ["repo_name", "issue_number"]
+            returns: "Dictionary with Issue details"
           - name: "create_issue"
             description: "Create a new issue in the repository"
             parameters: ["repo_name", "title", "body", "labels"]
@@ -91,6 +95,10 @@ features:
             description: "Execute the main automation process for a repository"
             parameters: ["repo_name", "jules_mode (optional)"]
             returns: "Dictionary with automation results"
+          - name: "process_single"
+            description: "Process a single issue or PR by number; supports 'auto' detection when number is given"
+            parameters: ["repo_name", "target_type ('issue'|'pr'|'auto')", "number", "jules_mode (optional)"]
+            returns: "Dictionary with results for the single target"
           - name: "create_feature_issues"
             description: "Analyze repository and create feature enhancement issues"
             parameters: ["repo_name"]
@@ -155,6 +163,7 @@ features:
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
               - "--skip-main-update/--no-skip-main-update": "When PR checks fail, skip merging main into PR before attempting fixes (default: skip)"
+              - "--only": "Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)"
               - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
               - "--log-file": "Log file path (optional)"
           - name: "create-feature-issues"
@@ -532,5 +541,9 @@ deployment:
         description: "Disable jules mode and process issues with AI analysis"
       - command: "auto-coder process-issues --repo owner/repo --jules-mode --dry-run"
         description: "Run jules mode in dry-run mode"
+      - command: "auto-coder process-issues --repo owner/repo --only 123"
+        description: "Process only issue/PR #123"
+      - command: "auto-coder process-issues --repo owner/repo --only https://github.com/owner/repo/pull/456"
+        description: "Process only PR #456 by URL"
       - command: "auto-coder create-feature-issues --repo owner/repo"
         description: "Create feature enhancement issues"

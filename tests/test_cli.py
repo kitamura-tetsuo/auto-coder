@@ -238,7 +238,76 @@ class TestCLI:
         assert getattr(kwargs['config'], 'SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL') is True
 
         # Verify run was called with jules_mode=True
-        mock_automation_engine.run.assert_called_once_with("test/repo", jules_mode=True)
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_process_issues_only_number_calls_single_auto(self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo", "test/repo",
+                "--github-token", "test_token",
+                "--only", "123",
+            ],
+        )
+        assert result.exit_code == 0
+        # Should call process_single with target_type='auto'
+        mock_engine.process_single.assert_called_once_with("test/repo", "auto", 123, jules_mode=True)
+        # Should not call bulk run
+        mock_engine.run.assert_not_called()
+
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_process_issues_only_url_issue(self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo", "test/repo",
+                "--github-token", "test_token",
+                "--only", "https://github.com/owner/repo/issues/456",
+                "--no-jules-mode"
+            ],
+        )
+        assert result.exit_code == 0
+        mock_engine.process_single.assert_called_once_with("test/repo", "issue", 456, jules_mode=False)
+        mock_engine.run.assert_not_called()
+
+    def test_process_issues_help_includes_only_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(process_issues, ["--help"])
+        assert result.exit_code == 0
+        assert "--only" in result.output
 
     def test_process_issues_missing_github_token(self):
         """Test process-issues command with missing GitHub token."""

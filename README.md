@@ -35,6 +35,7 @@ cd auto-coder
 
 2. 依存関係をインストールして、任意のディレクトリから実行可能にします:
 ```bash
+source ./venv/bin/activate
 pip install -e .
 # またはリポジトリをクローンせずに直接インストール
 pip install git+https://github.com/your-username/auto-coder.git
@@ -64,6 +65,12 @@ auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-
 
 # ドライランモードで実行（変更を行わない）
 auto-coder process-issues --repo owner/repo --dry-run
+
+# 特定のIssue/PRのみ処理（番号指定）
+auto-coder process-issues --repo owner/repo --only 123
+
+# 特定のPRのみ処理（URL指定）
+auto-coder process-issues --repo owner/repo --only https://github.com/owner/repo/pull/456
 ```
 
 #### 機能提案issueの作成
@@ -85,6 +92,7 @@ auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemi
 - `--skip-main-update/--no-skip-main-update`: PRのチェックが失敗している場合に、修正を試みる前に main ブランチをPRブランチへ取り込むかの挙動を切替（デフォルト: main取り込みをスキップ）。
   - 既定値: `--skip-main-update`（スキップ）
   - 明示的に main 取り込みを行いたい場合は `--no-skip-main-update` を指定
+- `--only`: 特定のIssue/PRのみ処理（URLまたは番号指定）
 
 オプション:
 - `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
