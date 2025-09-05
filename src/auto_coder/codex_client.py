@@ -13,7 +13,7 @@ logger = get_logger(__name__)
 class CodexClient:
     """Codex CLI client for analyzing issues and generating solutions.
 
-    Note: Provides a GeminiClient-compatible surface for minimal integration.
+    Note: Provides a GeminiClient-compatible surface for integration.
     """
 
     def __init__(self, model_name: str = "codex"):

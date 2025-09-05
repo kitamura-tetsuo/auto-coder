@@ -2,6 +2,7 @@
 Automation engine for Auto-Coder.
 """
 
+import math
 from typing import Dict, Any, List, Optional
 import json
 import os
@@ -32,6 +33,8 @@ class AutomationConfig:
     MAX_PR_DIFF_SIZE: int = 2000
     MAX_PROMPT_SIZE: int = 1000
     MAX_RESPONSE_SIZE: int = 200
+    # Default max attempts for fix loops
+    # Note: tests expect strict default value of 3
     MAX_FIX_ATTEMPTS: int = 3
 
     # Git settings
@@ -41,6 +44,9 @@ class AutomationConfig:
     # When GitHub Actions checks fail for a PR, skip merging main into the PR branch before LLM fixes.
     # This changes previous behavior to default-skipping to reduce noisy rebases.
     SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: bool = True
+
+    # Ignore Dependabot-authored PRs entirely when processing PRs
+    IGNORE_DEPENDABOT_PRS: bool = False
 
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
@@ -140,6 +146,281 @@ class AutomationEngine:
 
         # Create reports directory if it doesn't exist
         os.makedirs(self.config.REPORTS_DIR, exist_ok=True)
+
+    # ===== Local test run + fix loop =====
+    def _run_local_tests(self) -> Dict[str, Any]:
+        """Run local tests using configured script or pytest fallback.
+
+        Returns a dict: {success, output, errors, return_code}
+        """
+        try:
+            # Prefer test script if present; otherwise run pytest.
+            if os.path.exists(self.config.TEST_SCRIPT_PATH):
+                cmd = ['bash', self.config.TEST_SCRIPT_PATH]
+                logger.info(f"Running local tests via script: {self.config.TEST_SCRIPT_PATH}")
+            else:
+                # Fallback to pytest quick mode
+                cmd = ['pytest', '-q', '--maxfail=1']
+                logger.info("Test script not found; running pytest -q --maxfail=1")
+            result = self.cmd.run_command(cmd, timeout=self.cmd.DEFAULT_TIMEOUTS['test'])
+
+            return {
+                'success': result.success,
+                'output': result.stdout,
+                'errors': result.stderr,
+                'return_code': result.returncode,
+                'command': ' '.join(cmd),
+            }
+        except Exception as e:
+            logger.error(f"Local test execution failed: {e}")
+            return {
+                'success': False,
+                'output': '',
+                'errors': str(e),
+                'return_code': -1,
+                'command': '',
+            }
+
+    def _apply_workspace_test_fix(self, test_result: Dict[str, Any]) -> str:
+        """Ask the LLM to apply workspace edits based on local test failures.
+
+        Returns a short action summary string.
+        """
+        try:
+            error_summary = self._extract_important_errors(test_result)
+            if not error_summary:
+                return "No actionable errors found in local test output"
+
+            fix_prompt = f"""
+You are operating directly in this repository workspace with write access.
+
+Goal: Make local tests pass by applying safe edits.
+
+STRICT RULES:
+- Do NOT run git commit/push; the system will handle that.
+- Prefer the smallest change that resolves failures and preserves intent.
+
+Local Test Failure Summary (truncated):
+{error_summary[: self.config.MAX_PROMPT_SIZE]}
+
+ Local test command used:
+ {test_result.get('command', 'pytest -q --maxfail=1')}
+
+Now apply the fix directly in the repository.
+Return a single concise line summarizing the change.
+"""
+
+            if self.dry_run:
+                return "[DRY RUN] Would apply fixes for local test failures"
+
+            response = self.gemini._run_gemini_cli(fix_prompt)
+            if response and response.strip():
+                # Take the first line as the summary and trim
+                first_line = response.strip().splitlines()[0]
+                return first_line[: self.config.MAX_RESPONSE_SIZE]
+            return "LLM produced no response"
+        except Exception as e:
+            return f"Error applying workspace test fix: {e}"
+
+    def fix_to_pass_tests(self, max_attempts: Optional[int] = None) -> Dict[str, Any]:
+        """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
+
+        If the LLM makes no edits (no changes to commit) in an iteration, raise an error and stop.
+        Returns a summary dict.
+        """
+        attempts_limit = max_attempts if isinstance(max_attempts, int) and max_attempts > 0 else self.config.MAX_FIX_ATTEMPTS
+        summary: Dict[str, Any] = {
+            'mode': 'fix-to-pass-tests',
+            'attempts': 0,
+            'success': False,
+            'messages': []
+        }
+
+        # Track previous test output and the error summary given to LLM
+        prev_full_output: Optional[str] = None
+        prev_error_summary: Optional[str] = None
+
+        # Support infinite attempts (math.inf) by using a while loop
+        attempt = 0
+        while True:
+            attempt += 1
+            summary['attempts'] = attempt
+            logger.info(f"Running local tests (attempt {attempt}/{attempts_limit})")
+            test_result = self._run_local_tests()
+            if test_result['success']:
+                msg = f"Local tests passed on attempt {attempt}"
+                logger.info(msg)
+                summary['messages'].append(msg)
+                summary['success'] = True
+                return summary
+
+            # Prepare current error contexts for commit gating
+            current_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
+            current_error_summary = self._extract_important_errors(test_result)
+
+            # Apply LLM-based fix
+            action_msg = self._apply_workspace_test_fix(test_result)
+            summary['messages'].append(action_msg)
+
+            if self.dry_run:
+                # In dry-run we do not commit; just continue attempts
+                continue
+
+            # Commit gating based on significant change (>=10%) in test outputs or error summary
+            should_commit = True
+            try:
+                if prev_full_output is not None or prev_error_summary is not None:
+                    change_ratio_tests = self._change_fraction(prev_full_output or "", current_full_output or "")
+                    change_ratio_errors = self._change_fraction(prev_error_summary or "", current_error_summary or "")
+                    max_change = max(change_ratio_tests, change_ratio_errors)
+                    if max_change < 0.10:
+                        should_commit = False
+                        msg = f"Change below 10% threshold (max={max_change:.2%}); skipping commit this attempt"
+                        logger.info(msg)
+                        summary['messages'].append(msg)
+            except Exception:
+                # On any error computing change, default to committing
+                should_commit = True
+
+            # Update previous context for next iteration
+            prev_full_output = current_full_output
+            prev_error_summary = current_error_summary
+
+            if not should_commit:
+                # Skip staging/committing; proceed to next loop
+                # Stop if finite limit reached
+                try:
+                    if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
+                        break
+                except Exception:
+                    pass
+                continue
+
+            # Stage and commit; detect 'no changes' as an immediate error per requirement
+            add_res = self.cmd.run_command(['git', 'add', '.'])
+            if not add_res.success:
+                errmsg = f"Failed to stage changes: {add_res.stderr}"
+                logger.error(errmsg)
+                summary['messages'].append(errmsg)
+                break
+
+            # Ask LLM to craft a clear, concise commit message for the applied change
+            commit_msg = self._generate_commit_message_via_llm(
+                error_summary=current_error_summary,
+                action_summary=action_msg,
+                attempt=attempt,
+            )
+            if not commit_msg:
+                commit_msg = self._format_commit_message(action_msg, attempt)
+            commit_res = self._commit_with_message(commit_msg)
+            if not commit_res.success:
+                # Treat 'nothing to commit' as LLM made no edits -> error and stop
+                if 'nothing to commit' in (commit_res.stdout or ''):
+                    errmsg = "LLM made no edits; stopping per policy"
+                    logger.error(errmsg)
+                    summary['messages'].append(errmsg)
+                    raise RuntimeError(errmsg)
+                # Other commit failures are recorded and stop the loop
+                errmsg = f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}"
+                logger.error(errmsg)
+                summary['messages'].append(errmsg)
+                break
+
+            # Stop if finite limit reached
+            try:
+                if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
+                    break
+            except Exception:
+                # If attempts_limit is not a number, treat as unlimited
+                pass
+
+        # Final test after exhausting attempts (optional):
+        final = self._run_local_tests()
+        if final['success']:
+            summary['success'] = True
+            summary['messages'].append("Local tests passed after final run")
+        else:
+            summary['messages'].append("Local tests still failing after attempts")
+
+        return summary
+
+    @staticmethod
+    def _change_fraction(old: str, new: str) -> float:
+        """Return fraction of change between two strings (0.0..1.0).
+
+        Uses difflib.SequenceMatcher similarity; change = 1 - ratio.
+        """
+        try:
+            import difflib
+            if old is None and new is None:
+                return 0.0
+            old_s = old or ""
+            new_s = new or ""
+            if old_s == new_s:
+                return 0.0
+            ratio = difflib.SequenceMatcher(None, old_s, new_s).ratio()
+            return max(0.0, 1.0 - ratio)
+        except Exception:
+            # Conservative fallback: assume large change
+            return 1.0
+
+    def _generate_commit_message_via_llm(self, error_summary: str, action_summary: str, attempt: int) -> str:
+        """Use LLM to generate a concise commit message based on the fix context.
+
+        Keeps the call minimal and instructs the model to output a single-line subject only.
+        Never asks the LLM to run git commands.
+        """
+        try:
+            if not getattr(self, 'gemini', None):
+                return ""
+
+            prompt = f"""
+You have just applied code changes to fix failing local tests.
+Craft a concise commit subject (single line, <= 72 chars, imperative mood) summarizing the change.
+
+Rules:
+- Subject line only. No body, no backticks, no code blocks.
+- Do NOT include commands like git commit/push.
+- Prefer specifics (file/function/test) if clear from context.
+
+Context:
+- Action summary from previous step: {action_summary.strip()[:200]}
+- Error summary hint (truncated):
+{(error_summary or '').strip()[:400]}
+"""
+
+            response = self.gemini._run_gemini_cli(prompt)
+            if not response:
+                return ""
+            # Take first non-empty line, sanitize length
+            for line in response.splitlines():
+                line = line.strip().strip('"').strip("'")
+                if line:
+                    if len(line) > 72:
+                        line = line[:72].rstrip()
+                    return f"Auto-Coder: {line}"
+            return ""
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _format_commit_message(llm_summary: str, attempt: int) -> str:
+        """Create a concise commit message using the LLM-produced summary.
+
+        - Prefix with "Auto-Coder:" to unify automation commits
+        - Sanitize dry-run prefixes and trim to a reasonable length
+        - Fallback to a generic message if empty
+        """
+        base = (llm_summary or "").strip()
+        # Remove any dry-run indicator if accidentally present
+        if base.startswith('[DRY RUN]'):
+            base = base[len('[DRY RUN]'):].strip()
+        if not base:
+            base = "Fix local tests"
+        # Limit length to ~100 chars
+        if len(base) > 100:
+            base = base[:100].rstrip()
+        return f"Auto-Coder: {base}"
 
     def _handle_error(self, operation: str, error: Exception, context: str = "") -> str:
         """Standardized error handling."""
@@ -491,6 +772,13 @@ class AutomationEngine:
         """Process open pull requests in the repository with priority order."""
         try:
             prs = self.github.get_open_pull_requests(repo_name, limit=settings.max_prs_per_run)
+            # Optionally ignore Dependabot PRs
+            if self.config.IGNORE_DEPENDABOT_PRS:
+                original_count = len(prs)
+                prs = [pr for pr in prs if not self._is_dependabot_pr(pr)]
+                filtered = original_count - len(prs)
+                if filtered > 0:
+                    logger.info(f"Ignoring {filtered} Dependabot PR(s) due to configuration")
             processed_prs = []
             merged_pr_numbers = set()
             handled_pr_numbers = set()
@@ -566,6 +854,20 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Failed to process PRs for {repo_name}: {e}")
             return []
+
+    def _is_dependabot_pr(self, pr_obj: Any) -> bool:
+        """Return True if the PR is authored by Dependabot.
+
+        Detects common Dependabot actors such as 'dependabot[bot]' or accounts containing 'dependabot'.
+        """
+        try:
+            user = getattr(pr_obj, 'user', None)
+            login = getattr(user, 'login', None) if user is not None else None
+            if isinstance(login, str) and 'dependabot' in login.lower():
+                return True
+        except Exception:
+            pass
+        return False
 
     def _process_pr_for_merge(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process a PR for quick merging when GitHub Actions are passing."""
@@ -784,6 +1086,35 @@ Please proceed with analyzing and taking action on this issue now.
                 lower = resp.lower()
                 if "merged" in lower or "auto-merge" in lower:
                     actions.append(f"Auto-merged PR #{pr_data['number']} based on LLM action")
+                else:
+                    # Stage, commit, and push via helpers (LLM must not commit directly)
+                    add_res = self.cmd.run_command(['git', 'add', '.'])
+                    if not add_res.success:
+                        actions.append(f"Failed to stage changes: {add_res.stderr}")
+                        return actions
+
+                    # Safety: abort commit if conflict markers remain
+                    flagged = self._scan_conflict_markers()
+                    if flagged:
+                        actions.append(
+                            f"Conflict markers detected in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}. Aborting commit."
+                        )
+                        return actions
+
+                    commit_msg = f"Auto-Coder: Apply fix for PR #{pr_data['number']}"
+                    commit_res = self._commit_with_message(commit_msg)
+                    if commit_res.success:
+                        actions.append(f"Committed changes for PR #{pr_data['number']}")
+                        push_res = self._push_current_branch()
+                        if push_res.success:
+                            actions.append(f"Pushed changes for PR #{pr_data['number']}")
+                        else:
+                            actions.append(f"Failed to push changes: {push_res.stderr}")
+                    else:
+                        if 'nothing to commit' in (commit_res.stdout or ''):
+                            actions.append("No changes to commit")
+                        else:
+                            actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
             else:
                 actions.append("LLM CLI did not provide a clear response for PR actions")
 
@@ -805,21 +1136,15 @@ Please proceed with analyzing and taking action on this issue now.
         return f"""
 You are operating directly in the repository workspace with write access and the git and gh CLIs available.
 
-Task: For the following GitHub Pull Request, apply minimal, safe code changes directly to make it mergeable and passing. Never post PR comments.
+Task: For the following GitHub Pull Request, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
 
 STRICT DIRECTIVES (follow exactly):
 - Do NOT post any comments to the PR, reviews, or issues.
 - Do NOT write narrative explanations as output; take actions in the workspace instead.
-- Prefer minimal, targeted edits that make CI pass while preserving intent.
+- Prefer targeted edits that make CI pass while preserving intent.
 - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-- Stage, commit, and push changes to the PR branch.
-- If CI is already passing and the PR is mergeable, perform: gh pr merge {pr_data['number']} --repo {repo_name} {self.config.MERGE_METHOD}
+- Do NOT run git commit/push or gh pr merge; the system will handle committing/merging.
 - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-Suggested git commands after applying edits:
-- git add -A
-- git commit -m "Auto-Coder: Apply minimal fix for PR #{pr_data['number']}"
-- git push
 
 Return format:
 - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
@@ -1569,31 +1894,45 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
             actions.extend(initial_fix_actions)
 
             # Step 2: Local testing and iterative fixing loop
-            for attempt in range(self.config.MAX_FIX_ATTEMPTS):
-                actions.append(f"Running local tests (attempt {attempt + 1}/{self.config.MAX_FIX_ATTEMPTS})")
+            attempts_limit = self.config.MAX_FIX_ATTEMPTS
+            attempt = 0
+            while True:
+                attempt += 1
+                actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
                 test_result = self._run_pr_tests(repo_name, pr_data)
 
                 if test_result['success']:
-                    actions.append(f"Local tests passed on attempt {attempt + 1}")
+                    actions.append(f"Local tests passed on attempt {attempt}")
 
                     # Commit and push the successful fix
                     if not self.dry_run:
-                        commit_result = self._commit_and_push_fix(pr_data, f"Fix PR issues (attempt {attempt + 1})")
+                        commit_result = self._commit_and_push_fix(pr_data, f"Fix PR issues (attempt {attempt})")
                         actions.append(commit_result)
                     else:
                         actions.append(f"[DRY RUN] Would commit and push fix for PR #{pr_number}")
 
                     break
                 else:
-                    actions.append(f"Local tests failed on attempt {attempt + 1}")
+                    actions.append(f"Local tests failed on attempt {attempt}")
 
-                    if attempt < self.config.MAX_FIX_ATTEMPTS - 1:
-                        # Apply local test failure fix
+                    # Apply local test failure fix (always try unless finite limit reached)
+                    # Stop if finite limit reached after this attempt
+                    # Otherwise, continue attempting fixes
+                    # Determine if we have remaining attempts (finite limit)
+                    finite_limit_reached = False
+                    try:
+                        if math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
+                            finite_limit_reached = True
+                    except Exception:
+                        finite_limit_reached = False
+
+                    if finite_limit_reached:
+                        actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
+                        break
+                    else:
                         local_fix_actions = self._apply_local_test_fix(repo_name, pr_data, test_result)
                         actions.extend(local_fix_actions)
-                    else:
-                        actions.append(f"Max fix attempts ({self.config.MAX_FIX_ATTEMPTS}) reached for PR #{pr_number}")
 
         except Exception as e:
             actions.append(self._handle_error("fixing PR issues with testing", e, f"PR #{pr_number}"))
@@ -1603,14 +1942,14 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
     def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
         """Apply initial fix using GitHub Actions error logs.
 
-        This prompt explicitly instructs the LLM to not only apply code fixes but also
-        stage, commit, and push the changes to the current PR branch.
+        Implementation updated: The LLM is instructed to edit files only; committing
+        and pushing are handled by this code after a conflict-marker check.
         """
         actions: List[str] = []
         pr_number = pr_data['number']
 
         try:
-            # Create prompt for GitHub Actions error fix with commit/push instructions
+            # Create prompt for GitHub Actions error fix (no commit/push by LLM)
             fix_prompt = f"""
 Fix the following GitHub Actions test failures for PR #{pr_number}:
 
@@ -1622,18 +1961,13 @@ GitHub Actions Error Logs (truncated):
 
 Your task:
 1) Identify the root cause(s) of the failing checks based on the logs.
-2) Apply the minimal necessary code changes directly in the repository to fix them.
+2) Apply the necessary code changes directly in the repository to fix them.
 3) After applying changes, run the appropriate quick checks if available (linters/unit tests) to sanity-verify.
-4) Stage and commit the changes, then push to the current PR branch.
-
-Git commands to execute after edits:
-- git add .
-- git commit -m "Auto-Coder: Fix GitHub Actions failures for PR #{pr_number}"
-- git push
+4) Do NOT run git commit/push; the system will handle committing and pushing.
 
 Output requirements:
 - First, provide a concise summary of what you changed and why.
-- Then, include the final git commit result and push result (or any errors) so the automation can log them.
+- Return only a short summary line; no commit/push output is needed.
 """
 
             if not self.dry_run:
@@ -1642,6 +1976,34 @@ Output requirements:
                     actions.append(f"Applied GitHub Actions fix: {response[:self.config.MAX_RESPONSE_SIZE]}...")
                 else:
                     actions.append("No response from Gemini for GitHub Actions fix")
+
+                # Stage, then commit/push via helpers
+                add_res = self.cmd.run_command(['git', 'add', '.'])
+                if not add_res.success:
+                    actions.append(f"Failed to stage changes: {add_res.stderr}")
+                    return actions
+
+                flagged = self._scan_conflict_markers()
+                if flagged:
+                    actions.append(
+                        f"Conflict markers detected in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}. Aborting commit."
+                    )
+                    return actions
+
+                commit_msg = f"Auto-Coder: Fix GitHub Actions failures for PR #{pr_number}"
+                commit_res = self._commit_with_message(commit_msg)
+                if commit_res.success:
+                    actions.append("Committed changes")
+                    push_res = self._push_current_branch()
+                    if push_res.success:
+                        actions.append("Pushed changes")
+                    else:
+                        actions.append(f"Failed to push changes: {push_res.stderr}")
+                else:
+                    if 'nothing to commit' in (commit_res.stdout or ''):
+                        actions.append("No changes to commit")
+                    else:
+                        actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
             else:
                 actions.append(f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}")
 
@@ -1664,7 +2026,7 @@ PR #{pr_number}: {pr_data.get('title', '')}
 Logs:
 {github_logs[: self.config.MAX_PROMPT_SIZE]}
 
-Apply minimal code changes to resolve the failures and ensure tests pass.
+Apply code changes to resolve the failures and ensure tests pass.
 Summarize what you changed.
 """
             response = self.gemini._run_gemini_cli(prompt)
@@ -1689,7 +2051,7 @@ PR #{pr_number}: {pr_data.get('title', '')}
 Errors:
 {error_summary[: self.config.MAX_PROMPT_SIZE]}
 
-Apply minimal code changes to resolve the failures and ensure tests pass.
+Apply code changes to resolve the failures and ensure tests pass.
 Summarize what you changed.
 """
             response = self.gemini._run_gemini_cli(prompt)
@@ -1745,6 +2107,9 @@ Test Errors:
 
 Key Errors:
 {error_summary}
+
+ Local test command used:
+ {test_result.get('command', 'pytest -q --maxfail=1')}
 
 Please analyze the test failures and provide specific code fixes.
 Focus on making the tests pass while maintaining code quality.
@@ -2361,11 +2726,10 @@ Merge Conflict Information:
 Please resolve these merge conflicts by:
 1. Examining the conflicted files
 2. Choosing the appropriate resolution for each conflict
-3. Staging the resolved files with 'git add'
-4. Completing the merge with 'git commit'
-5. Pushing the resolved changes
+3. Editing files to fully remove all conflict markers
+4. Do NOT run git add/commit/push; the system will handle committing.
 
-After resolving the conflicts, respond with a summary of what you resolved.
+After resolving the conflicts, respond with a single-line summary of what you resolved.
 
 Please proceed with resolving these merge conflicts now.
 """
@@ -2378,33 +2742,35 @@ Please proceed with resolving these merge conflicts now.
             if response and len(response.strip()) > 0:
                 actions.append(f"Gemini CLI resolved merge conflicts: {response[:200]}...")
 
-                # Check if merge was completed
-                result = subprocess.run(
-                    ['git', 'status', '--porcelain'],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
+                # Stage any changes made by LLM
+                add_res = self.cmd.run_command(['git', 'add', '.'])
+                if not add_res.success:
+                    actions.append(f"Failed to stage resolved files: {add_res.stderr}")
+                    return actions
 
-                if result.returncode == 0 and not result.stdout.strip():
-                    actions.append(f"Merge conflicts resolved and committed for PR #{pr_data['number']}")
-
-                    # Push the resolved changes
-                    result = subprocess.run(
-                        ['git', 'push'],
-                        capture_output=True,
-                        text=True,
-                        timeout=120
+                # Verify no conflict markers remain before committing
+                flagged = self._scan_conflict_markers()
+                if flagged:
+                    actions.append(
+                        f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing"
                     )
+                    return actions
 
-                    if result.returncode == 0:
-                        actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
-                        # Signal to skip further LLM analysis for this PR in this run
-                        actions.append(self.FLAG_SKIP_ANALYSIS)
-                    else:
-                        actions.append(f"Failed to push resolved merge: {result.stderr}")
+                # Commit via helper and push
+                commit_msg = f"Resolve merge conflicts for PR #{pr_data['number']}"
+                commit_res = self._commit_with_message(commit_msg)
+                if commit_res.success:
+                    actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
                 else:
-                    actions.append(f"Merge conflicts may not be fully resolved for PR #{pr_data['number']}")
+                    actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
+                    return actions
+
+                push_res = self._push_current_branch()
+                if push_res.success:
+                    actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
+                    actions.append(self.FLAG_SKIP_ANALYSIS)
+                else:
+                    actions.append(f"Failed to push resolved merge: {push_res.stderr}")
             else:
                 actions.append("Gemini CLI did not provide a clear response for merge conflict resolution")
 
@@ -2437,10 +2803,84 @@ Please proceed with resolving these merge conflicts now.
         logger.info("Running formatter: npx dprint fmt")
         return self.cmd.run_command(['npx', 'dprint', 'fmt'])
 
+    @staticmethod
+    def _has_conflict_block_in_text(text: str) -> bool:
+        """Return True only if a real git conflict block exists in text.
+
+        Heuristic: require a triad of markers at the start of lines in order:
+        - a start line beginning with '<<<<<<<'
+        - a middle separator line beginning with '======='
+        - an end line beginning with '>>>>>>>'
+
+        This avoids false positives from incidental sequences inside content.
+        """
+        in_block = False
+        saw_mid = False
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip('\n')
+            if not in_block:
+                if line.startswith('<<<<<<<'):
+                    in_block = True
+                    saw_mid = False
+            else:
+                if line.startswith('======='):
+                    saw_mid = True
+                elif line.startswith('>>>>>>>'):
+                    if saw_mid:
+                        return True
+                    # malformed block; reset state
+                    in_block = False
+                    saw_mid = False
+                elif line.startswith('<<<<<<<'):
+                    # nested/another start without closing; restart detection
+                    in_block = True
+                    saw_mid = False
+        return False
+
+    def _scan_conflict_markers(self) -> List[str]:
+        """Scan the working tree for unresolved merge conflict markers.
+
+        Returns a list of file paths that contain a true git conflict block.
+        Skips common generated and cache directories.
+        """
+        flagged: List[str] = []
+        skip_dir_names = {
+            '.git', '.venv', 'venv', 'node_modules', '.pytest_cache', 'htmlcov', 'logs', 'reports',
+            '.mypy_cache', '.ruff_cache', '.svelte-kit', 'coverage', 'dist', 'build', '.next', 'out', '.cache'
+        }
+        skip_exts = {'.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.gz', '.tar', '.svg', '.ico', '.woff', '.woff2'}
+        try:
+            for root, dirs, files in os.walk('.'):
+                # Prune directories we don't want to scan
+                dirs[:] = [d for d in dirs if d not in skip_dir_names]
+                for name in files:
+                    path = os.path.join(root, name)
+                    # Skip common binary assets by extension
+                    ext = os.path.splitext(name)[1].lower()
+                    if ext in skip_exts:
+                        continue
+                    try:
+                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                        if self._has_conflict_block_in_text(content):
+                            flagged.append(path)
+                    except Exception:
+                        # Skip unreadable files
+                        continue
+        except Exception as e:
+            logger.error(f"Error scanning for conflict markers: {e}")
+        return flagged
+
     def _commit_with_message(self, commit_message: str) -> CommandResult:
         """Commit changes with a given message, auto-fixing dprint formatting if needed.
         Returns CommandResult of the final commit attempt.
         """
+        # Abort if conflict markers remain
+        flagged = self._scan_conflict_markers()
+        if flagged:
+            err = f"Unresolved conflict markers found in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}"
+            logger.error(err)
+            return CommandResult(success=False, stdout="", stderr=err, returncode=1)
         # First attempt
         result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
         if result.success:
@@ -2477,6 +2917,12 @@ Please proceed with resolving these merge conflicts now.
             summary = fix_suggestion.get('summary', 'Auto-Coder fix')
             commit_message = f"Auto-Coder: {summary}"
 
+            # Abort if conflict markers remain
+            flagged = self._scan_conflict_markers()
+            if flagged:
+                files_list = ', '.join(sorted(set(flagged)))
+                return f"Conflict markers detected in {len(flagged)} file(s): {files_list}. Aborting commit."
+
             # First commit attempt
             commit_result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
 
@@ -2493,6 +2939,11 @@ Please proceed with resolving these merge conflicts now.
                     add_result2 = self.cmd.run_command(['git', 'add', '.'])
                     if not add_result2.success:
                         return f"Failed to add files after formatting: {add_result2.stderr}"
+                    # Re-check markers after formatting
+                    flagged2 = self._scan_conflict_markers()
+                    if flagged2:
+                        files_list2 = ', '.join(sorted(set(flagged2)))
+                        return f"Conflict markers detected in {len(flagged2)} file(s): {files_list2}. Aborting commit."
                     commit_result = self.cmd.run_command(['git', 'commit', '-m', commit_message])
 
             if commit_result.success:
@@ -2508,23 +2959,10 @@ Please proceed with resolving these merge conflicts now.
         pr_number = pr_data['number']
 
         try:
-            # Check if test script exists
-            if not os.path.exists(self.config.TEST_SCRIPT_PATH):
-                logger.warning(f"Test script {self.config.TEST_SCRIPT_PATH} not found, skipping tests")
-                return {'success': True, 'output': 'No test script found', 'errors': ''}
-
-            # Run the test script
             self._log_action(f"Running tests for PR #{pr_number}")
-            result = self.cmd.run_command(['bash', self.config.TEST_SCRIPT_PATH], timeout=self.cmd.DEFAULT_TIMEOUTS['test'])
-
-            self._log_action(f"Test result for PR #{pr_number}: {'PASS' if result.success else 'FAIL'}")
-
-            return {
-                'success': result.success,
-                'output': result.stdout,
-                'errors': result.stderr,
-                'return_code': result.returncode
-            }
+            result = self._run_local_tests()
+            self._log_action(f"Test result for PR #{pr_number}: {'PASS' if result['success'] else 'FAIL'}")
+            return result
 
         except Exception as e:
             error_msg = self._handle_error("running tests", e, f"PR #{pr_number}")
@@ -2766,7 +3204,8 @@ Please proceed with resolving these merge conflicts now.
             try:
                 import re
                 # 見出し候補を後方に向かって探す
-                hdr_pat = re.compile(r"^Error:\s+\d+\).*\.spec\.ts:.*")
+                # Playwright 見出し: 先頭に "Error:" がないケースや、先頭空白/× 記号を許容
+                hdr_pat = re.compile(r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\).*\.spec\.ts:.*")
                 idx_expect = None
                 for i, ln in enumerate(lines):
                     if ('Expected substring:' in ln) or ('Received string:' in ln) or ('expect(received)' in ln):
@@ -2790,7 +3229,12 @@ Please proceed with resolving these merge conflicts now.
             import re
             # 失敗見出し: "Error:   1) [suite] › e2e/... .spec.ts:line:col › ..."
             header_indices = []
-            header_regex = re.compile(r"^Error:\s+\d+\)\s+\[[^\]]+\]\s+\u203a\s+.*\.spec\.ts:\d+:\d+\s+\u203a\s+.*|^Error:\s+\d+\)\s+.*\.spec\.ts:.*", re.UNICODE)
+            # Playwright 見出し: 先頭に "Error:" がない/ある両方、先頭空白や × 記号も許容
+            header_regex = re.compile(
+                r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+\[[^\]]+\]\s+\u203a\s+.*\.spec\.ts:\d+:\d+\s+\u203a\s+.*|"
+                r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+.*\.spec\.ts:.*",
+                re.UNICODE,
+            )
             for idx, ln in enumerate(lines):
                 if header_regex.search(ln):
                     header_indices.append(idx)

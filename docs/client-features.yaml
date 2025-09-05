@@ -95,6 +95,10 @@ features:
             description: "Execute the main automation process for a repository"
             parameters: ["repo_name", "jules_mode (optional)"]
             returns: "Dictionary with automation results"
+          - name: "fix_to_pass_tests"
+            description: "Run local tests and iteratively request LLM fixes until tests pass; commits are gated and happen only when the test output or the LLM error summary changes by >=10%; errors if LLM makes no edits"
+            parameters: ["max_attempts (optional)"]
+            returns: "Dictionary with success, attempts, and messages"
           - name: "process_single"
             description: "Process a single issue or PR by number; supports 'auto' detection when number is given"
             parameters: ["repo_name", "target_type ('issue'|'pr'|'auto')", "number", "jules_mode (optional)"]
@@ -163,6 +167,7 @@ features:
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
               - "--skip-main-update/--no-skip-main-update": "When PR checks fail, skip merging main into PR before attempting fixes (default: skip)"
+              - "--ignore-dependabot-prs/--no-ignore-dependabot-prs": "Ignore PRs opened by Dependabot when processing PRs (default: do not ignore)"
               - "--only": "Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)"
               - "--log-level": "Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"
               - "--log-file": "Log file path (optional)"
@@ -174,6 +179,16 @@ features:
               - "--backend": "AI backend to use (codex|gemini). Default: codex"
               - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
+          - name: "fix-to-pass-tests"
+            description: "Run tests and request LLM fixes until passing; stop with error if LLM made no edits"
+            options:
+              - "--backend": "AI backend to use (codex|gemini). Default: codex"
+              - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
+              - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
+              - "--max-attempts": "Maximum fix attempts before giving up (defaults to engine config)"
+              - "--dry-run": "Run without making changes"
+              - "--log-level": "Set logging level"
+              - "--log-file": "Log file path"
           - name: "mcp-pdb"
             description: "Helpers to set up and verify mcp-pdb (Model Context Protocol PDB server)"
             options:
@@ -368,10 +383,10 @@ special_features:
 
   pr_action_oriented_prompt:
     name: "PR Action-Oriented Prompt (No Comments)"
-    description: "LLM prompt for PRs forbids posting comments and enforces direct minimal code changes, git add/commit/push, and optional gh pr merge."
+    description: "LLM prompt for PRs forbids posting comments and enforces direct code changes, git add/commit/push, and optional gh pr merge."
     behavior:
       - "Prohibits PR comments or narrative outputs from LLM"
-      - "Instructs minimal, safe edits to make CI pass"
+      - "Instructs safe edits to make CI pass"
       - "Requires git add/commit/push to the PR branch"
       - "If mergeable and CI passing, performs gh pr merge"
       - "Standardizes output to a single line starting with ACTION_SUMMARY: or CANNOT_FIX"
@@ -390,7 +405,7 @@ special_features:
     description: "When applying fixes from GitHub Actions logs, the LLM is instructed to stage, commit, and push changes to the PR branch within the single-run action."
     behavior:
       - "_apply_github_actions_fix constructs a prompt that includes explicit git add/commit/push commands"
-      - "The LLM applies minimal fixes and then executes the git commands to update the PR branch"
+      - "The LLM applies fixes and then executes the git commands to update the PR branch"
       - "The output should summarize changes and include commit/push results for logging"
     benefits:
       - "Ensures fixes are not only generated but also persisted to the PR branch"

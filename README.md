@@ -82,6 +82,23 @@ auto-coder create-feature-issues --repo owner/repo
 auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemini-2.5-pro
 ```
 
+#### テスト合格まで自動修正（fix-to-pass-tests）
+ローカルテストを実行し、失敗していたら LLM に最小限の修正を依頼して再実行を繰り返します。LLM が一切編集しなかった場合はエラーで停止します。
+
+```bash
+# デフォルト（codex バックエンド）で実行
+auto-coder fix-to-pass-tests
+
+# バックエンドを gemini に切替してモデル指定
+auto-coder fix-to-pass-tests --backend gemini --model gemini-2.5-pro
+
+# 試行回数を指定（例: 最大5回）
+auto-coder fix-to-pass-tests --max-attempts 5
+
+# ドライラン（編集は行わず、実行フローのみ）
+auto-coder fix-to-pass-tests --dry-run
+```
+
 ### コマンドオプション
 
 #### `process-issues`
@@ -92,6 +109,7 @@ auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemi
 - `--skip-main-update/--no-skip-main-update`: PRのチェックが失敗している場合に、修正を試みる前に main ブランチをPRブランチへ取り込むかの挙動を切替（デフォルト: main取り込みをスキップ）。
   - 既定値: `--skip-main-update`（スキップ）
   - 明示的に main 取り込みを行いたい場合は `--no-skip-main-update` を指定
+- `--ignore-dependabot-prs/--no-ignore-dependabot-prs`: Dependabot によるPRを処理対象から除外（デフォルト: 除外しない）
 - `--only`: 特定のIssue/PRのみ処理（URLまたは番号指定）
 
 オプション:
@@ -106,6 +124,18 @@ auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemi
 オプション:
 - `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
 - `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
+
+#### `fix-to-pass-tests`
+- `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
+- `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
+- `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
+- `--max-attempts`: テスト修正の最大試行回数（省略時はエンジンの既定値）
+- `--dry-run`: ドライランモード（LLM へは依頼せず、フローのみ確認）
+
+動作仕様:
+- テスト実行は `scripts/test.sh` が存在すればそれを使用、なければ `pytest -q --maxfail=1` を実行します。
+- 各失敗ごとにエラー出力から重要部分を抽出し、LLM に最小限の修正を依頼します。
+- 修正後はステージングとコミットを行います。変更が全くない（`nothing to commit`）場合はエラーで停止します。
 
 ## 設定
 

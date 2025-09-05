@@ -131,6 +131,7 @@ def main() -> None:
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode/--no-jules-mode', default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)')
 @click.option('--skip-main-update/--no-skip-main-update', default=True, help='When PR checks fail, skip merging main into the PR before attempting fixes (default: skip)')
+@click.option('--ignore-dependabot-prs/--no-ignore-dependabot-prs', default=False, help='Ignore PRs opened by Dependabot when processing PRs (default: do not ignore)')
 @click.option('--only', 'only_target', help='Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
@@ -143,6 +144,7 @@ def process_issues(
     dry_run: bool,
     jules_mode: bool,
     skip_main_update: bool,
+    ignore_dependabot_prs: bool,
     only_target: Optional[str],
     log_level: str,
     log_file: Optional[str]
@@ -180,6 +182,7 @@ def process_issues(
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
     logger.info(f"Log level: {log_level}")
+    logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
 
     # Explicitly show main update policy for PR checks failure
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
@@ -192,6 +195,7 @@ def process_issues(
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
+    click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -204,6 +208,7 @@ def process_issues(
     # Configure engine behavior flags
     engine_config = AutomationConfig()
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
+    engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
 
     automation_engine = AutomationEngine(github_client, ai_client, dry_run=dry_run, config=engine_config)
 
@@ -305,6 +310,80 @@ def create_feature_issues(
 
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)
+
+
+@main.command(name="fix-to-pass-tests")
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
+@click.option('--max-attempts', type=int, default=None, help='Maximum fix attempts before giving up (defaults to engine config)')
+@click.option('--dry-run', is_flag=True, help='Run without making changes (LLM edits simulated)')
+@click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
+@click.option('--log-file', help='Log file path (optional)')
+def fix_to_pass_tests_command(
+    backend: str,
+    gemini_api_key: Optional[str],
+    model: str,
+    max_attempts: Optional[int],
+    dry_run: bool,
+    log_level: str,
+    log_file: Optional[str],
+) -> None:
+    """Run local tests and repeatedly request LLM fixes until tests pass.
+
+    If the LLM makes no edits in an iteration, error and stop.
+    """
+    setup_logger(log_level=log_level, log_file=log_file)
+
+    # Check backend CLI availability
+    if backend == 'codex':
+        check_codex_cli_or_fail()
+    else:
+        check_gemini_cli_or_fail()
+
+    # Initialize minimal clients (GitHub not used here, but engine expects a client)
+    try:
+        from .github_client import GitHubClient as _GH
+        github_client = _GH("")
+    except Exception:
+        # Fallback to a minimal stand-in (never used)
+        class _Dummy:
+            token = ""
+        github_client = _Dummy()  # type: ignore
+
+    if backend == 'gemini':
+        ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    else:
+        ai_client = CodexClient(model_name='codex')
+
+    engine = AutomationEngine(github_client, ai_client, dry_run=dry_run)
+
+    # Warn if model flag is set but backend codex (ignored)
+    try:
+        ctx = click.get_current_context(silent=True)
+        if ctx is not None and backend == 'codex':
+            source = ctx.get_parameter_source('model')
+            if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
+                logger.warning("--model is ignored when backend=codex")
+                click.echo("Warning: --model is ignored when backend=codex")
+    except Exception:
+        pass
+
+    click.echo(f"Using backend: {backend}")
+    if backend == 'gemini':
+        click.echo(f"Using model: {model}")
+    click.echo(f"Dry run mode: {dry_run}")
+
+    try:
+        result = engine.fix_to_pass_tests(max_attempts=max_attempts)
+        if result.get('success'):
+            click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")
+        else:
+            click.echo("❌ Tests still failing after attempts")
+            raise click.ClickException("Tests did not pass within the attempt limit")
+    except RuntimeError as e:
+        # Specific error when LLM made no edits
+        raise click.ClickException(str(e))
 
 
 @main.command()

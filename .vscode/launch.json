@@ -90,7 +90,23 @@
             "console": "integratedTerminal",
             "cwd": "/home/ubuntu/src2/outliner",
             "args": [
-                "process-issues"
+                "process-issues",
+                "--ignore-dependabot-prs"
+            ],
+            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "env": {
+                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+            }
+        },
+        {
+            "name": "Process Issues (Live Fix to pass tests) - Outliner",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "cwd": "/home/ubuntu/src2/outliner",
+            "args": [
+                "fix-to-pass-tests",
             ],
             "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
             "env": {

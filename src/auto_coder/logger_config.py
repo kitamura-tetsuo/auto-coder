@@ -41,12 +41,13 @@ def setup_logger(
 
     level = level.upper()
 
-    # Format with file and line information
+    # Format with file and line information (VS Code clickable path:line)
     if include_file_info:
+        # Keep the file path segment uncolored so VS Code detects clickable links
         format_string = (
             "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
+            "{file.path}:{line} in <cyan>{function}</cyan> - "
             "<level>{message}</level>"
         )
     else:
@@ -76,7 +77,7 @@ def setup_logger(
         file_format = (
             "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
             "{level: <8} | "
-            "{name}:{function}:{line} - "
+            "{file.path}:{line} in {function} - "
             "{message}"
         )
 

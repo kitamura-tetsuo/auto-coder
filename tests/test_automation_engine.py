@@ -9,10 +9,15 @@ def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, moc
     prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
 
     assert "Do NOT post any comments" in prompt
-    assert "git commit -m \"Auto-Coder: Apply minimal fix for PR #" in prompt
+    # Should NOT ask LLM to commit/push or merge
+    assert "git commit -m \"Auto-Coder: Apply fix for PR #" not in prompt
+    assert "gh pr merge" not in prompt
+    assert "Do NOT run git commit/push" in prompt
     assert "ACTION_SUMMARY:" in prompt
     assert "CANNOT_FIX" in prompt
-    assert f"gh pr merge {sample_pr_data['number']} --repo {test_repo_name}" in prompt
+    # Ensure repo/number placeholders are still present contextually
+    assert str(sample_pr_data['number']) in prompt
+    assert test_repo_name in prompt
 
 
 def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
@@ -430,6 +435,46 @@ class TestAutomationEngine:
         assert result['priority'] == 'fix'
         assert result['actions_taken'] == ['Fixed issue']
         engine._take_pr_actions.assert_called_once_with("test/repo", sample_pr_data)
+
+    def test_process_pull_requests_ignores_dependabot_when_configured(self, mock_github_client, mock_gemini_client):
+        """When IGNORE_DEPENDABOT_PRS=True, Dependabot PRs are skipped entirely."""
+        # Setup PR mocks
+        from unittest.mock import Mock as _Mock
+        dep_pr = _Mock()
+        dep_pr.number = 1
+        dep_pr.user = _Mock()
+        dep_pr.user.login = 'dependabot[bot]'
+
+        user_pr = _Mock()
+        user_pr.number = 2
+        user_pr.user = _Mock()
+        user_pr.user.login = 'alice'
+
+        mock_github_client.get_open_pull_requests.return_value = [dep_pr, user_pr]
+        mock_github_client.get_pr_details.return_value = {'number': 2, 'title': 'User PR'}
+
+        # Configure engine to ignore dependabot
+        from src.auto_coder.automation_engine import AutomationConfig
+        cfg = AutomationConfig()
+        cfg.IGNORE_DEPENDABOT_PRS = True
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True, config=cfg)
+        # Force second loop path for simplicity
+        engine._check_github_actions_status = _Mock(return_value={'success': False})
+        engine._process_pr_for_fixes = _Mock(return_value={
+            'pr_data': {'number': 2, 'title': 'User PR'},
+            'actions_taken': ['Fixed PR #2'],
+            'priority': 'fix'
+        })
+
+        result = engine._process_pull_requests('test/repo')
+
+        # Assert only the user PR was processed
+        assert len(result) == 1
+        assert result[0]['pr_data']['number'] == 2
+        # Ensure we never tried to get details for the dependabot PR
+        for call in mock_github_client.get_pr_details.call_args_list:
+            assert call.args[0] is user_pr
 
     def test_process_prs_first_loop_actions_passing_and_mergeable(self, mock_github_client, mock_gemini_client):
         """Test first loop processes PRs with passing Actions AND mergeable status."""
@@ -1048,8 +1093,8 @@ class TestAutomationEngine:
         assert "Committed changes" in result[1]
 
 
-    def test_apply_github_actions_fix_instructs_commit_push(self, mock_github_client, mock_gemini_client):
-        """_apply_github_actions_fix should instruct the LLM to commit and push changes."""
+    def test_apply_github_actions_fix_no_commit_in_prompt_and_code_commits(self, mock_github_client, mock_gemini_client):
+        """_apply_github_actions_fix should NOT instruct LLM to commit/push; code handles commit/push."""
         # Setup
         mock_gemini_client._run_gemini_cli.return_value = "OK: changes applied and pushed"
 
@@ -1061,19 +1106,23 @@ class TestAutomationEngine:
         }
         github_logs = "Error: Some CI failure details"
 
-        # Execute
-        result_actions = engine._apply_github_actions_fix('test/repo', pr_data, github_logs)
+        with patch.object(engine, '_commit_with_message', return_value=Mock(success=True, stdout="", stderr="", returncode=0)) as mock_commit, \
+             patch.object(engine, '_push_current_branch', return_value=Mock(success=True, stdout="", stderr="", returncode=0)) as mock_push, \
+             patch.object(engine.cmd, 'run_command', return_value=Mock(success=True, stdout="", stderr="", returncode=0)) as mock_add:
+            # Execute
+            result_actions = engine._apply_github_actions_fix('test/repo', pr_data, github_logs)
 
-        # Assert
-        # Ensure Gemini CLI was invoked once with a prompt containing git add/commit/push
+        # Assert prompt has no commit/push directives
         assert mock_gemini_client._run_gemini_cli.call_count == 1
         called_prompt = mock_gemini_client._run_gemini_cli.call_args[0][0]
-        assert 'git add .' in called_prompt
-        assert 'git commit -m "Auto-Coder: Fix GitHub Actions failures for PR #123"' in called_prompt
-        assert 'git push' in called_prompt
+        assert 'git commit -m' not in called_prompt
+        assert 'git push' not in called_prompt
 
-        # Ensure actions contain applied fix summary
+        # Ensure actions contain applied fix summary and code-driven commit/push occurred
         assert any("Applied GitHub Actions fix" in a for a in result_actions)
+        mock_add.assert_called()
+        mock_commit.assert_called_once()
+        mock_push.assert_called_once()
 
     def test_format_direct_fix_comment(self, mock_github_client, mock_gemini_client):
         """Test direct fix comment formatting."""
@@ -1703,13 +1752,9 @@ class TestPackageLockConflictResolution:
             with patch.object(engine.gemini, 'switch_to_conflict_model'):
                 with patch.object(engine.gemini, 'switch_to_default_model'):
                     with patch.object(engine.gemini, '_run_gemini_cli', return_value="Conflicts resolved"):
-                        with patch('subprocess.run') as mock_subprocess:
-                            # Mock git status and push commands
-                            mock_subprocess.side_effect = [
-                                Mock(returncode=0, stdout="", stderr=""),  # git status
-                                Mock(returncode=0, stdout="", stderr="")   # git push
-                            ]
-
+                        with patch.object(engine, '_commit_with_message', return_value=Mock(success=True, stdout="", stderr="", returncode=0)) as mock_commit, \
+                             patch.object(engine, '_push_current_branch', return_value=Mock(success=True, stdout="", stderr="", returncode=0)) as mock_push, \
+                             patch.object(engine.cmd, 'run_command', return_value=Mock(success=True, stdout="", stderr="", returncode=0)) as mock_add:
                             # Execute
                             result = engine._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
 
@@ -1717,6 +1762,9 @@ class TestPackageLockConflictResolution:
                             assert len(result) > 0
                             assert any("Switched to" in action for action in result)
                             assert any("Gemini CLI resolved merge conflicts" in action for action in result)
+                            mock_add.assert_called()  # git add called
+                            mock_commit.assert_called_once()
+                            mock_push.assert_called_once()
 
 
     @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
@@ -1965,3 +2013,53 @@ class TestPackageJsonDependencyConflictResolution:
         assert '--merge' in allowed
         assert '--squash' in allowed
         assert '--rebase' not in allowed
+
+    def test_commit_changes_aborts_on_conflict_markers(self, mock_github_client, mock_gemini_client, tmp_path):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        # Create a file with conflict markers
+        p = tmp_path / "conflicted.txt"
+        p.write_text("""
+<<<<<<< HEAD
+foo
+=======
+bar
+>>>>>>> branch
+""", encoding='utf-8')
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            with patch('src.auto_coder.automation_engine.CommandExecutor.run_command') as mock_run:
+                # git add succeeds; commit should not be attempted
+                def side_effect(cmd, timeout=None, cwd=None, check_success=True):
+                    if cmd[:2] == ['git', 'add']:
+                        return Mock(success=True, stdout="", stderr="", returncode=0)
+                    if cmd[:2] == ['git', 'commit']:
+                        return Mock(success=True, stdout="SHOULD_NOT_COMMIT", stderr="", returncode=0)
+                    return Mock(success=True, stdout="", stderr="", returncode=0)
+                mock_run.side_effect = side_effect
+                msg = engine._commit_changes({'summary': 'Test commit'})
+                assert msg.startswith("Conflict markers detected")
+                # Ensure commit was not attempted
+                calls = [args[0] for args, _ in mock_run.call_args_list]
+                assert ['git', 'commit', '-m', 'Auto-Coder: Test commit'] not in calls
+        finally:
+            os.chdir(cwd)
+
+    def test_commit_with_message_aborts_on_conflict_markers(self, mock_github_client, mock_gemini_client, tmp_path):
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        p = tmp_path / "conflicted2.txt"
+        p.write_text("""
+<<<<<<< HEAD
+alpha
+=======
+beta
+>>>>>>> other
+""", encoding='utf-8')
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            res = engine._commit_with_message("Test msg")
+            assert res.success is False
+            assert "Unresolved conflict markers" in (res.stderr or "")
+        finally:
+            os.chdir(cwd)

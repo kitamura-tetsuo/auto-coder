@@ -308,6 +308,8 @@ class TestCLI:
         result = runner.invoke(process_issues, ["--help"])
         assert result.exit_code == 0
         assert "--only" in result.output
+        # New option should appear in help
+        assert "--ignore-dependabot-prs" in result.output
 
     def test_process_issues_missing_github_token(self):
         """Test process-issues command with missing GitHub token."""
@@ -605,6 +607,43 @@ class TestCLI:
         assert "ignored when" in result.output
         assert "backend=codex" in result.output
         assert "--dry-run" in result.output
+        assert "--ignore-dependabot-prs" in result.output
+
+    @patch("src.auto_coder.cli.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli.AutomationEngine")
+    @patch("src.auto_coder.cli.CodexClient")
+    @patch("src.auto_coder.cli.GitHubClient")
+    def test_process_issues_ignore_dependabot_flag_sets_config(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
+        """--ignore-dependabot-prs should set engine config flag to True and print it."""
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo", "test/repo",
+                "--github-token", "test_token",
+                "--ignore-dependabot-prs",
+            ],
+        )
+        assert result.exit_code == 0
+        # Output shows the flag state
+        assert "Ignore Dependabot PRs: True" in result.output
+        # Engine config is set
+        _, kwargs = mock_automation_engine_class.call_args
+        assert getattr(kwargs['config'], 'IGNORE_DEPENDABOT_PRS') is True
 
     def test_create_feature_issues_help(self):
         """Test create-feature-issues command help."""
