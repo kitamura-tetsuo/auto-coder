@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from .github_client import GitHubClient
 from .gemini_client import GeminiClient
 from .codex_client import CodexClient
+from .codex_mcp_client import CodexMCPClient
 from .automation_engine import AutomationEngine, AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
@@ -94,9 +95,42 @@ def check_gemini_cli_or_fail() -> None:
 
 
 def check_codex_cli_or_fail() -> None:
-    """Check if codex CLI is available and working."""
+    """Check if Codex (or override) CLI is available and working.
+
+    For testing or custom environments, you can override the codex CLI binary
+    via environment variable AUTOCODER_CODEX_CLI. When set, we will try to
+    execute the command with `--version` first; if that fails, we will run the
+    command without arguments as a liveness check.
+    """
+    import shlex
+    import subprocess
+
+    # Allow override for CI/e2e tests
+    override = os.environ.get("AUTOCODER_CODEX_CLI")
+    if override:
+        cmd = shlex.split(override)
+        # Try with --version
+        try:
+            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                click.echo(f"Using codex CLI (override): {cmd[0]}")
+                return
+        except Exception:
+            pass
+        # Fallback: run without args
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                click.echo(f"Using codex CLI (override): {cmd[0]}")
+                return
+        except Exception:
+            pass
+        raise click.ClickException(
+            "Codex CLI override (AUTOCODER_CODEX_CLI) is set but not working"
+        )
+
+    # Default: check real codex CLI
     try:
-        import subprocess
         result = subprocess.run(
             ['codex', '--version'],
             capture_output=True,
@@ -125,12 +159,12 @@ def main() -> None:
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
-@click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex or codex-mcp)')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode/--no-jules-mode', default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)')
-@click.option('--skip-main-update/--no-skip-main-update', default=True, help='When PR checks fail, skip merging main into the PR before attempting fixes (default: skip)')
+@click.option('--skip-main-update/--no-skip-main-update', default=True, help='When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)')
 @click.option('--ignore-dependabot-prs/--no-ignore-dependabot-prs', default=False, help='Ignore PRs opened by Dependabot when processing PRs (default: do not ignore)')
 @click.option('--only', 'only_target', help='Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
@@ -155,7 +189,7 @@ def process_issues(
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
-    if backend == 'codex':
+    if backend in ('codex', 'codex-mcp'):
         check_codex_cli_or_fail()
     else:
         check_gemini_cli_or_fail()
@@ -163,14 +197,14 @@ def process_issues(
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
-    # Warn if model is specified but backend is codex (model will be ignored)
+    # Warn if model is specified but backend is codex/codex-mcp (model will be ignored)
     try:
         ctx = click.get_current_context(silent=True)
-        if ctx is not None and backend == 'codex':
+        if ctx is not None and backend in ('codex', 'codex-mcp'):
             source = ctx.get_parameter_source('model')
             if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
-                logger.warning("--model is ignored when backend=codex")
-                click.echo("Warning: --model is ignored when backend=codex")
+                logger.warning("--model is ignored when backend=codex or codex-mcp")
+                click.echo("Warning: --model is ignored when backend=codex or codex-mcp")
     except Exception:
         # Non-fatal: proceed without warning if context/source not available
         pass
@@ -184,9 +218,9 @@ def process_issues(
     logger.info(f"Log level: {log_level}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
 
-    # Explicitly show main update policy for PR checks failure
+    # Explicitly show base branch update policy for PR checks failure
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
-    logger.info(f"Main update before fixes when PR checks fail: {policy_str}")
+    logger.info(f"Base branch update before fixes when PR checks fail: {policy_str}")
 
     click.echo(f"Processing repository: {repo_name}")
     click.echo(f"Using backend: {backend}")
@@ -202,6 +236,8 @@ def process_issues(
     ai_client = None
     if backend == 'gemini':
         ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    elif backend == 'codex-mcp':
+        ai_client = CodexMCPClient(model_name='codex-mcp')
     else:
         ai_client = CodexClient(model_name='codex')
 
@@ -235,9 +271,15 @@ def process_issues(
             except ValueError:
                 raise click.ClickException("--only must be a PR/Issue URL or a number")
         # Run single-item processing
-        result = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
+        _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
         # Print brief summary to stdout
         click.echo(f"Processed single {target_type} #{number}")
+        # Close MCP session if present
+        try:
+            if hasattr(ai_client, 'close') and callable(getattr(ai_client, 'close')):
+                ai_client.close()
+        except Exception:
+            pass
         return
 
     # Run automation
@@ -246,13 +288,20 @@ def process_issues(
     else:
         automation_engine.run(repo_name, jules_mode=jules_mode)
 
+    # Close MCP session if present
+    try:
+        if hasattr(ai_client, 'close') and callable(getattr(ai_client, 'close')):
+            ai_client.close()
+    except Exception:
+        pass
+
 
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
-@click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex or codex-mcp)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def create_feature_issues(
@@ -270,7 +319,7 @@ def create_feature_issues(
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
-    if backend == 'codex':
+    if backend in ('codex', 'codex-mcp'):
         check_codex_cli_or_fail()
     else:
         check_gemini_cli_or_fail()
@@ -278,14 +327,14 @@ def create_feature_issues(
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
-    # Warn if model is specified but backend is codex (model will be ignored)
+    # Warn if model is specified but backend is codex/codex-mcp (model will be ignored)
     try:
         ctx = click.get_current_context(silent=True)
-        if ctx is not None and backend == 'codex':
+        if ctx is not None and backend in ('codex', 'codex-mcp'):
             source = ctx.get_parameter_source('model')
             if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
-                logger.warning("--model is ignored when backend=codex")
-                click.echo("Warning: --model is ignored when backend=codex")
+                logger.warning("--model is ignored when backend=codex or codex-mcp")
+                click.echo("Warning: --model is ignored when backend=codex or codex-mcp")
     except Exception:
         pass
 
@@ -304,6 +353,8 @@ def create_feature_issues(
     github_client = GitHubClient(github_token_final)
     if backend == 'gemini':
         ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    elif backend == 'codex-mcp':
+        ai_client = CodexMCPClient(model_name='codex-mcp')
     else:
         ai_client = CodexClient(model_name='codex')
     automation_engine = AutomationEngine(github_client, ai_client)
@@ -311,11 +362,18 @@ def create_feature_issues(
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)
 
+    # Close MCP session if present
+    try:
+        if hasattr(ai_client, 'close') and callable(getattr(ai_client, 'close')):
+            ai_client.close()
+    except Exception:
+        pass
+
 
 @main.command(name="fix-to-pass-tests")
-@click.option('--backend', default='codex', type=click.Choice(['codex', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex or codex-mcp)')
 @click.option('--max-attempts', type=int, default=None, help='Maximum fix attempts before giving up (defaults to engine config)')
 @click.option('--dry-run', is_flag=True, help='Run without making changes (LLM edits simulated)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
@@ -336,7 +394,7 @@ def fix_to_pass_tests_command(
     setup_logger(log_level=log_level, log_file=log_file)
 
     # Check backend CLI availability
-    if backend == 'codex':
+    if backend in ('codex', 'codex-mcp'):
         check_codex_cli_or_fail()
     else:
         check_gemini_cli_or_fail()
@@ -353,19 +411,21 @@ def fix_to_pass_tests_command(
 
     if backend == 'gemini':
         ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    elif backend == 'codex-mcp':
+        ai_client = CodexMCPClient(model_name='codex-mcp')
     else:
         ai_client = CodexClient(model_name='codex')
 
     engine = AutomationEngine(github_client, ai_client, dry_run=dry_run)
 
-    # Warn if model flag is set but backend codex (ignored)
+    # Warn if model flag is set but backend codex/codex-mcp (ignored)
     try:
         ctx = click.get_current_context(silent=True)
-        if ctx is not None and backend == 'codex':
+        if ctx is not None and backend in ('codex', 'codex-mcp'):
             source = ctx.get_parameter_source('model')
             if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
-                logger.warning("--model is ignored when backend=codex")
-                click.echo("Warning: --model is ignored when backend=codex")
+                logger.warning("--model is ignored when backend=codex or codex-mcp")
+                click.echo("Warning: --model is ignored when backend=codex or codex-mcp")
     except Exception:
         pass
 
@@ -384,6 +444,13 @@ def fix_to_pass_tests_command(
     except RuntimeError as e:
         # Specific error when LLM made no edits
         raise click.ClickException(str(e))
+    finally:
+        # Close MCP session if present
+        try:
+            if hasattr(ai_client, 'close') and callable(getattr(ai_client, 'close')):
+                ai_client.close()
+        except Exception:
+            pass
 
 
 @main.command()

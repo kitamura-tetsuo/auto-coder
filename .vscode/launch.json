@@ -88,7 +88,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src2/outliner",
+            "cwd": "/home/ubuntu/src3/outliner",
             "args": [
                 "process-issues",
                 "--ignore-dependabot-prs"
@@ -104,7 +104,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src2/outliner",
+            "cwd": "/home/ubuntu/src3/outliner",
             "args": [
                 "fix-to-pass-tests",
             ],

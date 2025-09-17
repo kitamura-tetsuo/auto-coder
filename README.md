@@ -106,9 +106,9 @@ auto-coder fix-to-pass-tests --dry-run
 - `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
 - `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
 - `--dry-run`: ドライランモード（変更を行わない）
-- `--skip-main-update/--no-skip-main-update`: PRのチェックが失敗している場合に、修正を試みる前に main ブランチをPRブランチへ取り込むかの挙動を切替（デフォルト: main取り込みをスキップ）。
+- `--skip-main-update/--no-skip-main-update`: PRのチェックが失敗している場合に、修正を試みる前に PRのベースブランチをPRブランチへ取り込むかの挙動を切替（デフォルト: ベースブランチ取り込みをスキップ）。
   - 既定値: `--skip-main-update`（スキップ）
-  - 明示的に main 取り込みを行いたい場合は `--no-skip-main-update` を指定
+  - 明示的に ベースブランチ 取り込みを行いたい場合は `--no-skip-main-update` を指定
 - `--ignore-dependabot-prs/--no-ignore-dependabot-prs`: Dependabot によるPRを処理対象から除外（デフォルト: 除外しない）
 - `--only`: 特定のIssue/PRのみ処理（URLまたは番号指定）
 

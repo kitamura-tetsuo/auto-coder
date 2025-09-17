@@ -41,7 +41,7 @@ class AutomationConfig:
     MAIN_BRANCH: str = "main"
 
     # Behavior flags
-    # When GitHub Actions checks fail for a PR, skip merging main into the PR branch before LLM fixes.
+    # When GitHub Actions checks fail for a PR, skip merging the PR's base branch into the PR branch before LLM fixes.
     # This changes previous behavior to default-skipping to reduce noisy rebases.
     SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: bool = True
 
@@ -236,27 +236,31 @@ Return a single concise line summarizing the change.
             'messages': []
         }
 
-        # Track previous test output and the error summary given to LLM
+        # Track previous test output and the error summary given to LLM (from last completed test run)
         prev_full_output: Optional[str] = None
         prev_error_summary: Optional[str] = None
 
+        # Cache the latest post-fix test result to avoid redundant runs in the next loop
+        cached_test_result: Optional[Dict[str, Any]] = None
+
         # Support infinite attempts (math.inf) by using a while loop
-        attempt = 0
+        attempt = 0  # counts actual test executions
         while True:
-            attempt += 1
-            summary['attempts'] = attempt
-            logger.info(f"Running local tests (attempt {attempt}/{attempts_limit})")
-            test_result = self._run_local_tests()
+            # Use cached result (from previous post-fix run) if available; otherwise run tests now
+            if cached_test_result is not None:
+                test_result = cached_test_result
+                cached_test_result = None
+            else:
+                attempt += 1
+                summary['attempts'] = attempt
+                logger.info(f"Running local tests (attempt {attempt}/{attempts_limit})")
+                test_result = self._run_local_tests()
             if test_result['success']:
                 msg = f"Local tests passed on attempt {attempt}"
                 logger.info(msg)
                 summary['messages'].append(msg)
                 summary['success'] = True
                 return summary
-
-            # Prepare current error contexts for commit gating
-            current_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
-            current_error_summary = self._extract_important_errors(test_result)
 
             # Apply LLM-based fix
             action_msg = self._apply_workspace_test_fix(test_result)
@@ -266,35 +270,58 @@ Return a single concise line summarizing the change.
                 # In dry-run we do not commit; just continue attempts
                 continue
 
-            # Commit gating based on significant change (>=10%) in test outputs or error summary
-            should_commit = True
-            try:
-                if prev_full_output is not None or prev_error_summary is not None:
-                    change_ratio_tests = self._change_fraction(prev_full_output or "", current_full_output or "")
-                    change_ratio_errors = self._change_fraction(prev_error_summary or "", current_error_summary or "")
-                    max_change = max(change_ratio_tests, change_ratio_errors)
-                    if max_change < 0.10:
-                        should_commit = False
-                        msg = f"Change below 10% threshold (max={max_change:.2%}); skipping commit this attempt"
-                        logger.info(msg)
-                        summary['messages'].append(msg)
-            except Exception:
-                # On any error computing change, default to committing
+            # Baseline (pre-fix) outputs for comparison
+            baseline_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
+            baseline_error_summary = self._extract_important_errors(test_result)
+
+            # Re-run tests AFTER LLM edits to measure change and decide commit
+            attempt += 1
+            summary['attempts'] = attempt
+            logger.info(f"Re-running local tests after LLM fix (attempt {attempt}/{attempts_limit})")
+            post_result = self._run_local_tests()
+
+            post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
+            post_error_summary = self._extract_important_errors(post_result)
+
+            # Update previous context for next loop start
+            prev_full_output = post_full_output
+            prev_error_summary = post_error_summary
+
+            if post_result['success']:
+                # Tests passed after the fix; proceed to commit
+                pass_msg = f"Local tests passed on attempt {attempt}"
+                logger.info(pass_msg)
+                summary['messages'].append(pass_msg)
                 should_commit = True
-
-            # Update previous context for next iteration
-            prev_full_output = current_full_output
-            prev_error_summary = current_error_summary
-
-            if not should_commit:
-                # Skip staging/committing; proceed to next loop
-                # Stop if finite limit reached
+            else:
+                # Compute change ratios between pre-fix and post-fix results
                 try:
-                    if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
-                        break
+                    change_ratio_tests = self._change_fraction(baseline_full_output or "", post_full_output or "")
+                    change_ratio_errors = self._change_fraction(baseline_error_summary or "", post_error_summary or "")
+                    max_change = max(change_ratio_tests, change_ratio_errors)
                 except Exception:
-                    pass
-                continue
+                    max_change = 1.0  # default to commit if comparison fails
+
+                if max_change < 0.10:
+                    # Consider this as insufficient change; skip commit and ask LLM again next loop
+                    info = "Change below 10% threshold; skipping commit and retrying"
+                    logger.info(info)
+                    summary['messages'].append(info)
+                    # Use this post-fix test result as the starting point for the next loop
+                    cached_test_result = post_result
+                    # Stop if finite limit reached
+                    try:
+                        if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
+                            break
+                    except Exception:
+                        pass
+                    # Continue to next loop (will request another LLM fix)
+                    continue
+                else:
+                    info = f"Significant change detected ({max_change:.2%}); committing and continuing"
+                    logger.info(info)
+                    summary['messages'].append(info)
+                    should_commit = True
 
             # Stage and commit; detect 'no changes' as an immediate error per requirement
             add_res = self.cmd.run_command(['git', 'add', '.'])
@@ -306,7 +333,7 @@ Return a single concise line summarizing the change.
 
             # Ask LLM to craft a clear, concise commit message for the applied change
             commit_msg = self._generate_commit_message_via_llm(
-                error_summary=current_error_summary,
+                error_summary=post_error_summary,
                 action_summary=action_msg,
                 attempt=attempt,
             )
@@ -326,6 +353,14 @@ Return a single concise line summarizing the change.
                 summary['messages'].append(errmsg)
                 break
 
+            # If tests passed, mark success and return
+            if post_result['success']:
+                summary['success'] = True
+                return summary
+
+            # Cache the failing post-fix result for the next loop to avoid re-running before LLM edits
+            cached_test_result = post_result
+
             # Stop if finite limit reached
             try:
                 if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
@@ -334,13 +369,9 @@ Return a single concise line summarizing the change.
                 # If attempts_limit is not a number, treat as unlimited
                 pass
 
-        # Final test after exhausting attempts (optional):
-        final = self._run_local_tests()
-        if final['success']:
-            summary['success'] = True
-            summary['messages'].append("Local tests passed after final run")
-        else:
-            summary['messages'].append("Local tests still failing after attempts")
+        # Final test after exhausting attempts (optional): do not re-run here because we already
+        # executed a post-fix run within the loop. Keep messages concise.
+        summary['messages'].append("Local tests still failing after attempts")
 
         return summary
 
@@ -1143,7 +1174,7 @@ STRICT DIRECTIVES (follow exactly):
 - Do NOT write narrative explanations as output; take actions in the workspace instead.
 - Prefer targeted edits that make CI pass while preserving intent.
 - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-- Do NOT run git commit/push or gh pr merge; the system will handle committing/merging.
+- Do NOT run git commit/push; the system will handle committing.
 - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
 Return format:
@@ -1836,9 +1867,9 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
 
             actions.append(f"Checked out PR #{pr_number} branch")
 
-            # Step 5: Optionally update with latest main branch commits (configurable)
+            # Step 5: Optionally update with latest base branch commits (configurable)
             if self.config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
-                actions.append(f"[Policy] Skipping main branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
+                actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
 
                 # Proceed directly to extracting GitHub Actions logs and attempting fixes
                 if failed_checks:
@@ -1850,13 +1881,13 @@ PR Changes (first {self.config.MAX_PR_DIFF_SIZE} chars):
 
                 return actions
             else:
-                actions.append(f"[Policy] Performing main branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
-                update_actions = self._update_with_main_branch(repo_name, pr_data)
+                actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
+                update_actions = self._update_with_base_branch(repo_name, pr_data)
                 actions.extend(update_actions)
 
-                # Step 6: If main branch update required pushing changes, skip to next PR
+                # Step 6: If base branch update required pushing changes, skip to next PR
                 if self.FLAG_SKIP_ANALYSIS in update_actions or any("Pushed updated branch" in action for action in update_actions):
-                    actions.append(f"Updated PR #{pr_number} with main branch, skipping to next PR for GitHub Actions check")
+                    actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
                     return actions
 
                 # Step 7: If no main branch updates were needed, the test failures are due to PR content
@@ -2224,35 +2255,46 @@ After analyzing, apply the necessary fixes to the codebase.
             self._handle_error("manually checking out PR", e, f"#{pr_number}")
             return False
 
-    def _update_with_main_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
-        """Update PR branch with latest main branch commits."""
+    def _update_with_base_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
+        """Update PR branch with latest base branch commits.
+
+        This function merges the PR's base branch (e.g., main, develop) into the PR branch
+        to bring it up to date before attempting fixes.
+        """
         actions = []
         pr_number = pr_data['number']
 
         try:
+            # Determine target base branch for this PR
+            target_branch = (
+                pr_data.get('base_branch')
+                or pr_data.get('base', {}).get('ref')
+                or self.config.MAIN_BRANCH
+            )
+
             # Fetch latest changes from origin
             result = self.cmd.run_command(['git', 'fetch', 'origin'])
             if not result.success:
                 actions.append(f"Failed to fetch latest changes: {result.stderr}")
                 return actions
 
-            # Check if main branch has new commits
-            result = self.cmd.run_command(['git', 'rev-list', '--count', f'HEAD..origin/{self.config.MAIN_BRANCH}'])
+            # Check if base branch has new commits
+            result = self.cmd.run_command(['git', 'rev-list', '--count', f'HEAD..origin/{target_branch}'])
             if not result.success:
-                actions.append(f"Failed to check main branch status: {result.stderr}")
+                actions.append(f"Failed to check {target_branch} branch status: {result.stderr}")
                 return actions
 
             commits_behind = int(result.stdout.strip())
             if commits_behind == 0:
-                actions.append(f"PR #{pr_number} is up to date with {self.config.MAIN_BRANCH} branch")
+                actions.append(f"PR #{pr_number} is up to date with {target_branch} branch")
                 return actions
 
-            actions.append(f"PR #{pr_number} is {commits_behind} commits behind {self.config.MAIN_BRANCH}, updating...")
+            actions.append(f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating...")
 
-            # Try to merge main branch
-            result = self.cmd.run_command(['git', 'merge', f'origin/{self.config.MAIN_BRANCH}'])
+            # Try to merge base branch
+            result = self.cmd.run_command(['git', 'merge', f'origin/{target_branch}'])
             if result.success:
-                actions.append(f"Successfully merged {self.config.MAIN_BRANCH} branch into PR #{pr_number}")
+                actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
 
                 # Push the updated branch
                 push_result = self.cmd.run_command(['git', 'push'])
@@ -2268,13 +2310,23 @@ After analyzing, apply the necessary fixes to the codebase.
 
                 # Get conflict information
                 conflict_info = self._get_merge_conflict_info()
+                # Ensure pr_data carries base branch info for downstream resolution/prompt
+                pr_data = {**pr_data, 'base_branch': target_branch}
                 merge_actions = self._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
                 actions.extend(merge_actions)
 
         except Exception as e:
-            actions.append(self._handle_error("updating with main branch", e, f"PR #{pr_number}"))
+            actions.append(self._handle_error("updating with base branch", e, f"PR #{pr_number}"))
 
         return actions
+
+    def _update_with_main_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
+        """DEPRECATED: Use _update_with_base_branch instead.
+
+        This function is kept for backward compatibility with existing tests and callers.
+        It delegates to the new _update_with_base_branch function.
+        """
+        return self._update_with_base_branch(repo_name, pr_data)
 
     def _get_merge_conflict_info(self) -> str:
         """Get information about merge conflicts."""
@@ -2714,8 +2766,9 @@ After analyzing, apply the necessary fixes to the codebase.
                 did_switch_model = True
 
             # Create a prompt for Gemini CLI to resolve conflicts
+            base_branch = pr_data.get('base_branch') or pr_data.get('base', {}).get('ref') or self.config.MAIN_BRANCH
             resolve_prompt = f"""
-There are merge conflicts when trying to merge main branch into PR #{pr_data['number']}: {pr_data['title']}
+There are merge conflicts when trying to merge {base_branch} branch into PR #{pr_data['number']}: {pr_data['title']}
 
 PR Description:
 {pr_data['body'][:500]}...
@@ -2838,38 +2891,81 @@ Please proceed with resolving these merge conflicts now.
         return False
 
     def _scan_conflict_markers(self) -> List[str]:
-        """Scan the working tree for unresolved merge conflict markers.
+        """Scan Git-tracked files for unresolved merge conflict markers.
 
         Returns a list of file paths that contain a true git conflict block.
-        Skips common generated and cache directories.
+        Only scans files that are tracked by Git to avoid false positives from
+        untracked files, build artifacts, or cache files.
         """
         flagged: List[str] = []
-        skip_dir_names = {
-            '.git', '.venv', 'venv', 'node_modules', '.pytest_cache', 'htmlcov', 'logs', 'reports',
-            '.mypy_cache', '.ruff_cache', '.svelte-kit', 'coverage', 'dist', 'build', '.next', 'out', '.cache'
-        }
-        skip_exts = {'.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.gz', '.tar', '.svg', '.ico', '.woff', '.woff2'}
+        skip_exts = {'.png', '.jpg', '.jpeg', '.gif', '.pdf', '.zip', '.gz', '.tar', '.svg', '.ico', '.woff', '.woff2', '.pyc'}
+
         try:
-            for root, dirs, files in os.walk('.'):
-                # Prune directories we don't want to scan
-                dirs[:] = [d for d in dirs if d not in skip_dir_names]
-                for name in files:
-                    path = os.path.join(root, name)
-                    # Skip common binary assets by extension
-                    ext = os.path.splitext(name)[1].lower()
-                    if ext in skip_exts:
-                        continue
-                    try:
-                        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                            content = f.read()
-                        if self._has_conflict_block_in_text(content):
-                            flagged.append(path)
-                    except Exception:
-                        # Skip unreadable files
-                        continue
+            # First, try to get files with unmerged status (most likely to have conflict markers)
+            unmerged_files = self._get_unmerged_files()
+            if unmerged_files:
+                # Scan only unmerged files
+                files_to_scan = unmerged_files
+            else:
+                # Fallback: scan all tracked files
+                files_to_scan = self._get_tracked_files()
+
+            for file_path in files_to_scan:
+                # Skip binary files by extension
+                ext = os.path.splitext(file_path)[1].lower()
+                if ext in skip_exts:
+                    continue
+
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        content = f.read()
+                    if self._has_conflict_block_in_text(content):
+                        flagged.append(file_path)
+                except Exception:
+                    # Skip unreadable files
+                    continue
+
         except Exception as e:
             logger.error(f"Error scanning for conflict markers: {e}")
         return flagged
+
+    def _get_unmerged_files(self) -> List[str]:
+        """Get list of files with unmerged status from git status.
+
+        Returns files that have 'UU' status (both modified, unmerged).
+        """
+        try:
+            result = self.cmd.run_command(['git', 'status', '--porcelain'])
+            if not result.success:
+                return []
+
+            unmerged_files = []
+            for line in result.stdout.strip().split('\n'):
+                if line.strip() and line.startswith('UU '):
+                    file_path = line[3:].strip()
+                    unmerged_files.append(file_path)
+            return unmerged_files
+        except Exception:
+            return []
+
+    def _get_tracked_files(self) -> List[str]:
+        """Get list of all files tracked by Git.
+
+        Uses 'git ls-files' to get only files that are tracked by Git,
+        avoiding untracked files and respecting .gitignore.
+        """
+        try:
+            result = self.cmd.run_command(['git', 'ls-files'])
+            if not result.success:
+                return []
+
+            tracked_files = []
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    tracked_files.append(line.strip())
+            return tracked_files
+        except Exception:
+            return []
 
     def _commit_with_message(self, commit_message: str) -> CommandResult:
         """Commit changes with a given message, auto-fixing dprint formatting if needed.
@@ -3097,7 +3193,7 @@ Please proceed with resolving these merge conflicts now.
             return []
 
     def _resolve_pr_merge_conflicts(self, repo_name: str, pr_number: int) -> bool:
-        """Resolve merge conflicts for a PR by checking it out and merging with main."""
+        """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
         try:
             # Step 0: Clean up any existing git state
             logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
@@ -3125,21 +3221,29 @@ Please proceed with resolving these merge conflicts now.
                 logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
                 return False
 
-            # Step 2: Fetch the latest main branch
-            logger.info(f"Fetching latest main branch")
-            fetch_result = self.cmd.run_command(['git', 'fetch', 'origin', self.config.MAIN_BRANCH])
+            # Obtain PR details to determine base branch
+            pr_data = self.github.get_pr_details_by_number(repo_name, pr_number)
+            target_branch = (
+                pr_data.get('base_branch')
+                or pr_data.get('base', {}).get('ref')
+                or self.config.MAIN_BRANCH
+            )
+
+            # Step 2: Fetch the latest base branch
+            logger.info(f"Fetching latest {target_branch} branch")
+            fetch_result = self.cmd.run_command(['git', 'fetch', 'origin', target_branch])
 
             if not fetch_result.success:
-                logger.error(f"Failed to fetch main branch: {fetch_result.stderr}")
+                logger.error(f"Failed to fetch {target_branch} branch: {fetch_result.stderr}")
                 return False
 
-            # Step 3: Attempt to merge main branch
-            logger.info(f"Merging origin/{self.config.MAIN_BRANCH} into PR #{pr_number}")
-            merge_result = self.cmd.run_command(['git', 'merge', f'origin/{self.config.MAIN_BRANCH}'])
+            # Step 3: Attempt to merge base branch
+            logger.info(f"Merging origin/{target_branch} into PR #{pr_number}")
+            merge_result = self.cmd.run_command(['git', 'merge', f'origin/{target_branch}'])
 
             if merge_result.success:
                 # No conflicts, push the updated branch
-                logger.info(f"Successfully merged main into PR #{pr_number}, pushing changes")
+                logger.info(f"Successfully merged {target_branch} into PR #{pr_number}, pushing changes")
                 push_result = self.cmd.run_command(['git', 'push'])
 
                 if push_result.success:
@@ -3152,13 +3256,12 @@ Please proceed with resolving these merge conflicts now.
                 # Merge conflicts detected, use Gemini to resolve them
                 logger.info(f"Merge conflicts detected for PR #{pr_number}, using Gemini to resolve")
 
-                # Get PR data for context
-                pr_data = self.github.get_pr_details_by_number(repo_name, pr_number)
-
                 # Get conflict information
                 conflict_info = self._get_merge_conflict_info()
 
                 # Use Gemini to resolve conflicts
+                # Ensure pr_data carries base branch info for downstream resolution/prompt
+                pr_data = {**pr_data, 'base_branch': target_branch}
                 resolve_actions = self._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
 
                 # Log the resolution actions

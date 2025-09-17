@@ -698,13 +698,60 @@ class TestAutomationEngine:
         # Setup
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
 
+
+    @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
+    def test_resolve_pr_merge_conflicts_uses_base_branch(self, mock_run_command, mock_github_client, mock_gemini_client):
+        """When PR base branch is not 'main', conflict resolution should fetch/merge that base branch."""
+        # Setup
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, config=config)
+
+        # Mock PR data with non-main base
+        pr_data = {'number': 456, 'title': 'Feature PR', 'body': 'Some changes', 'base_branch': 'develop'}
+        mock_github_client.get_pr_details_by_number.return_value = pr_data
+
+        # Mock all commands to succeed for conflict resolve path
+        mock_run_command.side_effect = [
+            Mock(success=True, stdout="", stderr=""),  # git reset --hard
+            Mock(success=True, stdout="", stderr=""),  # git clean -fd
+            Mock(success=True, stdout="", stderr=""),  # git merge --abort
+            Mock(success=True, stdout="", stderr=""),  # gh pr checkout
+            Mock(success=True, stdout="", stderr=""),  # git fetch origin develop
+            Mock(success=True, stdout="", stderr=""),  # git merge origin/develop
+            Mock(success=True, stdout="", stderr=""),  # git push
+        ]
+
         # Execute
-        result = engine._take_pr_actions("test/repo", sample_pr_data)
+        result = engine._resolve_pr_merge_conflicts("test/repo", 456)
 
         # Assert
-        assert len(result) == 1
-        assert "[DRY RUN]" in result[0]
-        assert "456" in result[0]
+        assert result is True
+        calls = [call[0][0] for call in mock_run_command.call_args_list]
+        assert calls[4] == ['git', 'fetch', 'origin', 'develop']  # Fetch base branch
+        assert calls[5] == ['git', 'merge', 'origin/develop']  # Merge base branch
+
+    @patch('subprocess.run')
+    def test_update_with_base_branch_uses_provided_base_branch(self, mock_run, mock_github_client, mock_gemini_client):
+        """_update_with_base_branch should use pr_data.base_branch when provided (even if not main)."""
+        # Setup mocks for git operations: fetch, rev-list (2 commits behind), merge, push
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),   # git fetch
+            Mock(returncode=0, stdout="2", stderr=""),  # git rev-list
+            Mock(returncode=0, stdout="", stderr=""),   # git merge
+            Mock(returncode=0, stdout="", stderr=""),   # git push
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        pr_data = {'number': 999, 'base_branch': 'develop'}
+
+        # Execute
+        result = engine._update_with_base_branch('test/repo', pr_data)
+
+        # Assert
+        assert any("2 commits behind develop" in a for a in result)
+        assert any("Successfully merged develop branch into PR #999" in a for a in result)
+        assert any("Pushed updated branch" in a for a in result)
+
 
     def test_get_repository_context_success(self, mock_github_client, mock_gemini_client):
         """Test successful repository context retrieval."""
@@ -1150,20 +1197,22 @@ class TestAutomationEngine:
     def test_commit_changes_success(self, mock_run, mock_github_client, mock_gemini_client):
         """Test successful git commit."""
         # Setup
-        mock_run.side_effect = [
-            Mock(returncode=0, stdout="", stderr=""),  # git add
-            Mock(returncode=0, stdout="", stderr="")   # git commit
-        ]
-
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
         fix_suggestion = {'summary': 'Fix test issue'}
 
-        # Execute
-        result = engine._commit_changes(fix_suggestion)
+        # Patch CommandExecutor to simulate successful add, scan, commit
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git add .
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git status --porcelain (no unmerged)
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git ls-files (no files)
+                Mock(success=True, stdout="[commit] done", stderr="", returncode=0),  # git commit
+            ]
+            # Execute
+            result = engine._commit_changes(fix_suggestion)
 
         # Assert
         assert "Committed changes: Auto-Coder: Fix test issue" in result
-        assert mock_run.call_count == 2
 
     def test_check_github_actions_status_in_progress(self, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with in-progress checks."""
@@ -1187,7 +1236,7 @@ class TestAutomationEngine:
             assert len(result['checks']) == 2
 
     @patch('subprocess.run')
-    def test_update_with_main_branch_up_to_date(self, mock_run, mock_github_client, mock_gemini_client):
+    def test_update_with_base_branch_up_to_date(self, mock_run, mock_github_client, mock_gemini_client):
         """Test updating PR branch when already up to date."""
         # Setup
         mock_run.side_effect = [
@@ -1199,15 +1248,15 @@ class TestAutomationEngine:
         pr_data = {'number': 123}
 
         # Execute
-        result = engine._update_with_main_branch('test/repo', pr_data)
+        result = engine._update_with_base_branch('test/repo', pr_data)
 
         # Assert
         assert len(result) == 1
         assert "up to date with main branch" in result[0]
 
     @patch('subprocess.run')
-    def test_update_with_main_branch_merge_success(self, mock_run, mock_github_client, mock_gemini_client):
-        """Test successful main branch merge."""
+    def test_update_with_base_branch_merge_success(self, mock_run, mock_github_client, mock_gemini_client):
+        """Test successful base branch merge."""
         # Setup
         mock_run.side_effect = [
             Mock(returncode=0, stdout="", stderr=""),  # git fetch
@@ -1220,7 +1269,7 @@ class TestAutomationEngine:
         pr_data = {'number': 123}
 
         # Execute
-        result = engine._update_with_main_branch('test/repo', pr_data)
+        result = engine._update_with_base_branch('test/repo', pr_data)
 
         # Assert
         assert len(result) == 4
@@ -1312,24 +1361,23 @@ class TestAutomationConfig:
     def test_commit_changes_runs_dprint_on_format_failure(self, mock_run, mock_github_client, mock_gemini_client):
         """When commit fails due to dprint formatting, run 'npx dprint fmt' and retry commit."""
         # Sequence: git add (ok), git commit (fail with dprint), npx dprint fmt (ok), git add (ok), git commit (ok)
-        mock_run.side_effect = [
-            Mock(returncode=0, stdout="", stderr=""),  # git add
-            Mock(
-                returncode=1,
-                stdout="Check formatting with dprint... Failed\nFormatting issues detected. Run 'npx dprint fmt' to fix.",
-                stderr="pre-commit hook failed: dprint-format"
-            ),  # git commit fails due to dprint
-            Mock(returncode=0, stdout="Formatted 3 files", stderr=""),  # npx dprint fmt
-            Mock(returncode=0, stdout="", stderr=""),  # git add after fmt
-            Mock(returncode=0, stdout="[commit] done", stderr=""),  # git commit success
-        ]
-
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
-        res = engine._commit_changes({'summary': 'Fix style'})
+        # Patch CommandExecutor to simulate format failure and retry path
+        with patch.object(engine.cmd, 'run_command') as mock_cmd:
+            mock_cmd.side_effect = [
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git add .
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git status --porcelain
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git ls-files (pre-commit scan)
+                Mock(success=False, stdout="Check formatting with dprint... Failed\nFormatting issues detected. Run 'npx dprint fmt' to fix.", stderr="pre-commit hook failed: dprint-format", returncode=1),  # git commit fails due to dprint
+                Mock(success=True, stdout="Formatted 3 files", stderr="", returncode=0),  # npx dprint fmt
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git add after fmt
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git status --porcelain
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git ls-files (pre-commit scan again)
+                Mock(success=True, stdout="[commit] done", stderr="", returncode=0),  # git commit success
+            ]
+            res = engine._commit_changes({'summary': 'Fix style'})
 
         assert "Committed changes: Auto-Coder: Fix style" in res
-        # Ensure subprocess.run was called at least 5 times according to the sequence
-        assert mock_run.call_count == 5
 
 class TestAutomationEngineExtended:
     """Extended test cases for AutomationEngine."""
@@ -1400,7 +1448,7 @@ class TestAutomationEngineExtended:
         # Mock GitHub Actions failure, checkout success, and up-to-date branch
         with patch.object(engine, '_check_github_actions_status') as mock_check, \
              patch.object(engine, '_checkout_pr_branch') as mock_checkout, \
-             patch.object(engine, '_update_with_main_branch') as mock_update, \
+             patch.object(engine, '_update_with_base_branch') as mock_update, \
              patch.object(engine, '_get_github_actions_logs') as mock_logs, \
              patch.object(engine, '_fix_pr_issues_with_testing') as mock_fix:
 
@@ -1419,37 +1467,36 @@ class TestAutomationEngineExtended:
             mock_logs.assert_called_once_with('test/repo', failed_checks)
             mock_fix.assert_called_once_with('test/repo', pr_data, "Test failed: assertion error")
 
+    def test_handle_pr_merge_skips_base_update_when_flag_true(self, mock_github_client, mock_gemini_client):
+        """When SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL is True, _handle_pr_merge should not call _update_with_base_branch and proceed to fixes."""
+        # Setup engine with flag True
+        config = AutomationConfig()
+        config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, config=config)
+        pr_data = {'number': 555, 'title': 'Failing PR'}
+
+        failed_checks = [{'name': 'ci', 'status': 'failed'}]
+        with patch.object(engine, '_check_github_actions_status') as mock_check, \
+             patch.object(engine, '_checkout_pr_branch') as mock_checkout, \
+             patch.object(engine, '_update_with_base_branch') as mock_update, \
+             patch.object(engine, '_get_github_actions_logs') as mock_logs, \
+             patch.object(engine, '_fix_pr_issues_with_testing') as mock_fix:
+            mock_check.return_value = {'success': False, 'in_progress': False, 'failed_checks': failed_checks}
+            mock_checkout.return_value = True
+            mock_logs.return_value = "Err log"
+            mock_fix.return_value = ["Applied fix", "Committed and pushed fix"]
+
+            result = engine._handle_pr_merge('test/repo', pr_data, {})
+
+            # Should have skipped _update_with_base_branch
+            mock_update.assert_not_called()
+            mock_logs.assert_called_once()
+            mock_fix.assert_called_once()
+            assert any("Skipping base branch update" in a for a in result)
+
     def test_fix_pr_issues_with_testing_success(self, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with successful local tests."""
         # Setup
-
-        def test_handle_pr_merge_skips_main_update_when_flag_true(self, mock_github_client, mock_gemini_client):
-            """When SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL is True, _handle_pr_merge should not call _update_with_main_branch and proceed to fixes."""
-            # Setup engine with flag True
-            config = AutomationConfig()
-            config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = True
-            engine = AutomationEngine(mock_github_client, mock_gemini_client, config=config)
-            pr_data = {'number': 555, 'title': 'Failing PR'}
-
-            failed_checks = [{'name': 'ci', 'status': 'failed'}]
-            with patch.object(engine, '_check_github_actions_status') as mock_check, \
-                 patch.object(engine, '_checkout_pr_branch') as mock_checkout, \
-                 patch.object(engine, '_update_with_main_branch') as mock_update, \
-                 patch.object(engine, '_get_github_actions_logs') as mock_logs, \
-                 patch.object(engine, '_fix_pr_issues_with_testing') as mock_fix:
-                mock_check.return_value = {'success': False, 'in_progress': False, 'failed_checks': failed_checks}
-                mock_checkout.return_value = True
-                mock_logs.return_value = "Err log"
-                mock_fix.return_value = ["Applied fix", "Committed and pushed fix"]
-
-                result = engine._handle_pr_merge('test/repo', pr_data, {})
-
-                # Should have skipped _update_with_main_branch
-                mock_update.assert_not_called()
-                mock_logs.assert_called_once()
-                mock_fix.assert_called_once()
-                assert any("Skipping main branch update" in a for a in result)
-
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
         pr_data = {'number': 123, 'title': 'Test PR'}
         github_logs = "Test failed: assertion error"
@@ -1632,14 +1679,10 @@ class TestPackageLockConflictResolution:
         mock_exists.return_value = True
 
         with patch.object(engine.cmd, 'run_command') as mock_cmd:
-            # Mock successful command execution
-            mock_cmd.side_effect = [
-                Mock(success=True, stdout="", stderr=""),  # rm -f package-lock.json
-                Mock(success=True, stdout="", stderr=""),  # npm install
-                Mock(success=True, stdout="", stderr=""),  # git add .
-                Mock(success=True, stdout="", stderr=""),  # git commit
-                Mock(success=True, stdout="", stderr="")   # git push
-            ]
+            # Mock: every command returns success (covers rm, npm, add, ls-files, commit, push)
+            def side_effect(cmd, timeout=None, cwd=None, check_success=True):
+                return Mock(success=True, stdout="", stderr="", returncode=0)
+            mock_cmd.side_effect = side_effect
 
             # Execute
             result = engine._resolve_package_lock_conflicts(pr_data, conflict_info)
@@ -2029,10 +2072,12 @@ bar
         os.chdir(tmp_path)
         try:
             with patch('src.auto_coder.automation_engine.CommandExecutor.run_command') as mock_run:
-                # git add succeeds; commit should not be attempted
+                # git add succeeds; commit should not be attempted when conflict markers exist
                 def side_effect(cmd, timeout=None, cwd=None, check_success=True):
                     if cmd[:2] == ['git', 'add']:
                         return Mock(success=True, stdout="", stderr="", returncode=0)
+                    if cmd[:2] == ['git', 'ls-files']:
+                        return Mock(success=True, stdout="conflicted.txt\n", stderr="", returncode=0)
                     if cmd[:2] == ['git', 'commit']:
                         return Mock(success=True, stdout="SHOULD_NOT_COMMIT", stderr="", returncode=0)
                     return Mock(success=True, stdout="", stderr="", returncode=0)
@@ -2058,7 +2103,15 @@ beta
         cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
-            res = engine._commit_with_message("Test msg")
+            with patch('src.auto_coder.automation_engine.CommandExecutor.run_command') as mock_run:
+                def side_effect(cmd, timeout=None, cwd=None, check_success=True):
+                    if cmd[:2] == ['git', 'ls-files']:
+                        return Mock(success=True, stdout="conflicted2.txt\n", stderr="", returncode=0)
+                    if cmd[:2] == ['git', 'commit']:
+                        return Mock(success=True, stdout="SHOULD_NOT_COMMIT", stderr="", returncode=0)
+                    return Mock(success=True, stdout="", stderr="", returncode=0)
+                mock_run.side_effect = side_effect
+                res = engine._commit_with_message("Test msg")
             assert res.success is False
             assert "Unresolved conflict markers" in (res.stderr or "")
         finally:

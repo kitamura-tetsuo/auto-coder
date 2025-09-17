@@ -84,6 +84,29 @@ features:
             parameters: ["prompt"]
             returns: "String with escaped @ characters"
 
+  codex_mcp_integration:
+    name: "Codex MCP Integration"
+    description: "Integration with Codex MCP server maintaining a persistent session during a single PR or a single error-fix flow. Implements minimal JSON-RPC handshake (initialize) and a tools/call echo invocation; falls back to codex exec when unavailable."
+    components:
+      - name: "CodexMCPClient"
+        file: "src/auto_coder/codex_mcp_client.py"
+        details: |
+          - Spawns persistent MCP subprocess (default: `codex mcp`)
+          - Performs JSON-RPC initialize handshake
+          - Attempts `tools/call` with an `echo` tool first; if not supported, falls back to `codex exec` with session kept alive
+          - Environment overrides for testing:
+            - AUTOCODER_CODEX_CLI: overrides CLI check command (default: `codex`)
+            - AUTOCODER_MCP_COMMAND: overrides MCP subprocess command (default: `codex mcp`)
+        methods:
+          - name: "_run_gemini_cli"
+            description: "Prefer MCP tools/call (echo) then fallback to codex exec while MCP session stays alive"
+            parameters: ["prompt"]
+            returns: "String output"
+          - name: "close"
+            description: "Terminate the persistent MCP subprocess if running"
+            parameters: []
+            returns: "None"
+
   automation_engine:
     name: "Automation Engine"
     description: "Main orchestration engine that coordinates GitHub and Gemini integration"
@@ -162,8 +185,8 @@ features:
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
-              - "--backend": "AI backend to use (codex|gemini). Default: codex"
-              - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
+              - "--backend": "AI backend to use (codex|codex-mcp|gemini). Default: codex"
+              - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
               - "--skip-main-update/--no-skip-main-update": "When PR checks fail, skip merging main into PR before attempting fixes (default: skip)"
@@ -176,14 +199,14 @@ features:
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
-              - "--backend": "AI backend to use (codex|gemini). Default: codex"
-              - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
+              - "--backend": "AI backend to use (codex|codex-mcp|gemini). Default: codex"
+              - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
           - name: "fix-to-pass-tests"
             description: "Run tests and request LLM fixes until passing; stop with error if LLM made no edits"
             options:
-              - "--backend": "AI backend to use (codex|gemini). Default: codex"
-              - "--model": "Model to use (Gemini only; ignored when backend=codex; default: gemini-2.5-pro)"
+              - "--backend": "AI backend to use (codex|codex-mcp|gemini). Default: codex"
+              - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
               - "--max-attempts": "Maximum fix attempts before giving up (defaults to engine config)"
               - "--dry-run": "Run without making changes"
@@ -399,6 +422,25 @@ special_features:
 
       - "AutomationEngine._resolve_merge_conflicts_with_gemini updated to use specialized resolver and sequential handling"
 
+  base_branch_merge_for_conflicts:
+    name: "PR Base Branch Merge for Updates/Conflicts"
+    description: "When updating a PR branch or resolving conflicts, merge the PR's base branch (not necessarily main) into the PR branch."
+    behavior:
+      - "Detect PR base branch from pr_data.base_branch (or base.ref) and use it as merge target"
+      - "Fetch and merge origin/<base_branch> into the PR branch for updates and conflict resolution"
+      - "Prompts and logs refer to the actual base branch dynamically"
+    benefits:
+      - "Handles repositories where default branch is not main (e.g., develop)"
+      - "Reduces unnecessary rebases when PR targets a non-main branch"
+    implementation:
+      - "AutomationEngine._update_with_main_branch (uses base_branch; function name kept for compatibility)"
+      - "AutomationEngine._resolve_pr_merge_conflicts"
+      - "AutomationEngine._resolve_merge_conflicts_with_gemini (prompt mentions base branch)"
+    tests:
+      - "tests/test_automation_engine.py::test_resolve_pr_merge_conflicts_uses_base_branch"
+      - "tests/test_automation_engine.py::test_update_with_main_branch_uses_provided_base_branch"
+
+
 
   github_actions_fix_commit_push:
     name: "GitHub Actions Fix with Commit/Push"
@@ -429,11 +471,11 @@ special_features:
       - "AutomationEngine._get_allowed_merge_methods"
 
   pr_checks_fail_skip_main_update:
-    name: "Skip Main Update When PR Checks Fail"
-    description: "Adds a CLI option to skip merging main into PR branches when CI checks are failing; default is to skip."
+    name: "Skip Base Branch Update When PR Checks Fail"
+    description: "Adds a CLI option to skip merging the PR's base branch into PR branches when CI checks are failing; default is to skip."
     behavior:
-      - "On failing CI checks, the engine skips updating PR branch with main and proceeds directly to GitHub Actions log extraction and fix attempts."
-      - "If --no-skip-main-update is provided, the engine will attempt to merge main into PR branch first (previous behavior)."
+      - "On failing CI checks, the engine skips updating PR branch with the base branch and proceeds directly to GitHub Actions log extraction and fix attempts."
+      - "If --no-skip-main-update is provided, the engine will attempt to merge the base branch into PR branch first (previous behavior)."
     implementation:
       - "AutomationConfig.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL (default True)"
       - "AutomationEngine._handle_pr_merge respects the flag and branches logic accordingly"
@@ -554,6 +596,13 @@ deployment:
         description: "Process issues and PRs using Gemini backend (model required for Gemini; --model is ignored when backend=codex)"
       - command: "auto-coder process-issues --repo owner/repo --no-jules-mode"
         description: "Disable jules mode and process issues with AI analysis"
+      - command: "auto-coder process-issues --repo owner/repo --backend codex-mcp"
+        description: "Process issues and PRs using Codex MCP backend (persistent session for a single PR or a single error-fix)"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend codex-mcp"
+        description: "Create feature enhancement issues using Codex MCP backend (persistent session)"
+      - command: "auto-coder fix-to-pass-tests --backend codex-mcp"
+        description: "Run local tests and request fixes using Codex MCP backend (session maintained); --model is ignored"
+
       - command: "auto-coder process-issues --repo owner/repo --jules-mode --dry-run"
         description: "Run jules mode in dry-run mode"
       - command: "auto-coder process-issues --repo owner/repo --only 123"

@@ -237,7 +237,7 @@ def stub_git_and_gh_commands(monkeypatch):
             # 想定外は元の run にフォールバック
             return orig_run(cmd, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, check=check, input=input, env=env)
 
-    def fake_popen(cmd, stdout=None, stderr=None, text=False, bufsize=1, universal_newlines=None, cwd=None, env=None):
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, text=False, bufsize=1, universal_newlines=None, cwd=None, env=None):
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
             if program in ("git", "gh", "gemini", "codex", "uv"):
@@ -246,15 +246,19 @@ def stub_git_and_gh_commands(monkeypatch):
                         # stdout をイテレータにして、逐次読み取りを安全に終了
                         self._lines = [""]
                         self.stdout = iter(self._lines)
+                        self.stderr = iter([""])
+                        self.pid = 0
                     def wait(self):
+                        return 0
+                    def poll(self):
                         return 0
                 return DummyPopen()
             # universal_newlines は Python3.12 で text と同義。両方指定の齟齬を避ける
             if universal_newlines is not None and text is None:
                 text = bool(universal_newlines)
-            return orig_popen(cmd, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
+            return orig_popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
         except Exception:
-            return orig_popen(cmd, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
+            return orig_popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)

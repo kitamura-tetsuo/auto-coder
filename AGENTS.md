@@ -48,7 +48,7 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 ### LLM実行ポリシー（重要）
 
 ## 仕様メモ（運用上の重要点）
-- PR処理: PRのチェックが失敗している場合、デフォルトで main 取り込みをスキップして修正に進む（`--skip-main-update`）。従来挙動に戻すには `--no-skip-main-update` を指定。
+- PR処理: PRのチェックが失敗している場合、デフォルトで PRのベースブランチ 取り込みをスキップして修正に進む（`--skip-main-update`）。従来挙動に戻すには `--no-skip-main-update` を指定。
 
 
 - 分析フェーズ禁止: analyze_issue 等、分析だけを目的とした LLM 呼び出しを行わない
@@ -92,6 +92,8 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 
 - LLMスキップ用フラグ導入: package-lock.json等の自動解消やマージ解決後にpush完了した場合、フラグで後続のLLM分析を明示的にスキップ
 - Jules ModeはデフォルトON: CLIの --jules-mode/--no-jules-mode で切替（既定はON）
+
+- Codex-MCPモード: 単一PR処理または単回のローカルエラー修正フロー中は、`codex mcp` の永続セッションを維持。最小のJSON-RPC（initialize/echoツール呼び出し）を実装済み。高度な操作は引き続き `codex exec` で対応
 
 ## テスト戦略
 - ユニットテスト: 各モジュールの個別機能をテスト

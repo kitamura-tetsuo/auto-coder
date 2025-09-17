@@ -12,30 +12,25 @@ def _cmd_result(success=True, stdout="", stderr="", returncode=0):
     return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
 
 
-def test_engine_fix_to_pass_tests_no_edits_raises(mock_github_client, mock_gemini_client):
+def test_engine_fix_to_pass_tests_small_change_retries_without_commit(mock_github_client, mock_gemini_client):
     engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
 
-    # First run: tests fail
+    # Always failing output to simulate <10% change across retries
     engine._run_local_tests = Mock(return_value={
         'success': False,
         'output': 'E AssertionError: expected 1 == 2',
         'errors': '',
         'return_code': 1,
     })
-    # LLM returns a message but does not change files
-    engine._apply_workspace_test_fix = Mock(return_value="Applied change")
-    # git add succeeds
-    engine.cmd.run_command = Mock(side_effect=[
-        _cmd_result(True),  # git add .
-    ])
-    # commit reports nothing to commit -> treat as no edits
-    engine._commit_with_message = Mock(return_value=_cmd_result(False, stdout='nothing to commit'))
+    # LLM returns a message but effectively makes no meaningful change
+    engine._apply_workspace_test_fix = Mock(return_value="Applied change but minimal impact")
 
-    try:
-        engine.fix_to_pass_tests(max_attempts=1)
-        assert False, "Expected RuntimeError when no edits were made"
-    except RuntimeError as e:
-        assert "no edits" in str(e).lower()
+    # Run with max_attempts=1: it should retry once after LLM and stop without commit, not raise
+    result = engine.fix_to_pass_tests(max_attempts=1)
+    assert result['success'] is False
+    assert result['attempts'] == 2  # first run + post-fix retry
+    # Ensure message indicates skipping commit and retrying due to small change
+    assert any('skipping commit and retrying' in m.lower() for m in result['messages'])
 
 
 def test_engine_fix_to_pass_tests_succeeds_after_edit(mock_github_client, mock_gemini_client):
