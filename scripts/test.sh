@@ -7,6 +7,19 @@ elif [ -f "../venv/bin/activate" ]; then
     source ../venv/bin/activate
 fi
 
+# Check if a specific test file is provided as an argument
+if [ $# -eq 1 ]; then
+    SPECIFIC_TEST_FILE=$1
+    if [ -f "$SPECIFIC_TEST_FILE" ]; then
+        echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
+        pytest -v --tb=short "$SPECIFIC_TEST_FILE"
+        exit $?
+    else
+        echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
+        exit 1
+    fi
+fi
+
 # Run all tests first to see which ones fail
 echo "Running all tests..."
 TEST_OUTPUT_FILE=$(mktemp)

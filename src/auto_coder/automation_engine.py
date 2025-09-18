@@ -166,12 +166,29 @@ class AutomationEngine:
 
 
     # ===== Local test run + fix loop =====
-    def _run_local_tests(self) -> Dict[str, Any]:
+    def _run_local_tests(self, test_file: Optional[str] = None) -> Dict[str, Any]:
         """Run local tests using configured script or pytest fallback.
+
+        If test_file is specified, only that test file will be run.
+        Otherwise, all tests will be run.
 
         Returns a dict: {success, output, errors, return_code}
         """
         try:
+            # If a specific test file is specified, run only that test
+            if test_file and os.path.exists(test_file):
+                logger.info(f"Running only the specified test file: {test_file}")
+                cmd = ['pytest', '-v', '--tb=short', test_file]
+                result = self.cmd.run_command(cmd, timeout=self.cmd.DEFAULT_TIMEOUTS['test'])
+                return {
+                    'success': result.success,
+                    'output': result.stdout,
+                    'errors': result.stderr,
+                    'return_code': result.returncode,
+                    'command': ' '.join(cmd),
+                    'test_file': test_file,
+                }
+
             # Prefer test script if present; otherwise run pytest.
             if os.path.exists(self.config.TEST_SCRIPT_PATH):
                 cmd = ['bash', self.config.TEST_SCRIPT_PATH]
@@ -190,6 +207,14 @@ class AutomationEngine:
                     logger.info(f"Running only the first failed test: {first_failed_test}")
                     cmd = ['pytest', '-v', '--tb=short', first_failed_test]
                     result = self.cmd.run_command(cmd, timeout=self.cmd.DEFAULT_TIMEOUTS['test'])
+                    return {
+                        'success': result.success,
+                        'output': result.stdout,
+                        'errors': result.stderr,
+                        'return_code': result.returncode,
+                        'command': ' '.join(cmd),
+                        'test_file': first_failed_test,
+                    }
 
             return {
                 'success': result.success,
@@ -197,6 +222,7 @@ class AutomationEngine:
                 'errors': result.stderr,
                 'return_code': result.returncode,
                 'command': ' '.join(cmd),
+                'test_file': None,
             }
         except Exception as e:
             logger.error(f"Local test execution failed: {e}")
@@ -206,6 +232,7 @@ class AutomationEngine:
                 'errors': str(e),
                 'return_code': -1,
                 'command': '',
+                'test_file': None,
             }
 
     def _apply_workspace_test_fix(self, test_result: Dict[str, Any]) -> str:
@@ -270,6 +297,9 @@ Return a single concise line summarizing the change.
         # Cache the latest post-fix test result to avoid redundant runs in the next loop
         cached_test_result: Optional[Dict[str, Any]] = None
 
+        # Track the test file that is currently being fixed
+        current_test_file: Optional[str] = None
+
         # Support infinite attempts (math.inf) by using a while loop
         attempt = 0  # counts actual test executions
         while True:
@@ -281,7 +311,9 @@ Return a single concise line summarizing the change.
                 attempt += 1
                 summary['attempts'] = attempt
                 logger.info(f"Running local tests (attempt {attempt}/{attempts_limit})")
-                test_result = self._run_local_tests()
+                test_result = self._run_local_tests(test_file=current_test_file)
+                # Update the current test file being fixed
+                current_test_file = test_result.get('test_file')
             if test_result['success']:
                 msg = f"Local tests passed on attempt {attempt}"
                 logger.info(msg)
@@ -305,7 +337,7 @@ Return a single concise line summarizing the change.
             attempt += 1
             summary['attempts'] = attempt
             logger.info(f"Re-running local tests after LLM fix (attempt {attempt}/{attempts_limit})")
-            post_result = self._run_local_tests()
+            post_result = self._run_local_tests(test_file=current_test_file)
 
             post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
             post_error_summary = self._extract_important_errors(post_result)
