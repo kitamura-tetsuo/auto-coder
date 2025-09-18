@@ -13,7 +13,8 @@ from .gemini_client import GeminiClient
 from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
 from .qwen_client import QwenClient
-from .automation_engine import AutomationEngine, AutomationConfig
+from .automation_engine import AutomationEngine
+from .automation_config import AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
 from .logger_config import setup_logger, get_logger

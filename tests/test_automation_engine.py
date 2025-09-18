@@ -51,7 +51,9 @@ import os
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime
 
-from src.auto_coder.automation_engine import AutomationEngine, CommandExecutor, CommandResult, AutomationConfig
+from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.utils import CommandExecutor, CommandResult
+from src.auto_coder.automation_config import AutomationConfig
 
 
 class TestAutomationEngine:
