@@ -182,6 +182,15 @@ class AutomationEngine:
                 logger.info("Test script not found; running pytest -q --maxfail=1")
             result = self.cmd.run_command(cmd, timeout=self.cmd.DEFAULT_TIMEOUTS['test'])
 
+            # If the test script failed, try to extract the first failed test file and run it
+            if not result.success and os.path.exists(self.config.TEST_SCRIPT_PATH):
+                # Extract the first failed test file from the output
+                first_failed_test = self._extract_first_failed_test(result.stdout, result.stderr)
+                if first_failed_test and os.path.exists(first_failed_test):
+                    logger.info(f"Running only the first failed test: {first_failed_test}")
+                    cmd = ['pytest', '-v', '--tb=short', first_failed_test]
+                    result = self.cmd.run_command(cmd, timeout=self.cmd.DEFAULT_TIMEOUTS['test'])
+
             return {
                 'success': result.success,
                 'output': result.stdout,
@@ -548,6 +557,31 @@ Context:
         if len(sliced) > 800:
             sliced = sliced[:800]
         return '\n'.join(sliced)
+
+    def _extract_first_failed_test(self, stdout: str, stderr: str) -> Optional[str]:
+        """Extract the first failed test file from the test output.
+        
+        Supports both pytest-style and Playwright-style test failures.
+        """
+        # Combine stdout and stderr for analysis
+        full_output = f"{stdout}\n{stderr}"
+        
+        # Look for pytest-style failures (lines starting with "FAILED")
+        import re
+        failed_lines = re.findall(r"^FAILED\s+([^:]+):", full_output, re.MULTILINE)
+        if failed_lines:
+            first_failed_test = failed_lines[0]
+            if os.path.exists(first_failed_test):
+                return first_failed_test
+        
+        # Look for Playwright-style failures (lines containing .spec.ts)
+        spec_lines = re.findall(r"([a-zA-Z0-9_/-]+\.spec\.ts)", full_output)
+        if spec_lines:
+            first_failed_test = spec_lines[0]
+            if os.path.exists(first_failed_test):
+                return first_failed_test
+                
+        return None
 
 
     def _log_action(self, action: str, success: bool = True, details: str = "") -> str:
