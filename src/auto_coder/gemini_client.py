@@ -114,6 +114,7 @@ class GeminiClient:
                 logger.info(line)  # Display in real-time
                 output_lines.append(line)
 
+
             # Wait for process to complete
             return_code = process.wait()
 
@@ -154,6 +155,8 @@ class GeminiClient:
     def _create_pr_analysis_prompt(self, pr_data: Dict[str, Any]) -> str:
         """Create prompt for pull request analysis."""
         return f"""
+
+
 Analyze the following GitHub pull request and provide a structured analysis:
 
 Title: {pr_data['title']}
@@ -257,3 +260,8 @@ Please provide feature suggestions in the following JSON format:
                 return []
         except json.JSONDecodeError:
             return []
+
+
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
+        return self._run_gemini_cli(prompt)

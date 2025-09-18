@@ -53,6 +53,19 @@ cp .env.example .env
 
 基本的には `gh auth login` を実施してください。Gemini バックエンドを使用する場合は `gemini login` を行うことで、APIキーを環境変数に設定せずに利用できます（codex バックエンドでは --model は無視されます）。
 
+
+#### Qwen の利用について（認証）
+- Qwen OAuth（推奨）:
+  - `qwen` を一度実行し、ブラウザで qwen.ai アカウント認証すると自動で利用可能になります。
+  - 途中で `/auth` コマンドを実行すると Qwen OAuth に切替できます。
+  - 参考: Qwen Code 公式リポジトリ（Authorization セクション）: https://github.com/QwenLM/qwen-code
+- OpenAI 互換モード:
+  - 以下の環境変数を設定して利用できます。
+    - `OPENAI_API_KEY`（必須）
+    - `OPENAI_BASE_URL`（プロバイダに応じて指定）
+    - `OPENAI_MODEL`（例: `qwen3-coder-plus`）
+  - 当ツールの Qwen バックエンドは非対話モードで `qwen -p/--prompt` を使用し、モデルは `--model/-m` フラグまたは `OPENAI_MODEL` に従います（両方指定時は `--model` を優先）。
+
 ### CLIコマンド
 
 #### issueとPRの処理
@@ -62,6 +75,9 @@ auto-coder process-issues --repo owner/repo
 
 # バックエンドを gemini に切替してモデル指定
 auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro
+
+# バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
+auto-coder process-issues --repo owner/repo --backend qwen --model qwen3-coder-plus
 
 # ドライランモードで実行（変更を行わない）
 auto-coder process-issues --repo owner/repo --dry-run
@@ -80,6 +96,9 @@ auto-coder create-feature-issues --repo owner/repo
 
 # バックエンドを gemini に切替してモデル指定
 auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemini-2.5-pro
+
+# バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
+auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus
 ```
 
 #### テスト合格まで自動修正（fix-to-pass-tests）
@@ -91,6 +110,9 @@ auto-coder fix-to-pass-tests
 
 # バックエンドを gemini に切替してモデル指定
 auto-coder fix-to-pass-tests --backend gemini --model gemini-2.5-pro
+
+# バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
+auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus
 
 # 試行回数を指定（例: 最大5回）
 auto-coder fix-to-pass-tests --max-attempts 5

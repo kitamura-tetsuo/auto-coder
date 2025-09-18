@@ -12,6 +12,7 @@ from .github_client import GitHubClient
 from .gemini_client import GeminiClient
 from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
+from .qwen_client import QwenClient
 from .automation_engine import AutomationEngine, AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
@@ -149,6 +150,66 @@ def check_codex_cli_or_fail() -> None:
     )
 
 
+def check_qwen_cli_or_fail() -> None:
+    """Check if qwen CLI is available and working."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['qwen', '--version'],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            click.echo("Using qwen CLI")
+            return
+    except Exception:
+        pass
+    raise click.ClickException(
+        "Qwen Code CLI is required. Please install it from:\n"
+        "https://github.com/QwenLM/qwen-code\n"
+        "Or use: npm install -g @qwen-code/qwen-code"
+    )
+
+
+
+def qwen_help_has_flags(required_flags: list[str]) -> bool:
+    """Lightweight probe for qwen --help to verify presence of required flags.
+
+    Tolerates short/long form equivalence, e.g. "-p" <-> "--prompt", "-m" <-> "--model".
+    Returns False on any error; intended for tests and optional diagnostics. Fully mocked in CI.
+    """
+    try:
+        import subprocess
+        import re as _re
+        res = subprocess.run(['qwen', '--help'], capture_output=True, text=True, timeout=10)
+        if res.returncode != 0:
+            return False
+        help_text_raw = (res.stdout or "") + (res.stderr or "")
+
+        # Normalize help text: strip ANSI, unify dashes, collapse whitespace
+        ansi_re = _re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+        help_text = ansi_re.sub("", help_text_raw)
+        help_text = help_text.replace('\u2013', '-').replace('\u2014', '-')
+        help_text = " ".join(help_text.split())
+
+        # Map equivalent flags so either form satisfies the requirement
+        equivalents = {
+            '-p': ['-p', '--prompt'],
+            '--prompt': ['--prompt', '-p'],
+            '-m': ['-m', '--model'],
+            '--model': ['--model', '-m'],
+        }
+
+        def flag_present(flag: str) -> bool:
+            options = equivalents.get(flag, [flag])
+            return any(opt in help_text for opt in options)
+
+        return all(flag_present(f) for f in required_flags)
+    except Exception:
+        return False
+
+
 @click.group()
 @click.version_option(version="0.1.0", package_name="auto-coder")
 def main() -> None:
@@ -159,9 +220,11 @@ def main() -> None:
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
-@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini', 'qwen']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex or codex-mcp)')
+@click.option('--openai-api-key', envvar='OPENAI_API_KEY', help='OpenAI-style API key (optional, used when backend=qwen)')
+@click.option('--openai-base-url', envvar='OPENAI_BASE_URL', help='OpenAI-style Base URL (optional, used when backend=qwen)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini/Qwen; ignored when backend=codex or codex-mcp)')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode/--no-jules-mode', default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)')
 @click.option('--skip-main-update/--no-skip-main-update', default=True, help='When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)')
@@ -174,6 +237,8 @@ def process_issues(
     github_token: Optional[str],
     backend: str,
     gemini_api_key: Optional[str],
+    openai_api_key: Optional[str],
+    openai_base_url: Optional[str],
     model: str,
     dry_run: bool,
     jules_mode: bool,
@@ -181,7 +246,7 @@ def process_issues(
     ignore_dependabot_prs: bool,
     only_target: Optional[str],
     log_level: str,
-    log_file: Optional[str]
+    log_file: Optional[str],
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
     # Setup logger with specified options
@@ -191,8 +256,10 @@ def process_issues(
     github_token_final = get_github_token_or_fail(github_token)
     if backend in ('codex', 'codex-mcp'):
         check_codex_cli_or_fail()
-    else:
+    elif backend == 'gemini':
         check_gemini_cli_or_fail()
+    else:
+        check_qwen_cli_or_fail()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
@@ -224,7 +291,7 @@ def process_issues(
 
     click.echo(f"Processing repository: {repo_name}")
     click.echo(f"Using backend: {backend}")
-    if backend == 'gemini':
+    if backend in ('gemini', 'qwen'):
         click.echo(f"Using model: {model}")
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
@@ -236,6 +303,8 @@ def process_issues(
     ai_client = None
     if backend == 'gemini':
         ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    elif backend == 'qwen':
+        ai_client = QwenClient(model_name=model, openai_api_key=openai_api_key, openai_base_url=openai_base_url)
     elif backend == 'codex-mcp':
         ai_client = CodexMCPClient(model_name='codex-mcp')
     else:
@@ -299,9 +368,11 @@ def process_issues(
 @main.command()
 @click.option('--repo', help='GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.')
 @click.option('--github-token', envvar='GITHUB_TOKEN', help='GitHub API token')
-@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini', 'qwen']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex or codex-mcp)')
+@click.option('--openai-api-key', envvar='OPENAI_API_KEY', help='OpenAI-style API key (optional, used when backend=qwen)')
+@click.option('--openai-base-url', envvar='OPENAI_BASE_URL', help='OpenAI-style Base URL (optional, used when backend=qwen)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini/Qwen; ignored when backend=codex or codex-mcp)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def create_feature_issues(
@@ -309,6 +380,8 @@ def create_feature_issues(
     github_token: Optional[str],
     backend: str,
     gemini_api_key: Optional[str],
+    openai_api_key: Optional[str],
+    openai_base_url: Optional[str],
     model: str,
     log_level: str,
     log_file: Optional[str]
@@ -321,8 +394,10 @@ def create_feature_issues(
     github_token_final = get_github_token_or_fail(github_token)
     if backend in ('codex', 'codex-mcp'):
         check_codex_cli_or_fail()
-    else:
+    elif backend == 'gemini':
         check_gemini_cli_or_fail()
+    else:
+        check_qwen_cli_or_fail()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
@@ -340,19 +415,21 @@ def create_feature_issues(
 
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
     logger.info(f"Using backend: {backend}")
-    if backend == 'gemini':
+    if backend in ('gemini', 'qwen'):
         logger.info(f"Using model: {model}")
     logger.info(f"Log level: {log_level}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
     click.echo(f"Using backend: {backend}")
-    if backend == 'gemini':
+    if backend in ('gemini', 'qwen'):
         click.echo(f"Using model: {model}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
     if backend == 'gemini':
         ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    elif backend == 'qwen':
+        ai_client = QwenClient(model_name=model, openai_api_key=openai_api_key, openai_base_url=openai_base_url)
     elif backend == 'codex-mcp':
         ai_client = CodexMCPClient(model_name='codex-mcp')
     else:
@@ -371,9 +448,11 @@ def create_feature_issues(
 
 
 @main.command(name="fix-to-pass-tests")
-@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini']), help='AI backend to use (default: codex)')
+@click.option('--backend', default='codex', type=click.Choice(['codex', 'codex-mcp', 'gemini', 'qwen']), help='AI backend to use (default: codex)')
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini only; ignored when backend=codex or codex-mcp)')
+@click.option('--openai-api-key', envvar='OPENAI_API_KEY', help='OpenAI-style API key (optional, used when backend=qwen)')
+@click.option('--openai-base-url', envvar='OPENAI_BASE_URL', help='OpenAI-style Base URL (optional, used when backend=qwen)')
+@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini/Qwen; ignored when backend=codex or codex-mcp)')
 @click.option('--max-attempts', type=int, default=None, help='Maximum fix attempts before giving up (defaults to engine config)')
 @click.option('--dry-run', is_flag=True, help='Run without making changes (LLM edits simulated)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
@@ -381,6 +460,8 @@ def create_feature_issues(
 def fix_to_pass_tests_command(
     backend: str,
     gemini_api_key: Optional[str],
+    openai_api_key: Optional[str],
+    openai_base_url: Optional[str],
     model: str,
     max_attempts: Optional[int],
     dry_run: bool,
@@ -396,8 +477,10 @@ def fix_to_pass_tests_command(
     # Check backend CLI availability
     if backend in ('codex', 'codex-mcp'):
         check_codex_cli_or_fail()
-    else:
+    elif backend == 'gemini':
         check_gemini_cli_or_fail()
+    else:
+        check_qwen_cli_or_fail()
 
     # Initialize minimal clients (GitHub not used here, but engine expects a client)
     try:
@@ -411,6 +494,8 @@ def fix_to_pass_tests_command(
 
     if backend == 'gemini':
         ai_client = GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)
+    elif backend == 'qwen':
+        ai_client = QwenClient(model_name=model, openai_api_key=openai_api_key, openai_base_url=openai_base_url)
     elif backend == 'codex-mcp':
         ai_client = CodexMCPClient(model_name='codex-mcp')
     else:
@@ -430,7 +515,7 @@ def fix_to_pass_tests_command(
         pass
 
     click.echo(f"Using backend: {backend}")
-    if backend == 'gemini':
+    if backend in ('gemini', 'qwen'):
         click.echo(f"Using model: {model}")
     click.echo(f"Dry run mode: {dry_run}")
 
@@ -510,6 +595,24 @@ def auth_status() -> None:
     except Exception:
         click.echo("  ❌ gemini CLI not found")
         click.echo("     Please install from: https://github.com/google-gemini/gemini-cli")
+
+    click.echo()
+
+    # Qwen Code CLI status
+    click.echo("🤖 Qwen Code CLI:")
+    try:
+        import subprocess as _sp
+        res = _sp.run(['qwen', '--version'], capture_output=True, text=True, timeout=10)
+        if res.returncode == 0:
+            click.echo("  ✅ qwen CLI available")
+            ver = (res.stdout or '').strip()
+            if ver:
+                click.echo(f"     Version: {ver}")
+        else:
+            click.echo("  ❌ qwen CLI not working")
+    except Exception:
+        click.echo("  ❌ qwen CLI not found")
+        click.echo("     Please install from: https://github.com/QwenLM/qwen-code")
 
     click.echo()
 

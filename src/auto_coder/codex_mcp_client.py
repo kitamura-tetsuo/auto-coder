@@ -309,6 +309,10 @@ class CodexMCPClient:
         except Exception as e:
             raise RuntimeError(f"Failed to run codex exec under MCP session: {e}")
 
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
+        return self._run_gemini_cli(prompt)
+
     def close(self) -> None:
         """Terminate the persistent MCP process if running."""
         try:

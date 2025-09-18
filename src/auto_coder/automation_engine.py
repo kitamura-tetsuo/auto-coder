@@ -140,12 +140,30 @@ class AutomationEngine:
         """Initialize automation engine."""
         self.github = github_client
         self.gemini = gemini_client
+        # Neutral alias to avoid gemini-specific naming in engine internals
+        self.ai = gemini_client
         self.dry_run = dry_run
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
 
         # Create reports directory if it doesn't exist
         os.makedirs(self.config.REPORTS_DIR, exist_ok=True)
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Neutral LLM runner: prefer client's _run_llm_cli, fallback to legacy names.
+        This keeps AutomationEngine naming neutral while preserving backward compatibility.
+        """
+        client = getattr(self, 'gemini', None) or getattr(self, 'ai', None)
+        if client is None:
+            raise RuntimeError("LLM client not available")
+        # Prefer legacy methods first for backward compatibility with existing tests/mocks
+        if hasattr(client, '_run_gemini_cli') and callable(getattr(client, '_run_gemini_cli')):
+            return client._run_gemini_cli(prompt)
+        if hasattr(client, '_run_llm_cli') and callable(getattr(client, '_run_llm_cli')):
+            return client._run_llm_cli(prompt)
+        if hasattr(client, '_run_qwen_cli') and callable(getattr(client, '_run_qwen_cli')):
+            return client._run_qwen_cli(prompt)
+        raise AttributeError("LLM client does not implement a known run method (_run_gemini_cli/_run_llm_cli/_run_qwen_cli)")
+
 
     # ===== Local test run + fix loop =====
     def _run_local_tests(self) -> Dict[str, Any]:
@@ -213,7 +231,7 @@ Return a single concise line summarizing the change.
             if self.dry_run:
                 return "[DRY RUN] Would apply fixes for local test failures"
 
-            response = self.gemini._run_gemini_cli(fix_prompt)
+            response = self._run_llm_cli(fix_prompt)
             if response and response.strip():
                 # Take the first line as the summary and trim
                 first_line = response.strip().splitlines()[0]
@@ -420,7 +438,7 @@ Context:
 {(error_summary or '').strip()[:400]}
 """
 
-            response = self.gemini._run_gemini_cli(prompt)
+            response = self._run_llm_cli(prompt)
             if not response:
                 return ""
             # Take first non-empty line, sanitize length
@@ -1011,7 +1029,7 @@ Please proceed with analyzing and taking action on this issue now.
                 return actions
 
             logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
-            response = self.gemini._run_gemini_cli(action_prompt)
+            response = self._run_llm_cli(action_prompt)
 
             # Parse the response
             if response and len(response.strip()) > 0:
@@ -1094,7 +1112,7 @@ Please proceed with analyzing and taking action on this issue now.
 
             # Use LLM CLI to analyze and take actions
             self._log_action(f"Applying PR actions directly for PR #{pr_data['number']}")
-            response = self.gemini._run_gemini_cli(action_prompt)
+            response = self._run_llm_cli(action_prompt)
 
             # Process the response
             if response and len(response.strip()) > 0:
@@ -2002,7 +2020,7 @@ Output requirements:
 """
 
             if not self.dry_run:
-                response = self.gemini._run_gemini_cli(fix_prompt)
+                response = self._run_llm_cli(fix_prompt)
                 if response:
                     actions.append(f"Applied GitHub Actions fix: {response[:self.config.MAX_RESPONSE_SIZE]}...")
                 else:
@@ -2060,7 +2078,7 @@ Logs:
 Apply code changes to resolve the failures and ensure tests pass.
 Summarize what you changed.
 """
-            response = self.gemini._run_gemini_cli(prompt)
+            response = self._run_llm_cli(prompt)
             actions.append(f"Gemini CLI applied GitHub Actions fixes: {response[:self.config.MAX_RESPONSE_SIZE]}" if response else "No response from Gemini for GitHub Actions fixes")
             # Commit changes
             commit_result = self._commit_changes("Apply fixes based on GitHub Actions logs")
@@ -2085,7 +2103,7 @@ Errors:
 Apply code changes to resolve the failures and ensure tests pass.
 Summarize what you changed.
 """
-            response = self.gemini._run_gemini_cli(prompt)
+            response = self._run_llm_cli(prompt)
             actions.append(f"Gemini CLI applied local test fixes: {response[:self.config.MAX_RESPONSE_SIZE]}" if response else "No response from Gemini for local test fixes")
             commit_result = self._commit_changes("Apply fixes based on local test failures")
             actions.append(commit_result)
@@ -2149,7 +2167,7 @@ After analyzing, apply the necessary fixes to the codebase.
 """
 
             if not self.dry_run:
-                response = self.gemini._run_gemini_cli(fix_prompt)
+                response = self._run_llm_cli(fix_prompt)
                 if response:
                     actions.append(f"Applied local test fix: {response[:self.config.MAX_RESPONSE_SIZE]}...")
                 else:
@@ -2789,7 +2807,7 @@ Please proceed with resolving these merge conflicts now.
 
             # Use Gemini CLI to resolve conflicts
             logger.info(f"Asking Gemini ({self.gemini.model_name}) to resolve merge conflicts for PR #{pr_data['number']}")
-            response = self.gemini._run_gemini_cli(resolve_prompt)
+            response = self._run_llm_cli(resolve_prompt)
 
             # Parse the response
             if response and len(response.strip()) > 0:

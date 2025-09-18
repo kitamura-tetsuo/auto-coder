@@ -588,12 +588,107 @@ deployment:
       tests:
         - "tests/test_ci_workflow.py::test_github_actions_ci_workflow_exists_and_has_required_jobs"
 
+  qwen_integration:
+    name: "Qwen Code Integration"
+    description: "Integration with Qwen Code CLI for single-run direct actions (no analysis-only calls)."
+    migration_plan_phase3:
+      goal: "Eliminate 'gemini' from internal method names in QwenClient while preserving engine compatibility"
+      impacted_components:
+        - "AutomationEngine (calls _run_gemini_cli on client object)"
+        - "QwenClient (private method names)"
+        - "Tests referencing _run_gemini_cli/_run_qwen_cli"
+      strategy:
+        - "Make _run_qwen_cli the primary implementation in QwenClient"
+        - "Keep _run_gemini_cli as a delegating alias during transition"
+        - "Update internal QwenClient calls (e.g., suggest_features) to use _run_qwen_cli"
+        - "Plan a later phase to rename AutomationEngine.gemini and callers to neutral naming before alias removal"
+      deprecation:
+        - "Mark _run_gemini_cli as temporary alias; remove after engine rename and downstream updates"
+
+    migration_plan_phase4:
+      goal: "Neutralize AutomationEngine LLM invocation naming and reduce alias dependencies"
+      impacted_components:
+        - "AutomationEngine (introduce _run_llm_cli helper; progressively replace call sites)"
+        - "GeminiClient/QwenClient/CodexClient/CodexMCPClient (add _run_llm_cli delegating alias)"
+        - "CLI/Docs/Tests (ensure consistency)"
+      strategy:
+        - "Phase 1: Introduce _run_llm_cli in all clients, keep existing methods for compatibility"
+        - "Phase 2: Replace AutomationEngine call sites to use self._run_llm_cli(...) while keeping self.gemini attr"
+        - "Phase 3: Plan removal conditions for QwenClient._run_gemini_cli alias once engine neutralization reaches 100% and downstream usage is gone"
+      deprecation:
+        - "Deprecate QwenClient._run_gemini_cli; remove after a grace period when CI shows zero usages across engine/tests"
+      tests:
+        - "tests/test_llm_cli_neutral.py::test_gemini_client_llm_alias"
+        - "tests/test_llm_cli_neutral.py::test_qwen_client_llm_alias"
+        - "tests/test_llm_cli_neutral.py::test_codex_client_llm_alias"
+
+    components:
+      - name: "QwenClient"
+        file: "src/auto_coder/qwen_client.py"
+        methods:
+          - name: "suggest_features"
+            description: "Suggest new features based on repository analysis via Qwen Code"
+            parameters: ["repo_context"]
+            returns: "List of feature suggestions"
+          - name: "switch_to_conflict_model"
+            description: "No-op switch for conflict resolution (same model by default)"
+            parameters: []
+            returns: "None"
+          - name: "switch_to_default_model"
+            description: "No-op switch back to default model"
+            parameters: []
+            returns: "None"
+          - name: "_run_qwen_cli"
+            description: "Primary method: run qwen CLI non-interactively (-p/--prompt); prefers -m/--model; sets OPENAI_MODEL and applies OPENAI_API_KEY/OPENAI_BASE_URL env when provided; streams output"
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
+
+          - name: "_run_gemini_cli"
+            description: "Temporary alias delegating to _run_qwen_cli (for AutomationEngine compatibility)"
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
+
+          - name: "_run_llm_cli"
+            description: "Neutral method delegating to _run_qwen_cli; preferred by AutomationEngine during migration"
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
+
+
+        probes:
+          - name: "qwen_help_has_flags"
+            file: "src/auto_coder/cli.py"
+            description: "Lightweight probe executing 'qwen --help' to verify required flags; tolerates short/long forms (-p/--prompt, -m/--model) and normalizes ANSI/whitespace/dashes; fully mocked in CI"
+            tests:
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_detects_required_flags"
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_missing_flag_returns_false"
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_accepts_long_form_for_short_flags"
+              - "tests/test_qwen_help_probe.py::test_qwen_help_probe_accepts_short_form_for_long_flags"
+              - "tests/test_qwen_help_probe_extra.py::test_qwen_help_probe_handles_trailing_space_and_text"
+              - "tests/test_qwen_help_probe_extra.py::test_qwen_help_probe_handles_table_style"
+
+        cli_options:
+          - name: "--openai-api-key"
+            scope: "backend=qwen only"
+            envvar: "OPENAI_API_KEY"
+            description: "OpenAI-style API key forwarded to QwenClient and exported to env for qwen CLI invocations"
+          - name: "--openai-base-url"
+            scope: "backend=qwen only"
+            envvar: "OPENAI_BASE_URL"
+            description: "OpenAI-style Base URL forwarded to QwenClient and exported to env for qwen CLI invocations"
+
   usage:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
         description: "Process issues and PRs with codex backend (default); jules mode is ON by default"
       - command: "auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro"
         description: "Process issues and PRs using Gemini backend (model required for Gemini; --model is ignored when backend=codex)"
+      - command: "auto-coder process-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
+        description: "Process issues and PRs using Qwen Code backend (model accepted for Qwen; --model is ignored when backend=codex)"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
+        description: "Create feature enhancement issues using Qwen Code backend"
+      - command: "auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus"
+        description: "Run local tests and request fixes using Qwen Code backend"
+
       - command: "auto-coder process-issues --repo owner/repo --no-jules-mode"
         description: "Disable jules mode and process issues with AI analysis"
       - command: "auto-coder process-issues --repo owner/repo --backend codex-mcp"
