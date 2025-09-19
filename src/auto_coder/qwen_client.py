@@ -115,6 +115,8 @@ class QwenClient:
         assert process.stdout is not None
         for line in process.stdout:
             line = line.rstrip("\n")
+            if len(line) == 0:
+                continue
             logger.info(line)
             output_lines.append(line)
 

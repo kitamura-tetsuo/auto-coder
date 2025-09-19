@@ -25,10 +25,10 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
     Returns a dict: {success, output, errors, return_code}
     """
     try:
-        # If a specific test file is specified, run only that test
-        if test_file and os.path.exists(test_file):
-            logger.info(f"Running only the specified test file: {test_file}")
-            cmd_list = ['pytest', '-v', '--tb=short', test_file]
+        # If a specific test file is specified, run only that test (always via TEST_SCRIPT_PATH)
+        if test_file:
+            logger.info(f"Running only the specified test file via script: {test_file}")
+            cmd_list = ['bash', config.TEST_SCRIPT_PATH, test_file]
             result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS['test'])
             return {
                 'success': result.success,
@@ -39,32 +39,17 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
                 'test_file': test_file,
             }
 
-        # Prefer test script if present; otherwise run pytest.
-        if os.path.exists(config.TEST_SCRIPT_PATH):
-            cmd_list = ['bash', config.TEST_SCRIPT_PATH]
-            logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
-        else:
-            # Fallback to pytest quick mode
-            cmd_list = ['pytest', '-q', '--maxfail=1']
-            logger.info("Test script not found; running pytest -q --maxfail=1")
+        # Always run via test script
+        cmd_list = ['bash', config.TEST_SCRIPT_PATH]
+        logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS['test'])
 
-        # If the test script failed, try to extract the first failed test file and run it
-        if not result.success and os.path.exists(config.TEST_SCRIPT_PATH):
+        # If the test run failed, try to extract the first failed test file and run it via the script
+        if not result.success:
             # Extract the first failed test file from the output
             first_failed_test = extract_first_failed_test(result.stdout, result.stderr)
-            if first_failed_test and os.path.exists(first_failed_test):
-                logger.info(f"Running only the first failed test: {first_failed_test}")
-                cmd_list = ['pytest', '-v', '--tb=short', first_failed_test]
-                result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS['test'])
-                return {
-                    'success': result.success,
-                    'output': result.stdout,
-                    'errors': result.stderr,
-                    'return_code': result.returncode,
-                    'command': ' '.join(cmd_list),
-                    'test_file': first_failed_test,
-                }
+            if first_failed_test:
+                return run_local_tests(config, test_file=first_failed_test)
 
         return {
             'success': result.success,
@@ -234,6 +219,8 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
                 logger.info(info)
                 summary['messages'].append(info)
                 should_commit = True
+                
+        current_test_file = None
 
         # Stage and commit; detect 'no changes' as an immediate error per requirement
         add_res = cmd.run_command(['git', 'add', '.'])

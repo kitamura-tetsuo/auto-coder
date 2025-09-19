@@ -60,6 +60,12 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 
 - PR出力ポリシー: PRに対するLLMの出力はコメント投稿を禁止し、最小限のコード修正・git add/commit/push・条件を満たす場合は gh pr merge を行う。コメントやレビュー文面の出力は不可。成功時は `ACTION_SUMMARY:` で始まる1行のみを出力し、修正不能時は `CANNOT_FIX` を出力する。
 
+
+- TEST_SCRIPT_PATH（scripts/test.sh）の所在と方針
+  - 実行時に使用される scripts/test.sh は「対象リポジトリ」のもの。本リポジトリ内の scripts/test.sh を最適化しても効果はない。
+  - 自動実行系（run_local_tests, run_pr_tests 等）は pytest 直叩きを行わず、常に TEST_SCRIPT_PATH を呼び出す。単一テスト再実行時も `bash $TEST_SCRIPT_PATH <file>` で渡す。
+  - TEST_SCRIPT_PATH の存在確認は「起動時に一度だけ」行い、不在なら即エラーで終了する。それ以降の処理では TEST_SCRIPT_PATH の不在チェックを行わない（フォールバック禁止）。
+
 ### Git commit/push policy (English)
 
 - Centralize all git commit and push operations through dedicated helper routines.

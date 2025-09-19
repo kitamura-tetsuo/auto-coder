@@ -173,6 +173,39 @@ features:
             returns: "String containing extracted error snippets per failed job (with step headings and expectation details when available)"
 
 
+  test_runner_utils:
+    name: "Test Runner Utilities"
+    description: "Utilities to parse test outputs and assist selective re-runs"
+    components:
+      - name: "extract_first_failed_test"
+        file: "src/auto_coder/utils.py"
+        description: "Robustly extracts the first failed test file from stdout/stderr across pytest and Playwright formats"
+        inputs:
+          - "stdout: string"
+          - "stderr: string"
+        returns: "Relative file path to the first failed test or null"
+        supports:
+          - "pytest summary lines: 'FAILED tests/test_foo.py::test_bar - ...'"
+          - "pytest traceback lines: 'tests/test_foo.py:12: in test_bar'"
+          - "Playwright specs: 'e2e/.../name.spec.ts:16:5'"
+        tests:
+          - "tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_failed_summary_hyphen"
+          - "tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_traceback_line"
+          - "tests/test_utils_extract_first_failed_test.py::test_extract_from_playwright_spec"
+      - name: "run_local_tests"
+        file: "src/auto_coder/test_runner.py"
+        description: |
+          Executes local tests via TEST_SCRIPT_PATH (scripts/test.sh) with no pytest fallback.
+          Behavior:
+          - When a specific test file is provided, invokes: `bash $TEST_SCRIPT_PATH <file>`
+          - When running all tests via script and failures occur, extracts the first failed test and re-runs it via script with the file argument
+          - TEST_SCRIPT_PATH is validated once at CLI startup; if missing, the command errors and exits
+        tests:
+          - "tests/test_run_local_tests_script.py::test_run_local_tests_uses_script_for_single_file"
+          - "tests/test_run_local_tests_script.py::test_run_local_tests_uses_script_for_all_tests"
+          - "tests/test_run_local_tests_script.py::test_run_local_tests_reruns_first_failed_via_script"
+
+
   cli_interface:
     name: "Command Line Interface"
     description: "CLI for interacting with Auto-Coder functionality"

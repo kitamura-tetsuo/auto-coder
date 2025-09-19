@@ -26,6 +26,18 @@ load_dotenv()
 logger = get_logger(__name__)
 
 
+def ensure_test_script_or_fail() -> None:
+    """Ensure TEST_SCRIPT_PATH exists; error early if missing.
+    This check runs at CLI startup for commands that may run tests.
+    """
+    cfg = AutomationConfig()
+    script_path = cfg.TEST_SCRIPT_PATH
+    if not os.path.exists(script_path):
+        raise click.ClickException(
+            f"Required test script not found: {script_path}. This tool requires a target-repo-provided test script."
+        )
+
+
 def get_repo_or_detect(repo: Optional[str]) -> str:
     """Get repository name from parameter or auto-detect from current directory."""
     if repo:
@@ -265,6 +277,9 @@ def process_issues(
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
+    # Ensure required test script is present (fail early)
+    ensure_test_script_or_fail()
+
     # Warn if model is specified but backend is codex/codex-mcp (model will be ignored)
     try:
         ctx = click.get_current_context(silent=True)
@@ -474,6 +489,10 @@ def fix_to_pass_tests_command(
     If the LLM makes no edits in an iteration, error and stop.
     """
     setup_logger(log_level=log_level, log_file=log_file)
+
+    # Ensure required test script is present (fail early)
+    ensure_test_script_or_fail()
+
 
     # Check backend CLI availability
     if backend in ('codex', 'codex-mcp'):
