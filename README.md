@@ -41,6 +41,18 @@ pip install -e .
 pip install git+https://github.com/your-username/auto-coder.git
 ```
 
+> 補足（PEP 668 回避/推奨）: システム Python が外部管理（externally-managed）で `pip install` がブロックされる環境では、pipx によるインストールを推奨します。
+>
+> Debian/Ubuntu 系の例:
+>
+> ```bash
+> sudo apt update && sudo apt install -y pipx
+> pipx ensurepath   # 必要に応じてシェルを再起動/再ログイン
+> pipx install git+https://github.com/kitamura-tetsuo/auto-coder.git
+> auto-coder --help
+> ```
+
+
 3. 必要に応じて設定ファイルを作成:
 ```bash
 cp .env.example .env

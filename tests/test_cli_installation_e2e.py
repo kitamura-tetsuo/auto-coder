@@ -27,3 +27,4 @@ def test_cli_accessible_from_any_directory(tmp_path):
         text=True,
     )
     assert "Usage: auto-coder" in result.stdout
+
