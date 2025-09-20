@@ -14,6 +14,7 @@ from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
 from .qwen_client import QwenClient
 from .automation_engine import AutomationEngine
+from .backend_manager import BackendManager
 from .automation_config import AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
@@ -326,12 +327,22 @@ def process_issues(
     else:
         ai_client = CodexClient(model_name='codex')
 
+    # Wrap with BackendManager (cyclic switching)
+    factories = {
+        'codex': lambda: CodexClient(model_name='codex'),
+        'codex-mcp': lambda: CodexMCPClient(model_name='codex-mcp'),
+        'gemini': (lambda: (GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model))),
+        'qwen': lambda: QwenClient(model_name=model, openai_api_key=openai_api_key, openai_base_url=openai_base_url),
+    }
+    cyclic_order = ['codex', 'codex-mcp', 'gemini', 'qwen']
+    manager = BackendManager(default_backend=backend, default_client=ai_client, factories=factories, order=cyclic_order)
+
     # Configure engine behavior flags
     engine_config = AutomationConfig()
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
 
-    automation_engine = AutomationEngine(github_client, ai_client, dry_run=dry_run, config=engine_config)
+    automation_engine = AutomationEngine(github_client, manager, dry_run=dry_run, config=engine_config)
 
     # If only_target is provided, parse and process a single item
     if only_target:
@@ -361,8 +372,8 @@ def process_issues(
         click.echo(f"Processed single {target_type} #{number}")
         # Close MCP session if present
         try:
-            if hasattr(ai_client, 'close') and callable(getattr(ai_client, 'close')):
-                ai_client.close()
+            if hasattr(manager, 'close') and callable(getattr(manager, 'close')):
+                manager.close()
         except Exception:
             pass
         return
@@ -450,15 +461,25 @@ def create_feature_issues(
         ai_client = CodexMCPClient(model_name='codex-mcp')
     else:
         ai_client = CodexClient(model_name='codex')
-    automation_engine = AutomationEngine(github_client, ai_client)
+
+    factories = {
+        'codex': lambda: CodexClient(model_name='codex'),
+        'codex-mcp': lambda: CodexMCPClient(model_name='codex-mcp'),
+        'gemini': (lambda: (GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model))),
+        'qwen': lambda: QwenClient(model_name=model, openai_api_key=openai_api_key, openai_base_url=openai_base_url),
+    }
+    cyclic_order = ['codex', 'codex-mcp', 'gemini', 'qwen']
+    manager = BackendManager(default_backend=backend, default_client=ai_client, factories=factories, order=cyclic_order)
+
+    automation_engine = AutomationEngine(github_client, manager)
 
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)
 
     # Close MCP session if present
     try:
-        if hasattr(ai_client, 'close') and callable(getattr(ai_client, 'close')):
-            ai_client.close()
+        if hasattr(manager, 'close') and callable(getattr(manager, 'close')):
+            manager.close()
     except Exception:
         pass
 
@@ -521,7 +542,16 @@ def fix_to_pass_tests_command(
     else:
         ai_client = CodexClient(model_name='codex')
 
-    engine = AutomationEngine(github_client, ai_client, dry_run=dry_run)
+    factories = {
+        'codex': lambda: CodexClient(model_name='codex'),
+        'codex-mcp': lambda: CodexMCPClient(model_name='codex-mcp'),
+        'gemini': (lambda: (GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model))),
+        'qwen': lambda: QwenClient(model_name=model, openai_api_key=openai_api_key, openai_base_url=openai_base_url),
+    }
+    cyclic_order = ['codex', 'codex-mcp', 'gemini', 'qwen']
+    manager = BackendManager(default_backend=backend, default_client=ai_client, factories=factories, order=cyclic_order)
+
+    engine = AutomationEngine(github_client, manager, dry_run=dry_run)
 
     # Warn if model flag is set but backend codex/codex-mcp (ignored)
     try:
@@ -550,10 +580,10 @@ def fix_to_pass_tests_command(
         # Specific error when LLM made no edits
         raise click.ClickException(str(e))
     finally:
-        # Close MCP session if present
+        # Close underlying sessions if present
         try:
-            if hasattr(ai_client, 'close') and callable(getattr(ai_client, 'close')):
-                ai_client.close()
+            if hasattr(manager, 'close') and callable(getattr(manager, 'close')):
+                manager.close()
         except Exception:
             pass
 

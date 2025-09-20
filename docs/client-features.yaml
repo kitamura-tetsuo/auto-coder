@@ -655,6 +655,35 @@ deployment:
         - "tests/test_llm_cli_neutral.py::test_qwen_client_llm_alias"
         - "tests/test_llm_cli_neutral.py::test_codex_client_llm_alias"
 
+    backend_manager:
+      name: "Cyclic Multi-Backend Manager"
+      description: "Manages multiple AI backends and switches cyclically on usage limits or repeated failures."
+      behavior:
+        - "Detects AutoCoderUsageLimitError from clients and rotates to the next backend; tries each backend at most once per prompt"
+        - "apply_workspace_test_fix: when the same model receives the same prompt 3 times consecutively, rotate to the next backend before executing the 3rd call"
+        - "When a different prompt arrives, revert to the default backend"
+        - "Order is cyclic among: codex -> codex-mcp -> gemini -> qwen (starting from selected default)"
+      implementation:
+        - file: "src/auto_coder/backend_manager.py"
+        - methods:
+          - "_run_llm_cli(prompt)"
+          - "run_test_fix_prompt(prompt)"
+          - "switch_to_next_backend() / switch_to_default_backend()"
+      client_side_limit_detection:
+        - "Clients raise AutoCoderUsageLimitError on rate/quota limit detection in CLI outputs"
+        - files:
+          - "src/auto_coder/gemini_client.py"
+          - "src/auto_coder/qwen_client.py"
+          - "src/auto_coder/codex_client.py"
+      cli_wiring:
+        - "CLI constructs the selected backend immediately (preserving tests that assert constructor args) and wraps it with BackendManager that lazily instantiates alternates"
+        - files:
+          - "src/auto_coder/cli.py"
+      tests:
+        - "tests/test_backend_manager.py::test_manager_switches_on_usage_limit"
+        - "tests/test_backend_manager.py::test_run_test_fix_prompt_switch_after_three_same_prompts"
+        - "tests/test_apply_workspace_test_fix_switch.py::test_apply_workspace_test_fix_switch_after_three_same_prompts"
+
     components:
       - name: "QwenClient"
         file: "src/auto_coder/qwen_client.py"

@@ -6,6 +6,7 @@ import subprocess
 from typing import Dict, Any, List
 
 from .logger_config import get_logger
+from .exceptions import AutoCoderUsageLimitError
 
 logger = get_logger(__name__)
 
@@ -85,10 +86,20 @@ class CodexClient:
 
             return_code = process.wait()
             logger.info("=" * 60)
+            full_output = "\n".join(output_lines).strip()
+            low = full_output.lower()
             if return_code != 0:
-                raise RuntimeError(f"codex CLI failed with return code {return_code}")
+                # Detect usage/rate limit patterns
+                if ("rate limit" in low) or ("quota" in low) or ("429" in low):
+                    raise AutoCoderUsageLimitError(full_output)
+                raise RuntimeError(f"codex CLI failed with return code {return_code}\n{full_output}")
 
-            return "\n".join(output_lines).strip()
+            # Even with 0, some CLIs may print limit messages
+            if ("rate limit" in low) or ("quota" in low):
+                raise AutoCoderUsageLimitError(full_output)
+            return full_output
+        except AutoCoderUsageLimitError:
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to run codex CLI: {e}")
 

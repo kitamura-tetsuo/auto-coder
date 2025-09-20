@@ -13,6 +13,7 @@ except Exception:  # ランタイム依存を避けるため
     genai = None  # テストでは patch により置き換えられる
 
 from .logger_config import get_logger
+from .exceptions import AutoCoderUsageLimitError
 
 logger = get_logger(__name__)
 
@@ -120,13 +121,22 @@ class GeminiClient:
 
             logger.info("=" * 60)
 
+            # Join all output lines first
+            full_output = '\n'.join(output_lines).strip()
+            low = full_output.lower()
+
             if return_code != 0:
-                raise RuntimeError(f"Gemini CLI failed with return code {return_code}")
+                if ("rate limit" in low) or ("quota" in low) or ("429" in low):
+                    raise AutoCoderUsageLimitError(full_output)
+                raise RuntimeError(f"Gemini CLI failed with return code {return_code}\n{full_output}")
 
-            # Join all output lines
-            full_output = '\n'.join(output_lines)
-            return full_output.strip()
+            # Even with 0, detect soft limit messages
+            if ("rate limit" in low) or ("quota" in low):
+                raise AutoCoderUsageLimitError(full_output)
+            return full_output
 
+        except AutoCoderUsageLimitError:
+            raise
         except Exception as e:
             if "timed out" not in str(e):  # Don't mention timeout since we removed it
                 raise RuntimeError(f"Failed to run Gemini CLI: {e}")

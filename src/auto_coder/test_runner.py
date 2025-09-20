@@ -103,8 +103,11 @@ Return a single concise line summarizing the change.
         if dry_run:
             return "[DRY RUN] Would apply fixes for local test failures"
 
-        # Use the LLM client to run the prompt
-        response = llm_client._run_llm_cli(fix_prompt)
+        # Use the LLM client/manager to run the prompt
+        if hasattr(llm_client, 'run_test_fix_prompt') and callable(getattr(llm_client, 'run_test_fix_prompt')):
+            response = llm_client.run_test_fix_prompt(fix_prompt)
+        else:
+            response = llm_client._run_llm_cli(fix_prompt)
         if response and response.strip():
             # Take the first line as the summary and trim
             first_line = response.strip().splitlines()[0]

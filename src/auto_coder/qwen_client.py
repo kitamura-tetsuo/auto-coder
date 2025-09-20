@@ -14,6 +14,7 @@ import subprocess
 from typing import Any, Dict, List, Optional
 
 from .logger_config import get_logger
+from .exceptions import AutoCoderUsageLimitError
 
 logger = get_logger(__name__)
 
@@ -122,10 +123,15 @@ class QwenClient:
 
         return_code = process.wait()
         logger.info("=" * 60)
+        full_output = "\n".join(output_lines)
+        low = full_output.lower()
         if return_code != 0:
-            raise RuntimeError(f"qwen CLI failed with return code {return_code}")
-
-        return "\n".join(output_lines)
+            if ("rate limit" in low) or ("quota" in low) or ("429" in low):
+                raise AutoCoderUsageLimitError(full_output)
+            raise RuntimeError(f"qwen CLI failed with return code {return_code}\n{full_output}")
+        if ("rate limit" in low) or ("quota" in low):
+            raise AutoCoderUsageLimitError(full_output)
+        return full_output
 
 
     def _run_gemini_cli(self, prompt: str) -> str:
