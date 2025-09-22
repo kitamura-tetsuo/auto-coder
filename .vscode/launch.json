@@ -92,8 +92,11 @@
             "args": [
                 "process-issues",
                 "--ignore-dependabot-prs",
-                "--backend", "qwen"
-            ],
+                "--backend", "qwen",
+                "--backend", "gemini",
+                "--backend", "codex-mcp",
+                "--backend", "codex",
+                "--backend", "auggie",            ],
             "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
             "env": {
                 "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
@@ -108,7 +111,11 @@
             "cwd": "/home/ubuntu/src3/outliner",
             "args": [
                 "fix-to-pass-tests",
-                "--backend", "qwen"
+                "--backend", "qwen",
+                "--backend", "gemini",
+                "--backend", "codex-mcp",
+                "--backend", "codex",
+                "--backend", "auggie",
             ],
             "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
             "env": {

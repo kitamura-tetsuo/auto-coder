@@ -1,12 +1,12 @@
 # Auto-Coder
 
-AI CLIバックエンド（デフォルト: codex、--backendでgeminiに切替可）を用いてアプリケーション開発を自動化するPythonアプリケーションです。GitHubからissueやエラーのPRを取得して構築・修正を行い、必要に応じて機能追加issueを自動作成します。
+AI CLIバックエンド（デフォルト: codex。`--backend` を複数指定して gemini / qwen / auggie / codex-mcp とのフォールバック順を設定可能）を用いてアプリケーション開発を自動化するPythonアプリケーションです。GitHubからissueやエラーのPRを取得して構築・修正を行い、必要に応じて機能追加issueを自動作成します。
 
 ## 機能
 
 ### 🔧 主要機能
 - **GitHub API統合**: issueとPRの自動取得・管理
-- **AI分析（codexデフォルト／Gemini切替可）**: issueとPRの内容を自動分析
+- **AI分析（codexデフォルト／`--backend` 複数指定でGemini・Qwen・Auggie・codex-mcpをフォールバック順に設定可）**: issueとPRの内容を自動分析
 - **自動化処理**: 分析結果に基づく自動アクション
 - **機能提案**: リポジトリ分析による新機能の自動提案
 - **レポート生成**: 処理結果の詳細レポート
@@ -78,6 +78,11 @@ cp .env.example .env
     - `OPENAI_MODEL`（例: `qwen3-coder-plus`）
   - 当ツールの Qwen バックエンドは非対話モードで `qwen -p/--prompt` を使用し、モデルは `--model/-m` フラグまたは `OPENAI_MODEL` に従います（両方指定時は `--model` を優先）。
 
+#### Auggie の利用について
+- CLI を `npm install -g @augmentcode/auggie` でインストールしてください。
+- 当ツールでは非対話モードで `auggie --print --model <モデル名> "<プロンプト>"` を呼び出します。
+- `--model` を指定しない場合は `GPT-5` を既定モデルとして使用します。任意のモデルを指定したい場合は `--model` オプションで上書きできます。
+
 ### CLIコマンド
 
 #### issueとPRの処理
@@ -90,6 +95,12 @@ auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-
 
 # バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
 auto-coder process-issues --repo owner/repo --backend qwen --model qwen3-coder-plus
+
+# バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
+auto-coder process-issues --repo owner/repo --backend auggie
+
+# codex をデフォルト、Gemini をフォールバックに設定
+auto-coder process-issues --repo owner/repo --backend codex --backend gemini
 
 # ドライランモードで実行（変更を行わない）
 auto-coder process-issues --repo owner/repo --dry-run
@@ -111,6 +122,12 @@ auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemi
 
 # バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
 auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus
+
+# バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
+auto-coder create-feature-issues --repo owner/repo --backend auggie
+
+# codex をデフォルト、Gemini をフォールバックに設定
+auto-coder create-feature-issues --repo owner/repo --backend codex --backend gemini
 ```
 
 #### テスト合格まで自動修正（fix-to-pass-tests）
@@ -126,6 +143,12 @@ auto-coder fix-to-pass-tests --backend gemini --model gemini-2.5-pro
 # バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
 auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus
 
+# バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
+auto-coder fix-to-pass-tests --backend auggie
+
+# codex をデフォルト、Gemini をフォールバックに設定
+auto-coder fix-to-pass-tests --backend codex --backend gemini
+
 # 試行回数を指定（例: 最大5回）
 auto-coder fix-to-pass-tests --max-attempts 5
 
@@ -137,8 +160,8 @@ auto-coder fix-to-pass-tests --dry-run
 
 #### `process-issues`
 - `--repo`: GitHubリポジトリ (owner/repo形式)
-- `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
-- `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
+- `--backend`: 使用するAIバックエンド（codex|codex-mcp|gemini|qwen|auggie）。複数指定すると指定順にフォールバックし、先頭がデフォルト。デフォルトは codex。
+- `--model`: モデル指定（Gemini/Qwen/Auggieで有効。backend=codex/codex-mcp の場合は無視され、警告が表示されます。Auggieは未指定時にGPT-5を使用）
 - `--dry-run`: ドライランモード（変更を行わない）
 - `--skip-main-update/--no-skip-main-update`: PRのチェックが失敗している場合に、修正を試みる前に PRのベースブランチをPRブランチへ取り込むかの挙動を切替（デフォルト: ベースブランチ取り込みをスキップ）。
   - 既定値: `--skip-main-update`（スキップ）
@@ -152,16 +175,16 @@ auto-coder fix-to-pass-tests --dry-run
 
 #### `create-feature-issues`
 - `--repo`: GitHubリポジトリ (owner/repo形式)
-- `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
-- `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
+- `--backend`: 使用するAIバックエンド（codex|codex-mcp|gemini|qwen|auggie）。複数指定すると指定順にフォールバックし、先頭がデフォルト。デフォルトは codex。
+- `--model`: モデル指定（Gemini/Qwen/Auggieで有効。backend=codex/codex-mcp の場合は無視され、警告が表示されます。Auggieは未指定時にGPT-5を使用）
 
 オプション:
 - `--github-token`: gh CLIの認証情報を使用しない場合に手動指定
 - `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
 
 #### `fix-to-pass-tests`
-- `--backend`: 使用するAIバックエンド（codex|gemini）。デフォルトは codex。
-- `--model`: モデル指定（Geminiのみ有効。backend=codex の場合は無視され、警告が表示されます）
+- `--backend`: 使用するAIバックエンド（codex|codex-mcp|gemini|qwen|auggie）。複数指定すると指定順にフォールバックし、先頭がデフォルト。デフォルトは codex。
+- `--model`: モデル指定（Gemini/Qwen/Auggieで有効。backend=codex/codex-mcp の場合は無視され、警告が表示されます。Auggieは未指定時にGPT-5を使用）
 - `--gemini-api-key`: Gemini バックエンド使用時に、CLI認証情報を使わない場合の手動指定
 - `--max-attempts`: テスト修正の最大試行回数（省略時はエンジンの既定値）
 - `--dry-run`: ドライランモード（LLM へは依頼せず、フローのみ確認）

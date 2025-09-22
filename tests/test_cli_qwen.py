@@ -35,7 +35,7 @@ def test_process_issues_backend_qwen_prints_model_and_uses_qwen(
     )
 
     assert result.exit_code == 0
-    assert "Using backend: qwen" in result.output
+    assert "Using backends: qwen (default: qwen)" in result.output
     assert "Using model: qwen3-coder-plus" in result.output
     mock_qwen_client_class.assert_called_once()
     _, kwargs = mock_qwen_client_class.call_args
@@ -73,7 +73,7 @@ def test_create_feature_issues_backend_qwen(
     )
 
     assert result.exit_code == 0
-    assert "Using backend: qwen" in result.output
+    assert "Using backends: qwen (default: qwen)" in result.output
 
 
 @patch("src.auto_coder.cli.check_qwen_cli_or_fail")
@@ -96,6 +96,6 @@ def test_fix_to_pass_tests_backend_qwen(
     )
 
     assert result.exit_code == 0
-    assert "Using backend: qwen" in result.output
+    assert "Using backends: qwen (default: qwen)" in result.output
     assert "Using model: qwen3-coder-plus" in result.output
 

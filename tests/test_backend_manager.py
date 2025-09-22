@@ -91,18 +91,27 @@ def test_cyclic_rotation_across_multiple_backends_on_usage_limits():
         return DummyClient('gemini', 'm2', 'limit', calls)
 
     def fac_qwen():
-        return DummyClient('qwen', 'm3', 'ok', calls)
+        return DummyClient('qwen', 'm3', 'limit', calls)
+
+    def fac_auggie():
+        return DummyClient('auggie', 'm4', 'ok', calls)
 
     mgr = BackendManager(
         default_backend='codex',
         default_client=codex,
-        factories={'codex': fac_codex, 'codex-mcp': fac_codex_mcp, 'gemini': fac_gemini, 'qwen': fac_qwen},
-        order=['codex', 'codex-mcp', 'gemini', 'qwen'],
+        factories={
+            'codex': fac_codex,
+            'codex-mcp': fac_codex_mcp,
+            'gemini': fac_gemini,
+            'qwen': fac_qwen,
+            'auggie': fac_auggie,
+        },
+        order=['codex', 'codex-mcp', 'gemini', 'qwen', 'auggie'],
     )
 
     out = mgr._run_llm_cli("P")
-    assert out == "qwen:P"
-    assert calls == ['codex', 'codex-mcp', 'gemini', 'qwen']
+    assert out == "auggie:P"
+    assert calls == ['codex', 'codex-mcp', 'gemini', 'qwen', 'auggie']
 
 
 def test_run_test_fix_prompt_resets_to_default_on_new_prompt():

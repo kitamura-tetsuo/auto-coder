@@ -36,7 +36,7 @@ def test_process_issues_backend_codex_mcp_warns_and_closes(
     )
 
     assert result.exit_code == 0
-    assert "Using backend: codex-mcp" in result.output
+    assert "Using backends: codex-mcp (default: codex-mcp)" in result.output
     assert "Warning: --model is ignored when backend=codex or codex-mcp" in result.output
     # ensured the MCP client was used and closed
     mock_codex_mcp_client_class.assert_called_once()
@@ -64,6 +64,6 @@ def test_fix_to_pass_tests_backend_codex_mcp_closes(
     )
 
     assert result.exit_code == 0
-    assert "Using backend: codex-mcp" in result.output
+    assert "Using backends: codex-mcp (default: codex-mcp)" in result.output
     mock_ai_client.close.assert_called_once()
 

@@ -218,17 +218,36 @@ class CommandExecutor:
 def change_fraction(old: str, new: str) -> float:
     """Return fraction of change between two strings (0.0..1.0).
 
-    Uses difflib.SequenceMatcher similarity; change = 1 - ratio.
+    性能最適化のため、比較対象は末尾の「20行」または「1000文字」のうち小さい方。
+    実装: 各文字列に対して末尾ウィンドウを抽出し、そのウィンドウ同士で
+    difflib.SequenceMatcher の類似度を計算して change = 1 - ratio を返す。
     """
     try:
         import difflib
+
         if old is None and new is None:
             return 0.0
+
+        def tail_window(s: str) -> str:
+            if not s:
+                return ""
+            # 末尾20行
+            lines = s.splitlines()
+            tail_by_lines = "\n".join(lines[-20:])
+            # 末尾1000文字
+            tail_by_chars = s[-1000:]
+            # より短い方を採用
+            return tail_by_lines if len(tail_by_lines) <= len(tail_by_chars) else tail_by_chars
+
         old_s = old or ""
         new_s = new or ""
         if old_s == new_s:
             return 0.0
-        ratio = difflib.SequenceMatcher(None, old_s, new_s).ratio()
+
+        old_win = tail_window(old_s)
+        new_win = tail_window(new_s)
+
+        ratio = difflib.SequenceMatcher(None, old_win, new_win).ratio()
         return max(0.0, 1.0 - ratio)
     except Exception:
         # Conservative fallback: assume large change

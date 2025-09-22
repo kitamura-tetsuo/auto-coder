@@ -216,6 +216,15 @@ features:
           - "tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_failed_summary_hyphen"
           - "tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_traceback_line"
           - "tests/test_utils_extract_first_failed_test.py::test_extract_from_playwright_spec"
+      - name: "change_fraction"
+        file: "src/auto_coder/utils.py"
+        description: "Compute fraction of change using only the tail window (min of last 20 lines or last 1000 chars) for performance; returns 1 - difflib ratio on the selected windows. None is treated as empty, equal strings return 0.0."
+        tests:
+          - "tests/test_utils_change_fraction.py::test_change_fraction_ignores_large_prefix_when_last_20_lines_identical"
+          - "tests/test_utils_change_fraction.py::test_change_fraction_ignores_large_prefix_when_last_1000_chars_identical"
+          - "tests/test_utils_change_fraction.py::test_change_fraction_detects_tail_difference"
+          - "tests/test_utils_change_fraction.py::test_change_fraction_none_and_equal_cases"
+
       - name: "run_local_tests"
         file: "src/auto_coder/test_runner.py"
         description: |
@@ -242,7 +251,7 @@ features:
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
-              - "--backend": "AI backend to use (codex|codex-mcp|gemini). Default: codex"
+              - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
               - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
@@ -256,13 +265,13 @@ features:
             options:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
-              - "--backend": "AI backend to use (codex|codex-mcp|gemini). Default: codex"
+              - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
               - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
           - name: "fix-to-pass-tests"
             description: "Run tests and request LLM fixes until passing; stop with error if LLM made no edits"
             options:
-              - "--backend": "AI backend to use (codex|codex-mcp|gemini). Default: codex"
+              - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
               - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
               - "--max-attempts": "Maximum fix attempts before giving up (defaults to engine config)"
@@ -686,7 +695,7 @@ deployment:
         - "Detects AutoCoderUsageLimitError from clients and rotates to the next backend; tries each backend at most once per prompt"
         - "apply_workspace_test_fix: when the same model receives the same prompt 3 times consecutively, rotate to the next backend before executing the 3rd call"
         - "When a different prompt arrives, revert to the default backend"
-        - "Order is cyclic among: codex -> codex-mcp -> gemini -> qwen (starting from selected default)"
+        - "Order is cyclic among: codex -> codex-mcp -> gemini -> qwen -> auggie (starting from selected default)"
       implementation:
         - file: "src/auto_coder/backend_manager.py"
         - methods:
@@ -762,6 +771,37 @@ deployment:
             envvar: "OPENAI_BASE_URL"
             description: "OpenAI-style Base URL forwarded to QwenClient and exported to env for qwen CLI invocations"
 
+  auggie_integration:
+    name: "Auggie CLI Integration"
+    description: "Integration with Auggie CLI for non-interactive execution. Defaults to the GPT-5 model when the user does not override --model."
+    components:
+      - name: "AuggieClient"
+        file: "src/auto_coder/auggie_client.py"
+        methods:
+          - name: "_run_auggie_cli"
+            description: "Invoke `auggie --print --model <model> "<prompt>"` and stream output via logger; raises AutoCoderUsageLimitError on rate-limit phrases."
+            parameters: ["prompt"]
+            returns: "Aggregated CLI output text"
+          - name: "switch_to_conflict_model"
+            description: "Compatibility no-op; Auggie uses the same model for conflict handling."
+            parameters: []
+            returns: "None"
+          - name: "switch_to_default_model"
+            description: "Compatibility no-op; Auggie sticks to the configured model."
+            parameters: []
+            returns: "None"
+
+    cli_support:
+      defaults:
+        model: "GPT-5 (applied when --model is omitted)"
+      checks:
+        - "cli.check_auggie_cli_or_fail performs `auggie --version` probe and instructs installation via npm"
+      tests:
+        - "tests/test_cli_auggie.py::test_process_issues_backend_auggie_defaults_to_gpt5"
+        - "tests/test_cli_auggie.py::test_process_issues_backend_auggie_respects_model_override"
+        - "tests/test_cli_auggie.py::test_create_feature_issues_backend_auggie"
+        - "tests/test_cli_auggie.py::test_fix_to_pass_tests_backend_auggie_default_model"
+
   usage:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
@@ -770,10 +810,22 @@ deployment:
         description: "Process issues and PRs using Gemini backend (model required for Gemini; --model is ignored when backend=codex)"
       - command: "auto-coder process-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
         description: "Process issues and PRs using Qwen Code backend (model accepted for Qwen; --model is ignored when backend=codex)"
+      - command: "auto-coder process-issues --repo owner/repo --backend auggie"
+        description: "Process issues and PRs using Auggie backend (defaults to GPT-5 when --model is omitted)"
+      - command: "auto-coder process-issues --repo owner/repo --backend codex --backend gemini"
+        description: "Process issues with codex as the default backend and fall back to Gemini if limits are hit"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
         description: "Create feature enhancement issues using Qwen Code backend"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend auggie"
+        description: "Create feature enhancement issues using Auggie backend (defaults to GPT-5)"
+      - command: "auto-coder create-feature-issues --repo owner/repo --backend codex --backend gemini"
+        description: "Create feature issues with codex default and Gemini fallback order"
       - command: "auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus"
         description: "Run local tests and request fixes using Qwen Code backend"
+      - command: "auto-coder fix-to-pass-tests --backend auggie"
+        description: "Run local tests and request fixes using Auggie backend (defaults to GPT-5)"
+      - command: "auto-coder fix-to-pass-tests --backend codex --backend gemini"
+        description: "Run fix-to-pass-tests with codex by default and Gemini as a secondary option"
 
       - command: "auto-coder process-issues --repo owner/repo --no-jules-mode"
         description: "Disable jules mode and process issues with AI analysis"
