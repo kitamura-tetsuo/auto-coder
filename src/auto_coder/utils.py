@@ -2,10 +2,15 @@
 Utility classes for Auto-Coder automation engine.
 """
 
-import subprocess
 import os
+import selectors
+import shlex
+import signal
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from .logger_config import get_logger
 
@@ -32,13 +37,129 @@ class CommandExecutor:
         'default': 60
     }
 
+    DEBUGGER_ENV_MARKERS = (
+        'PYDEVD_USE_FRAME_EVAL',
+        'PYDEVD_LOAD_VALUES_ASYNC',
+        'DEBUGPY_LAUNCHER_PORT',
+        'PYDEV_DEBUG',
+        'VSCODE_PID',
+    )
+
+    @staticmethod
+    def _should_stream_output(stream_output: Optional[bool]) -> bool:
+        """Determine whether to stream command output in real time."""
+        if stream_output is not None:
+            return stream_output
+
+        # Allow forcing via env var for manual debugging sessions
+        if os.environ.get('AUTOCODER_STREAM_COMMANDS'):
+            return True
+
+        # Detect common debugger environment markers (debugpy, VS Code, PyCharm)
+        for marker in CommandExecutor.DEBUGGER_ENV_MARKERS:
+            if os.environ.get(marker):
+                return True
+
+        # Heuristic: when a debugger is attached (sys.gettrace), favor streaming
+        try:
+            return sys.gettrace() is not None
+        except Exception:
+            return False
+
+    @classmethod
+    def _run_with_streaming(
+        cls,
+        cmd: List[str],
+        timeout: Optional[int],
+        cwd: Optional[str]
+    ) -> Tuple[int, str, str]:
+        """Run a command while streaming stdout/stderr to the logger."""
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            cwd=cwd
+        )
+
+        stdout_lines: List[str] = []
+        stderr_lines: List[str] = []
+
+        selector = selectors.DefaultSelector()
+        if process.stdout is not None:
+            selector.register(process.stdout, selectors.EVENT_READ, ('stdout', process.stdout))
+        if process.stderr is not None:
+            selector.register(process.stderr, selectors.EVENT_READ, ('stderr', process.stderr))
+
+        start = time.monotonic()
+
+        try:
+            while True:
+                if timeout is not None:
+                    elapsed = time.monotonic() - start
+                    remaining = timeout - elapsed
+                    if remaining <= 0:
+                        process.kill()
+                        raise subprocess.TimeoutExpired(cmd, timeout, ''.join(stdout_lines), ''.join(stderr_lines))
+                    wait_timeout = min(0.1, max(0.0, remaining))
+                else:
+                    wait_timeout = 0.1
+
+                events = selector.select(wait_timeout)
+                if not events:
+                    if process.poll() is not None:
+                        break
+                    continue
+
+                for key, _ in events:
+                    stream_name, stream = key.data
+                    chunk = stream.readline()
+                    if chunk:
+                        if stream_name == 'stdout':
+                            stdout_lines.append(chunk)
+                            logger.info(chunk.rstrip('\n'))
+                        else:
+                            stderr_lines.append(chunk)
+                            logger.error(chunk.rstrip('\n'))
+                    else:
+                        selector.unregister(stream)
+                        stream.close()
+
+            # Ensure process has terminated (respecting timeout)
+            while process.poll() is None:
+                if timeout is not None:
+                    elapsed = time.monotonic() - start
+                    remaining = timeout - elapsed
+                    if remaining <= 0:
+                        process.kill()
+                        raise subprocess.TimeoutExpired(cmd, timeout, ''.join(stdout_lines), ''.join(stderr_lines))
+                    process.wait(timeout=max(0.0, remaining))
+                else:
+                    process.wait()
+
+            return_code = process.returncode
+            stdout = ''.join(stdout_lines)
+            stderr = ''.join(stderr_lines)
+            return return_code, stdout, stderr
+        except KeyboardInterrupt:
+            process.send_signal(signal.SIGINT)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+            raise
+        finally:
+            selector.close()
+
     @classmethod
     def run_command(
         cls,
         cmd: List[str],
         timeout: Optional[int] = None,
         cwd: Optional[str] = None,
-        check_success: bool = True
+        check_success: bool = True,
+        stream_output: Optional[bool] = None
     ) -> CommandResult:
         """Run a command with consistent error handling."""
         if timeout is None:
@@ -46,22 +167,34 @@ class CommandExecutor:
             cmd_type = cmd[0] if cmd else 'default'
             timeout = cls.DEFAULT_TIMEOUTS.get(cmd_type, cls.DEFAULT_TIMEOUTS['default'])
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=cwd
-            )
+        command_display = shlex.join(cmd) if cmd else ''
+        should_stream = cls._should_stream_output(stream_output)
+        logger.debug(
+            f"Executing command (timeout={timeout}s, stream={should_stream}): {command_display}"
+        )
 
-            success = result.returncode == 0 if check_success else True
+        try:
+            if should_stream:
+                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd)
+            else:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=cwd
+                )
+                return_code = result.returncode
+                stdout = result.stdout
+                stderr = result.stderr
+
+            success = return_code == 0 if check_success else True
 
             return CommandResult(
                 success=success,
-                stdout=result.stdout,
-                stderr=result.stderr,
-                returncode=result.returncode
+                stdout=stdout,
+                stderr=stderr,
+                returncode=return_code
             )
 
         except subprocess.TimeoutExpired:

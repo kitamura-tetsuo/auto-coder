@@ -16,6 +16,16 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
+def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
+    """Remove the LLM task log file before committing final fixes."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            logger.debug(f"Removed {path} prior to commit")
+    except Exception as exc:
+        logger.warning(f"Failed to remove {path}: {exc}")
+
+
 def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -> Dict[str, Any]:
     """Run local tests using configured script or pytest fallback.
 
@@ -86,6 +96,11 @@ You are operating directly in this repository workspace with write access.
 
 Goal: Make local tests pass by applying safe edits.
 
+Task Memory File: ./llm_task.md
+- If the file exists, read it first to understand previous purpose/method/result notes.
+- After deciding on the fix, update the file with concise Markdown sections for Purpose, Method, and Result describing this attempt.
+- Ensure the file always reflects the latest state when you finish (overwrite rather than append blindly).
+
 STRICT RULES:
 - Do NOT run git commit/push; the system will handle that.
 - Prefer the smallest change that resolves failures and preserves intent.
@@ -97,6 +112,7 @@ Local Test Failure Summary (truncated):
  {test_result.get('command', 'pytest -q --maxfail=1')}
 
 Now apply the fix directly in the repository.
+Run tests again after applying the fix to verify that the fix resolves the issue.
 Return a single concise line summarizing the change.
 """
 
@@ -160,6 +176,8 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             logger.info(msg)
             summary['messages'].append(msg)
             summary['success'] = True
+            if not dry_run:
+                cleanup_llm_task_file()
             return summary
 
         # Apply LLM-based fix
@@ -187,12 +205,16 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
         prev_full_output = post_full_output
         prev_error_summary = post_error_summary
 
+        cleanup_pending = False
+
         if post_result['success']:
             # Tests passed after the fix; proceed to commit
             pass_msg = f"Local tests passed on attempt {attempt}"
             logger.info(pass_msg)
             summary['messages'].append(pass_msg)
             should_commit = True
+            if not dry_run:
+                cleanup_pending = True
         else:
             # Compute change ratios between pre-fix and post-fix results
             try:
@@ -224,6 +246,9 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
                 should_commit = True
                 
         current_test_file = None
+
+        if cleanup_pending:
+            cleanup_llm_task_file()
 
         # Stage and commit; detect 'no changes' as an immediate error per requirement
         add_res = cmd.run_command(['git', 'add', '.'])

@@ -173,6 +173,30 @@ features:
             returns: "String containing extracted error snippets per failed job (with step headings and expectation details when available)"
 
 
+  command_execution:
+    name: "Command Execution"
+    description: "Unified command runner with debugger-friendly streaming mode"
+    components:
+      - name: "CommandExecutor.run_command"
+        file: "src/auto_coder/utils.py"
+        description: |
+          Executes shell commands with consistent timeout handling and optional streaming.
+          Automatically streams stdout/stderr when a debugger is attached or when AUTOCODER_STREAM_COMMANDS=1.
+          Recognizes common debug adapters (debugpy, VS Code, PyCharm) via environment markers to ensure streaming during IDE sessions.
+          Preserves captured output for downstream processing while logging live updates for active debugging.
+        parameters:
+          - "cmd: list[str]"
+          - "timeout: Optional[int]"
+          - "cwd: Optional[str]"
+          - "check_success: bool"
+          - "stream_output: Optional[bool]"
+        returns: "CommandResult(success, stdout, stderr, returncode)"
+        tests:
+          - "tests/test_utils_command_executor.py::test_run_command_respects_stream_flag"
+          - "tests/test_utils_command_executor.py::test_run_command_streams_output"
+          - "tests/test_utils_command_executor.py::test_should_stream_when_debugger_attached"
+          - "tests/test_utils_command_executor.py::test_should_stream_when_env_forced"
+          - "tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers"
   test_runner_utils:
     name: "Test Runner Utilities"
     description: "Utilities to parse test outputs and assist selective re-runs"
