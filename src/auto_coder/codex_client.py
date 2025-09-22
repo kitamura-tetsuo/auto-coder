@@ -3,10 +3,11 @@ Codex CLI client for Auto-Coder.
 """
 
 import subprocess
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
@@ -69,30 +70,25 @@ class CodexClient:
             logger.info("🤖 Running: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]")
             logger.info("=" * 60)
 
-            process = subprocess.Popen(
+            result = CommandExecutor.run_command(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                stream_output=True,
+                check_success=False
             )
-
-            output_lines: List[str] = []
-            assert process.stdout is not None
-            for line in process.stdout:
-                line = line.rstrip('\n')
-                logger.info(line)
-                output_lines.append(line)
-
-            return_code = process.wait()
             logger.info("=" * 60)
-            full_output = "\n".join(output_lines).strip()
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            combined_parts = [part for part in (stdout, stderr) if part]
+            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+            full_output = full_output.strip()
             low = full_output.lower()
-            if return_code != 0:
+            if result.returncode != 0:
                 # Detect usage/rate limit patterns
                 if ("rate limit" in low) or ("quota" in low) or ("429" in low):
                     raise AutoCoderUsageLimitError(full_output)
-                raise RuntimeError(f"codex CLI failed with return code {return_code}\n{full_output}")
+                raise RuntimeError(
+                    f"codex CLI failed with return code {result.returncode}\n{full_output}"
+                )
 
             # Even with 0, some CLIs may print limit messages
             if ("rate limit" in low) or ("quota" in low):

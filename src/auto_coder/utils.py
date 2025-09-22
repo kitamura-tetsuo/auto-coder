@@ -3,12 +3,13 @@ Utility classes for Auto-Coder automation engine.
 """
 
 import os
-import selectors
+import queue
 import shlex
 import signal
 import subprocess
 import sys
 import time
+import threading
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -34,6 +35,9 @@ class CommandExecutor:
         'git': 120,
         'gh': 60,
         'test': 3600,
+        'codex': 3600,
+        'gemini': 3600,
+        'qwen': 3600,
         'default': 60
     }
 
@@ -44,6 +48,9 @@ class CommandExecutor:
         'PYDEV_DEBUG',
         'VSCODE_PID',
     )
+
+    # Interval for polling worker queue while streaming output (seconds)
+    STREAM_POLL_INTERVAL = 0.2
 
     @staticmethod
     def _should_stream_output(stream_output: Optional[bool]) -> bool:
@@ -66,12 +73,34 @@ class CommandExecutor:
         except Exception:
             return False
 
+    @staticmethod
+    def _spawn_reader(
+        stream,
+        stream_name: str,
+        out_queue: "queue.Queue[Tuple[str, Optional[str]]]"
+    ) -> threading.Thread:
+        """Spawn a background reader thread for the given stream."""
+
+        def _reader() -> None:
+            try:
+                for line in iter(stream.readline, ''):
+                    out_queue.put((stream_name, line))
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error(f"Streaming reader failed for {stream_name}: {exc}")
+            finally:
+                out_queue.put((stream_name, None))
+
+        thread = threading.Thread(target=_reader, name=f"CommandStream-{stream_name}", daemon=True)
+        thread.start()
+        return thread
+
     @classmethod
     def _run_with_streaming(
         cls,
         cmd: List[str],
         timeout: Optional[int],
-        cwd: Optional[str]
+        cwd: Optional[str],
+        env: Optional[Dict[str, str]]
     ) -> Tuple[int, str, str]:
         """Run a command while streaming stdout/stderr to the logger."""
         process = subprocess.Popen(
@@ -80,17 +109,23 @@ class CommandExecutor:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
-            cwd=cwd
+            cwd=cwd,
+            env=env
         )
 
         stdout_lines: List[str] = []
         stderr_lines: List[str] = []
 
-        selector = selectors.DefaultSelector()
+        streams_active: set[str] = set()
+        output_queue: "queue.Queue[Tuple[str, Optional[str]]]" = queue.Queue()
+        readers: List[threading.Thread] = []
+
         if process.stdout is not None:
-            selector.register(process.stdout, selectors.EVENT_READ, ('stdout', process.stdout))
+            streams_active.add('stdout')
+            readers.append(cls._spawn_reader(process.stdout, 'stdout', output_queue))
         if process.stderr is not None:
-            selector.register(process.stderr, selectors.EVENT_READ, ('stderr', process.stderr))
+            streams_active.add('stderr')
+            readers.append(cls._spawn_reader(process.stderr, 'stderr', output_queue))
 
         start = time.monotonic()
 
@@ -102,41 +137,25 @@ class CommandExecutor:
                     if remaining <= 0:
                         process.kill()
                         raise subprocess.TimeoutExpired(cmd, timeout, ''.join(stdout_lines), ''.join(stderr_lines))
-                    wait_timeout = min(0.1, max(0.0, remaining))
-                else:
-                    wait_timeout = 0.1
 
-                events = selector.select(wait_timeout)
-                if not events:
-                    if process.poll() is not None:
-                        break
-                    continue
+                poll_interval = min(cls.STREAM_POLL_INTERVAL, remaining) if timeout is not None else cls.STREAM_POLL_INTERVAL
 
-                for key, _ in events:
-                    stream_name, stream = key.data
-                    chunk = stream.readline()
-                    if chunk:
+                try:
+                    stream_name, chunk = output_queue.get(timeout=poll_interval)
+                    if chunk is None:
+                        streams_active.discard(stream_name)
+                    else:
                         if stream_name == 'stdout':
                             stdout_lines.append(chunk)
                             logger.info(chunk.rstrip('\n'))
                         else:
                             stderr_lines.append(chunk)
                             logger.error(chunk.rstrip('\n'))
-                    else:
-                        selector.unregister(stream)
-                        stream.close()
+                except queue.Empty:
+                    pass
 
-            # Ensure process has terminated (respecting timeout)
-            while process.poll() is None:
-                if timeout is not None:
-                    elapsed = time.monotonic() - start
-                    remaining = timeout - elapsed
-                    if remaining <= 0:
-                        process.kill()
-                        raise subprocess.TimeoutExpired(cmd, timeout, ''.join(stdout_lines), ''.join(stderr_lines))
-                    process.wait(timeout=max(0.0, remaining))
-                else:
-                    process.wait()
+                if process.poll() is not None and not streams_active and output_queue.empty():
+                    break
 
             return_code = process.returncode
             stdout = ''.join(stdout_lines)
@@ -150,7 +169,13 @@ class CommandExecutor:
                 process.kill()
             raise
         finally:
-            selector.close()
+            # Best-effort cleanup: close pipes and join threads quickly
+            if process.stdout:
+                process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+            for reader in readers:
+                reader.join(timeout=1)
 
     @classmethod
     def run_command(
@@ -159,7 +184,8 @@ class CommandExecutor:
         timeout: Optional[int] = None,
         cwd: Optional[str] = None,
         check_success: bool = True,
-        stream_output: Optional[bool] = None
+        stream_output: Optional[bool] = None,
+        env: Optional[Dict[str, str]] = None
     ) -> CommandResult:
         """Run a command with consistent error handling."""
         if timeout is None:
@@ -175,14 +201,15 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd)
+                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, env)
             else:
                 result = subprocess.run(
                     cmd,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
-                    cwd=cwd
+                    cwd=cwd,
+                    env=env
                 )
                 return_code = result.returncode
                 stdout = result.stdout

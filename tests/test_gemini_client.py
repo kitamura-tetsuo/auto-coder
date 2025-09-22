@@ -7,23 +7,17 @@ import json
 from unittest.mock import Mock, patch, MagicMock
 
 from src.auto_coder.gemini_client import GeminiClient
+from src.auto_coder.utils import CommandResult
 
 
 class TestGeminiClient:
     @patch('src.auto_coder.gemini_client.logger')
     @patch('subprocess.run')
-    @patch('subprocess.Popen')
-    def test_llm_invocation_warn_log(self, mock_popen, mock_run, mock_logger, mock_gemini_api_key):
+    @patch('src.auto_coder.gemini_client.CommandExecutor.run_command')
+    def test_llm_invocation_warn_log(self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key):
         """Verify that LLM invocation emits a warning log before running CLI."""
         mock_run.return_value.returncode = 0
-
-        class DummyPopen:
-            def __init__(self):
-                self._lines = ["ok\n"]
-                self.stdout = iter(self._lines)
-            def wait(self):
-                return 0
-        mock_popen.return_value = DummyPopen()
+        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
 
         client = GeminiClient(mock_gemini_api_key)
         _ = client._run_gemini_cli("hello")

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
@@ -102,33 +103,25 @@ class QwenClient:
             logger.info("🤖 Running: qwen -p [prompt]")
         logger.info("=" * 60)
 
-        process = subprocess.Popen(
+        result = CommandExecutor.run_command(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
-            env=env,
+            stream_output=True,
+            check_success=False,
+            env=env
         )
-
-        output_lines: List[str] = []
-        assert process.stdout is not None
-        for line in process.stdout:
-            line = line.rstrip("\n")
-            if len(line) == 0:
-                continue
-            logger.info(line)
-            output_lines.append(line)
-
-        return_code = process.wait()
         logger.info("=" * 60)
-        full_output = "\n".join(output_lines)
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        combined_parts = [part for part in (stdout, stderr) if part]
+        full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+        full_output = full_output.strip()
         low = full_output.lower()
-        if return_code != 0:
+        if result.returncode != 0:
             if ("rate limit" in low) or ("quota" in low) or ("429" in low):
                 raise AutoCoderUsageLimitError(full_output)
-            raise RuntimeError(f"qwen CLI failed with return code {return_code}\n{full_output}")
+            raise RuntimeError(
+                f"qwen CLI failed with return code {result.returncode}\n{full_output}"
+            )
         if ("rate limit" in low) or ("quota" in low):
             raise AutoCoderUsageLimitError(full_output)
         return full_output
@@ -194,4 +187,3 @@ Please provide feature suggestions in the following JSON format:
             return []
         except json.JSONDecodeError:
             return []
-

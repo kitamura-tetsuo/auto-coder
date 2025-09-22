@@ -161,6 +161,7 @@ For valid issues that can be implemented:
 - Implement the necessary code changes
 - Create or modify files as needed
 - Ensure the implementation follows best practices
+- Prefer the smart, reasonable and logically beautiful change that resolves issues.
 
 For duplicate/invalid issues:
 - Close the issue

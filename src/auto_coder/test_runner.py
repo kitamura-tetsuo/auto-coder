@@ -103,7 +103,7 @@ Task Memory File: ./llm_task.md
 
 STRICT RULES:
 - Do NOT run git commit/push; the system will handle that.
-- Prefer the smallest change that resolves failures and preserves intent.
+- Prefer the smart, reasonable and logically beautiful change that resolves failures and preserves intent.
 
 Local Test Failure Summary (truncated):
 {error_summary[: config.MAX_PROMPT_SIZE]}
@@ -172,6 +172,9 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             # Update the current test file being fixed
             current_test_file = test_result.get('test_file')
         if test_result['success']:
+            if current_test_file is None:
+                current_test_file = None
+                continue
             msg = f"Local tests passed on attempt {attempt}"
             logger.info(msg)
             summary['messages'].append(msg)
@@ -245,7 +248,6 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
                 summary['messages'].append(info)
                 should_commit = True
                 
-        current_test_file = None
 
         if cleanup_pending:
             cleanup_llm_task_file()
@@ -271,6 +273,9 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             
         # If tests passed, mark success and return
         if post_result['success']:
+            if current_test_file is None:
+                current_test_file = None
+                continue
             summary['success'] = True
             return summary
 
@@ -310,11 +315,6 @@ Rules:
 - Subject line only. No body, no backticks, no code blocks.
 - Do NOT include commands like git commit/push.
 - Prefer specifics (file/function/test) if clear from context.
-
-Context:
-- Action summary from previous step: {action_summary.strip()[:200]}
-- Error summary hint (truncated):
-{(error_summary or '').strip()[:400]}
 """
 
         response = llm_client._run_llm_cli(prompt)

@@ -116,6 +116,7 @@
                 "--backend", "codex-mcp",
                 "--backend", "codex",
                 "--backend", "auggie",
+                "--max-attempts", "100000"
             ],
             "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
             "env": {

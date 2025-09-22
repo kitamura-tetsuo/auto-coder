@@ -11,7 +11,7 @@ def test_run_command_respects_stream_flag(monkeypatch):
 
     monkeypatch.delenv('AUTOCODER_STREAM_COMMANDS', raising=False)
 
-    def fake_run(cmd, capture_output, text, timeout, cwd):
+    def fake_run(cmd, capture_output, text, timeout, cwd, env=None):
         calls['called'] = True
         return SimpleNamespace(returncode=0, stdout='ok', stderr='')
 

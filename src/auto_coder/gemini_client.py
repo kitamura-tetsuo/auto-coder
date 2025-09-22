@@ -14,6 +14,7 @@ except Exception:  # ランタイム依存を避けるため
 
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
@@ -97,38 +98,27 @@ class GeminiClient:
             logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
             logger.info("=" * 60)
 
-            # Run with real-time output
-            process = subprocess.Popen(
+            result = CommandExecutor.run_command(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
+                stream_output=True,
+                check_success=False
             )
-
-            output_lines = []
-
-            # Read output line by line and display in real-time
-            for line in process.stdout:
-                line = line.rstrip('\n')
-                logger.info(line)  # Display in real-time
-                output_lines.append(line)
-
-
-            # Wait for process to complete
-            return_code = process.wait()
 
             logger.info("=" * 60)
 
-            # Join all output lines first
-            full_output = '\n'.join(output_lines).strip()
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            combined_parts = [part for part in (stdout, stderr) if part]
+            full_output = '\n'.join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+            full_output = full_output.strip()
             low = full_output.lower()
 
-            if return_code != 0:
+            if result.returncode != 0:
                 if ("rate limit" in low) or ("quota" in low) or ("429" in low):
                     raise AutoCoderUsageLimitError(full_output)
-                raise RuntimeError(f"Gemini CLI failed with return code {return_code}\n{full_output}")
+                raise RuntimeError(
+                    f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
+                )
 
             # Even with 0, detect soft limit messages
             if ("rate limit" in low) or ("quota" in low):

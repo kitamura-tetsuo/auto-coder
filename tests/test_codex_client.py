@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from src.auto_coder.codex_client import CodexClient
+from src.auto_coder.utils import CommandResult
 
 
 class TestCodexClient:
@@ -19,18 +20,11 @@ class TestCodexClient:
         client = CodexClient()
         assert client.model_name == "codex"
     @patch("subprocess.run")
-    @patch("subprocess.Popen")
-    def test_llm_invocation_warn_log(self, mock_popen, mock_run):
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_llm_invocation_warn_log(self, mock_run_command, mock_run):
         """Verify warning is logged when invoking codex CLI."""
         mock_run.return_value.returncode = 0
-
-        class DummyPopen:
-            def __init__(self):
-                self._lines = ["ok\n"]
-                self.stdout = iter(self._lines)
-            def wait(self):
-                return 0
-        mock_popen.return_value = DummyPopen()
+        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
 
         client = CodexClient()
         _ = client._run_gemini_cli("hello world")
@@ -39,38 +33,23 @@ class TestCodexClient:
 
 
     @patch("subprocess.run")
-    @patch("subprocess.Popen")
-    def test_run_exec_success(self, mock_popen, mock_run):
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_run_exec_success(self, mock_run_command, mock_run):
         """codex exec should stream and aggregate output successfully."""
         mock_run.return_value.returncode = 0
-
-        class DummyPopen:
-            def __init__(self):
-                self._lines = ["line1\n", "line2\n"]
-                self.stdout = iter(self._lines)
-            def wait(self):
-                return 0
-        mock_popen.return_value = DummyPopen()
+        mock_run_command.return_value = CommandResult(True, "line1\nline2\n", "", 0)
 
         client = CodexClient()
         output = client._run_gemini_cli("hello world")
         assert "line1" in output and "line2" in output
 
     @patch("subprocess.run")
-    @patch("subprocess.Popen")
-    def test_run_exec_failure(self, mock_popen, mock_run):
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_run_exec_failure(self, mock_run_command, mock_run):
         """When codex exec returns non-zero, raise RuntimeError."""
         mock_run.return_value.returncode = 0
-
-        class DummyPopen:
-            def __init__(self):
-                self._lines = [""]
-                self.stdout = iter(self._lines)
-            def wait(self):
-                return 1
-        mock_popen.return_value = DummyPopen()
+        mock_run_command.return_value = CommandResult(False, "", "boom", 1)
 
         client = CodexClient()
         with pytest.raises(RuntimeError):
             client._run_gemini_cli("hello world")
-

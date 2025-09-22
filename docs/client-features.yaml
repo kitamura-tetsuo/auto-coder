@@ -183,6 +183,8 @@ features:
           Executes shell commands with consistent timeout handling and optional streaming.
           Automatically streams stdout/stderr when a debugger is attached or when AUTOCODER_STREAM_COMMANDS=1.
           Recognizes common debug adapters (debugpy, VS Code, PyCharm) via environment markers to ensure streaming during IDE sessions.
+          Uses background reader threads plus short-interval polling so debugger pauses land within a few hundred milliseconds even when the command is silent.
+          Consumed by Codex/Gemini/Qwen CLI clients for LLM invocations via CommandExecutor.run_command(..., stream_output=True).
           Preserves captured output for downstream processing while logging live updates for active debugging.
         parameters:
           - "cmd: list[str]"
@@ -190,6 +192,7 @@ features:
           - "cwd: Optional[str]"
           - "check_success: bool"
           - "stream_output: Optional[bool]"
+          - "env: Optional[dict[str, str]]"
         returns: "CommandResult(success, stdout, stderr, returncode)"
         tests:
           - "tests/test_utils_command_executor.py::test_run_command_respects_stream_flag"
@@ -197,6 +200,9 @@ features:
           - "tests/test_utils_command_executor.py::test_should_stream_when_debugger_attached"
           - "tests/test_utils_command_executor.py::test_should_stream_when_env_forced"
           - "tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers"
+          - "tests/test_llm_cli_neutral.py::test_codex_client_run_llm_cli_delegates"
+          - "tests/test_llm_cli_neutral.py::test_gemini_client_run_llm_cli_delegates"
+          - "tests/test_llm_cli_neutral.py::test_qwen_client_run_llm_cli_delegates"
   test_runner_utils:
     name: "Test Runner Utilities"
     description: "Utilities to parse test outputs and assist selective re-runs"
