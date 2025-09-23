@@ -14,6 +14,7 @@ from datetime import datetime
 from .utils import CommandExecutor, log_action
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -297,38 +298,20 @@ def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> st
 
 def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig) -> str:
     """Create a PR prompt that prioritizes direct code changes over comments."""
-    return f"""
-You are operating directly in the repository workspace with write access and the git and gh CLIs available.
-
-Task: For the following GitHub Pull Request, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
-
-STRICT DIRECTIVES (follow exactly):
-- Do NOT post any comments to the PR, reviews, or issues.
-- Do NOT write narrative explanations as output; take actions in the workspace instead.
-- Prefer targeted edits that make CI pass while preserving intent.
-- After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
-- Do NOT run git commit/push; the system will handle committing.
-- If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
-
-Return format:
-- Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
-- No greetings, no multi-paragraph analysis.
-
-Context:
-Repository: {repo_name}
-PR #{pr_data['number']}: {pr_data['title']}
-
-PR Description (truncated):
-{pr_data['body'][:config.MAX_PROMPT_SIZE]}...
-
-PR Author: {pr_data.get('user', {}).get('login', 'unknown')}
-PR State: {pr_data.get('state', 'open')}
-Draft: {pr_data.get('draft', False)}
-Mergeable: {pr_data.get('mergeable', False)}
-
-PR Changes (first {config.MAX_PR_DIFF_SIZE} chars):
-{pr_diff}
-"""
+    body_text = (pr_data.get('body') or '')[: config.MAX_PROMPT_SIZE]
+    return render_prompt(
+        "pr.action",
+        repo_name=repo_name,
+        pr_number=pr_data.get('number', 'unknown'),
+        pr_title=pr_data.get('title', 'Unknown'),
+        pr_body=body_text,
+        pr_author=pr_data.get('user', {}).get('login', 'unknown'),
+        pr_state=pr_data.get('state', 'open'),
+        pr_draft=pr_data.get('draft', False),
+        pr_mergeable=pr_data.get('mergeable', False),
+        diff_limit=config.MAX_PR_DIFF_SIZE,
+        pr_diff=pr_diff,
+    )
 
 
 def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> Dict[str, Any]:
@@ -721,25 +704,14 @@ def _resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: st
     try:
         # Create a prompt for LLM to resolve conflicts
         base_branch = pr_data.get('base_branch') or pr_data.get('base', {}).get('ref') or config.MAIN_BRANCH
-        resolve_prompt = f"""
-There are merge conflicts when trying to merge {base_branch} branch into PR #{pr_data['number']}: {pr_data['title']}
-
-PR Description:
-{pr_data['body'][:500]}...
-
-Merge Conflict Information:
-{conflict_info}
-
-Please resolve these merge conflicts by:
-1. Examining the conflicted files
-2. Choosing the appropriate resolution for each conflict
-3. Editing files to fully remove all conflict markers
-4. Do NOT run git add/commit/push; the system will handle committing.
-
-After resolving the conflicts, respond with a single-line summary of what you resolved.
-
-Please proceed with resolving these merge conflicts now.
-"""
+        resolve_prompt = render_prompt(
+            "pr.merge_conflict_resolution",
+            base_branch=base_branch,
+            pr_number=pr_data.get('number', 'unknown'),
+            pr_title=pr_data.get('title', 'Unknown'),
+            pr_body=(pr_data.get('body') or '')[:500],
+            conflict_info=conflict_info,
+        )
 
         # Use LLM to resolve conflicts
         logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}")
@@ -1056,25 +1028,13 @@ def _apply_github_actions_fix(repo_name: str, pr_data: Dict[str, Any], config: A
 
     try:
         # Create prompt for GitHub Actions error fix (no commit/push by LLM)
-        fix_prompt = f"""
-Fix the following GitHub Actions test failures for PR #{pr_number}:
-
-Repository: {repo_name}
-PR Title: {pr_data.get('title', 'Unknown')}
-
-GitHub Actions Error Logs (truncated):
-{github_logs[:config.MAX_PROMPT_SIZE]}
-
-Your task:
-1) Identify the root cause(s) of the failing checks based on the logs.
-2) Apply the necessary code changes directly in the repository to fix them.
-3) After applying changes, run the appropriate quick checks if available (linters/unit tests) to sanity-verify.
-4) Do NOT run git commit/push; the system will handle committing and pushing.
-
-Output requirements:
-- First, provide a concise summary of what you changed and why.
-- Return only a short summary line; no commit/push output is needed.
-"""
+        fix_prompt = render_prompt(
+            "pr.github_actions_fix",
+            pr_number=pr_number,
+            repo_name=repo_name,
+            pr_title=pr_data.get('title', 'Unknown'),
+            github_logs=(github_logs or '')[: config.MAX_PROMPT_SIZE],
+        )
 
         if not dry_run:
             response = "Applied GitHub Actions fix"  # Placeholder
@@ -1133,29 +1093,15 @@ def _apply_local_test_fix(repo_name: str, pr_data: Dict[str, Any], config: Autom
         #     return actions
 
         # Create prompt for local test error fix
-        fix_prompt = f"""
-Fix the following local test failures for PR #{pr_number}:
-
-Repository: {repo_name}
-PR Title: {pr_data.get('title', 'Unknown')}
-
-Test Output:
-{test_result.get('output', '')[:config.MAX_PROMPT_SIZE]}
-
-Test Errors:
-{test_result.get('errors', '')[:config.MAX_PROMPT_SIZE]}
-
-Key Errors:
-Error summary would go here
-
- Local test command used:
- {test_result.get('command', 'pytest -q --maxfail=1')}
-
-Please analyze the test failures and provide specific code fixes.
-Focus on making the tests pass while maintaining code quality.
-
-After analyzing, apply the necessary fixes to the codebase.
-"""
+        fix_prompt = render_prompt(
+            "pr.local_test_fix",
+            pr_number=pr_number,
+            repo_name=repo_name,
+            pr_title=pr_data.get('title', 'Unknown'),
+            test_output=(test_result.get('output', '') or '')[: config.MAX_PROMPT_SIZE],
+            test_errors=(test_result.get('errors', '') or '')[: config.MAX_PROMPT_SIZE],
+            test_command=test_result.get('command', 'pytest -q --maxfail=1'),
+        )
 
         if not dry_run:
             response = "Applied local test fix"  # Placeholder

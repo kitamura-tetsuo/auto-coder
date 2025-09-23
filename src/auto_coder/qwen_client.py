@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
 from .utils import CommandExecutor
+from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
 
@@ -150,32 +151,14 @@ class QwenClient:
             return []
 
     def _create_feature_suggestion_prompt(self, repo_context: Dict[str, Any]) -> str:
-        return f"""
-Based on the following repository context, suggest new features that would be valuable:
-
-Repository: {repo_context.get('name', 'Unknown')}
-Description: {repo_context.get('description', 'No description')}
-Language: {repo_context.get('language', 'Unknown')}
-Recent Issues: {repo_context.get('recent_issues', [])}
-Recent PRs: {repo_context.get('recent_prs', [])}
-
-Please provide feature suggestions in the following JSON format:
-[
-    {{
-        "title": "Feature title",
-        "description": "Detailed description of the feature",
-        "rationale": "Why this feature would be valuable",
-        "priority": "low|medium|high",
-        "complexity": "simple|moderate|complex",
-        "estimated_effort": "hours|days|weeks",
-        "labels": ["enhancement", "feature"],
-        "acceptance_criteria": [
-            "criteria 1",
-            "criteria 2"
-        ]
-    }}
-]
-"""
+        return render_prompt(
+            "feature.suggestion",
+            repo_name=repo_context.get('name', 'Unknown'),
+            description=repo_context.get('description', 'No description'),
+            language=repo_context.get('language', 'Unknown'),
+            recent_issues=repo_context.get('recent_issues', []),
+            recent_prs=repo_context.get('recent_prs', []),
+        )
 
     def _parse_feature_suggestions(self, response_text: str) -> List[Dict[str, Any]]:
         try:

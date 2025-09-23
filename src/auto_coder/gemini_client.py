@@ -15,6 +15,7 @@ except Exception:  # ランタイム依存を避けるため
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
 from .utils import CommandExecutor
+from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
 
@@ -178,64 +179,30 @@ class GeminiClient:
 
     def _create_pr_analysis_prompt(self, pr_data: Dict[str, Any]) -> str:
         """Create prompt for pull request analysis."""
-        return f"""
-
-
-Analyze the following GitHub pull request and provide a structured analysis:
-
-Title: {pr_data['title']}
-Body: {pr_data['body']}
-Labels: {', '.join(pr_data['labels'])}
-Branch: {pr_data['head_branch']} -> {pr_data['base_branch']}
-Changes: +{pr_data['additions']} -{pr_data['deletions']} files: {pr_data['changed_files']}
-Draft: {pr_data['draft']}
-Mergeable: {pr_data['mergeable']}
-
-Please provide analysis in the following JSON format:
-{{
-    "category": "bugfix|feature|refactor|documentation|test",
-    "risk_level": "low|medium|high",
-    "review_priority": "low|medium|high",
-    "estimated_review_time": "minutes|hours",
-    "recommendations": [
-        {{
-            "action": "description of recommended action",
-            "rationale": "why this action is recommended"
-        }}
-    ],
-    "potential_issues": ["issue1", "issue2"],
-    "summary": "brief summary of the changes"
-}}
-"""
+        return render_prompt(
+            "gemini.pr_analysis",
+            title=pr_data.get('title', ''),
+            body=pr_data.get('body', ''),
+            labels=', '.join(pr_data.get('labels', [])),
+            head_branch=pr_data.get('head_branch', ''),
+            base_branch=pr_data.get('base_branch', ''),
+            additions=pr_data.get('additions', 0),
+            deletions=pr_data.get('deletions', 0),
+            changed_files=pr_data.get('changed_files', 0),
+            draft=pr_data.get('draft', False),
+            mergeable=pr_data.get('mergeable', False),
+        )
 
     def _create_feature_suggestion_prompt(self, repo_context: Dict[str, Any]) -> str:
         """Create prompt for feature suggestions."""
-        return f"""
-Based on the following repository context, suggest new features that would be valuable:
-
-Repository: {repo_context.get('name', 'Unknown')}
-Description: {repo_context.get('description', 'No description')}
-Language: {repo_context.get('language', 'Unknown')}
-Recent Issues: {repo_context.get('recent_issues', [])}
-Recent PRs: {repo_context.get('recent_prs', [])}
-
-Please provide feature suggestions in the following JSON format:
-[
-    {{
-        "title": "Feature title",
-        "description": "Detailed description of the feature",
-        "rationale": "Why this feature would be valuable",
-        "priority": "low|medium|high",
-        "complexity": "simple|moderate|complex",
-        "estimated_effort": "hours|days|weeks",
-        "labels": ["enhancement", "feature"],
-        "acceptance_criteria": [
-            "criteria 1",
-            "criteria 2"
-        ]
-    }}
-]
-"""
+        return render_prompt(
+            "feature.suggestion",
+            repo_name=repo_context.get('name', 'Unknown'),
+            description=repo_context.get('description', 'No description'),
+            language=repo_context.get('language', 'Unknown'),
+            recent_issues=repo_context.get('recent_issues', []),
+            recent_prs=repo_context.get('recent_prs', []),
+        )
 
 
     # ===== SDK-based analysis helpers (disabled per LLM execution policy) =====

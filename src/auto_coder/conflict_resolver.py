@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Optional
 from .utils import CommandExecutor, log_action
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -21,25 +22,14 @@ def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str
     try:
         # Create a prompt for LLM to resolve conflicts
         base_branch = pr_data.get('base_branch') or pr_data.get('base', {}).get('ref') or config.MAIN_BRANCH
-        resolve_prompt = f"""
-There are merge conflicts when trying to merge {base_branch} branch into PR #{pr_data['number']}: {pr_data['title']}
-
-PR Description:
-{pr_data['body'][:500]}...
-
-Merge Conflict Information:
-{conflict_info}
-
-Please resolve these merge conflicts by:
-1. Examining the conflicted files
-2. Choosing the appropriate resolution for each conflict
-3. Editing files to fully remove all conflict markers
-4. Do NOT run git add/commit/push; the system will handle committing.
-
-After resolving the conflicts, respond with a single-line summary of what you resolved.
-
-Please proceed with resolving these merge conflicts now.
-"""
+        resolve_prompt = render_prompt(
+            "pr.merge_conflict_resolution",
+            base_branch=base_branch,
+            pr_number=pr_data.get('number', 'unknown'),
+            pr_title=pr_data.get('title', 'Unknown'),
+            pr_body=(pr_data.get('body') or '')[:500],
+            conflict_info=conflict_info,
+        )
 
         # Use LLM to resolve conflicts
         logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}")
