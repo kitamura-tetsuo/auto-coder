@@ -87,6 +87,7 @@ class GeminiClient:
             # Run gemini CLI with prompt via stdin and additional prompt parameter
             cmd = [
                 'gemini',
+                '--yolo',
                 '--model', self.model_name,
                 '--force-model',
                 '--prompt', escaped_prompt
@@ -98,10 +99,24 @@ class GeminiClient:
             logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
             logger.info("=" * 60)
 
+            # Streaming-time usage limit detection via callback
+            usage_markers = (
+                "rate limit",
+                "quota",
+                "429",
+                "resource_exhausted",
+                "too many requests",
+            )
+            def _on_stream(stream_name: str, chunk: str) -> None:
+                low_chunk = chunk.lower()
+                if any(m in low_chunk for m in usage_markers):
+                    raise AutoCoderUsageLimitError(chunk.strip())
+
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
-                check_success=False
+                check_success=False,
+                on_stream=_on_stream,
             )
 
             logger.info("=" * 60)
@@ -113,15 +128,24 @@ class GeminiClient:
             full_output = full_output.strip()
             low = full_output.lower()
 
+            # Detect usage/rate limit conditions
+            usage_markers = (
+                "rate limit",
+                "quota",
+                "429",
+                "resource_exhausted",
+                "too many requests",
+            )
+
             if result.returncode != 0:
-                if ("rate limit" in low) or ("quota" in low) or ("429" in low):
+                if any(m in low for m in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(
                     f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
                 )
 
-            # Even with 0, detect soft limit messages
-            if ("rate limit" in low) or ("quota" in low):
+            # Even with 0, detect soft limit messages (some CLIs log 429 but exit 0)
+            if any(m in low for m in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
 

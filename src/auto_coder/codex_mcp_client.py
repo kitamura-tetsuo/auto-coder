@@ -20,6 +20,7 @@ import threading
 import json
 import shlex
 import time
+import select
 from typing import Optional, List, Any, Dict
 
 from .logger_config import get_logger
@@ -80,6 +81,7 @@ class CodexMCPClient:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                bufsize=0,
                 env=env,
             )
             logger.info(f"spawned MCP process pid={self.proc.pid}; cmd={' '.join(cmd)}")
@@ -101,6 +103,9 @@ class CodexMCPClient:
         self._initialized = False
 
         # Try minimal JSON-RPC handshake (non-fatal if it fails)
+        self._default_timeout = float(os.environ.get("AUTOCODER_MCP_TIMEOUT", "60"))
+        self._handshake_timeout = float(os.environ.get("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "1.0"))
+
         try:
             _ = self._rpc_call(
                 method="initialize",
@@ -109,6 +114,7 @@ class CodexMCPClient:
                     "capabilities": {},
                     "clientInfo": {"name": "auto-coder", "version": "0.1.0"},
                 },
+                timeout=self._handshake_timeout,
             )
             self._initialized = True
             logger.info("MCP JSON-RPC initialized successfully")
@@ -123,12 +129,30 @@ class CodexMCPClient:
         logger.info("CodexMCPClient: switch_to_default_model noop")
 
     # --- Minimal JSON-RPC helpers (single-flight; no concurrent calls) ---
-    def _read_headers(self) -> int:
+    def _wait_for_stdout(self, timeout: Optional[float]) -> bool:
+        if self._stdout is None:
+            raise RuntimeError("MCP stdout not available")
+        if timeout is not None and timeout < 0:
+            timeout = 0.0
+        try:
+            ready, _, _ = select.select([self._stdout], [], [], timeout)
+        except (ValueError, OSError) as exc:
+            raise RuntimeError(f"Failed waiting on MCP stdout: {exc}")
+        return bool(ready)
+
+    def _read_headers(self, deadline: Optional[float]) -> int:
         if self._stdout is None:
             raise RuntimeError("MCP stdout not available")
         # Read until CRLFCRLF
         raw_headers = b""
         while True:
+            timeout = None
+            if deadline is not None:
+                timeout = deadline - time.time()
+                if timeout <= 0:
+                    raise TimeoutError("Timed out waiting for MCP headers")
+            if not self._wait_for_stdout(timeout):
+                raise TimeoutError("Timed out waiting for MCP headers")
             line = self._stdout.readline()
             if not line:
                 raise RuntimeError("EOF while reading MCP headers")
@@ -148,20 +172,30 @@ class CodexMCPClient:
             raise RuntimeError("Missing Content-Length header")
         return content_length
 
-    def _read_n(self, n: int) -> bytes:
+    def _read_n(self, n: int, deadline: Optional[float]) -> bytes:
         if self._stdout is None:
             raise RuntimeError("MCP stdout not available")
         buf = b""
         while len(buf) < n:
+            timeout = None
+            if deadline is not None:
+                timeout = deadline - time.time()
+                if timeout <= 0:
+                    raise TimeoutError("Timed out waiting for MCP body")
+            if not self._wait_for_stdout(timeout):
+                raise TimeoutError("Timed out waiting for MCP body")
             chunk = self._stdout.read(n - len(buf))
             if not chunk:
                 raise RuntimeError("EOF while reading MCP message body")
             buf += chunk
         return buf
 
-    def _read_message(self) -> Dict[str, Any]:
-        length = self._read_headers()
-        body = self._read_n(length)
+    def _read_message(self, timeout: Optional[float]) -> Dict[str, Any]:
+        deadline = None
+        if timeout is not None:
+            deadline = time.time() + timeout
+        length = self._read_headers(deadline)
+        body = self._read_n(length, deadline)
         try:
             return json.loads(body.decode("utf-8"))
         except Exception as e:
@@ -175,7 +209,13 @@ class CodexMCPClient:
         self._stdin.write(header + data)
         self._stdin.flush()
 
-    def _rpc_call(self, method: str, params: Dict[str, Any] | None = None, req_id: int | None = None) -> Any:
+    def _rpc_call(
+        self,
+        method: str,
+        params: Dict[str, Any] | None = None,
+        req_id: int | None = None,
+        timeout: Optional[float] = None,
+    ) -> Any:
         if self.proc is None or self.proc.poll() is not None:
             raise RuntimeError("MCP process not running")
         self._req_id = (self._req_id + 1) if req_id is None else req_id
@@ -183,7 +223,8 @@ class CodexMCPClient:
         if params is not None:
             message["params"] = params
         self._send_message(message)
-        resp = self._read_message()
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        resp = self._read_message(effective_timeout)
         if "error" in resp:
             raise RuntimeError(f"MCP error: {resp['error']}")
         if resp.get("id") != self._req_id:
@@ -328,4 +369,3 @@ class CodexMCPClient:
                     pass
         finally:
             self.proc = None
-

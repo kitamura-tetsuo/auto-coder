@@ -53,6 +53,30 @@ def test_gemini_raises_usage_limit_on_message_even_zero(mock_run_command, mock_r
         client._run_gemini_cli("hi")
 
 
+
+@patch("subprocess.run")
+@patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+def test_gemini_raises_usage_limit_on_zero_with_429_only(mock_run_command, mock_run):
+    mock_run.return_value.returncode = 0
+    # Exit code 0 but logs include 429 without explicit 'quota'/'rate limit'
+    mock_run_command.return_value = CommandResult(True, "status: 429\nToo Many Requests\n", "", 0)
+
+    client = GeminiClient(model_name="gemini-2.5-pro")
+    with pytest.raises(AutoCoderUsageLimitError):
+        client._run_gemini_cli("hi")
+
+
+@patch("subprocess.run")
+@patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+def test_gemini_raises_usage_limit_on_zero_with_resource_exhausted(mock_run_command, mock_run):
+    mock_run.return_value.returncode = 0
+    mock_run_command.return_value = CommandResult(True, "error: RESOURCE_EXHAUSTED", "", 0)
+
+    client = GeminiClient(model_name="gemini-2.5-pro")
+    with pytest.raises(AutoCoderUsageLimitError):
+        client._run_gemini_cli("hi")
+
+
 @patch("subprocess.run")
 @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
 def test_codex_raises_usage_limit_on_message_even_zero(mock_run_command, mock_run):

@@ -11,7 +11,7 @@ import sys
 import time
 import threading
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 
 from .logger_config import get_logger
 
@@ -100,9 +100,14 @@ class CommandExecutor:
         cmd: List[str],
         timeout: Optional[int],
         cwd: Optional[str],
-        env: Optional[Dict[str, str]]
+        env: Optional[Dict[str, str]],
+        on_stream: Optional[Callable[[str, str], None]] = None,
     ) -> Tuple[int, str, str]:
-        """Run a command while streaming stdout/stderr to the logger."""
+        """Run a command while streaming stdout/stderr to the logger.
+
+        on_stream: optional callback invoked for each chunk (stream_name, chunk).
+        The callback may raise to abort the process early; the exception is propagated.
+        """
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -151,6 +156,17 @@ class CommandExecutor:
                         else:
                             stderr_lines.append(chunk)
                             logger.error(chunk.rstrip('\n'))
+
+                        # Optional per-chunk callback for early aborts
+                        if on_stream is not None:
+                            try:
+                                on_stream(stream_name, chunk)
+                            except Exception:
+                                try:
+                                    process.kill()
+                                except Exception:
+                                    pass
+                                raise
                 except queue.Empty:
                     pass
 
@@ -169,13 +185,33 @@ class CommandExecutor:
                 process.kill()
             raise
         finally:
-            # Best-effort cleanup: close pipes and join threads quickly
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
+            # Ensure process is terminated to unblock pipes
+            try:
+                if process.poll() is None:
+                    try:
+                        process.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        process.wait(timeout=0.5)
+                    except Exception:
+                        try:
+                            process.kill()
+                        except Exception:
+                            pass
+                        try:
+                            process.wait(timeout=0.5)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            # Join reader threads (daemon) briefly; do not hard-block
             for reader in readers:
-                reader.join(timeout=1)
+                try:
+                    reader.join(timeout=1)
+                except Exception:
+                    pass
+            # Avoid explicit close() on pipes to prevent rare blocking on some platforms
 
     @classmethod
     def run_command(
@@ -185,7 +221,8 @@ class CommandExecutor:
         cwd: Optional[str] = None,
         check_success: bool = True,
         stream_output: Optional[bool] = None,
-        env: Optional[Dict[str, str]] = None
+        env: Optional[Dict[str, str]] = None,
+        on_stream: Optional[Callable[[str, str], None]] = None,
     ) -> CommandResult:
         """Run a command with consistent error handling."""
         if timeout is None:
@@ -201,7 +238,7 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, env)
+                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, env, on_stream)
             else:
                 result = subprocess.run(
                     cmd,

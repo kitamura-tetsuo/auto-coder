@@ -97,6 +97,7 @@ features:
           - Environment overrides for testing:
             - AUTOCODER_CODEX_CLI: overrides CLI check command (default: `codex`)
             - AUTOCODER_MCP_COMMAND: overrides MCP subprocess command (default: `codex mcp`)
+            - AUTOCODER_MCP_TIMEOUT / AUTOCODER_MCP_HANDSHAKE_TIMEOUT: configure select-based read timeouts to prevent MCP hangs during handshake and requests
         methods:
           - name: "_run_gemini_cli"
             description: "Prefer MCP tools/call (echo) then fallback to codex exec while MCP session stays alive"
@@ -722,6 +723,17 @@ deployment:
         - "tests/test_backend_manager.py::test_manager_switches_on_usage_limit"
         - "tests/test_backend_manager.py::test_run_test_fix_prompt_switch_after_three_same_prompts"
         - "tests/test_apply_workspace_test_fix_switch.py::test_apply_workspace_test_fix_switch_after_three_same_prompts"
+      hardening_2025_09:
+        description: "Hardened usage limit detection for Gemini streaming errors to ensure BackendManager rotation on quota exhaustion."
+        recognizes:
+          - "rate limit"
+          - "quota"
+          - "429"
+          - "RESOURCE_EXHAUSTED"
+          - "Too Many Requests"
+        tests:
+          - "tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_429_only"
+          - "tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_resource_exhausted"
 
     components:
       - name: "QwenClient"

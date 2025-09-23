@@ -111,11 +111,11 @@
             "cwd": "/home/ubuntu/src3/outliner",
             "args": [
                 "fix-to-pass-tests",
-                "--backend", "qwen",
                 "--backend", "gemini",
-                "--backend", "codex-mcp",
-                "--backend", "codex",
                 "--backend", "auggie",
+                "--backend", "qwen",
+                // "--backend", "codex-mcp",
+                "--backend", "codex",
                 "--max-attempts", "100000"
             ],
             "python": "/home/ubuntu/src/auto-coder/venv/bin/python",

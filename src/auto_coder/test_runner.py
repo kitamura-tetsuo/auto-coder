@@ -172,7 +172,7 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             # Update the current test file being fixed
             current_test_file = test_result.get('test_file')
         if test_result['success']:
-            if current_test_file is None:
+            if current_test_file is not None:
                 current_test_file = None
                 continue
             msg = f"Local tests passed on attempt {attempt}"
@@ -273,7 +273,7 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             
         # If tests passed, mark success and return
         if post_result['success']:
-            if current_test_file is None:
+            if current_test_file is not None:
                 current_test_file = None
                 continue
             summary['success'] = True

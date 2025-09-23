@@ -1,42 +1,63 @@
-from unittest.mock import patch
+import types
+from unittest import mock
+
+import pytest
 
 from src.auto_coder.codex_mcp_client import CodexMCPClient
 
 
-class DummyStream:
-    def readline(self):
-        return b""  # immediately EOF
-
-    def close(self):
-        pass
-
-
-class DummyProc:
-    def __init__(self):
-        self.pid = 12345
-        self.stdout = DummyStream()
-        self.stderr = DummyStream()
-        self.terminated = False
-
-    def wait(self, timeout=None):
-        return 0
-
-    def terminate(self):
-        self.terminated = True
+def _make_fake_popen(stdout=None, stderr=None):
+    fake_proc = mock.MagicMock()
+    fake_proc.pid = 123
+    fake_proc.poll.return_value = None
+    fake_proc.stdout = stdout if stdout is not None else mock.MagicMock()
+    fake_proc.stdin = mock.MagicMock()
+    fake_proc.stderr = stderr
+    return fake_proc
 
 
-@patch("src.auto_coder.codex_mcp_client.subprocess.Popen", return_value=DummyProc())
-@patch("src.auto_coder.codex_mcp_client.subprocess.run", return_value=type("R", (), {"returncode": 0})())
-def test_codex_mcp_client_starts_and_close_terminates(mock_run, mock_popen):
-    client = CodexMCPClient()
-    # Popen called for codex mcp
-    mock_popen.assert_called()
-    args, kwargs = mock_popen.call_args
-    assert args[0][:2] == ["codex", "mcp"]
+def test_handshake_timeout_uses_configured_limit(monkeypatch):
+    fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
+    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
-    # close should terminate the persistent process
-    proc: DummyProc = mock_popen.return_value  # type: ignore
-    assert proc.terminated is False
-    client.close()
-    assert proc.terminated is True
+    fake_proc = _make_fake_popen()
+    mock_popen = mock.MagicMock(return_value=fake_proc)
+    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")) as mock_rpc:
+        client = CodexMCPClient()
+
+    assert client._initialized is False
+    mock_rpc.assert_called_with(
+        method="initialize",
+        params={
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": {"name": "auto-coder", "version": "0.1.0"},
+        },
+        timeout=client._handshake_timeout,
+    )
+    assert mock_popen.call_count == 1
+    _, kwargs = mock_popen.call_args
+    assert kwargs.get("bufsize") == 0
+
+
+def test_rpc_call_times_out_without_stdout_ready(monkeypatch):
+    client = CodexMCPClient.__new__(CodexMCPClient)
+    client.proc = mock.MagicMock()
+    client.proc.poll.return_value = None
+    client._stdin = mock.MagicMock()
+    client._stdout = mock.MagicMock()
+    client._default_timeout = 0.25
+    client._req_id = 0
+    client._initialized = False
+
+    def never_ready(_timeout):
+        return False
+
+    client._wait_for_stdout = never_ready
+
+    with pytest.raises(TimeoutError):
+        client._rpc_call("prompts/call", timeout=0.01)
+
+    client._stdin.write.assert_called()
