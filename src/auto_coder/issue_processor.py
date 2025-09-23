@@ -10,6 +10,7 @@ from datetime import datetime
 from .utils import CommandExecutor, log_action
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -137,40 +138,16 @@ def _apply_issue_actions_directly(repo_name: str, issue_data: Dict[str, Any], co
 
     try:
         # Create a comprehensive prompt for LLM CLI
-        action_prompt = f"""
-Analyze the following GitHub issue and take appropriate actions:
-
-Repository: {repo_name}
-Issue #{issue_data['number']}: {issue_data['title']}
-
-Issue Description:
-{issue_data['body'][:1000]}...
-
-Issue Labels: {', '.join(issue_data.get('labels', []))}
-Issue State: {issue_data.get('state', 'open')}
-Created by: {issue_data.get('author', 'unknown')}
-
-Please analyze this issue and determine the appropriate action:
-
-1. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
-2. If this is a valid bug report or feature request, provide analysis and implementation
-3. If this needs clarification, add a comment requesting more information
-
-For valid issues that can be implemented:
-- Analyze the requirements
-- Implement the necessary code changes
-- Create or modify files as needed
-- Ensure the implementation follows best practices
-- Prefer the smart, reasonable and logically beautiful change that resolves issues.
-
-For duplicate/invalid issues:
-- Close the issue
-- Add a polite comment explaining why it was closed
-
-After taking action, respond with a summary of what you did.
-
-Please proceed with analyzing and taking action on this issue now.
-"""
+        action_prompt = render_prompt(
+            "issue.action",
+            repo_name=repo_name,
+            issue_number=issue_data.get('number', 'unknown'),
+            issue_title=issue_data.get('title', 'Unknown'),
+            issue_body=(issue_data.get('body') or '')[:1000],
+            issue_labels=', '.join(issue_data.get('labels', [])),
+            issue_state=issue_data.get('state', 'open'),
+            issue_author=issue_data.get('author', 'unknown'),
+        )
 
         # Use LLM CLI to analyze and take actions
         logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")

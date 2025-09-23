@@ -1,0 +1,226 @@
+pr:
+  action: |-
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
+
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
+
+    Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description (truncated):
+    $pr_body...
+
+    PR Author: $pr_author
+    PR State: $pr_state
+    Draft: $pr_draft
+    Mergeable: $pr_mergeable
+
+    PR Changes (first $diff_limit chars):
+    $pr_diff
+
+  merge_conflict_resolution: |-
+    There are merge conflicts when trying to merge $base_branch branch into PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    Merge Conflict Information:
+    $conflict_info
+
+    Please resolve these merge conflicts by:
+    1. Examining the conflicted files
+    2. Choosing the appropriate resolution for each conflict
+    3. Editing files to fully remove all conflict markers
+    4. Do NOT run git add/commit/push; the system will handle committing.
+
+    After resolving the conflicts, respond with a single-line summary of what you resolved.
+
+    Please proceed with resolving these merge conflicts now.
+
+  github_actions_fix: |-
+    Fix the following GitHub Actions test failures for PR #$pr_number:
+
+    Repository: $repo_name
+    PR Title: $pr_title
+
+    GitHub Actions Error Logs (truncated):
+    $github_logs
+
+    Your task:
+    1) Identify the root cause(s) of the failing checks based on the logs.
+    2) Apply the necessary code changes directly in the repository to fix them.
+    3) After applying changes, run the appropriate quick checks if available (linters/unit tests) to sanity-verify.
+    4) Do NOT run git commit/push; the system will handle committing and pushing.
+
+    Output requirements:
+    - First, provide a concise summary of what you changed and why.
+    - Return only a short summary line; no commit/push output is needed.
+
+  local_test_fix: |-
+    Fix the following local test failures for PR #$pr_number:
+
+    Repository: $repo_name
+    PR Title: $pr_title
+
+    Test Output:
+    $test_output
+
+    Test Errors:
+    $test_errors
+
+    Key Errors:
+    Error summary would go here
+
+     Local test command used:
+     $test_command
+
+    Please analyze the test failures and provide specific code fixes.
+    Focus on making the tests pass while maintaining code quality.
+
+    After analyzing, apply the necessary fixes to the codebase.
+
+issue:
+  action: |-
+    Analyze the following GitHub issue and take appropriate actions:
+
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+
+    Issue Description:
+    $issue_body...
+
+    Issue Labels: $issue_labels
+    Issue State: $issue_state
+    Created by: $issue_author
+
+    Please analyze this issue and determine the appropriate action:
+
+    1. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
+    2. If this is a valid bug report or feature request, provide analysis and implementation
+    3. If this needs clarification, add a comment requesting more information
+
+    For valid issues that can be implemented:
+    - Analyze the requirements
+    - Implement the necessary code changes
+    - Create or modify files as needed
+    - Ensure the implementation follows best practices
+    - Prefer the smart, reasonable and logically beautiful change that resolves issues.
+
+    For duplicate/invalid issues:
+    - Close the issue
+    - Add a polite comment explaining why it was closed
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and taking action on this issue now.
+
+tests:
+  workspace_fix: |-
+    You are operating directly in this repository workspace with write access.
+
+    Goal: Make local tests pass by applying safe edits.
+
+    Task Memory File: ./llm_task.md
+    - If the file exists, review the "Logging Protocol" section before making changes.
+    - After completing your attempt, insert a new entry at the top of "## Experiment Log" using this exact template:
+    ```
+    ### YYYY-MM-DD HH:MM (local)
+    - Change Summary:
+    - Expected Outcome:
+    - Tests Run: `bash scripts/test.sh ...`
+    - Actual Outcome:
+    - Variance Analysis:
+    - Follow-ups / Notes:
+    ```
+    - Keep earlier log entries intact and maintain the newest entry first ordering.
+
+    STRICT RULES:
+    - Do NOT run git commit/push; the system will handle that.
+    - Prefer the smart, reasonable and logically beautiful change that resolves failures and preserves intent.
+
+    Local Test Failure Summary (truncated):
+    $error_summary
+
+     Local test command used:
+     $test_command
+
+    Now apply the fix directly in the repository.
+    Run tests again after applying the fix to verify that the fix resolves the issue.
+    Return a single concise line summarizing the change.
+
+  commit_message: |-
+    You have just applied code changes to fix failing local tests.
+    Craft a concise commit subject (single line, <= 72 chars, imperative mood) summarizing the change.
+
+    Rules:
+    - Subject line only. No body, no backticks, no code blocks.
+    - Do NOT include commands like git commit/push.
+    - Prefer specifics (file/function/test) if clear from context.
+
+gemini:
+  pr_analysis: |-
+    Analyze the following GitHub pull request and provide a structured analysis:
+
+    Title: $title
+    Body: $body
+    Labels: $labels
+    Branch: $head_branch -> $base_branch
+    Changes: +$additions -$deletions files: $changed_files
+    Draft: $draft
+    Mergeable: $mergeable
+
+    Please provide analysis in the following JSON format:
+    {
+        "category": "bugfix|feature|refactor|documentation|test",
+        "risk_level": "low|medium|high",
+        "review_priority": "low|medium|high",
+        "estimated_review_time": "minutes|hours",
+        "recommendations": [
+            {
+                "action": "description of recommended action",
+                "rationale": "why this action is recommended"
+            }
+        ],
+        "potential_issues": ["issue1", "issue2"],
+        "summary": "brief summary of the changes"
+    }
+
+feature:
+  suggestion: |-
+    Based on the following repository context, suggest new features that would be valuable:
+
+    Repository: $repo_name
+    Description: $description
+    Language: $language
+    Recent Issues: $recent_issues
+    Recent PRs: $recent_prs
+
+    Please provide feature suggestions in the following JSON format:
+    [
+        {
+            "title": "Feature title",
+            "description": "Detailed description of the feature",
+            "rationale": "Why this feature would be valuable",
+            "priority": "low|medium|high",
+            "complexity": "simple|moderate|complex",
+            "estimated_effort": "hours|days|weeks",
+            "labels": ["enhancement", "feature"],
+            "acceptance_criteria": [
+                "criteria 1",
+                "criteria 2"
+            ]
+        }
+    ]

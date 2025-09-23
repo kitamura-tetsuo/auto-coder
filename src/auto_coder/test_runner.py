@@ -11,6 +11,7 @@ from datetime import datetime
 from .utils import CommandExecutor, change_fraction, slice_relevant_error_window, extract_first_failed_test, log_action
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -91,39 +92,11 @@ def apply_workspace_test_fix(config: AutomationConfig, test_result: Dict[str, An
         if not error_summary:
             return "No actionable errors found in local test output"
 
-        fix_prompt = f"""
-You are operating directly in this repository workspace with write access.
-
-Goal: Make local tests pass by applying safe edits.
-
-Task Memory File: ./llm_task.md
-- If the file exists, review the "Logging Protocol" section before making changes.
-- After completing your attempt, insert a new entry at the top of "## Experiment Log" using this exact template:
-```
-### YYYY-MM-DD HH:MM (local)
-- Change Summary:
-- Expected Outcome:
-- Tests Run: `bash scripts/test.sh ...`
-- Actual Outcome:
-- Variance Analysis:
-- Follow-ups / Notes:
-```
-- Keep earlier log entries intact and maintain the newest entry first ordering.
-
-STRICT RULES:
-- Do NOT run git commit/push; the system will handle that.
-- Prefer the smart, reasonable and logically beautiful change that resolves failures and preserves intent.
-
-Local Test Failure Summary (truncated):
-{error_summary[: config.MAX_PROMPT_SIZE]}
-
- Local test command used:
- {test_result.get('command', 'pytest -q --maxfail=1')}
-
-Now apply the fix directly in the repository.
-Run tests again after applying the fix to verify that the fix resolves the issue.
-Return a single concise line summarizing the change.
-"""
+        fix_prompt = render_prompt(
+            "tests.workspace_fix",
+            error_summary=error_summary[: config.MAX_PROMPT_SIZE],
+            test_command=test_result.get('command', 'pytest -q --maxfail=1'),
+        )
 
         if dry_run:
             return "[DRY RUN] Would apply fixes for local test failures"
@@ -316,15 +289,7 @@ def generate_commit_message_via_llm(config: AutomationConfig, error_summary: str
         if llm_client is None:
             return ""
 
-        prompt = f"""
-You have just applied code changes to fix failing local tests.
-Craft a concise commit subject (single line, <= 72 chars, imperative mood) summarizing the change.
-
-Rules:
-- Subject line only. No body, no backticks, no code blocks.
-- Do NOT include commands like git commit/push.
-- Prefer specifics (file/function/test) if clear from context.
-"""
+        prompt = render_prompt("tests.commit_message")
 
         response = llm_client._run_llm_cli(prompt)
         if not response:

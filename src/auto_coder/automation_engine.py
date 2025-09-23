@@ -10,7 +10,7 @@ from datetime import datetime
 from .automation_config import AutomationConfig
 from .utils import log_action
 from .test_runner import fix_to_pass_tests
-from .pr_processor import process_pull_requests
+from .pr_processor import process_pull_requests, _create_pr_analysis_prompt as _engine_pr_prompt
 from .issue_processor import process_issues, create_feature_issues, process_single
 from .logger_config import get_logger
 
@@ -93,3 +93,12 @@ class AutomationEngine:
             log_action(f"Report saved to {filepath}")
         except Exception as e:
             logger.error(f"Error saving report {filename}: {e}")
+
+    def _create_pr_analysis_prompt(
+        self,
+        repo_name: str,
+        pr_data: Dict[str, Any],
+        pr_diff: str = "",
+    ) -> str:
+        """Compatibility wrapper used in tests to expose the PR prompt builder."""
+        return _engine_pr_prompt(repo_name, pr_data, pr_diff, self.config)
