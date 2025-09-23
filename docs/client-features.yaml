@@ -259,7 +259,9 @@ features:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
               - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
-              - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
+              - "--model-gemini": "Model to use when backend=gemini"
+              - "--model-qwen": "Model to use when backend=qwen"
+              - "--model-auggie": "Model to use when backend=auggie (defaults to GPT-5)"
               - "--dry-run": "Run in dry-run mode without making changes"
               - "--jules-mode": "Run in jules mode - only add 'jules' label to issues (PRs still use AI analysis)"
               - "--skip-main-update/--no-skip-main-update": "When PR checks fail, skip merging main into PR before attempting fixes (default: skip)"
@@ -273,13 +275,17 @@ features:
               - "--repo": "GitHub repository (owner/repo)"
               - "--github-token": "GitHub API token"
               - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
-              - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
+              - "--model-gemini": "Model to use when backend=gemini"
+              - "--model-qwen": "Model to use when backend=qwen"
+              - "--model-auggie": "Model to use when backend=auggie (defaults to GPT-5)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
           - name: "fix-to-pass-tests"
             description: "Run tests and request LLM fixes until passing; stop with error if LLM made no edits"
             options:
               - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
-              - "--model": "Model to use (Gemini only; ignored when backend=codex or codex-mcp; default: gemini-2.5-pro)"
+              - "--model-gemini": "Model to use when backend=gemini"
+              - "--model-qwen": "Model to use when backend=qwen"
+              - "--model-auggie": "Model to use when backend=auggie (defaults to GPT-5)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
               - "--max-attempts": "Maximum fix attempts before giving up (defaults to engine config)"
               - "--dry-run": "Run without making changes"
@@ -811,7 +817,7 @@ deployment:
 
     cli_support:
       defaults:
-        model: "GPT-5 (applied when --model is omitted)"
+        model: "GPT-5 (default)"
       checks:
         - "cli.check_auggie_cli_or_fail performs `auggie --version` probe and instructs installation via npm"
       tests:
@@ -824,12 +830,12 @@ deployment:
     examples:
       - command: "auto-coder process-issues --repo owner/repo"
         description: "Process issues and PRs with codex backend (default); jules mode is ON by default"
-      - command: "auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro"
-        description: "Process issues and PRs using Gemini backend (model required for Gemini; --model is ignored when backend=codex)"
-      - command: "auto-coder process-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
-        description: "Process issues and PRs using Qwen Code backend (model accepted for Qwen; --model is ignored when backend=codex)"
+      - command: "auto-coder process-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro"
+        description: "Process issues and PRs using Gemini backend (you can override the model via --model-gemini)"
+      - command: "auto-coder process-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus"
+        description: "Process issues and PRs using Qwen Code backend (you can override the model via --model-qwen)"
       - command: "auto-coder process-issues --repo owner/repo --backend auggie"
-        description: "Process issues and PRs using Auggie backend (defaults to GPT-5 when --model is omitted)"
+        description: "Process issues and PRs using Auggie backend (defaults to GPT-5; override with --model-auggie)"
       - command: "auto-coder process-issues --repo owner/repo --backend codex --backend gemini"
         description: "Process issues with codex as the default backend and fall back to Gemini if limits are hit"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"

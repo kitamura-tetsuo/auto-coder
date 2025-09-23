@@ -71,7 +71,7 @@ def test_process_issues_backend_auggie_respects_model_override(
             "token",
             "--backend",
             "auggie",
-            "--model",
+            "--model-auggie",
             "custom-model",
         ],
     )

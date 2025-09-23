@@ -97,9 +97,18 @@ You are operating directly in this repository workspace with write access.
 Goal: Make local tests pass by applying safe edits.
 
 Task Memory File: ./llm_task.md
-- If the file exists, read it first to understand previous purpose/method/result notes.
-- After deciding on the fix, update the file with concise Markdown sections for Purpose, Method, and Result describing this attempt.
-- Ensure the file always reflects the latest state when you finish (overwrite rather than append blindly).
+- If the file exists, review the "Logging Protocol" section before making changes.
+- After completing your attempt, insert a new entry at the top of "## Experiment Log" using this exact template:
+```
+### YYYY-MM-DD HH:MM (local)
+- Change Summary:
+- Expected Outcome:
+- Tests Run: `bash scripts/test.sh ...`
+- Actual Outcome:
+- Variance Analysis:
+- Follow-ups / Notes:
+```
+- Keep earlier log entries intact and maintain the newest entry first ordering.
 
 STRICT RULES:
 - Do NOT run git commit/push; the system will handle that.

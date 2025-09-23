@@ -38,14 +38,14 @@ class TestCLI:
                 "test/repo",
                 "--github-token",
                 "test_token",
-                "--model",
+                "--model-gemini",
                 "some-model",
             ],
         )
 
         assert result.exit_code == 0
         assert "Using backends: codex (default: codex)" in result.output
-        assert "Warning: --model is ignored when backend=codex" in result.output
+        assert "Warning:" not in result.output
         assert "Using model:" not in result.output
 
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
@@ -75,14 +75,14 @@ class TestCLI:
                 "test/repo",
                 "--github-token",
                 "test_token",
-                "--model",
+                "--model-gemini",
                 "some-model",
             ],
         )
 
         assert result.exit_code == 0
         assert "Using backends: codex (default: codex)" in result.output
-        assert "Warning: --model is ignored when backend=codex" in result.output
+        assert "Warning:" not in result.output
         assert "Using model:" not in result.output
 
     def test_main_command_help(self):
@@ -189,7 +189,7 @@ class TestCLI:
                 "--github-token", "token",
                 "--backend", "codex",
                 "--backend", "gemini",
-                "--model", "gemini-2.5-pro",
+                "--model-gemini", "gemini-2.5-pro",
             ],
         )
 
@@ -420,7 +420,7 @@ class TestCLI:
                 "--github-token",
                 "test_token",
                 "--backend", "gemini",
-                "--model",
+                "--model-gemini",
                 "gemini-custom",
             ],
         )
@@ -489,7 +489,7 @@ class TestCLI:
                 "--github-token",
                 "test_token",
                 "--backend", "gemini",
-                "--model",
+                "--model-gemini",
                 "gemini-custom",
             ],
         )
@@ -643,7 +643,7 @@ class TestCLI:
                 "--github-token",
                 "test_token",
                 "--backend", "gemini",
-                "--model",
+                "--model-gemini",
                 "gemini-custom",
             ],
         )
@@ -665,10 +665,9 @@ class TestCLI:
         assert "--repo" in result.output
         assert "--github-token" in result.output
         assert "--backend" in result.output
-        assert "--model" in result.output
-        # help text wraps, so check parts to avoid line-break brittleness
-        assert "ignored when" in result.output
-        assert "backend=codex" in result.output
+        assert "--model-gemini" in result.output
+        assert "--model-qwen" in result.output
+        assert "--model-auggie" in result.output
         assert "--dry-run" in result.output
         assert "--ignore-dependabot-prs" in result.output
 
@@ -721,6 +720,6 @@ class TestCLI:
         assert "--repo" in result.output
         assert "--github-token" in result.output
         assert "--backend" in result.output
-        assert "--model" in result.output
-        assert "ignored when" in result.output
-        assert "backend=codex" in result.output
+        assert "--model-gemini" in result.output
+        assert "--model-qwen" in result.output
+        assert "--model-auggie" in result.output

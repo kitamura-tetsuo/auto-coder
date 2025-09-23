@@ -29,7 +29,7 @@ def test_process_issues_qwen_receives_openai_options(
             "token",
             "--backend",
             "qwen",
-            "--model",
+            "--model-qwen",
             "qwen3-coder-plus",
             "--openai-api-key",
             "sk-cli-xyz",

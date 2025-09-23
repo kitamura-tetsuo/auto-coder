@@ -208,23 +208,31 @@ def check_auggie_cli_or_fail() -> None:
     )
 
 
-def _coerce_default_model(backend: str, model: str) -> str:
-    """Apply backend-specific default models when the user did not override them."""
-    try:
-        ctx = click.get_current_context(silent=True)
-        source = ctx.get_parameter_source('model') if ctx is not None else None
-    except Exception:
-        source = None
+def _build_models_map(
+    model_gemini: Optional[str] = None,
+    model_qwen: Optional[str] = None,
+    model_auggie: Optional[str] = None,
+) -> dict[str, str]:
+    """Compute per-backend model map with sensible defaults.
 
-    user_supplied = source in (
-        click.core.ParameterSource.COMMANDLINE,
-        click.core.ParameterSource.ENVIRONMENT,
-        click.core.ParameterSource.PROMPT,
-    )
-
-    if backend == 'auggie' and not user_supplied:
-        return 'GPT-5'
-    return model
+    Priority per backend: specific flag (--model-<backend>) > backend default.
+    Backend defaults:
+      - gemini: gemini-2.5-pro
+      - qwen: qwen3-coder-plus
+      - auggie: GPT-5
+      - codex/codex-mcp: placeholders (unused by CLI but kept for uniformity)
+    """
+    models: dict[str, str] = {}
+    # codex backends (accepted for compatibility, not actually used by CLI)
+    models['codex'] = 'codex'
+    models['codex-mcp'] = 'codex-mcp'
+    # gemini
+    models['gemini'] = model_gemini or 'gemini-2.5-pro'
+    # qwen
+    models['qwen'] = model_qwen or 'qwen3-coder-plus'
+    # auggie
+    models['auggie'] = model_auggie or 'GPT-5'
+    return models
 
 
 
@@ -260,17 +268,30 @@ def _check_backend_prerequisites(backends: list[str]) -> None:
 def _build_backend_manager(
     selected_backends: list[str],
     primary_backend: str,
-    model: str,
+    models: dict[str, str],
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
 ) -> BackendManager:
+    """Construct BackendManager with per-backend model selection.
+
+    models: mapping backend -> model_name (codex backends ignored but accepted).
+    """
+    def _gm() -> str:
+        return models.get('gemini', 'gemini-2.5-pro')
+
+    def _qm() -> str:
+        return models.get('qwen', 'qwen3-coder-plus')
+
+    def _am() -> str:
+        return models.get('auggie', 'GPT-5')
+
     factories_all = {
         'codex': lambda: CodexClient(model_name='codex'),
         'codex-mcp': lambda: CodexMCPClient(model_name='codex-mcp'),
-        'gemini': lambda: (GeminiClient(gemini_api_key, model_name=model) if gemini_api_key else GeminiClient(model_name=model)),
-        'qwen': lambda: QwenClient(model_name=model, openai_api_key=openai_api_key, openai_base_url=openai_base_url),
-        'auggie': lambda: AuggieClient(model_name=model),
+        'gemini': lambda: (GeminiClient(gemini_api_key, model_name=_gm()) if gemini_api_key else GeminiClient(model_name=_gm())),
+        'qwen': lambda: QwenClient(model_name=_qm(), openai_api_key=openai_api_key, openai_base_url=openai_base_url),
+        'auggie': lambda: AuggieClient(model_name=_am()),
     }
 
     missing_factories = [name for name in selected_backends if name not in factories_all]
@@ -296,6 +317,7 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
     """
     try:
         import subprocess
+
         import re as _re
         res = subprocess.run(['qwen', '--help'], capture_output=True, text=True, timeout=10)
         if res.returncode != 0:
@@ -346,7 +368,9 @@ def main() -> None:
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
 @click.option('--openai-api-key', envvar='OPENAI_API_KEY', help='OpenAI-style API key (optional, used when backend=qwen)')
 @click.option('--openai-base-url', envvar='OPENAI_BASE_URL', help='OpenAI-style Base URL (optional, used when backend=qwen)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini/Qwen; ignored when backend=codex or codex-mcp)')
+@click.option('--model-gemini', help='Model to use when backend=gemini')
+@click.option('--model-qwen', help='Model to use when backend=qwen')
+@click.option('--model-auggie', help='Model to use when backend=auggie (defaults to GPT-5)')
 @click.option('--dry-run', is_flag=True, help='Run in dry-run mode without making changes')
 @click.option('--jules-mode/--no-jules-mode', default=True, help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)')
 @click.option('--skip-main-update/--no-skip-main-update', default=True, help='When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)')
@@ -361,7 +385,9 @@ def process_issues(
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
-    model: str,
+    model_gemini: Optional[str],
+    model_qwen: Optional[str],
+    model_auggie: Optional[str],
     dry_run: bool,
     jules_mode: bool,
     skip_main_update: bool,
@@ -374,7 +400,8 @@ def process_issues(
 
     selected_backends = _normalize_backends(backends)
     primary_backend = selected_backends[0]
-    model = _coerce_default_model(primary_backend, model)
+    models = _build_models_map(model_gemini, model_qwen, model_auggie)
+    primary_model = models.get(primary_backend)
 
     # Setup logger with specified options
     setup_logger(log_level=log_level, log_file=log_file)
@@ -389,23 +416,11 @@ def process_issues(
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
 
-    # Warn if model is specified but backend is codex/codex-mcp (model will be ignored)
-    try:
-        ctx = click.get_current_context(silent=True)
-        if ctx is not None and primary_backend in ('codex', 'codex-mcp'):
-            source = ctx.get_parameter_source('model')
-            if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
-                logger.warning("--model is ignored when backend=codex or codex-mcp")
-                click.echo("Warning: --model is ignored when backend=codex or codex-mcp")
-    except Exception:
-        # Non-fatal: proceed without warning if context/source not available
-        pass
-
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ('gemini', 'qwen', 'auggie'):
-        logger.info(f"Using model: {model}")
+        logger.info(f"Using model: {primary_model}")
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
     logger.info(f"Log level: {log_level}")
@@ -418,7 +433,7 @@ def process_issues(
     click.echo(f"Processing repository: {repo_name}")
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ('gemini', 'qwen', 'auggie'):
-        click.echo(f"Using model: {model}")
+        click.echo(f"Using model: {primary_model}")
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
@@ -429,7 +444,7 @@ def process_issues(
     manager = _build_backend_manager(
         selected_backends,
         primary_backend,
-        model,
+        models,
         gemini_api_key,
         openai_api_key,
         openai_base_url,
@@ -504,7 +519,9 @@ def process_issues(
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
 @click.option('--openai-api-key', envvar='OPENAI_API_KEY', help='OpenAI-style API key (optional, used when backend=qwen)')
 @click.option('--openai-base-url', envvar='OPENAI_BASE_URL', help='OpenAI-style Base URL (optional, used when backend=qwen)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini/Qwen; ignored when backend=codex or codex-mcp)')
+@click.option('--model-gemini', help='Model to use when backend=gemini')
+@click.option('--model-qwen', help='Model to use when backend=qwen')
+@click.option('--model-auggie', help='Model to use when backend=auggie (defaults to GPT-5)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
 def create_feature_issues(
@@ -514,7 +531,9 @@ def create_feature_issues(
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
-    model: str,
+    model_gemini: Optional[str],
+    model_qwen: Optional[str],
+    model_auggie: Optional[str],
     log_level: str,
     log_file: Optional[str]
 ) -> None:
@@ -522,7 +541,8 @@ def create_feature_issues(
 
     selected_backends = _normalize_backends(backends)
     primary_backend = selected_backends[0]
-    model = _coerce_default_model(primary_backend, model)
+    models = _build_models_map(model_gemini, model_qwen, model_auggie)
+    primary_model = models.get(primary_backend)
 
     # Setup logger with specified options
     setup_logger(log_level=log_level, log_file=log_file)
@@ -534,35 +554,24 @@ def create_feature_issues(
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
 
-    # Warn if model is specified but backend is codex/codex-mcp (model will be ignored)
-    try:
-        ctx = click.get_current_context(silent=True)
-        if ctx is not None and primary_backend in ('codex', 'codex-mcp'):
-            source = ctx.get_parameter_source('model')
-            if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
-                logger.warning("--model is ignored when backend=codex or codex-mcp")
-                click.echo("Warning: --model is ignored when backend=codex or codex-mcp")
-    except Exception:
-        pass
-
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ('gemini', 'qwen', 'auggie'):
-        logger.info(f"Using model: {model}")
+        logger.info(f"Using model: {primary_model}")
     logger.info(f"Log level: {log_level}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ('gemini', 'qwen', 'auggie'):
-        click.echo(f"Using model: {model}")
+        click.echo(f"Using model: {primary_model}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
     manager = _build_backend_manager(
         selected_backends,
         primary_backend,
-        model,
+        models,
         gemini_api_key,
         openai_api_key,
         openai_base_url,
@@ -593,7 +602,9 @@ def create_feature_issues(
 @click.option('--gemini-api-key', envvar='GEMINI_API_KEY', help='Gemini API key (optional, used when backend=gemini)')
 @click.option('--openai-api-key', envvar='OPENAI_API_KEY', help='OpenAI-style API key (optional, used when backend=qwen)')
 @click.option('--openai-base-url', envvar='OPENAI_BASE_URL', help='OpenAI-style Base URL (optional, used when backend=qwen)')
-@click.option('--model', default='gemini-2.5-pro', help='Model to use (Gemini/Qwen; ignored when backend=codex or codex-mcp)')
+@click.option('--model-gemini', help='Model to use when backend=gemini')
+@click.option('--model-qwen', help='Model to use when backend=qwen')
+@click.option('--model-auggie', help='Model to use when backend=auggie (defaults to GPT-5)')
 @click.option('--max-attempts', type=int, default=None, help='Maximum fix attempts before giving up (defaults to engine config)')
 @click.option('--dry-run', is_flag=True, help='Run without making changes (LLM edits simulated)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
@@ -603,7 +614,9 @@ def fix_to_pass_tests_command(
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
-    model: str,
+    model_gemini: Optional[str],
+    model_qwen: Optional[str],
+    model_auggie: Optional[str],
     max_attempts: Optional[int],
     dry_run: bool,
     log_level: str,
@@ -615,7 +628,8 @@ def fix_to_pass_tests_command(
     """
     selected_backends = _normalize_backends(backends)
     primary_backend = selected_backends[0]
-    model = _coerce_default_model(primary_backend, model)
+    models = _build_models_map(model_gemini, model_qwen, model_auggie)
+    primary_model = models.get(primary_backend)
 
     setup_logger(log_level=log_level, log_file=log_file)
 
@@ -639,7 +653,7 @@ def fix_to_pass_tests_command(
     manager = _build_backend_manager(
         selected_backends,
         primary_backend,
-        model,
+        models,
         gemini_api_key,
         openai_api_key,
         openai_base_url,
@@ -647,21 +661,10 @@ def fix_to_pass_tests_command(
 
     engine = AutomationEngine(github_client, manager, dry_run=dry_run)
 
-    # Warn if model flag is set but backend codex/codex-mcp (ignored)
-    try:
-        ctx = click.get_current_context(silent=True)
-        if ctx is not None and primary_backend in ('codex', 'codex-mcp'):
-            source = ctx.get_parameter_source('model')
-            if source in (click.core.ParameterSource.COMMANDLINE, click.core.ParameterSource.ENVIRONMENT, click.core.ParameterSource.PROMPT):
-                logger.warning("--model is ignored when backend=codex or codex-mcp")
-                click.echo("Warning: --model is ignored when backend=codex or codex-mcp")
-    except Exception:
-        pass
-
     backend_list_str = ", ".join(selected_backends)
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ('gemini', 'qwen', 'auggie'):
-        click.echo(f"Using model: {model}")
+        click.echo(f"Using model: {primary_model}")
     click.echo(f"Dry run mode: {dry_run}")
 
     try:

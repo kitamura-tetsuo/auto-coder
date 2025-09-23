@@ -29,7 +29,7 @@ def test_process_issues_backend_qwen_prints_model_and_uses_qwen(
             "token",
             "--backend",
             "qwen",
-            "--model",
+            "--model-qwen",
             "qwen3-coder-plus",
         ],
     )
@@ -67,7 +67,7 @@ def test_create_feature_issues_backend_qwen(
             "token",
             "--backend",
             "qwen",
-            "--model",
+            "--model-qwen",
             "qwen3-coder-plus",
         ],
     )
@@ -92,7 +92,7 @@ def test_fix_to_pass_tests_backend_qwen(
     runner = CliRunner()
     result = runner.invoke(
         fix_to_pass_tests_command,
-        ["--backend", "qwen", "--model", "qwen3-coder-plus"],
+        ["--backend", "qwen", "--model-qwen", "qwen3-coder-plus"],
     )
 
     assert result.exit_code == 0

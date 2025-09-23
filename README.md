@@ -91,10 +91,10 @@ cp .env.example .env
 auto-coder process-issues --repo owner/repo
 
 # バックエンドを gemini に切替してモデル指定
-auto-coder process-issues --repo owner/repo --backend gemini --model gemini-2.5-pro
+auto-coder process-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro
 
 # バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
-auto-coder process-issues --repo owner/repo --backend qwen --model qwen3-coder-plus
+auto-coder process-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus
 
 # バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
 auto-coder process-issues --repo owner/repo --backend auggie
@@ -118,10 +118,10 @@ auto-coder process-issues --repo owner/repo --only https://github.com/owner/repo
 auto-coder create-feature-issues --repo owner/repo
 
 # バックエンドを gemini に切替してモデル指定
-auto-coder create-feature-issues --repo owner/repo --backend gemini --model gemini-2.5-pro
+auto-coder create-feature-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro
 
 # バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
-auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus
+auto-coder create-feature-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus
 
 # バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
 auto-coder create-feature-issues --repo owner/repo --backend auggie
@@ -138,10 +138,10 @@ auto-coder create-feature-issues --repo owner/repo --backend codex --backend gem
 auto-coder fix-to-pass-tests
 
 # バックエンドを gemini に切替してモデル指定
-auto-coder fix-to-pass-tests --backend gemini --model gemini-2.5-pro
+auto-coder fix-to-pass-tests --backend gemini --model-gemini gemini-2.5-pro
 
 # バックエンドを qwen に切替してモデル指定（例: qwen3-coder-plus）
-auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus
+auto-coder fix-to-pass-tests --backend qwen --model-qwen qwen3-coder-plus
 
 # バックエンドを auggie に切替（デフォルトで GPT-5 を使用）
 auto-coder fix-to-pass-tests --backend auggie
