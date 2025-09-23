@@ -2,12 +2,19 @@
 
 import sys
 import tempfile
+from io import StringIO
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+
 import pytest
 from loguru import logger
 
-from src.auto_coder.logger_config import setup_logger, get_logger
+from src.auto_coder.logger_config import (
+    format_path_for_log,
+    get_logger,
+    setup_logger,
+)
+from src.auto_coder.utils import log_action
 
 
 class TestLoggerConfig:
@@ -17,12 +24,14 @@ class TestLoggerConfig:
         """Setup for each test method."""
         # Remove all existing handlers before each test
         logger.remove()
+        logger.configure(patcher=None)
 
     def teardown_method(self):
         """Cleanup after each test method."""
         # Remove all handlers and restore default
         logger.remove()
         logger.add(sys.stderr)
+        logger.configure(patcher=None)
 
     def test_setup_logger_default_settings(self):
         """Test logger setup with default settings."""
@@ -176,7 +185,45 @@ class TestLoggerConfig:
         """Test logger behavior with invalid log level."""
         with patch('src.auto_coder.logger_config.settings') as mock_settings:
             mock_settings.log_level = 'INFO'
-            
+
             # Should raise an exception for invalid log level
             with pytest.raises(ValueError, match="Invalid log level 'INVALID'"):
                 setup_logger(log_level='INVALID')
+
+    def test_format_path_for_log_trims_package_prefix(self):
+        """Paths inside the project should be trimmed to package-relative form."""
+
+        package_dir = Path(__file__).resolve().parents[1] / 'src' / 'auto_coder'
+        target = package_dir / 'utils.py'
+
+        result = format_path_for_log(str(target))
+
+        assert result == 'auto_coder/utils.py'
+
+    def test_format_path_for_log_preserves_external_paths(self, tmp_path):
+        """Paths outside the package remain unchanged."""
+
+        external_file = tmp_path / 'external.py'
+        external_file.write_text('')
+
+        result = format_path_for_log(str(external_file))
+
+        assert result == str(external_file.resolve())
+
+    def test_logger_output_uses_trimmed_paths(self):
+        """Log messages emitted from package modules should show trimmed paths."""
+
+        buffer = StringIO()
+
+        with patch('src.auto_coder.logger_config.settings') as mock_settings:
+            mock_settings.log_level = 'INFO'
+
+            setup_logger(log_level='INFO', stream=buffer, include_file_info=True)
+
+            log_action('Trimmed path check')
+            logger.complete()
+
+        log_output = buffer.getvalue()
+
+        assert 'auto_coder/utils.py' in log_output
+        assert '/site-packages/' not in log_output

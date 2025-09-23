@@ -1,13 +1,68 @@
-"""
-Logger configuration using loguru.
+"""Logger configuration using loguru.
+
+This module centralizes all logging configuration and formatting for
+Auto-Coder.  The default format previously emitted absolute paths coming from
+the executing Python environment (e.g. the pipx site-packages directory).  In
+practice this produced very long, noisy file paths such as::
+
+    /home/node/.local/pipx/venvs/auto-coder/lib/python3.11/site-packages/auto_coder/utils.py
+
+To keep log output focused on project-relevant information we strip those
+environment specific prefixes and report file paths relative to the
+``auto_coder`` package root instead.
 """
 
 import sys
 from pathlib import Path
-from loguru import logger
 from typing import Optional
 
+from loguru import logger
+
 from .config import settings
+
+
+# Determine the base directory that should be removed from log paths.  When the
+# package is installed this resolves to ``.../site-packages``.  When running
+# directly from the repository it resolves to ``.../src``.
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_PATH_TRIM_BASES = (
+    _PACKAGE_DIR.parent.resolve(),
+)
+
+
+def format_path_for_log(file_path: str) -> str:
+    """Return a concise, project-relative path for logging purposes.
+
+    Args:
+        file_path: Original absolute file path reported by loguru.
+
+    Returns:
+        A trimmed path relative to :data:`_PATH_TRIM_BASES` when possible.  If
+        the path is outside our project roots the original path is returned.
+    """
+
+    path = Path(file_path)
+    try:
+        resolved = path.resolve()
+    except OSError:
+        # Some environments (e.g. zipimport) may not support ``resolve``.
+        resolved = path
+
+    for base in _PATH_TRIM_BASES:
+        try:
+            trimmed = resolved.relative_to(base)
+        except ValueError:
+            continue
+        else:
+            return trimmed.as_posix()
+
+    return str(resolved)
+
+
+def _patch_record(record) -> None:
+    """Enrich log records with shortened file paths."""
+
+    record["extra"]["short_path"] = format_path_for_log(record["file"].path)
 
 
 def setup_logger(
@@ -28,8 +83,9 @@ def setup_logger(
     Raises:
         ValueError: If an invalid log level is provided
     """
-    # Remove default handler
+    # Remove existing handlers and reset any previous patchers
     logger.remove()
+    logger.configure(patcher=None)
 
     # Use provided log level or fall back to settings
     level = log_level or settings.log_level
@@ -41,13 +97,17 @@ def setup_logger(
 
     level = level.upper()
 
+    if include_file_info:
+        # Ensure records include shortened file paths for formatting
+        logger.configure(patcher=_patch_record)
+
     # Format with file and line information (VS Code clickable path:line)
     if include_file_info:
         # Keep the file path segment uncolored so VS Code detects clickable links
         format_string = (
             "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
             "<level>{level: <8}</level> | "
-            "{file.path}:{line} in <cyan>{function}</cyan> - "
+            "{extra[short_path]}:{line} in <cyan>{function}</cyan> - "
             "<level>{message}</level>"
         )
     else:
@@ -74,12 +134,20 @@ def setup_logger(
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # File format without colors
-        file_format = (
-            "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
-            "{level: <8} | "
-            "{file.path}:{line} in {function} - "
-            "{message}"
-        )
+        if include_file_info:
+            file_format = (
+                "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
+                "{level: <8} | "
+                "{extra[short_path]}:{line} in {function} - "
+                "{message}"
+            )
+        else:
+            file_format = (
+                "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
+                "{level: <8} | "
+                "{name} - "
+                "{message}"
+            )
 
         logger.add(
             log_file,
