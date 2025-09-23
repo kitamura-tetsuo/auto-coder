@@ -20,6 +20,7 @@ from .automation_config import AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
 from .logger_config import setup_logger, get_logger
+from .update_manager import maybe_run_auto_update
 
 # Load environment variables
 load_dotenv()
@@ -351,7 +352,7 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
 @click.version_option(version="0.1.0", package_name="auto-coder")
 def main() -> None:
     """Auto-Coder: Automated application development using Gemini CLI and GitHub integration."""
-    pass
+    maybe_run_auto_update()
 
 
 @main.command()
