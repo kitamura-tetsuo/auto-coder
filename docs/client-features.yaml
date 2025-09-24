@@ -120,7 +120,7 @@ features:
             parameters: ["repo_name", "jules_mode (optional)"]
             returns: "Dictionary with automation results"
           - name: "fix_to_pass_tests"
-            description: "Run local tests and iteratively request LLM fixes until tests pass; commits are gated and happen only when the test output or the LLM error summary changes by >=10%; errors if LLM makes no edits"
+            description: "Run local tests and iteratively request LLM fixes until tests pass; commits are gated and happen only when the test output or the LLM error summary changes by >=10%; at the beginning of each iteration the loop checks for Auto-Coder updates and restarts with the original CLI arguments when an upgrade is applied; errors if LLM makes no edits"
             parameters: ["max_attempts (optional)"]
             returns: "Dictionary with success, attempts, and messages"
           - name: "process_single"
@@ -140,10 +140,10 @@ features:
             parameters: ["repo_name"]
             returns: "List of processed issues"
           - name: "_process_pull_requests"
-            description: "Process open pull requests in the repository with two-loop priority order"
+            description: "Process open pull requests in the repository with two-loop priority order, checking for Auto-Coder updates at the start of each iteration and restarting with the recorded CLI arguments when an upgrade is applied"
             parameters: ["repo_name"]
             returns: "List of processed PRs"
-            details: "First loop merges PRs with passing Actions AND mergeable status, second loop fixes remaining PRs"
+            details: "First loop merges PRs with passing Actions AND mergeable status, second loop fixes remaining PRs; each pass re-runs the auto-update check before contacting GitHub so upgrades are applied before continuing"
           - name: "_take_issue_actions"
             description: "Take automated actions based on issue analysis"
             parameters: ["repo_name", "issue_data", "analysis", "solution"]
@@ -160,6 +160,10 @@ features:
             description: "Process a PR for issue resolution when GitHub Actions are failing or pending"
             parameters: ["repo_name", "pr_data"]
             returns: "Dictionary with PR processing results"
+          - name: "_fix_pr_issues_with_testing"
+            description: "Fix PR issues by applying GitHub Actions log guidance then iterating local tests; every loop iteration begins with an auto-update check that restarts with the saved CLI arguments when an upgrade is detected"
+            parameters: ["repo_name", "pr_data", "config", "dry_run", "github_logs"]
+            returns: "List of actions taken"
           - name: "_is_package_lock_only_conflict"
             description: "Check if merge conflicts are only in package-lock.json or similar dependency files"
             parameters: ["conflict_info"]
@@ -280,7 +284,7 @@ features:
               - "--model-auggie": "Model to use when backend=auggie (defaults to GPT-5)"
               - "--gemini-api-key": "Gemini API key (optional, used when backend=gemini)"
           - name: "fix-to-pass-tests"
-            description: "Run tests and request LLM fixes until passing; stop with error if LLM made no edits"
+            description: "Run tests and request LLM fixes until passing; automatically checks for Auto-Coder updates at the start of each LLM attempt and restarts with the original CLI flags when an upgrade completes; stop with error if LLM made no edits"
             options:
               - "--backend": "AI backend(s) to use (codex|codex-mcp|gemini|qwen|auggie). Repeat option to set fallbacks; first value becomes the default. Default: codex"
               - "--model-gemini": "Model to use when backend=gemini"
@@ -349,9 +353,10 @@ workflows:
     description: "Automated workflow for processing GitHub pull requests with two-loop priority order"
     steps:
       1. "Fetch open pull requests from repository (oldest first)"
-      2. "First loop: Check GitHub Actions status AND mergeable status, merge qualifying PRs"
-      3. "Second loop: Process remaining PRs for issue resolution"
-      4. "Generate automation report"
+      2. "At the beginning of each pass iteration, check for Auto-Coder updates and restart with the original CLI arguments when an upgrade is applied"
+      3. "First loop: Check GitHub Actions status AND mergeable status, merge qualifying PRs"
+      4. "Second loop: Process remaining PRs for issue resolution"
+      5. "Generate automation report"
 
   feature_suggestion:
     name: "Feature Suggestion Workflow"

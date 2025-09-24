@@ -14,8 +14,12 @@ def _cmd_result(success=True, stdout="", stderr="", returncode=0):
     return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
 
 
-def test_engine_fix_to_pass_tests_small_change_retries_without_commit(mock_github_client, mock_gemini_client):
+def test_engine_fix_to_pass_tests_small_change_retries_without_commit(
+    mock_github_client, mock_gemini_client, monkeypatch
+):
     engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
+
+    monkeypatch.setattr(test_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
 
     # Always failing output to simulate <10% change across retries
     engine._run_local_tests = Mock(return_value={
@@ -86,6 +90,8 @@ def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
     from src.auto_coder.automation_config import AutomationConfig
 
     monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(test_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
 
     config = AutomationConfig()
 

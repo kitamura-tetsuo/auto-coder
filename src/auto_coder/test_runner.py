@@ -3,7 +3,7 @@
 import csv
 import math
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import json
 import re
 from dataclasses import dataclass
@@ -14,6 +14,7 @@ from .utils import CommandExecutor, change_fraction, extract_first_failed_test, 
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .update_manager import check_for_updates_and_restart
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -274,6 +275,13 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
     # Support infinite attempts (math.inf) by using a while loop
     attempt = 0  # counts actual test executions
     while True:
+        try:
+            check_for_updates_and_restart()
+        except SystemExit:
+            raise
+        except Exception:
+            logger.warning("Auto-update check failed during fix loop", exc_info=True)
+
         # Use cached result (from previous post-fix run) if available; otherwise run tests now
         if cached_test_result is not None:
             test_result = cached_test_result

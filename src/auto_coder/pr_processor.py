@@ -17,6 +17,7 @@ from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .test_runner import run_local_tests
+from .update_manager import check_for_updates_and_restart
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -40,6 +41,12 @@ def process_pull_requests(github_client, config: AutomationConfig, dry_run: bool
         # First loop: Process PRs with passing GitHub Actions AND mergeable status (merge them)
         logger.info("First pass: Processing PRs with passing GitHub Actions and mergeable status for merging...")
         for pr in prs:
+            try:
+                check_for_updates_and_restart()
+            except SystemExit:
+                raise
+            except Exception:
+                logger.warning("Auto-update check failed during PR merge pass", exc_info=True)
             try:
                 pr_data = github_client.get_pr_details(pr)
                 github_checks = _check_github_actions_status(repo_name, pr_data, config)
@@ -83,6 +90,12 @@ def process_pull_requests(github_client, config: AutomationConfig, dry_run: bool
         # Second loop: Process remaining PRs (fix issues)
         logger.info("Second pass: Processing remaining PRs for issue resolution...")
         for pr in prs:
+            try:
+                check_for_updates_and_restart()
+            except SystemExit:
+                raise
+            except Exception:
+                logger.warning("Auto-update check failed during PR fix pass", exc_info=True)
             try:
                 pr_data = github_client.get_pr_details(pr)
 
@@ -991,6 +1004,12 @@ def _fix_pr_issues_with_testing(repo_name: str, pr_data: Dict[str, Any], config:
         attempts_limit = config.MAX_FIX_ATTEMPTS
         attempt = 0
         while True:
+            try:
+                check_for_updates_and_restart()
+            except SystemExit:
+                raise
+            except Exception:
+                logger.warning("Auto-update check failed during PR fix loop", exc_info=True)
             attempt += 1
             actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
