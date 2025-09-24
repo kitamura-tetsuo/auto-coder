@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from src.auto_coder import test_runner as test_runner_module
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.test_runner import WorkspaceFixResult
+from src.auto_coder.backend_manager import BackendManager
 
 
 def _cmd_result(success=True, stdout="", stderr="", returncode=0):
@@ -174,3 +175,126 @@ def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
     assert 'codex' in log_name
     assert 'gpt-4' in log_name
     assert 'Detailed LLM output' in log_files[0].read_text(encoding='utf-8')
+
+
+def test_fix_to_pass_tests_records_backend_manager_metadata(monkeypatch, tmp_path):
+    from src.auto_coder.automation_config import AutomationConfig
+    import csv
+
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(test_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
+
+    config = AutomationConfig()
+
+    failing_file = 'e2e/new/als-alias-keyboard-navigation.spec.ts::should_fail'
+    failing_result = {
+        'success': False,
+        'output': '',
+        'errors': 'Error: boom',
+        'return_code': 1,
+        'command': 'bash scripts/test.sh',
+        'test_file': failing_file,
+    }
+    targeted_success = {
+        'success': True,
+        'output': 'ok',
+        'errors': '',
+        'return_code': 0,
+        'command': 'bash scripts/test.sh',
+        'test_file': failing_file,
+    }
+    final_success = {
+        'success': True,
+        'output': 'ok',
+        'errors': '',
+        'return_code': 0,
+        'command': 'bash scripts/test.sh',
+        'test_file': None,
+    }
+
+    run_results = [failing_result, targeted_success, final_success]
+
+    def fake_run_local_tests(cfg, test_file=None):
+        result = run_results.pop(0).copy()
+        result.setdefault('test_file', test_file)
+        return result
+
+    monkeypatch.setattr(test_runner_module, 'run_local_tests', fake_run_local_tests)
+
+    monkeypatch.setattr(test_runner_module, 'render_prompt', Mock(return_value='PROMPT'))
+    monkeypatch.setattr(test_runner_module, 'extract_important_errors', Mock(return_value='ERR BLOCK'))
+
+    class DummyCmd:
+        DEFAULT_TIMEOUTS = {'test': 60}
+
+        def __init__(self):
+            self.calls = []
+
+        def run_command(self, command, timeout=None):
+            self.calls.append((tuple(command), timeout))
+            return SimpleNamespace(success=True, stdout='', stderr='', returncode=0)
+
+    dummy_cmd = DummyCmd()
+    monkeypatch.setattr(test_runner_module, 'cmd', dummy_cmd)
+    monkeypatch.setattr(
+        test_runner_module,
+        'generate_commit_message_via_llm',
+        Mock(return_value='Auto-Coder: log test'),
+    )
+
+    calls: list[tuple[str, str]] = []
+
+    class DummyLLM:
+        def __init__(self, name: str, model_name: str) -> None:
+            self.name = name
+            self.model_name = model_name
+
+        def _run_llm_cli(self, prompt: str) -> str:
+            calls.append((self.name, prompt))
+            return f'{self.name}:{prompt}'
+
+        def switch_to_default_model(self) -> None:
+            pass
+
+    manager = BackendManager(
+        default_backend='codex',
+        default_client=DummyLLM('codex', 'gpt-4o-mini'),
+        factories={
+            'codex': lambda: DummyLLM('codex', 'gpt-4o-mini'),
+            'gemini': lambda: DummyLLM('gemini', 'gemini-2.0-pro'),
+        },
+        order=['codex', 'gemini'],
+    )
+
+    summary = test_runner_module.fix_to_pass_tests(
+        config,
+        dry_run=False,
+        max_attempts=3,
+        llm_client=manager,
+    )
+
+    assert summary['success'] is True
+    assert any('Local tests passed' in msg for msg in summary['messages'])
+
+    csv_path = tmp_path / '.auto-coder' / 'fix_to_pass_tests_summury.csv'
+    assert csv_path.exists()
+    with csv_path.open('r', encoding='utf-8') as handle:
+        rows = list(csv.reader(handle))
+
+    assert rows[0] == ['current_test_file', 'backend', 'model', 'timestamp']
+    assert rows[1][0] == failing_file
+    assert rows[1][1] == 'codex'
+    assert rows[1][2] == 'gpt-4o-mini'
+
+    log_dir = tmp_path / '.auto-coder' / 'log'
+    log_files = list(log_dir.glob('*.txt'))
+    assert len(log_files) == 1
+    log_name = log_files[0].name
+    assert 'codex' in log_name
+    assert 'gpt-4o-mini' in log_name
+    content = log_files[0].read_text(encoding='utf-8')
+    assert 'codex:PROMPT' in content
+
+    assert calls == [('codex', 'PROMPT')]
+    assert any(cmd == ('git', 'add', '.') for cmd, _ in dummy_cmd.calls)
