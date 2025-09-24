@@ -5,7 +5,9 @@ Tests for fix-to-pass-tests mode.
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from src.auto_coder import test_runner as test_runner_module
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.test_runner import WorkspaceFixResult
 
 
 def _cmd_result(success=True, stdout="", stderr="", returncode=0):
@@ -23,7 +25,12 @@ def test_engine_fix_to_pass_tests_small_change_retries_without_commit(mock_githu
         'return_code': 1,
     })
     # LLM returns a message but effectively makes no meaningful change
-    engine._apply_workspace_test_fix = Mock(return_value="Applied change but minimal impact")
+    engine._apply_workspace_test_fix = Mock(return_value=WorkspaceFixResult(
+        summary='Applied change but minimal impact',
+        raw_response='Applied change but minimal impact',
+        backend='codex',
+        model='gpt-4',
+    ))
 
     # Run with max_attempts=1: it should retry once after LLM and stop without commit, not raise
     result = engine.fix_to_pass_tests(max_attempts=1)
@@ -73,3 +80,91 @@ def test_cli_fix_to_pass_tests_invokes_engine(monkeypatch):
 
     assert res.exit_code == 0
     dummy_engine.fix_to_pass_tests.assert_called_once()
+
+
+def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
+    from src.auto_coder.automation_config import AutomationConfig
+
+    monkeypatch.chdir(tmp_path)
+
+    config = AutomationConfig()
+
+    failing_result = {
+        'success': False,
+        'output': '',
+        'errors': 'AssertionError',
+        'return_code': 1,
+        'command': 'bash scripts/test.sh',
+        'test_file': 'tests/test_sample.py::test_fail',
+    }
+    post_fix_success = {
+        'success': True,
+        'output': 'ok',
+        'errors': '',
+        'return_code': 0,
+        'command': 'bash scripts/test.sh',
+        'test_file': None,
+    }
+
+    run_results = [failing_result, post_fix_success, post_fix_success]
+
+    def fake_run_local_tests(cfg, test_file=None):
+        result = run_results.pop(0).copy()
+        # Preserve explicit test_file when the stub wants to echo the requested target
+        result.setdefault('test_file', test_file)
+        return result
+
+    monkeypatch.setattr(test_runner_module, 'run_local_tests', fake_run_local_tests)
+
+    fix_response = WorkspaceFixResult(
+        summary='Applied fix',
+        raw_response='Detailed LLM output',
+        backend='codex',
+        model='gpt-4',
+    )
+    monkeypatch.setattr(test_runner_module, 'apply_workspace_test_fix', Mock(return_value=fix_response))
+
+    class DummyCmd:
+        DEFAULT_TIMEOUTS = {'test': 60}
+
+        def __init__(self):
+            self.calls = []
+
+        def run_command(self, command, timeout=None):
+            self.calls.append((tuple(command), timeout))
+            return SimpleNamespace(success=True, stdout='', stderr='', returncode=0)
+
+    dummy_cmd = DummyCmd()
+    monkeypatch.setattr(test_runner_module, 'cmd', dummy_cmd)
+
+    monkeypatch.setattr(
+        test_runner_module,
+        'generate_commit_message_via_llm',
+        Mock(return_value='Auto-Coder: log test'),
+    )
+
+    summary = test_runner_module.fix_to_pass_tests(config, dry_run=False, max_attempts=2, llm_client=Mock())
+
+    assert summary['success'] is True
+
+    csv_path = tmp_path / '.auto-coder' / 'fix_to_pass_tests_summury.csv'
+    assert csv_path.exists()
+    rows = csv_path.read_text(encoding='utf-8').strip().splitlines()
+    assert len(rows) == 2
+    assert rows[0].split(',')[0] == 'current_test_file'
+    assert 'tests/test_sample.py::test_fail' in rows[1]
+    assert ',codex,' in rows[1]
+    assert 'gpt-4' in rows[1]
+
+    log_dir = tmp_path / '.auto-coder' / 'log'
+    log_files = list(log_dir.glob('*.txt'))
+    assert len(log_files) == 1
+    log_name = log_files[0].name
+    sanitized_test = test_runner_module._sanitize_for_filename(
+        test_runner_module._normalize_test_file('tests/test_sample.py::test_fail'),
+        default='tests',
+    )
+    assert sanitized_test in log_name
+    assert 'codex' in log_name
+    assert 'gpt-4' in log_name
+    assert 'Detailed LLM output' in log_files[0].read_text(encoding='utf-8')

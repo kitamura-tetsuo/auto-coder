@@ -1,10 +1,14 @@
-"""
-Test runner functionality for Auto-Coder automation engine.
-"""
+"""Test runner functionality for Auto-Coder automation engine."""
 
+import csv
 import math
 import os
 from typing import Dict, Any, Optional
+import json
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from datetime import datetime
 
 from .utils import CommandExecutor, change_fraction, extract_first_failed_test, log_action
 from .automation_config import AutomationConfig
@@ -13,6 +17,109 @@ from .prompt_loader import render_prompt
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+@dataclass
+class WorkspaceFixResult:
+    """Container for LLM workspace-fix responses used during test retries."""
+
+    summary: str
+    raw_response: Optional[str]
+    backend: str
+    model: str
+
+
+def _normalize_test_file(test_file: Optional[str]) -> str:
+    """Return a friendly identifier for the target test file."""
+
+    if test_file:
+        return test_file
+    return "ALL_TESTS"
+
+
+def _sanitize_for_filename(value: str, *, default: str) -> str:
+    """Sanitize arbitrary text so it is safe for filesystem use."""
+
+    if not value:
+        value = default
+    cleaned = re.sub(r"[^\w.-]+", "_", value)
+    cleaned = cleaned.strip("._")
+    if not cleaned:
+        cleaned = default
+    # Keep filenames reasonably short to avoid OS limits
+    return cleaned[:80]
+
+
+def _log_fix_attempt_metadata(test_file: Optional[str], backend: str, model: str, timestamp: datetime) -> Path:
+    """Append metadata about a fix attempt to the CSV summary log."""
+
+    base_dir = Path(".auto-coder")
+    base_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = base_dir / "fix_to_pass_tests_summury.csv"
+    file_exists = csv_path.exists()
+    record = [
+        _normalize_test_file(test_file),
+        backend or "unknown",
+        model or "unknown",
+        timestamp.isoformat(),
+    ]
+    with csv_path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        if not file_exists:
+            writer.writerow(["current_test_file", "backend", "model", "timestamp"])
+        writer.writerow(record)
+    return csv_path
+
+
+def _write_llm_output_log(
+    *,
+    raw_output: Optional[str],
+    test_file: Optional[str],
+    backend: str,
+    model: str,
+    timestamp: datetime,
+) -> Path:
+    """Persist the raw LLM output for traceability."""
+
+    log_dir = Path(".auto-coder") / "log"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = "{time}_{test}_{backend}_{model}.txt".format(
+        time=timestamp.strftime("%Y%m%d_%H%M%S"),
+        test=_sanitize_for_filename(_normalize_test_file(test_file), default="tests"),
+        backend=_sanitize_for_filename(backend or "unknown", default="backend"),
+        model=_sanitize_for_filename(model or "unknown", default="model"),
+    )
+    log_path = log_dir / filename
+    content = raw_output if raw_output is not None else "LLM produced no response"
+    with log_path.open("w", encoding="utf-8") as handle:
+        handle.write(content)
+    return log_path
+
+
+def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
+    """Derive backend/model identifiers from the provided LLM client."""
+
+    if llm_client is None:
+        return "unknown", "unknown"
+
+    getter = getattr(llm_client, "get_last_backend_and_model", None)
+    if callable(getter):
+        try:
+            backend, model = getter()
+            backend = backend or "unknown"
+            model = model or getattr(llm_client, "model_name", "unknown")
+            return backend, model
+        except Exception:
+            pass
+
+    backend = getattr(llm_client, "backend", None) or getattr(llm_client, "name", None)
+    if backend is None:
+        backend = llm_client.__class__.__name__
+    model = getattr(llm_client, "model_name", None)
+    if not model:
+        model = "unknown"
+    return str(backend), str(model)
 
 
 def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
@@ -80,15 +187,25 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
-def apply_workspace_test_fix(config: AutomationConfig, test_result: Dict[str, Any], llm_client, dry_run: bool = False) -> str:
-    """Ask the LLM to apply workspace edits based on local test failures.
+def apply_workspace_test_fix(
+    config: AutomationConfig,
+    test_result: Dict[str, Any],
+    llm_client,
+    dry_run: bool = False,
+) -> WorkspaceFixResult:
+    """Ask the LLM to apply workspace edits based on local test failures."""
 
-    Returns a short action summary string.
-    """
+    backend, model = _extract_backend_model(llm_client)
+
     try:
         error_summary = extract_important_errors(test_result)
         if not error_summary:
-            return "No actionable errors found in local test output"
+            return WorkspaceFixResult(
+                summary="No actionable errors found in local test output",
+                raw_response=None,
+                backend=backend,
+                model=model,
+            )
 
         fix_prompt = render_prompt(
             "tests.workspace_fix",
@@ -97,20 +214,40 @@ def apply_workspace_test_fix(config: AutomationConfig, test_result: Dict[str, An
         )
 
         if dry_run:
-            return "[DRY RUN] Would apply fixes for local test failures"
+            return WorkspaceFixResult(
+                summary="[DRY RUN] Would apply fixes for local test failures",
+                raw_response=None,
+                backend=backend,
+                model=model,
+            )
 
         # Use the LLM client/manager to run the prompt
         if hasattr(llm_client, 'run_test_fix_prompt') and callable(getattr(llm_client, 'run_test_fix_prompt')):
             response = llm_client.run_test_fix_prompt(fix_prompt)
         else:
             response = llm_client._run_llm_cli(fix_prompt)
-        if response and response.strip():
-            # Take the first line as the summary and trim
-            first_line = response.strip().splitlines()[0]
-            return first_line[: config.MAX_RESPONSE_SIZE]
-        return "LLM produced no response"
+
+        backend, model = _extract_backend_model(llm_client)
+        raw_response = response.strip() if response and response.strip() else None
+        if raw_response:
+            first_line = raw_response.splitlines()[0]
+            summary = first_line[: config.MAX_RESPONSE_SIZE]
+        else:
+            summary = "LLM produced no response"
+
+        return WorkspaceFixResult(
+            summary=summary,
+            raw_response=raw_response,
+            backend=backend,
+            model=model,
+        )
     except Exception as e:
-        return f"Error applying workspace test fix: {e}"
+        return WorkspaceFixResult(
+            summary=f"Error applying workspace test fix: {e}",
+            raw_response=None,
+            backend=backend,
+            model=model,
+        )
 
 
 def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attempts: Optional[int] = None, llm_client=None) -> Dict[str, Any]:
@@ -161,7 +298,8 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             return summary
 
         # Apply LLM-based fix
-        action_msg = apply_workspace_test_fix(config, test_result, llm_client, dry_run)
+        fix_response = apply_workspace_test_fix(config, test_result, llm_client, dry_run)
+        action_msg = fix_response.summary
         summary['messages'].append(action_msg)
 
         if dry_run:
@@ -177,6 +315,24 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
         summary['attempts'] = attempt
         logger.info(f"Re-running local tests after LLM fix (attempt {attempt}/{attempts_limit})")
         post_result = run_local_tests(config, test_file=current_test_file)
+
+        log_timestamp = datetime.now()
+        backend_for_log = fix_response.backend
+        model_for_log = fix_response.model
+        try:
+            _log_fix_attempt_metadata(current_test_file, backend_for_log, model_for_log, log_timestamp)
+        except Exception:
+            logger.warning("Failed to record fix-to-pass-tests summary CSV entry", exc_info=True)
+        try:
+            _write_llm_output_log(
+                raw_output=fix_response.raw_response,
+                test_file=current_test_file,
+                backend=backend_for_log,
+                model=model_for_log,
+                timestamp=log_timestamp,
+            )
+        except Exception:
+            logger.warning("Failed to write LLM output log for fix-to-pass-tests", exc_info=True)
 
         post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
         post_error_summary = extract_important_errors(post_result)

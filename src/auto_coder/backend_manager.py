@@ -4,7 +4,7 @@ apply_workspace_test_fix での同一プロンプト3連続時の自動切替を
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Any
+from typing import Callable, Dict, List, Optional, Any, Tuple
 
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
@@ -161,6 +161,19 @@ class BackendManager:
         self._last_prompt = prompt
         self._last_backend = self._current_backend_name()
         return out
+
+    def get_last_backend_and_model(self) -> Tuple[Optional[str], Optional[str]]:
+        """Return the backend/model used for the most recent execution."""
+
+        backend = self._last_backend or self._current_backend_name()
+        model = self._last_model
+        if model is None:
+            try:
+                cli = self._get_or_create_client(self._current_backend_name())
+                model = getattr(cli, 'model_name', None)
+            except Exception:
+                model = None
+        return backend, model
 
     # ---------- 互換補助 ----------
     def switch_to_conflict_model(self) -> None:
