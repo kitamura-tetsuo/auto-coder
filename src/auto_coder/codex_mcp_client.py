@@ -14,15 +14,16 @@ process remains alive to satisfy the requirement of keeping a session for
 
 from __future__ import annotations
 
+import json
 import os
+import select
+import shlex
 import subprocess
 import threading
-import json
-import shlex
 import time
-import select
-from typing import Optional, List, Any, Dict
+from typing import Any, Dict, List, Optional
 
+from . import __version__ as AUTO_CODER_VERSION
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -112,7 +113,7 @@ class CodexMCPClient:
                 params={
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
-                    "clientInfo": {"name": "auto-coder", "version": "0.1.0"},
+                    "clientInfo": {"name": "auto-coder", "version": AUTO_CODER_VERSION},
                 },
                 timeout=self._handshake_timeout,
             )
