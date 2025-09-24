@@ -176,3 +176,38 @@ def test_same_prompt_counter_resets_when_backend_changes_due_to_limit():
 
     # Expect: 1st run tries 'a' (limit) then 'b'; 2nd runs on 'b'; 3rd switches before run to 'a' then rotates to 'b'
     assert calls == ['a', 'b', 'b', 'a', 'b']
+
+
+def test_get_last_backend_and_model_reflects_actual_client_usage():
+    calls: list[str] = []
+
+    codex_client = DummyClient('codex', 'm1', 'ok', calls)
+
+    def fac_codex():
+        return DummyClient('codex', 'm1', 'ok', calls)
+
+    def fac_gemini():
+        return DummyClient('gemini', 'm2', 'ok', calls)
+
+    mgr = BackendManager(
+        default_backend='codex',
+        default_client=codex_client,
+        factories={'codex': fac_codex, 'gemini': fac_gemini},
+        order=['codex', 'gemini'],
+    )
+
+    backend, model = mgr.get_last_backend_and_model()
+    assert backend == 'codex'
+    assert model == 'm1'
+
+    mgr.run_test_fix_prompt('PROMPT')
+    backend, model = mgr.get_last_backend_and_model()
+    assert backend == 'codex'
+    assert model == 'm1'
+
+    # Trigger rotation to the secondary backend and confirm reporting updates
+    mgr.run_test_fix_prompt('PROMPT')
+    mgr.run_test_fix_prompt('PROMPT')
+    backend, model = mgr.get_last_backend_and_model()
+    assert backend == 'gemini'
+    assert model == 'm2'

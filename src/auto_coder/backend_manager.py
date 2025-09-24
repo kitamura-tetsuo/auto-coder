@@ -48,6 +48,8 @@ class BackendManager:
         # apply_workspace_test_fix のための直近プロンプト/モデル/バックエンド追跡
         self._last_prompt: Optional[str] = None
         self._last_backend: Optional[str] = None
+        # 直近で使用したモデル名も記録し、テスト用CSVに正しい情報を残せるようにする
+        self._last_model: Optional[str] = getattr(default_client, "model_name", None)
         self._same_prompt_count: int = 0
 
     # ---------- 基本操作 ----------
@@ -112,6 +114,9 @@ class BackendManager:
             try:
                 cli = self._get_or_create_client(name)
                 out = cli._run_llm_cli(prompt)
+                # 実行に成功した場合のみ、直近利用したバックエンド/モデルを更新する
+                self._last_backend = name
+                self._last_model = getattr(cli, "model_name", None)
                 return out
             except AutoCoderUsageLimitError as e:
                 logger.warning(f"Backend '{name}' hit usage limit: {e}. Rotating to next backend.")
