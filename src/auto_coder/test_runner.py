@@ -3,14 +3,14 @@
 import csv
 import math
 import os
+from typing import Dict, Any, Optional
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 
-from .utils import CommandExecutor, change_fraction, slice_relevant_error_window, extract_first_failed_test, log_action
+from .utils import CommandExecutor, change_fraction, extract_first_failed_test, log_action
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -265,9 +265,6 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
     }
 
     # Track previous test output and the error summary given to LLM (from last completed test run)
-    prev_full_output: Optional[str] = None
-    prev_error_summary: Optional[str] = None
-
     # Cache the latest post-fix test result to avoid redundant runs in the next loop
     cached_test_result: Optional[Dict[str, Any]] = None
 
@@ -341,9 +338,6 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
         post_error_summary = extract_important_errors(post_result)
 
         # Update previous context for next loop start
-        prev_full_output = post_full_output
-        prev_error_summary = post_error_summary
-
         cleanup_pending = False
 
         if post_result['success']:
@@ -351,7 +345,6 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             pass_msg = f"Local tests passed on attempt {attempt}"
             logger.info(pass_msg)
             summary['messages'].append(pass_msg)
-            should_commit = True
             if not dry_run:
                 cleanup_pending = True
         else:
@@ -382,7 +375,6 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
                 info = f"Significant change detected ({max_change:.2%}); committing and continuing"
                 logger.info(info)
                 summary['messages'].append(info)
-                should_commit = True
                 
 
         if cleanup_pending:

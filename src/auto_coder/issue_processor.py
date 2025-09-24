@@ -2,12 +2,10 @@
 Issue processing functionality for Auto-Coder automation engine.
 """
 
-import json
-import os
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from datetime import datetime
 
-from .utils import CommandExecutor, log_action
+from .utils import CommandExecutor
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -148,6 +146,11 @@ def _apply_issue_actions_directly(repo_name: str, issue_data: Dict[str, Any], co
             issue_state=issue_data.get('state', 'open'),
             issue_author=issue_data.get('author', 'unknown'),
         )
+        logger.debug(
+            "Prepared issue-action prompt for #%s (preview: %s)",
+            issue_data.get('number', 'unknown'),
+            action_prompt[:160].replace('\n', ' '),
+        )
 
         # Use LLM CLI to analyze and take actions
         logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
@@ -160,13 +163,11 @@ def _apply_issue_actions_directly(repo_name: str, issue_data: Dict[str, Any], co
             # Check if LLM indicated the issue should be closed
             if "closed" in response.lower() or "duplicate" in response.lower() or "invalid" in response.lower():
                 # Close the issue
-                close_comment = f"Auto-Coder Analysis: {response[:500]}..."
-                # github_client.close_issue(repo_name, issue_data['number'], close_comment)
+                # github_client.close_issue(repo_name, issue_data['number'], f"Auto-Coder Analysis: {response[:500]}...")
                 actions.append(f"Closed issue #{issue_data['number']} based on analysis")
             else:
                 # Add analysis comment
-                comment = f"## 🤖 Auto-Coder Analysis\n\n{response}"
-                # github_client.add_comment_to_issue(repo_name, issue_data['number'], comment)
+                # github_client.add_comment_to_issue(repo_name, issue_data['number'], f"## 🤖 Auto-Coder Analysis\n\n{response}")
                 actions.append(f"Added analysis comment to issue #{issue_data['number']}")
 
             # Commit any changes made
@@ -192,6 +193,11 @@ def create_feature_issues(github_client, config: AutomationConfig, dry_run: bool
     try:
         # Get repository context
         repo_context = _get_repository_context(github_client, repo_name)
+        logger.debug(
+            "Repository context gathered for %s with keys: %s",
+            repo_name,
+            sorted(repo_context.keys()),
+        )
 
         # Generate feature suggestions
         suggestions = []  # gemini_client.suggest_features(repo_context)
@@ -251,7 +257,7 @@ def _get_repository_context(github_client, repo_name: str) -> Dict[str, Any]:
 
 def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
     """Format feature suggestion as issue body."""
-    body = f"## Feature Request\n\n"
+    body = "## Feature Request\n\n"
     body += f"**Description:**\n{suggestion.get('description', 'No description provided')}\n\n"
     body += f"**Rationale:**\n{suggestion.get('rationale', 'No rationale provided')}\n\n"
     body += f"**Priority:** {suggestion.get('priority', 'medium')}\n"

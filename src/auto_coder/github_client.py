@@ -6,7 +6,6 @@ from typing import List, Dict, Any, Optional
 from github import Github, Repository, Issue, PullRequest
 from github.GithubException import GithubException
 
-from .config import settings
 from .logger_config import get_logger
 
 logger = get_logger(__name__)

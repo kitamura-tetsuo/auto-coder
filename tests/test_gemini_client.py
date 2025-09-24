@@ -2,9 +2,8 @@
 Tests for Gemini client functionality.
 """
 
-import pytest
 import json
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.utils import CommandResult

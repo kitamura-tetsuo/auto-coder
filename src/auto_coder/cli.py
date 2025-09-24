@@ -18,7 +18,7 @@ from .automation_engine import AutomationEngine
 from .backend_manager import BackendManager
 from .automation_config import AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
-from .auth_utils import get_github_token, get_gemini_api_key, get_auth_status
+from .auth_utils import get_github_token, get_auth_status
 from .logger_config import setup_logger, get_logger
 from .update_manager import maybe_run_auto_update
 

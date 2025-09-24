@@ -3,7 +3,6 @@ Codex CLI client for Auto-Coder.
 """
 
 import subprocess
-from typing import Dict, Any
 
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError

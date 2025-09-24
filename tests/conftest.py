@@ -3,9 +3,7 @@ Pytest configuration and fixtures for Auto-Coder tests.
 """
 
 import pytest
-import os
-from unittest.mock import Mock, MagicMock
-from typing import Dict, Any
+from unittest.mock import Mock
 
 from src.auto_coder.github_client import GitHubClient
 from src.auto_coder.gemini_client import GeminiClient
@@ -233,7 +231,7 @@ def stub_git_and_gh_commands(monkeypatch):
                     stdout, stderr = _as_text_or_bytes(out_text, False)
 
             return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
-        except Exception as e:
+        except Exception:
             # 想定外は元の run にフォールバック
             return orig_run(cmd, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, check=check, input=input, env=env)
 
