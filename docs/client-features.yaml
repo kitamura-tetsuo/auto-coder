@@ -817,7 +817,7 @@ deployment:
 
   auggie_integration:
     name: "Auggie CLI Integration"
-    description: "Integration with Auggie CLI for non-interactive execution. Defaults to the GPT-5 model when the user does not override --model."
+    description: "Integration with Auggie CLI for non-interactive execution. Defaults to the GPT-5 model when the user does not override --model. Enforces a daily call ceiling to prevent accidental overuse."
     components:
       - name: "AuggieClient"
         file: "src/auto_coder/auggie_client.py"
@@ -834,6 +834,10 @@ deployment:
             description: "Compatibility no-op; Auggie sticks to the configured model."
             parameters: []
             returns: "None"
+          - name: "_check_and_increment_usage"
+            description: "Persisted counter that caps Auggie invocations at 20 per day and raises AutoCoderUsageLimitError before exceeding the quota."
+            parameters: []
+            returns: "None"
 
     cli_support:
       defaults:
@@ -845,6 +849,8 @@ deployment:
         - "tests/test_cli_auggie.py::test_process_issues_backend_auggie_respects_model_override"
         - "tests/test_cli_auggie.py::test_create_feature_issues_backend_auggie"
         - "tests/test_cli_auggie.py::test_fix_to_pass_tests_backend_auggie_default_model"
+        - "tests/test_auggie_client_daily_limit.py::test_auggie_usage_limit_blocks_21st_call"
+        - "tests/test_cli_auggie_usage_limit_e2e.py::test_process_issues_rotates_when_auggie_daily_limit_reached"
 
   usage:
     examples:

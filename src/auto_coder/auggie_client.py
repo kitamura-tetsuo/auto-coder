@@ -9,8 +9,12 @@ argument.
 """
 from __future__ import annotations
 
+import json
+import os
 import subprocess
-from typing import List
+from datetime import datetime
+from pathlib import Path
+from typing import List, Optional
 
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
@@ -18,14 +22,24 @@ from .exceptions import AutoCoderUsageLimitError
 logger = get_logger(__name__)
 
 
+_USAGE_STATE_ENV = "AUTO_CODER_AUGGIE_USAGE_DIR"
+_USAGE_FILENAME = "auggie_usage.json"
+_DAILY_LIMIT = 20
+
+
 class AuggieClient:
     """Auggie CLI client wrapper."""
+
+    DAILY_CALL_LIMIT = _DAILY_LIMIT
 
     def __init__(self, model_name: str = "GPT-5") -> None:
         self.model_name = model_name or "GPT-5"
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None
+        self._usage_state_path = self._compute_usage_state_path()
+        self._usage_date_cache: Optional[str] = None
+        self._usage_count_cache: int = 0
 
         # Verify Auggie CLI availability early for deterministic failures.
         try:
@@ -45,12 +59,94 @@ class AuggieClient:
         """No-op placeholder for compatibility with BackendManager."""
         logger.debug("AuggieClient.switch_to_default_model: no-op (single model)")
 
+    def _compute_usage_state_path(self) -> Path:
+        """Return path storing Auggie daily usage information."""
+
+        override_dir = os.environ.get(_USAGE_STATE_ENV)
+        base_dir = (
+            Path(override_dir).expanduser()
+            if override_dir
+            else Path.home() / ".cache" / "auto-coder"
+        )
+        return base_dir / _USAGE_FILENAME
+
+    def _update_usage_cache(self, date_str: Optional[str], count: int) -> None:
+        self._usage_date_cache = date_str
+        self._usage_count_cache = max(count, 0)
+
+    def _load_usage_state(self) -> tuple[Optional[str], int]:
+        """Load cached usage state, falling back to disk."""
+
+        if self._usage_date_cache is not None:
+            return self._usage_date_cache, self._usage_count_cache
+
+        path = self._usage_state_path
+        if not path.exists():
+            self._update_usage_cache(None, 0)
+            return None, 0
+
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            date_raw = data.get("date")
+            count_raw = data.get("count", 0)
+            date_str = str(date_raw) if date_raw else None
+            count_val = int(count_raw)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Failed to load Auggie usage state at %s: %s. Resetting counter.",
+                path,
+                exc,
+            )
+            self._update_usage_cache(None, 0)
+            return None, 0
+
+        self._update_usage_cache(date_str, count_val)
+        return date_str, count_val
+
+    def _persist_usage_state(self, date_str: str, count: int) -> None:
+        """Persist usage state to disk (best effort)."""
+
+        path = self._usage_state_path
+        payload = {"date": date_str, "count": count}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning(
+                "Unable to persist Auggie usage state at %s: %s", path, exc
+            )
+
+    def _check_and_increment_usage(self) -> None:
+        """Ensure the daily usage limit allows another Auggie invocation."""
+
+        today_str = datetime.now().date().isoformat()
+        stored_date, count = self._load_usage_state()
+
+        if stored_date != today_str:
+            count = 0
+
+        if count >= _DAILY_LIMIT:
+            message = (
+                f"Auggie daily invocation limit ({_DAILY_LIMIT}) reached. "
+                "Please wait until tomorrow before using Auggie again."
+            )
+            logger.warning(message)
+            raise AutoCoderUsageLimitError(message)
+
+        new_count = count + 1
+        self._update_usage_cache(today_str, new_count)
+        self._persist_usage_state(today_str, new_count)
+        logger.debug(
+            "Auggie daily usage incremented to %s for %s", new_count, today_str
+        )
+
     def _escape_prompt(self, prompt: str) -> str:
         """Escape characters that can confuse shell commands."""
         return prompt.replace('@', '\\@').strip()
 
     def _run_auggie_cli(self, prompt: str) -> str:
         """Execute Auggie CLI and stream output via logger."""
+        self._check_and_increment_usage()
         escaped_prompt = self._escape_prompt(prompt)
         cmd = [
             "auggie",
