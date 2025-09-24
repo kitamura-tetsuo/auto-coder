@@ -1,13 +1,13 @@
-"""
-Command Line Interface for Auto-Coder.
-"""
+"""Command Line Interface for Auto-Coder."""
 
-import click
-from typing import Optional
 import os
 import sys
+from typing import Optional
+
+import click
 from dotenv import load_dotenv
 
+from . import __version__ as AUTO_CODER_VERSION
 from .github_client import GitHubClient
 from .gemini_client import GeminiClient
 from .codex_client import CodexClient
@@ -19,7 +19,7 @@ from .backend_manager import BackendManager
 from .automation_config import AutomationConfig
 from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_auth_status
-from .logger_config import setup_logger, get_logger
+from .logger_config import get_logger, setup_logger
 from .update_manager import maybe_run_auto_update, record_startup_options
 
 # Load environment variables
@@ -349,7 +349,7 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
 
 
 @click.group()
-@click.version_option(version="0.1.0", package_name="auto-coder")
+@click.version_option(version=AUTO_CODER_VERSION, package_name="auto-coder")
 def main() -> None:
     """Auto-Coder: Automated application development using Gemini CLI and GitHub integration."""
     record_startup_options(sys.argv, os.environ)

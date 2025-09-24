@@ -3,6 +3,7 @@ from unittest import mock
 
 import pytest
 
+from src.auto_coder import __version__ as AUTO_CODER_VERSION
 from src.auto_coder.codex_mcp_client import CodexMCPClient
 
 
@@ -33,7 +34,7 @@ def test_handshake_timeout_uses_configured_limit(monkeypatch):
         params={
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {"name": "auto-coder", "version": "0.1.0"},
+            "clientInfo": {"name": "auto-coder", "version": AUTO_CODER_VERSION},
         },
         timeout=client._handshake_timeout,
     )
