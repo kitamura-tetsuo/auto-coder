@@ -69,10 +69,24 @@ class CodexClient:
             logger.info("🤖 Running: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]")
             logger.info("=" * 60)
 
+            usage_markers = (
+                "rate limit",
+                "quota",
+                "429",
+                "usage limit",
+                "upgrade to pro",
+            )
+
+            def _on_stream(stream_name: str, chunk: str) -> None:
+                low_chunk = chunk.lower()
+                if any(marker in low_chunk for marker in usage_markers):
+                    raise AutoCoderUsageLimitError(chunk.strip())
+
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
-                check_success=False
+                check_success=False,
+                on_stream=_on_stream,
             )
             logger.info("=" * 60)
             stdout = (result.stdout or "").strip()
@@ -83,14 +97,14 @@ class CodexClient:
             low = full_output.lower()
             if result.returncode != 0:
                 # Detect usage/rate limit patterns
-                if ("rate limit" in low) or ("quota" in low) or ("429" in low):
+                if any(marker in low for marker in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(
                     f"codex CLI failed with return code {result.returncode}\n{full_output}"
                 )
 
             # Even with 0, some CLIs may print limit messages
-            if ("rate limit" in low) or ("quota" in low):
+            if any(marker in low for marker in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
         except AutoCoderUsageLimitError:
