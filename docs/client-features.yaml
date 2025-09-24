@@ -760,6 +760,15 @@ deployment:
         tests:
           - "tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_429_only"
           - "tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_resource_exhausted"
+      hardening_2025_09_codex:
+        description: "Detect Codex CLI upgrade banner that signals usage/quota exhaustion."
+        recognizes:
+          - "usage limit"
+          - "Upgrade to Pro"
+        sample_error: "[2025-09-24T07:13:47] ERROR: You've hit your usage limit. Upgrade to Pro (...)"
+        tests:
+          - "tests/test_usage_limit_detection.py::test_codex_raises_usage_limit_on_upgrade_to_pro_message"
+          - "tests/test_cli_codex_usage_limit_e2e.py::test_codex_cli_usage_limit_detection_e2e"
 
     components:
       - name: "QwenClient"

@@ -97,3 +97,21 @@ def test_codex_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run):
     client = CodexClient()
     with pytest.raises(AutoCoderUsageLimitError):
         client._run_gemini_cli("hello")
+
+
+@patch("subprocess.run")
+@patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+def test_codex_raises_usage_limit_on_upgrade_to_pro_message(mock_run_command, mock_run):
+    mock_run.return_value.returncode = 0
+    message = (
+        "2025-09-24 16:13:47.530 | INFO     | auto_coder/utils.py:155 in _run_with_streaming - "
+        "[2025-09-24T07:13:47] ERROR: You've hit your usage limit. Upgrade to Pro "
+        "(https://openai.com/chatgpt/pricing) or try again in 2 hours 22 minutes."
+    )
+    mock_run_command.return_value = CommandResult(False, "", message, 1)
+
+    client = CodexClient()
+    with pytest.raises(AutoCoderUsageLimitError) as excinfo:
+        client._run_gemini_cli("hello")
+
+    assert "usage limit" in str(excinfo.value).lower()
