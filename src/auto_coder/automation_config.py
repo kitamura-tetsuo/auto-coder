@@ -1,9 +1,6 @@
-"""
-Configuration classes for Auto-Coder automation engine.
-"""
+"""Configuration classes for Auto-Coder automation engine."""
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass

@@ -3,6 +3,7 @@ PR processing functionality for Auto-Coder automation engine.
 """
 
 import json
+import math
 import os
 import tempfile
 import zipfile
@@ -11,10 +12,11 @@ import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
-from .utils import CommandExecutor, log_action
+from .utils import CommandExecutor, log_action, slice_relevant_error_window
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .test_runner import run_local_tests
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -36,7 +38,7 @@ def process_pull_requests(github_client, config: AutomationConfig, dry_run: bool
         handled_pr_numbers = set()
 
         # First loop: Process PRs with passing GitHub Actions AND mergeable status (merge them)
-        logger.info(f"First pass: Processing PRs with passing GitHub Actions and mergeable status for merging...")
+        logger.info("First pass: Processing PRs with passing GitHub Actions and mergeable status for merging...")
         for pr in prs:
             try:
                 pr_data = github_client.get_pr_details(pr)
@@ -79,7 +81,7 @@ def process_pull_requests(github_client, config: AutomationConfig, dry_run: bool
                 logger.error(f"Failed to process PR #{pr.number} in merge pass: {e}")
 
         # Second loop: Process remaining PRs (fix issues)
-        logger.info(f"Second pass: Processing remaining PRs for issue resolution...")
+        logger.info("Second pass: Processing remaining PRs for issue resolution...")
         for pr in prs:
             try:
                 pr_data = github_client.get_pr_details(pr)
@@ -178,28 +180,23 @@ def _take_pr_actions(repo_name: str, pr_data: Dict[str, Any], config: Automation
 
     try:
         if dry_run:
+            logger.debug("Dry run requested for PR #%s; skipping merge workflow", pr_number)
             return [f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}"]
-        if dry_run:
-            actions.append(f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}")
-            # In dry run, still show what merge actions would be taken
-            dry_run_analysis = {'category': 'feature', 'risk_level': 'low'}  # Mock analysis
-            merge_actions = _handle_pr_merge(repo_name, pr_data, config, dry_run, {})
-            actions.extend(merge_actions)
-        else:
-            # First, handle the merge process (GitHub Actions, testing, etc.)
-            # This doesn't depend on Gemini analysis
-            merge_actions = _handle_pr_merge(repo_name, pr_data, config, dry_run, {})
-            actions.extend(merge_actions)
 
-            # If merge process completed successfully (PR was merged), skip analysis
-            if any("Successfully merged" in action for action in merge_actions):
-                actions.append(f"PR #{pr_number} was merged, skipping further analysis")
-            elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions):
-                actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
-            else:
-                # Only do Gemini analysis if merge process didn't complete
-                analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config, dry_run)
-                actions.extend(analysis_results)
+        # First, handle the merge process (GitHub Actions, testing, etc.)
+        # This doesn't depend on Gemini analysis
+        merge_actions = _handle_pr_merge(repo_name, pr_data, config, dry_run, {})
+        actions.extend(merge_actions)
+
+        # If merge process completed successfully (PR was merged), skip analysis
+        if any("Successfully merged" in action for action in merge_actions):
+            actions.append(f"PR #{pr_number} was merged, skipping further analysis")
+        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions):
+            actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
+        else:
+            # Only do Gemini analysis if merge process didn't complete
+            analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config, dry_run)
+            actions.extend(analysis_results)
 
     except Exception as e:
         actions.append(f"Error taking PR actions for PR #{pr_number}: {e}")
@@ -222,6 +219,11 @@ def _apply_pr_actions_directly(repo_name: str, pr_data: Dict[str, Any], config: 
 
         # Create action-oriented prompt (no comments)
         action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
+        logger.debug(
+            "Prepared PR action prompt for #%s (preview: %s)",
+            pr_data.get('number', 'unknown'),
+            action_prompt[:160].replace('\n', ' '),
+        )
 
         # Use LLM CLI to analyze and take actions
         log_action(f"Applying PR actions directly for PR #{pr_data['number']}")
@@ -264,8 +266,9 @@ def _apply_pr_actions_directly(repo_name: str, pr_data: Dict[str, Any], config: 
                 #     )
                 #     return actions
 
-                commit_msg = f"Auto-Coder: Apply fix for PR #{pr_data['number']}"
-                # commit_res = _commit_with_message(commit_msg)
+                # commit_res = _commit_with_message(
+                #     f"Auto-Coder: Apply fix for PR #{pr_data['number']}"
+                # )
                 # if commit_res.success:
                 #     actions.append(f"Committed changes for PR #{pr_data['number']}")
                 #     push_res = _push_current_branch()
@@ -712,6 +715,11 @@ def _resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: st
             pr_body=(pr_data.get('body') or '')[:500],
             conflict_info=conflict_info,
         )
+        logger.debug(
+            "Generated PR conflict-resolution prompt for #%s (preview: %s)",
+            pr_data.get('number', 'unknown'),
+            resolve_prompt[:160].replace('\n', ' '),
+        )
 
         # Use LLM to resolve conflicts
         logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}")
@@ -736,8 +744,9 @@ def _resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: st
             #     return actions
 
             # Commit via helper and push
-            commit_msg = f"Resolve merge conflicts for PR #{pr_data['number']}"
-            # commit_res = _commit_with_message(commit_msg)
+            # commit_res = _commit_with_message(
+            #     f"Resolve merge conflicts for PR #{pr_data['number']}"
+            # )
             # if commit_res.success:
             #     actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
             # else:
@@ -915,7 +924,7 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             return False
 
         # Step 2: Fetch the latest base branch
-        logger.info(f"Fetching latest main branch")
+        logger.info("Fetching latest main branch")
         fetch_result = cmd.run_command(['git', 'fetch', 'origin', config.MAIN_BRANCH])
 
         if not fetch_result.success:
@@ -985,7 +994,7 @@ def _fix_pr_issues_with_testing(repo_name: str, pr_data: Dict[str, Any], config:
             attempt += 1
             actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
-            test_result = run_pr_tests(config, pr_data)
+            test_result = run_local_tests(config)
 
             if test_result['success']:
                 actions.append(f"Local tests passed on attempt {attempt}")
@@ -1035,6 +1044,11 @@ def _apply_github_actions_fix(repo_name: str, pr_data: Dict[str, Any], config: A
             pr_title=pr_data.get('title', 'Unknown'),
             github_logs=(github_logs or '')[: config.MAX_PROMPT_SIZE],
         )
+        logger.debug(
+            "Prepared GitHub Actions fix prompt for PR #%s (preview: %s)",
+            pr_number,
+            fix_prompt[:160].replace('\n', ' '),
+        )
 
         if not dry_run:
             response = "Applied GitHub Actions fix"  # Placeholder
@@ -1056,8 +1070,9 @@ def _apply_github_actions_fix(repo_name: str, pr_data: Dict[str, Any], config: A
             #     )
             #     return actions
 
-            commit_msg = f"Auto-Coder: Fix GitHub Actions failures for PR #{pr_number}"
-            # commit_res = _commit_with_message(commit_msg)
+            # commit_res = _commit_with_message(
+            #     f"Auto-Coder: Fix GitHub Actions failures for PR #{pr_number}"
+            # )
             # if commit_res.success:
             #     actions.append("Committed changes")
             #     push_res = _push_current_branch()
@@ -1101,6 +1116,11 @@ def _apply_local_test_fix(repo_name: str, pr_data: Dict[str, Any], config: Autom
             test_output=(test_result.get('output', '') or '')[: config.MAX_PROMPT_SIZE],
             test_errors=(test_result.get('errors', '') or '')[: config.MAX_PROMPT_SIZE],
             test_command=test_result.get('command', 'pytest -q --maxfail=1'),
+        )
+        logger.debug(
+            "Prepared local test fix prompt for PR #%s (preview: %s)",
+            pr_number,
+            fix_prompt[:160].replace('\n', ' '),
         )
 
         if not dry_run:

@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import Mock, patch
 
 from src.auto_coder.automation_engine import AutomationEngine

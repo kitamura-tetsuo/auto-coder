@@ -1,5 +1,4 @@
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder import test_runner as tr

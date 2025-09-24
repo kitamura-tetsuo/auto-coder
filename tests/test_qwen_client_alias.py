@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch
 
 from src.auto_coder.qwen_client import QwenClient

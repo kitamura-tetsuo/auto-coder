@@ -6,7 +6,8 @@ import pytest
 import os
 import json
 import tempfile
-from unittest.mock import Mock, patch, MagicMock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 from click.testing import CliRunner
 
 from src.auto_coder.cli import main
@@ -310,6 +311,105 @@ class TestE2E:
             assert "Dry run mode: True" in result.output
 
             # Verify that automation engine was called
+
+    def test_cli_process_issues_multi_backend_models(self):
+        """Process issues CLI selects correct backend order and model overrides."""
+        runner = CliRunner()
+
+        with patch('src.auto_coder.cli.GitHubClient') as mock_github_client_class, \
+             patch('src.auto_coder.cli.AutomationEngine') as mock_engine_class, \
+             patch('src.auto_coder.cli.BackendManager') as mock_manager_class, \
+             patch('src.auto_coder.cli.CodexClient') as mock_codex_client_class, \
+             patch('src.auto_coder.cli.CodexMCPClient'), \
+             patch('src.auto_coder.cli.GeminiClient') as mock_gemini_client_class, \
+             patch('src.auto_coder.cli.QwenClient') as mock_qwen_client_class, \
+             patch('src.auto_coder.cli.check_gemini_cli_or_fail') as mock_check_gemini, \
+             patch('src.auto_coder.cli.check_codex_cli_or_fail') as mock_check_codex, \
+             patch('src.auto_coder.cli.check_qwen_cli_or_fail') as mock_check_qwen:
+
+            mock_manager_class.return_value = SimpleNamespace(close=lambda: None)
+            mock_engine = Mock()
+            mock_engine.run.return_value = {'repository': 'test/repo'}
+            mock_engine_class.return_value = mock_engine
+            mock_github_client_class.return_value = Mock()
+
+            def _make_stub(kind: str, **attrs):
+                base = {'kind': kind, 'close': lambda: None}
+                base.update(attrs)
+                return SimpleNamespace(**base)
+
+            def _codex_side_effect(*args, **kwargs):
+                model_name = kwargs.get('model_name', args[0] if args else 'codex')
+                return _make_stub('codex', model_name=model_name)
+
+            gemini_calls = []
+
+            def _gemini_side_effect(*args, **kwargs):
+                if args and 'model_name' in kwargs:
+                    api_key = args[0]
+                    model_name = kwargs['model_name']
+                elif args:
+                    api_key = None
+                    model_name = args[0]
+                else:
+                    api_key = kwargs.get('api_key')
+                    model_name = kwargs.get('model_name')
+                gemini_calls.append({'api_key': api_key, 'model_name': model_name})
+                return _make_stub('gemini', api_key=api_key, model_name=model_name)
+
+            def _qwen_side_effect(*args, **kwargs):
+                model_name = kwargs.get('model_name', args[0] if args else 'qwen3-coder-plus')
+                return _make_stub(
+                    'qwen',
+                    model_name=model_name,
+                    openai_api_key=kwargs.get('openai_api_key'),
+                    openai_base_url=kwargs.get('openai_base_url'),
+                )
+
+            mock_codex_client_class.side_effect = _codex_side_effect
+            mock_gemini_client_class.side_effect = _gemini_side_effect
+            mock_qwen_client_class.side_effect = _qwen_side_effect
+            mock_check_gemini.return_value = None
+            mock_check_codex.return_value = None
+            mock_check_qwen.return_value = None
+
+            result = runner.invoke(main, [
+                'process-issues',
+                '--repo', 'test/repo',
+                '--github-token', 'token',
+                '--backend', 'gemini',
+                '--backend', 'codex',
+                '--backend', 'qwen',
+                '--backend', 'gemini',
+                '--gemini-api-key', 'gem-key',
+                '--model-gemini', 'g-custom',
+                '--model-qwen', 'q-custom',
+                '--openai-api-key', 'open-key',
+                '--dry-run',
+            ])
+
+            assert result.exit_code == 0
+            assert "Using backends: gemini, codex, qwen (default: gemini)" in result.output
+            assert any(call['model_name'] == 'g-custom' for call in gemini_calls)
+
+            backend_kwargs = mock_manager_class.call_args.kwargs
+            assert backend_kwargs['default_backend'] == 'gemini'
+            assert backend_kwargs['order'] == ['gemini', 'codex', 'qwen']
+            default_client = backend_kwargs['default_client']
+            assert default_client.kind == 'gemini'
+            assert default_client.api_key == 'gem-key'
+            assert default_client.model_name == 'g-custom'
+
+            factories = backend_kwargs['factories']
+            assert set(factories.keys()) == {'gemini', 'codex', 'qwen'}
+            qwen_instance = factories['qwen']()
+            assert qwen_instance.kind == 'qwen'
+            assert qwen_instance.model_name == 'q-custom'
+            assert qwen_instance.openai_api_key == 'open-key'
+
+            mock_engine_class.assert_called_once()
+            assert mock_engine_class.call_args.kwargs['dry_run'] is True
+            mock_engine.run.assert_called_once_with('test/repo')
 
     def test_cli_integration_process_issues_no_skip_main_update(self, mock_github_responses, mock_gemini_responses):
         """Test CLI integration for process-issues with --no-skip-main-update flag."""

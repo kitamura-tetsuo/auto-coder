@@ -1,12 +1,10 @@
-"""
-Conflict resolution functionality for Auto-Coder automation engine.
-"""
+"""Helpers for resolving merge and dependency conflicts for Auto-Coder."""
 
 import json
 import os
 from typing import Dict, Any, List, Optional
 
-from .utils import CommandExecutor, log_action
+from .utils import CommandExecutor
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -22,13 +20,18 @@ def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str
     try:
         # Create a prompt for LLM to resolve conflicts
         base_branch = pr_data.get('base_branch') or pr_data.get('base', {}).get('ref') or config.MAIN_BRANCH
-        resolve_prompt = render_prompt(
+        prompt = render_prompt(
             "pr.merge_conflict_resolution",
             base_branch=base_branch,
             pr_number=pr_data.get('number', 'unknown'),
             pr_title=pr_data.get('title', 'Unknown'),
             pr_body=(pr_data.get('body') or '')[:500],
             conflict_info=conflict_info,
+        )
+        logger.debug(
+            "Generated merge-conflict resolution prompt for PR #%s (preview: %s)",
+            pr_data.get('number', 'unknown'),
+            prompt[:160].replace('\n', ' '),
         )
 
         # Use LLM to resolve conflicts
@@ -54,8 +57,9 @@ def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str
             #     return actions
 
             # Commit via helper and push
-            commit_msg = f"Resolve merge conflicts for PR #{pr_data['number']}"
-            # commit_res = _commit_with_message(commit_msg)
+            # commit_res = _commit_with_message(
+            #     f"Resolve merge conflicts for PR #{pr_data['number']}"
+            # )
             # if commit_res.success:
             #     actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
             # else:
@@ -76,6 +80,8 @@ def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str
         actions.append(f"Error resolving merge conflicts: {e}")
 
     return actions
+
+
 
 
 def is_package_lock_only_conflict(conflict_info: str) -> bool:
@@ -344,8 +350,10 @@ def resolve_package_json_dependency_conflicts(pr_data: Dict[str, Any], conflict_
             return actions
         actions.append("Staged merged package.json files")
 
-        commit_msg = f"Resolve package.json dependency-only conflicts for PR #{pr_number} by preferring newer versions and union"
-        # commit = cmd.run_command(['git', 'commit', '-m', commit_msg])
+        # commit = cmd.run_command([
+        #     'git', 'commit',
+        #     '-m', f"Resolve package.json dependency-only conflicts for PR #{pr_number} by preferring newer versions and union"
+        # ])
         # if not commit.success:
         #     actions.append(f"Failed to commit merged package.json: {commit.stderr}")
         #     return actions
@@ -447,8 +455,9 @@ def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, 
             return actions
 
         # Commit the changes (via common helper which auto-runs dprint fmt)
-        commit_message = f"Resolve package-lock.json conflicts for PR #{pr_data['number']}"
-        # commit_result = _commit_with_message(commit_message)
+        # commit_result = _commit_with_message(
+        #     f"Resolve package-lock.json conflicts for PR #{pr_data['number']}"
+        # )
         # if commit_result.success:
         #     actions.append("Committed resolved dependency conflicts")
         # else:

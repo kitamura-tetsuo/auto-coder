@@ -47,7 +47,6 @@ class BackendManager:
 
         # apply_workspace_test_fix のための直近プロンプト/モデル/バックエンド追跡
         self._last_prompt: Optional[str] = None
-        self._last_model: Optional[str] = None
         self._last_backend: Optional[str] = None
         self._same_prompt_count: int = 0
 
@@ -137,8 +136,6 @@ class BackendManager:
         """
         # 現在のバックエンドとモデル名を取得
         current_backend = self._current_backend_name()
-        cur_cli = self._get_or_create_client(current_backend)
-        cur_model = getattr(cur_cli, 'model_name', None)
 
         if self._last_prompt is None or prompt != self._last_prompt:
             # プロンプトが変わった → デフォルトに戻す（今回が1回目）
@@ -161,9 +158,7 @@ class BackendManager:
         out = self._run_llm_cli(prompt)
 
         # 状態更新
-        cur_cli2 = self._get_or_create_client(self._current_backend_name())
         self._last_prompt = prompt
-        self._last_model = getattr(cur_cli2, 'model_name', None)
         self._last_backend = self._current_backend_name()
         return out
 

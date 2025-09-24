@@ -3,7 +3,7 @@ Tests for GitHub client functionality.
 """
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from github import Github, Repository, Issue, PullRequest
 from github.GithubException import GithubException
 

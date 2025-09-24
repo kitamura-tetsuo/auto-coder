@@ -4,7 +4,6 @@ Tests for fix-to-pass-tests mode.
 
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-from unittest.mock import Mock
 
 from src.auto_coder.automation_engine import AutomationEngine
 

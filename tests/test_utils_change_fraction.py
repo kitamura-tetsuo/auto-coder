@@ -1,5 +1,3 @@
-import pytest
-
 from src.auto_coder.utils import change_fraction
 
 

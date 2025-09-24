@@ -1,7 +1,10 @@
-import types
+import json
+import os
 from unittest.mock import Mock, patch
 
+from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.utils import CommandExecutor
 
 
 def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
@@ -41,19 +44,7 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
         # Actions should record LLM response in a non-commenting way
         assert any(a.startswith("LLM response:") or a.startswith("ACTION_SUMMARY:") for a in actions)
 
-"""
-Tests for automation engine functionality.
-"""
-
-import pytest
-import json
-import os
-from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime
-
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.utils import CommandExecutor, CommandResult
-from src.auto_coder.automation_config import AutomationConfig
+"""Tests for automation engine functionality."""
 
 
 class TestAutomationEngine:
@@ -699,6 +690,7 @@ class TestAutomationEngine:
         """Test PR actions execution."""
         # Setup
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
+        assert isinstance(engine, AutomationEngine)
 
 
     @patch('src.auto_coder.automation_engine.CommandExecutor.run_command')
@@ -1392,8 +1384,8 @@ class TestAutomationEngineExtended:
         with patch.object(engine, '_handle_pr_merge') as mock_handle_merge, \
              patch.object(engine, '_apply_pr_actions_directly') as mock_apply_actions:
             mock_handle_merge.return_value = [
-                f"All GitHub Actions checks passed for PR #999",
-                f"Pushed updated branch for PR #999",
+                "All GitHub Actions checks passed for PR #999",
+                "Pushed updated branch for PR #999",
                 AutomationEngine.FLAG_SKIP_ANALYSIS
             ]
 
@@ -1833,6 +1825,7 @@ class TestPackageLockConflictResolution:
 
         # Execute
         actions = engine._resolve_package_lock_conflicts(pr_data, conflict_info)
+        assert any("package-lock.json" in action for action in actions)
 
         # Assert: npm/yarn install が functions ディレクトリで実行されている
         called_cmds = [(args[0], kwargs.get('cwd')) for args, kwargs in mock_run_command.call_args_list]
