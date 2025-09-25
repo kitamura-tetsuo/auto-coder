@@ -18,6 +18,9 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
+VERBOSE_ENV_FLAG = "AUTOCODER_VERBOSE"
+
+
 @dataclass
 class CommandResult:
     """Result of a command execution."""
@@ -232,9 +235,20 @@ class CommandExecutor:
 
         command_display = shlex.join(cmd) if cmd else ''
         should_stream = cls._should_stream_output(stream_output)
-        logger.debug(
+        log_message = (
             f"Executing command (timeout={timeout}s, stream={should_stream}): {command_display}"
         )
+
+        verbose_requested = os.environ.get(VERBOSE_ENV_FLAG, "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+
+        if verbose_requested:
+            logger.info(log_message)
+        else:
+            logger.debug(log_message)
 
         try:
             if should_stream:

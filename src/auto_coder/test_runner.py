@@ -166,6 +166,9 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
             # Extract the first failed test file from the output
             first_failed_test = extract_first_failed_test(result.stdout, result.stderr)
             if first_failed_test:
+                logger.info(
+                    f"Detected failing test file {first_failed_test}; rerunning targeted script"
+                )
                 return run_local_tests(config, test_file=first_failed_test)
 
         return {
@@ -201,6 +204,9 @@ def apply_workspace_test_fix(
     try:
         error_summary = extract_important_errors(test_result)
         if not error_summary:
+            logger.info(
+                "Skipping LLM workspace fix because no actionable errors were extracted"
+            )
             return WorkspaceFixResult(
                 summary="No actionable errors found in local test output",
                 raw_response=None,
@@ -224,8 +230,14 @@ def apply_workspace_test_fix(
 
         # Use the LLM client/manager to run the prompt
         if hasattr(llm_client, 'run_test_fix_prompt') and callable(getattr(llm_client, 'run_test_fix_prompt')):
+            logger.info(
+                f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)"
+            )
             response = llm_client.run_test_fix_prompt(fix_prompt)
         else:
+            logger.info(
+                f"Requesting LLM workspace fix using backend {backend} model {model}"
+            )
             response = llm_client._run_llm_cli(fix_prompt)
 
         backend, model = _extract_backend_model(llm_client)
@@ -235,6 +247,10 @@ def apply_workspace_test_fix(
             summary = first_line[: config.MAX_RESPONSE_SIZE]
         else:
             summary = "LLM produced no response"
+
+        logger.info(
+            f"LLM workspace fix summary: {summary if summary else '<empty response>'}"
+        )
 
         return WorkspaceFixResult(
             summary=summary,
@@ -268,6 +284,7 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
     # Track previous test output and the error summary given to LLM (from last completed test run)
     # Cache the latest post-fix test result to avoid redundant runs in the next loop
     cached_test_result: Optional[Dict[str, Any]] = None
+    cached_result_attempt: Optional[int] = None
 
     # Track the test file that is currently being fixed
     current_test_file: Optional[str] = None
@@ -286,6 +303,12 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
         if cached_test_result is not None:
             test_result = cached_test_result
             cached_test_result = None
+            attempt_label = cached_result_attempt if cached_result_attempt is not None else attempt
+            target_label = current_test_file or "ALL_TESTS"
+            logger.info(
+                f"Reusing cached post-fix test result from attempt {attempt_label} for {target_label}"
+            )
+            cached_result_attempt = None
         else:
             attempt += 1
             summary['attempts'] = attempt
@@ -295,6 +318,9 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             current_test_file = test_result.get('test_file')
         if test_result['success']:
             if current_test_file is not None:
+                logger.info(
+                    f"Targeted test {current_test_file} passed; clearing focus before rerunning full suite"
+                )
                 current_test_file = None
                 continue
             msg = f"Local tests passed on attempt {attempt}"
@@ -367,10 +393,11 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             if max_change < 0.10:
                 # Consider this as insufficient change; skip commit and ask LLM again next loop
                 info = "Change below 10% threshold; skipping commit and retrying"
-                logger.info(info)
+                logger.info(f"{info} (max change {max_change * 100:.2f}%)")
                 summary['messages'].append(info)
                 # Use this post-fix test result as the starting point for the next loop
                 cached_test_result = post_result
+                cached_result_attempt = attempt
                 # Stop if finite limit reached
                 try:
                     if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
@@ -381,9 +408,9 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
                 continue
             else:
                 info = f"Significant change detected ({max_change:.2%}); committing and continuing"
-                logger.info(info)
-                summary['messages'].append(info)
-                
+            logger.info(info)
+            summary['messages'].append(info)
+
 
         if cleanup_pending:
             cleanup_llm_task_file()
@@ -410,6 +437,9 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
         # If tests passed, mark success and return
         if post_result['success']:
             if current_test_file is not None:
+                logger.info(
+                    f"Targeted test {current_test_file} passed after LLM fix; rerunning full suite"
+                )
                 current_test_file = None
                 continue
             summary['success'] = True
@@ -417,10 +447,12 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
 
         # Cache the failing post-fix result for the next loop to avoid re-running before LLM edits
         cached_test_result = post_result
+        cached_result_attempt = attempt
 
         # Stop if finite limit reached
         try:
             if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
+                logger.info(f"Reached attempt limit ({attempts_limit}); exiting fix loop")
                 break
         except Exception:
             # If attempts_limit is not a number, treat as unlimited
