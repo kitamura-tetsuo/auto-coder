@@ -17,7 +17,7 @@ wheels = [
 
 [[package]]
 name = "auto-coder"
-version = "2025.9.25.2+g6a67d8d"
+version = "2025.9.26+g7514d80"
 source = { editable = "." }
 dependencies = [
     { name = "click", version = "8.1.8", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
