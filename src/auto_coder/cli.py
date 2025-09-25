@@ -21,6 +21,7 @@ from .git_utils import get_current_repo_name, is_git_repository
 from .auth_utils import get_github_token, get_auth_status
 from .logger_config import get_logger, setup_logger
 from .update_manager import maybe_run_auto_update, record_startup_options
+from .utils import VERBOSE_ENV_FLAG
 
 # Load environment variables
 load_dotenv()
@@ -380,6 +381,7 @@ def main() -> None:
 @click.option('--only', 'only_target', help='Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
+@click.option('--verbose', is_flag=True, help='Enable verbose logging and detailed command traces')
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -397,6 +399,7 @@ def process_issues(
     only_target: Optional[str],
     log_level: str,
     log_file: Optional[str],
+    verbose: bool,
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
@@ -405,8 +408,15 @@ def process_issues(
     models = _build_models_map(model_gemini, model_qwen, model_auggie)
     primary_model = models.get(primary_backend)
 
-    # Setup logger with specified options
-    setup_logger(log_level=log_level, log_file=log_file)
+    # Configure verbose flag and setup logger with specified options
+    if verbose:
+        os.environ[VERBOSE_ENV_FLAG] = "1"
+        effective_log_level = "DEBUG"
+    else:
+        os.environ.pop(VERBOSE_ENV_FLAG, None)
+        effective_log_level = log_level
+
+    setup_logger(log_level=effective_log_level, log_file=log_file)
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
@@ -425,7 +435,8 @@ def process_issues(
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
-    logger.info(f"Log level: {log_level}")
+    logger.info(f"Log level: {effective_log_level}")
+    logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
 
     # Explicitly show base branch update policy for PR checks failure
@@ -440,6 +451,7 @@ def process_issues(
     click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
+    click.echo(f"Verbose logging: {verbose}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -526,6 +538,7 @@ def process_issues(
 @click.option('--model-auggie', help='Model to use when backend=auggie (defaults to GPT-5)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
+@click.option('--verbose', is_flag=True, help='Enable verbose logging and detailed command traces')
 def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -537,7 +550,8 @@ def create_feature_issues(
     model_qwen: Optional[str],
     model_auggie: Optional[str],
     log_level: str,
-    log_file: Optional[str]
+    log_file: Optional[str],
+    verbose: bool,
 ) -> None:
     """Analyze repository and create feature enhancement issues."""
 
@@ -546,8 +560,15 @@ def create_feature_issues(
     models = _build_models_map(model_gemini, model_qwen, model_auggie)
     primary_model = models.get(primary_backend)
 
-    # Setup logger with specified options
-    setup_logger(log_level=log_level, log_file=log_file)
+    # Configure verbose flag and setup logger with specified options
+    if verbose:
+        os.environ[VERBOSE_ENV_FLAG] = "1"
+        effective_log_level = "DEBUG"
+    else:
+        os.environ.pop(VERBOSE_ENV_FLAG, None)
+        effective_log_level = log_level
+
+    setup_logger(log_level=effective_log_level, log_file=log_file)
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
@@ -561,12 +582,14 @@ def create_feature_issues(
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ('gemini', 'qwen', 'auggie'):
         logger.info(f"Using model: {primary_model}")
-    logger.info(f"Log level: {log_level}")
+    logger.info(f"Log level: {effective_log_level}")
+    logger.info(f"Verbose logging: {verbose}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ('gemini', 'qwen', 'auggie'):
         click.echo(f"Using model: {primary_model}")
+    click.echo(f"Verbose logging: {verbose}")
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -611,6 +634,7 @@ def create_feature_issues(
 @click.option('--dry-run', is_flag=True, help='Run without making changes (LLM edits simulated)')
 @click.option('--log-level', default='INFO', type=click.Choice(['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']), help='Set logging level')
 @click.option('--log-file', help='Log file path (optional)')
+@click.option('--verbose', is_flag=True, help='Enable verbose logging and detailed command traces')
 def fix_to_pass_tests_command(
     backends: tuple[str, ...],
     gemini_api_key: Optional[str],
@@ -623,6 +647,7 @@ def fix_to_pass_tests_command(
     dry_run: bool,
     log_level: str,
     log_file: Optional[str],
+    verbose: bool,
 ) -> None:
     """Run local tests and repeatedly request LLM fixes until tests pass.
 
@@ -633,7 +658,14 @@ def fix_to_pass_tests_command(
     models = _build_models_map(model_gemini, model_qwen, model_auggie)
     primary_model = models.get(primary_backend)
 
-    setup_logger(log_level=log_level, log_file=log_file)
+    if verbose:
+        os.environ[VERBOSE_ENV_FLAG] = "1"
+        effective_log_level = "DEBUG"
+    else:
+        os.environ.pop(VERBOSE_ENV_FLAG, None)
+        effective_log_level = log_level
+
+    setup_logger(log_level=effective_log_level, log_file=log_file)
 
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
@@ -668,6 +700,7 @@ def fix_to_pass_tests_command(
     if primary_backend in ('gemini', 'qwen', 'auggie'):
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Dry run mode: {dry_run}")
+    click.echo(f"Verbose logging: {verbose}")
 
     try:
         result = engine.fix_to_pass_tests(max_attempts=max_attempts)
