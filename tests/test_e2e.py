@@ -14,6 +14,7 @@ from src.auto_coder.cli import main
 from src.auto_coder.github_client import GitHubClient
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.utils import CommandResult
 
 
 class TestE2E:
@@ -410,6 +411,145 @@ class TestE2E:
             mock_engine_class.assert_called_once()
             assert mock_engine_class.call_args.kwargs['dry_run'] is True
             mock_engine.run.assert_called_once_with('test/repo')
+
+    def test_cli_process_issues_qwen_prefers_config_providers(self, tmp_path):
+        """Ensure CLI wires QwenClient with configured API keys before OAuth."""
+        runner = CliRunner()
+        config_path = tmp_path / "qwen-providers.toml"
+        config_path.write_text(
+            """
+            [[qwen.providers]]
+            name = "modelstudio"
+            api_key = "dashscope-xyz"
+
+            [[qwen.providers]]
+            name = "openrouter"
+            api_key = "openrouter-123"
+            model = "qwen/qwen3-coder:free"
+            """.strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {'AUTO_CODER_QWEN_CONFIG': str(config_path)}), \
+             patch('src.auto_coder.cli.GitHubClient') as mock_github_client_class, \
+             patch('src.auto_coder.cli.AutomationEngine') as mock_engine_class, \
+             patch('src.auto_coder.cli.BackendManager') as mock_manager_class, \
+             patch('src.auto_coder.cli.CodexClient') as mock_codex_client_class, \
+             patch('src.auto_coder.cli.CodexMCPClient'), \
+             patch('src.auto_coder.cli.GeminiClient'), \
+             patch('src.auto_coder.cli.check_qwen_cli_or_fail') as mock_check_qwen, \
+             patch('src.auto_coder.qwen_client.CommandExecutor.run_command') as mock_run_command, \
+             patch('src.auto_coder.qwen_client.subprocess.run') as mock_subprocess_run:
+
+            mock_manager_class.return_value = SimpleNamespace(close=lambda: None)
+            mock_engine = Mock()
+            mock_engine.run.return_value = {'repository': 'test/repo'}
+            mock_engine_class.return_value = mock_engine
+            mock_github_client_class.return_value = Mock()
+            mock_codex_client_class.return_value = SimpleNamespace(kind='codex', model_name='codex')
+            mock_check_qwen.return_value = None
+            mock_subprocess_run.return_value.returncode = 0
+            mock_run_command.return_value = CommandResult(True, "", "", 0)
+
+            result = runner.invoke(
+                main,
+                [
+                    'process-issues',
+                    '--repo', 'test/repo',
+                    '--github-token', 'token',
+                    '--backend', 'qwen',
+                    '--dry-run',
+                ],
+            )
+
+            assert result.exit_code == 0
+            backend_kwargs = mock_manager_class.call_args.kwargs
+            assert 'qwen' in backend_kwargs['factories']
+
+            qwen_factory = backend_kwargs['factories']['qwen']
+            qwen_instance = qwen_factory()
+
+            output = qwen_instance._run_qwen_cli("hello")
+
+            assert output == ""
+            assert mock_run_command.call_count == 1
+            first_env = mock_run_command.call_args_list[0].kwargs['env']
+            assert first_env['OPENAI_API_KEY'] == 'dashscope-xyz'
+            assert first_env['OPENAI_BASE_URL'] == 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+            assert first_env['OPENAI_MODEL'] == 'qwen3-coder-plus'
+
+    def test_cli_process_issues_qwen_exhausts_api_keys_then_oauth(self, tmp_path):
+        """Full fallback chain: configured keys are tried before OAuth last."""
+        runner = CliRunner()
+        config_path = tmp_path / "qwen-providers.toml"
+        config_path.write_text(
+            """
+            [[qwen.providers]]
+            name = "modelstudio"
+            api_key = "dashscope-xyz"
+
+            [[qwen.providers]]
+            name = "openrouter"
+            api_key = "openrouter-123"
+            model = "qwen/qwen3-coder:free"
+            """.strip()
+            + "\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {'AUTO_CODER_QWEN_CONFIG': str(config_path)}), \
+             patch('src.auto_coder.cli.GitHubClient') as mock_github_client_class, \
+             patch('src.auto_coder.cli.AutomationEngine') as mock_engine_class, \
+             patch('src.auto_coder.cli.BackendManager') as mock_manager_class, \
+             patch('src.auto_coder.cli.CodexClient') as mock_codex_client_class, \
+             patch('src.auto_coder.cli.CodexMCPClient'), \
+             patch('src.auto_coder.cli.GeminiClient'), \
+             patch('src.auto_coder.cli.check_qwen_cli_or_fail') as mock_check_qwen, \
+             patch('src.auto_coder.qwen_client.CommandExecutor.run_command') as mock_run_command, \
+             patch('src.auto_coder.qwen_client.subprocess.run') as mock_subprocess_run:
+
+            mock_manager_class.return_value = SimpleNamespace(close=lambda: None)
+            mock_engine = Mock()
+            mock_engine.run.return_value = {'repository': 'test/repo'}
+            mock_engine_class.return_value = mock_engine
+            mock_github_client_class.return_value = Mock()
+            mock_codex_client_class.return_value = SimpleNamespace(kind='codex', model_name='codex')
+            mock_check_qwen.return_value = None
+            mock_subprocess_run.return_value.returncode = 0
+            mock_run_command.side_effect = [
+                CommandResult(False, "Rate limit", "", 1),
+                CommandResult(False, "Rate limit", "", 1),
+                CommandResult(True, "OAuth OK", "", 0),
+            ]
+
+            result = runner.invoke(
+                main,
+                [
+                    'process-issues',
+                    '--repo', 'test/repo',
+                    '--github-token', 'token',
+                    '--backend', 'qwen',
+                    '--dry-run',
+                ],
+            )
+
+            assert result.exit_code == 0
+            backend_kwargs = mock_manager_class.call_args.kwargs
+            qwen_factory = backend_kwargs['factories']['qwen']
+            qwen_instance = qwen_factory()
+
+            output = qwen_instance._run_qwen_cli("hello")
+
+            assert output == "OAuth OK"
+            assert mock_run_command.call_count == 3
+            first_env = mock_run_command.call_args_list[0].kwargs['env']
+            second_env = mock_run_command.call_args_list[1].kwargs['env']
+            third_env = mock_run_command.call_args_list[2].kwargs['env']
+
+            assert first_env['OPENAI_API_KEY'] == 'dashscope-xyz'
+            assert second_env['OPENAI_API_KEY'] == 'openrouter-123'
+            assert 'OPENAI_API_KEY' not in third_env
 
     def test_cli_integration_process_issues_no_skip_main_update(self, mock_github_responses, mock_gemini_responses):
         """Test CLI integration for process-issues with --no-skip-main-update flag."""

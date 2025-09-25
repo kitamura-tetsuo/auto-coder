@@ -11,12 +11,14 @@ from __future__ import annotations
 import os
 import json
 import subprocess
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
 from .utils import CommandExecutor
 from .prompt_loader import render_prompt
+from .qwen_provider_config import load_qwen_provider_configs
 
 logger = get_logger(__name__)
 
@@ -38,6 +40,10 @@ class QwenClient:
         self.openai_api_key = openai_api_key
         self.openai_base_url = openai_base_url
 
+        self._provider_chain: List[_QwenProviderOption] = self._build_provider_chain()
+        self._active_provider_index: int = 0
+        self._last_used_model: Optional[str] = self.model_name
+
         # Verify qwen CLI is available
         try:
             result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
@@ -49,11 +55,13 @@ class QwenClient:
     # ----- Model switching (keep simple; Qwen may not need to switch models) -----
     def switch_to_conflict_model(self) -> None:
         # Keep same model by default. In future, allow switching to a lighter model.
-        logger.debug("QwenClient.switch_to_conflict_model: no-op (using same model)")
+        self.model_name = self.conflict_model
+        logger.debug("QwenClient.switch_to_conflict_model: active model -> %s", self.model_name)
 
     def switch_to_default_model(self) -> None:
-        # No-op; self.model_name already default unless we implement dynamic switching
-        logger.debug("QwenClient.switch_to_default_model: no-op (using same model)")
+        # Restore to the initially configured default model.
+        self.model_name = self.default_model
+        logger.debug("QwenClient.switch_to_default_model: active model -> %s", self.model_name)
 
     # ----- Helpers -----
     def _escape_prompt(self, prompt: str) -> str:
@@ -68,64 +76,146 @@ class QwenClient:
         """
         escaped_prompt = self._escape_prompt(prompt)
 
-        # Prefer explicit -m/--model if available; also set OPENAI_MODEL for OpenAI-compatible providers
-        env = os.environ.copy()
-        if self.model_name:
-            env.setdefault("OPENAI_MODEL", self.model_name)
-        if self.openai_api_key:
-            env["OPENAI_API_KEY"] = self.openai_api_key
-        if self.openai_base_url:
-            env["OPENAI_BASE_URL"] = self.openai_base_url
+        if not self._provider_chain:
+            raise RuntimeError("No Qwen providers are configured")
 
-        # Non-interactive execution: use -p/--prompt
-        # If a model is provided, pass it explicitly via -m for Qwen OAuth mode; env OPENAI_MODEL works for OpenAI-compatible mode
-        if self.model_name:
-            cmd = [
-                "qwen",
-                "-y",
-                "-m",
-                self.model_name,
-                "-p",
-                escaped_prompt,
-            ]
-        else:
-            cmd = [
-                "qwen",
-                "-y",
-                "-p",
-                escaped_prompt,
-            ]
+        usage_errors: List[str] = []
+        start_index = self._active_provider_index
+
+        for offset in range(len(self._provider_chain)):
+            provider_index = (start_index + offset) % len(self._provider_chain)
+            provider = self._provider_chain[provider_index]
+
+            try:
+                output = self._execute_with_provider(provider, escaped_prompt, prompt)
+                self._active_provider_index = provider_index
+                self._last_used_model = provider.model or self.model_name
+                self.model_name = self._last_used_model or self.model_name
+                return output
+            except AutoCoderUsageLimitError as exc:
+                usage_errors.append(f"{provider.display_name}: {str(exc).strip()}")
+                logger.warning(
+                    "Qwen provider '%s' hit usage limit. Trying next provider.",
+                    provider.display_name,
+                )
+                continue
+
+        if usage_errors:
+            aggregated = " | ".join(usage_errors)
+            raise AutoCoderUsageLimitError(
+                f"All Qwen providers reached usage limits: {aggregated}"
+            )
+
+        raise RuntimeError("Qwen providers exhausted without usable response")
+
+    def _execute_with_provider(
+        self,
+        provider: "_QwenProviderOption",
+        escaped_prompt: str,
+        original_prompt: str,
+    ) -> str:
+        env = os.environ.copy()
+
+        model_to_use = provider.model or self.default_model
+
+        # Reset OPENAI_* values before applying overrides.
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("OPENAI_BASE_URL", None)
+        env.pop("OPENAI_MODEL", None)
+
+        if provider.api_key:
+            env["OPENAI_API_KEY"] = provider.api_key
+        if provider.base_url:
+            env["OPENAI_BASE_URL"] = provider.base_url
+        if model_to_use:
+            env["OPENAI_MODEL"] = model_to_use
+
+        cmd = ["qwen", "-y"]
+        if model_to_use:
+            cmd.extend(["-m", model_to_use])
+        cmd.extend(["-p", escaped_prompt])
 
         logger.warning("LLM invocation: qwen CLI is being called. Keep LLM calls minimized.")
-        logger.debug(f"Running qwen CLI with prompt length: {len(prompt)} characters")
-        if self.model_name:
-            logger.info("🤖 Running: qwen -m %s -p [prompt]" % self.model_name)
-        else:
-            logger.info("🤖 Running: qwen -p [prompt]")
+        logger.debug("Running qwen CLI with prompt length: %d characters", len(original_prompt))
+        logger.info(
+            "🤖 Running (%s): qwen %s",
+            provider.display_name,
+            "-m %s -p [prompt]" % model_to_use if model_to_use else "-p [prompt]",
+        )
         logger.info("=" * 60)
 
         result = CommandExecutor.run_command(
             cmd,
             stream_output=True,
             check_success=False,
-            env=env
+            env=env,
         )
         logger.info("=" * 60)
+
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         combined_parts = [part for part in (stdout, stderr) if part]
         full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
         full_output = full_output.strip()
-        low = full_output.lower()
+
+        if self._is_usage_limit(full_output, result.returncode):
+            raise AutoCoderUsageLimitError(full_output)
+
         if result.returncode != 0:
-            if ("rate limit" in low) or ("quota" in low) or ("429" in low):
-                raise AutoCoderUsageLimitError(full_output)
             raise RuntimeError(
                 f"qwen CLI failed with return code {result.returncode}\n{full_output}"
             )
-        if ("rate limit" in low) or ("quota" in low):
-            raise AutoCoderUsageLimitError(full_output)
+
         return full_output
+
+    @staticmethod
+    def _is_usage_limit(message: str, returncode: int) -> bool:
+        low = message.lower()
+        if "rate limit" in low or "quota" in low:
+            return True
+        if returncode != 0 and ("429" in low or "too many requests" in low):
+            return True
+        return False
+
+    def _build_provider_chain(self) -> List["_QwenProviderOption"]:
+        providers: List[_QwenProviderOption] = []
+
+        if self.openai_api_key or self.openai_base_url:
+            providers.append(
+                _QwenProviderOption(
+                    name="custom-openai",
+                    display_name="Custom OpenAI-compatible",
+                    api_key=self.openai_api_key,
+                    base_url=self.openai_base_url,
+                    model=self.model_name,
+                )
+            )
+
+        configured = load_qwen_provider_configs()
+        for cfg in configured:
+            providers.append(
+                _QwenProviderOption(
+                    name=cfg.name,
+                    display_name=cfg.description or cfg.name,
+                    api_key=cfg.api_key,
+                    base_url=cfg.base_url,
+                    model=cfg.model or self.default_model,
+                )
+            )
+
+        # Always allow falling back to OAuth as the last resort so that API keys are
+        # consumed before the default shared pool is hit.
+        providers.append(
+            _QwenProviderOption(
+                name="qwen-oauth",
+                display_name="Qwen OAuth",
+                api_key=None,
+                base_url=None,
+                model=self.model_name,
+            )
+        )
+
+        return providers
 
 
     def _run_gemini_cli(self, prompt: str) -> str:
@@ -170,3 +260,11 @@ class QwenClient:
             return []
         except json.JSONDecodeError:
             return []
+@dataclass
+class _QwenProviderOption:
+    name: str
+    display_name: str
+    api_key: Optional[str]
+    base_url: Optional[str]
+    model: Optional[str]
+

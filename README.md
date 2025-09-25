@@ -71,6 +71,26 @@ cp .env.example .env
   - `qwen` を一度実行し、ブラウザで qwen.ai アカウント認証すると自動で利用可能になります。
   - 途中で `/auth` コマンドを実行すると Qwen OAuth に切替できます。
   - 参考: Qwen Code 公式リポジトリ（Authorization セクション）: https://github.com/QwenLM/qwen-code
+- リミット到達時の自動フォールバック:
+  - Auto-Coder は設定済みの OpenAI 互換エンドポイントを優先的に使用し、すべての API キーが枯渇した場合にのみ Qwen OAuth に戻ります。
+  - 設定ファイルの場所: `~/.auto-coder/qwen-providers.toml`（`AUTO_CODER_QWEN_CONFIG` でパスを上書き可、`AUTO_CODER_CONFIG_DIR` でディレクトリ指定も可）。
+  - TOML 例:
+
+    ```toml
+    [[qwen.providers]]
+    # Option 1: Alibaba Cloud ModelStudio
+    name = "modelstudio"
+    api_key = "dashscope-..."  # 取得した API キーを設定
+    # base_url と model は省略すると既定値（dashscope互換 / qwen3-coder-plus）
+
+    [[qwen.providers]]
+    # Option 2: OpenRouter Free Tier
+    name = "openrouter"
+    api_key = "openrouter-..."
+    model = "qwen/qwen3-coder:free"  # 省略時は既定値を使用
+    ```
+
+  - 記述順にフォールバックします（API キー → OAuth の順番）。API キーのみ記入すれば既定 URL/モデルが適用され、実行時に `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` が自動注入されます。
 - OpenAI 互換モード:
   - 以下の環境変数を設定して利用できます。
     - `OPENAI_API_KEY`（必須）
