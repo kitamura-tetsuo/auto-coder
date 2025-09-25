@@ -4,7 +4,7 @@
 
 application:
   name: "Auto-Coder"
-  version: "2025.9.24.18+g7f4f167"
+  version: "2025.9.25+g594de48"
   description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
 features:
@@ -720,6 +720,37 @@ deployment:
         - "tests/test_llm_cli_neutral.py::test_gemini_client_llm_alias"
         - "tests/test_llm_cli_neutral.py::test_qwen_client_llm_alias"
         - "tests/test_llm_cli_neutral.py::test_codex_client_llm_alias"
+
+    provider_fallback:
+      name: "Qwen OAuth usage limit fallback"
+      description: |
+        Prefer configured OpenAI-compatible providers (ModelStudio, OpenRouter, etc.)
+        before falling back to the shared Qwen OAuth pool when usage limits occur.
+      configuration:
+        files:
+          - path: "~/.auto-coder/qwen-providers.toml"
+            description: |
+              TOML file defining fallback providers. Each entry supplies ``name`` and
+              ``api_key``; known providers auto-fill ``base_url``/``model``.
+          - env: "AUTO_CODER_QWEN_CONFIG"
+            description: "Override the exact config file path"
+          - env: "AUTO_CODER_CONFIG_DIR"
+            description: "Override the directory that contains qwen-providers.toml"
+      behavior:
+        - "Providers are attempted in file order before OAuth"
+        - "OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL are injected per provider"
+        - "Successful provider becomes the active default for subsequent calls"
+        - "Aggregates AutoCoderUsageLimitError details if all providers are exhausted"
+      implementation:
+        - "src/auto_coder/qwen_client.py"
+        - "src/auto_coder/qwen_provider_config.py"
+      tests:
+        - "tests/test_qwen_provider_config.py::test_load_qwen_provider_configs_defaults"
+        - "tests/test_qwen_provider_config.py::test_load_qwen_provider_configs_skips_missing_key"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_prefers_configured_api_keys_before_oauth"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_fallback_to_openrouter"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_fallbacks_to_oauth_after_api_keys"
+        - "tests/test_qwen_client_fallback.py::test_qwen_client_all_limits_raise"
 
     backend_manager:
       name: "Cyclic Multi-Backend Manager"

@@ -15,6 +15,8 @@ class AutomationConfig:
     MAX_PR_DIFF_SIZE: int = 2000
     MAX_PROMPT_SIZE: int = 1000
     MAX_RESPONSE_SIZE: int = 200
+    max_issues_per_run: int = -1
+    max_prs_per_run: int = -1
     # Default max attempts for fix loops
     # Note: tests expect strict default value of 3
     MAX_FIX_ATTEMPTS: int = 3
