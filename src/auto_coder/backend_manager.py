@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
-from .logger_config import get_logger
+from .logger_config import get_logger, log_calls
 from .exceptions import AutoCoderUsageLimitError
 
 logger = get_logger(__name__)
@@ -99,6 +99,7 @@ class BackendManager:
         logger.info(f"BackendManager: switched back to default backend -> {self._current_backend_name()}")
 
     # ---------- 直接互換メソッド ----------
+    @log_calls
     def _run_llm_cli(self, prompt: str) -> str:
         """通常の実行（使用料制限時は循環的リトライ）。"""
         attempts = 0
@@ -133,6 +134,7 @@ class BackendManager:
         raise RuntimeError("No backend available to run prompt")
 
     # ---------- apply_workspace_test_fix 専用 ----------
+    @log_calls
     def run_test_fix_prompt(self, prompt: str) -> str:
         """apply_workspace_test_fix 用の実行。
         - 同一モデル・同一プロンプトが3回連続で与えられたら次のバックエンドへ切替

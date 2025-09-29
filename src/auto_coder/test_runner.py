@@ -12,7 +12,7 @@ from datetime import datetime
 
 from .utils import CommandExecutor, change_fraction, extract_first_failed_test, log_action
 from .automation_config import AutomationConfig
-from .logger_config import get_logger
+from .logger_config import get_logger, log_calls
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
 
@@ -98,6 +98,7 @@ def _write_llm_output_log(
     return log_path
 
 
+@log_calls
 def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
     """Derive backend/model identifiers from the provided LLM client."""
 
@@ -190,7 +191,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
             'test_file': None,
         }
 
-
+@log_calls
 def apply_workspace_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
@@ -511,6 +512,7 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
     return f"Auto-Coder: {base}"
 
 
+@log_calls
 def extract_important_errors(test_result: Dict[str, Any]) -> str:
     """Extract important error information from test output.
 

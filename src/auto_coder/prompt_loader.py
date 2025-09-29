@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from .logger_config import get_logger
+from .logger_config import get_logger, log_calls
 
 logger = get_logger(__name__)
 
@@ -71,7 +71,7 @@ def get_prompt_template(key: str, path: Optional[str] = None) -> str:
         raise ValueError(f"Prompt '{key}' must map to a string template")
     return template
 
-
+@log_calls
 def render_prompt(key: str, *, path: Optional[str] = None, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
     """Render a prompt template identified by key with provided parameters."""
     template_str = get_prompt_template(key, path=path)
