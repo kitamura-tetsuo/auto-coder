@@ -57,6 +57,10 @@ auto-coder = "auto_coder.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+
+[tool.setuptools.package-data]
+"auto_coder" = ["prompts.yaml"]
+
 [tool.black]
 line-length = 88
 target-version = ['py39']

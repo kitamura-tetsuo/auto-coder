@@ -25,7 +25,11 @@ def _resolve_path(path: Optional[str] = None) -> Path:
 
 
 def load_prompts(path: Optional[str] = None) -> Dict[str, Any]:
-    """Load prompts from YAML file, caching the parsed mapping."""
+    """Load prompts from YAML file, caching the parsed mapping.
+
+    要求: prompts のロードに失敗した場合は以降の処理が成立しないため、直ちに終了する。
+    そのため、本関数では致命的エラーとして SystemExit を送出する。
+    """
     resolved = _resolve_path(path)
     cached = _PROMPTS_CACHE.get(resolved)
     if cached is not None:
@@ -35,12 +39,18 @@ def load_prompts(path: Optional[str] = None) -> Dict[str, Any]:
         with resolved.open("r", encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
     except FileNotFoundError as exc:
-        raise FileNotFoundError(f"Prompt configuration file not found: {resolved}") from exc
+        msg = f"Prompt configuration file not found: {resolved}"
+        logger.critical(msg)
+        raise SystemExit(msg) from exc
     except yaml.YAMLError as exc:
-        raise ValueError(f"Failed to parse prompt configuration: {resolved}: {exc}") from exc
+        msg = f"Failed to parse prompt configuration: {resolved}: {exc}"
+        logger.critical(msg)
+        raise SystemExit(msg) from exc
 
     if not isinstance(data, dict):
-        raise ValueError(f"Prompt configuration root must be a mapping: {resolved}")
+        msg = f"Prompt configuration root must be a mapping: {resolved}"
+        logger.critical(msg)
+        raise SystemExit(msg)
 
     _PROMPTS_CACHE[resolved] = data
     return data
@@ -64,9 +74,18 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
 
 
 def get_prompt_template(key: str, path: Optional[str] = None) -> str:
-    """Return the raw prompt template string for the given key."""
+    """Return the raw prompt template string for the given key.
+
+    未定義キーの参照は以降の処理を継続しても意味がないため、致命的エラーとしてSystemExitで即終了する。
+    """
     prompts = load_prompts(path)
-    template = _traverse(prompts, key)
+    try:
+        template = _traverse(prompts, key)
+    except KeyError as exc:
+        # Fail-fast for missing prompt keys to avoid continuing with undefined instructions
+        msg = str(exc)
+        logger.critical(msg)
+        raise SystemExit(msg) from exc
     if not isinstance(template, str):
         raise ValueError(f"Prompt '{key}' must map to a string template")
     return template

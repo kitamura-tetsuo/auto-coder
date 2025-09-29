@@ -511,12 +511,17 @@ special_features:
       - "Central prompt templates defined in YAML with $placeholders"
       - "Functions render prompts via prompt_loader.render_prompt"
       - "Supports cache invalidation and custom prompt paths for tests"
+      - "Fail-fast: If prompts.yaml is missing or invalid, terminate immediately (SystemExit) with a clear error message"
     implementation:
-      - "prompt_loader.py parses YAML and caches templates"
+      - "prompt_loader.py parses YAML and caches templates; on failure, logs critical and raises SystemExit"
       - "pr_processor, issue_processor, test_runner, gemini_client, qwen_client, conflict_resolver consume YAML prompts"
+      - "packaging: prompts.yaml included in wheel/sdist via setuptools package-data; verified via pipx install presence in site-packages"
+
     tests:
       - "tests/test_prompt_loader.py::test_render_prompt_with_custom_path"
       - "tests/test_prompt_loader.py::test_get_prompt_template_uses_cache"
+      - "tests/test_prompt_loader.py::test_missing_prompt_file_causes_system_exit"
+      - "tests/test_prompt_loader.py::test_invalid_yaml_causes_system_exit"
       - "tests/test_e2e_prompt_yaml.py::test_pr_prompt_uses_yaml_template"
 
       - "AutomationEngine._resolve_merge_conflicts_with_gemini updated to use specialized resolver and sequential handling"

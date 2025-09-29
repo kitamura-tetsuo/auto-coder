@@ -1,6 +1,8 @@
 """Tests for prompt loader utilities."""
 
 import pytest
+from src.auto_coder import prompt_loader
+
 
 from src.auto_coder.prompt_loader import (
     DEFAULT_PROMPTS_PATH,
@@ -42,3 +44,31 @@ def test_get_prompt_template_uses_cache(temp_prompt_file):
 def test_default_prompt_file_exists():
     path = DEFAULT_PROMPTS_PATH
     assert path.exists(), f"Default prompt file missing at {path}"
+
+
+def test_missing_prompt_file_causes_system_exit(tmp_path):
+    prompt_loader.clear_prompt_cache()
+    original = prompt_loader.DEFAULT_PROMPTS_PATH
+    try:
+        missing = tmp_path / "no_such_prompts.yaml"
+        prompt_loader.DEFAULT_PROMPTS_PATH = missing
+        with pytest.raises(SystemExit):
+            # Any key is fine; loading will fail before lookup
+            render_prompt("any.key")
+    finally:
+        prompt_loader.DEFAULT_PROMPTS_PATH = original
+        prompt_loader.clear_prompt_cache()
+
+
+def test_invalid_yaml_causes_system_exit(tmp_path):
+    prompt_loader.clear_prompt_cache()
+    original = prompt_loader.DEFAULT_PROMPTS_PATH
+    try:
+        bad = tmp_path / "prompts.yaml"
+        bad.write_text(":-: not yaml\n", encoding="utf-8")
+        prompt_loader.DEFAULT_PROMPTS_PATH = bad
+        with pytest.raises(SystemExit):
+            render_prompt("any.key")
+    finally:
+        prompt_loader.DEFAULT_PROMPTS_PATH = original
+        prompt_loader.clear_prompt_cache()
