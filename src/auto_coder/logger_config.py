@@ -193,17 +193,17 @@ def log_calls(func):
     if iscoroutinefunction(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            logger.debug(f"CALL {where}({_format_args(func, args, kwargs)})")
+            logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = await func(*args, **kwargs)
-            logger.debug(f"RET  {where} -> {result!r}")
+            logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
         return wrapper
     else:
         @wraps(func)
         def wrapper(*args, **kwargs):
-            logger.debug(f"CALL {where}({_format_args(func, args, kwargs)})")
+            logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = func(*args, **kwargs)
-            logger.debug(f"RET  {where} -> {result!r}")
+            logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
         return wrapper
     

@@ -220,6 +220,7 @@ def apply_workspace_test_fix(
             error_summary=error_summary[: config.MAX_PROMPT_SIZE],
             test_command=test_result.get('command', 'pytest -q --maxfail=1'),
         )
+        logger.debug(            f"0"        )
 
         if dry_run:
             return WorkspaceFixResult(
@@ -228,25 +229,32 @@ def apply_workspace_test_fix(
                 backend=backend,
                 model=model,
             )
+        logger.debug(            f"0"        )
 
         # Use the LLM client/manager to run the prompt
         if hasattr(llm_client, 'run_test_fix_prompt') and callable(getattr(llm_client, 'run_test_fix_prompt')):
+            logger.debug(            f"0"        )
             logger.info(
                 f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)"
             )
             response = llm_client.run_test_fix_prompt(fix_prompt)
         else:
+            logger.debug(            f"0"        )
             logger.info(
                 f"Requesting LLM workspace fix using backend {backend} model {model}"
             )
             response = llm_client._run_llm_cli(fix_prompt)
 
+        logger.debug(            f"0"        )
+
         backend, model = _extract_backend_model(llm_client)
         raw_response = response.strip() if response and response.strip() else None
         if raw_response:
+            logger.debug(            f"0"        )
             first_line = raw_response.splitlines()[0]
             summary = first_line[: config.MAX_RESPONSE_SIZE]
         else:
+            logger.debug(            f"0"        )
             summary = "LLM produced no response"
 
         logger.info(
