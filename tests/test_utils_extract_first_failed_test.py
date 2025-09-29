@@ -95,3 +95,45 @@ def test_playwright_prefers_fail_over_pass_when_both_present():
     stderr = ""
     path = extract_first_failed_test(stdout, stderr)
     assert path == "e2e/new/fail-example.spec.ts"
+
+
+def test_stderr_is_prioritized_over_stdout(monkeypatch):
+    stdout = (
+        "  \u2713    1 [basic] › e2e/basic/pass-example.spec.ts:10:5 › ok\n"
+        "All tests passed\n"
+    )
+    stderr = "  ✘    1 [new] › e2e/new/fail-example.spec.ts:20:5 › broken\n"
+
+    failing_path = "e2e/new/fail-example.spec.ts"
+
+    monkeypatch.setattr(
+        os.path,
+        "exists",
+        lambda p: p == failing_path,
+    )
+
+    path = extract_first_failed_test(stdout, stderr)
+    assert path == failing_path
+
+
+def test_vitest_fail_line_extracts_test_ts(monkeypatch):
+    stdout = "  ✓ 22 tests passed"
+    stderr = textwrap.dedent(
+        """
+        2025-09-26 17:55:46.482 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+        2025-09-26 17:55:46.483 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - 
+        2025-09-26 17:55:46.483 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -  FAIL  |unit| src/tests/attachmentService.test.ts > attachmentService > listAttachments requires auth
+        2025-09-26 17:55:46.484 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - AssertionError: promise resolved "[]" instead of rejecting
+        2025-09-26 17:55:46.485 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - 
+        2025-09-26 17:55:46.495 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -  ❯ src/tests/attachmentService.test.ts:10:58
+        2025-09-26 17:55:46.499 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - 
+        2025-09-26 17:55:46.501 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+        """
+    )
+
+    target = "src/tests/attachmentService.test.ts"
+
+    monkeypatch.setattr(os.path, "exists", lambda p: p == target)
+
+    path = extract_first_failed_test(stdout, stderr)
+    assert path == target
