@@ -162,13 +162,32 @@ tests:
     Return a single concise line summarizing the change.
 
   commit_message: |-
-    You have just applied code changes to fix failing local tests.
-    Craft a concise commit subject (single line, <= 72 chars, imperative mood) summarizing the change.
+    You are an expert code reviewer and commit message generator.
 
-    Rules:
-    - Subject line only. No body, no backticks, no code blocks.
-    - Do NOT include commands like git commit/push.
-    - Prefer specifics (file/function/test) if clear from context.
+    Your task is to analyze the code changes in the current diff and write a high-quality Git commit message following these rules:
+
+    1. **Message format**:
+      - Use the conventional commits style: `<type>(<scope>): <summary>`
+      - Examples of `<type>`: feat, fix, refactor, chore, test, docs, style, perf
+      - `<scope>` should reflect the main affected module, package, or feature
+      - `<summary>` must be in imperative form, concise (< 72 chars), and describe *what the change does*, not *what you did*
+
+    2. **Body (optional but recommended)**:
+      - Provide 1–3 bullet points explaining **what** changed and **why**
+      - Mention key implementation decisions or side effects if any
+      - If the change fixes a bug or issue, briefly describe the cause and resolution
+
+    3. **Footer (optional)**:
+      - Include references like `Fixes #123` or `Refs #456` if applicable
+
+    4. **General principles**:
+      - Do not restate the diff or list every file.
+      - Avoid vague terms like "update code" or "fix some bugs."
+      - Prefer actionable and descriptive language such as "prevent null dereference in Yjs observer" or "optimize search indexing for large trees."
+
+    5. **Output format**:
+      - Provide the final commit message ready to use, with summary, body, and footer (if needed).
+      - Do not include explanations of your reasoning.
 
 gemini:
   pr_analysis: |-
