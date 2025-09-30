@@ -237,7 +237,7 @@ features:
           - "tests/test_utils_change_fraction.py::test_change_fraction_none_and_equal_cases"
 
       - name: "run_local_tests"
-        file: "src/auto_coder/test_runner.py"
+        file: "src/auto_coder/fix_to_pass_tests_runner.py"
         description: |
           Executes local tests via TEST_SCRIPT_PATH (scripts/test.sh) with no pytest fallback.
           Behavior:

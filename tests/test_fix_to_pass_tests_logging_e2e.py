@@ -5,7 +5,7 @@ from pathlib import Path
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.logger_config import setup_logger
-from src.auto_coder.test_runner import fix_to_pass_tests
+from src.auto_coder.fix_to_pass_tests_runner import fix_to_pass_tests
 
 
 class StubLLMClient:
@@ -24,6 +24,10 @@ class StubLLMClient:
         self.marker_path.write_text("applied", encoding="utf-8")
         self.invocations.append(prompt)
         return "Applied stub workspace fix"
+
+    def switch_to_default_backend(self) -> None:
+        """Stub method for BackendManager compatibility."""
+        pass
 
 
 def _write_test_script(script_path: Path, marker_dir: Path) -> None:
@@ -114,14 +118,14 @@ def test_fix_to_pass_tests_verbose_flow_logging_e2e(tmp_path):
     try:
         config = AutomationConfig()
         llm_marker = markers_dir / "llm_applied.txt"
-        llm_client = StubLLMClient(llm_marker)
+        llm_backend_manager = StubLLMClient(llm_marker)
 
-        result = fix_to_pass_tests(config, dry_run=False, max_attempts=5, llm_client=llm_client)
+        result = fix_to_pass_tests(config, dry_run=False, max_attempts=5, llm_backend_manager=llm_backend_manager)
 
         assert result["success"] is True
         assert result["attempts"] >= 3
         assert llm_marker.exists()
-        assert llm_client.invocations, "LLM should be invoked at least once"
+        assert llm_backend_manager.invocations, "LLM should be invoked at least once"
 
         log_text = log_file.read_text(encoding="utf-8")
         assert "Detected failing test file src/tests/unit/cursor/cursor-core.spec.ts" in log_text

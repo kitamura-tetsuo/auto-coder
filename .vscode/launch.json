@@ -15,9 +15,9 @@
                 "process-issues",
                 "--dry-run"
             ],
-            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
-                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         },
         {
@@ -30,9 +30,9 @@
             "args": [
                 "create-feature-issues"
             ],
-            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
-                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         },
         {
@@ -47,9 +47,9 @@
                 "--url",
                 "https://github.com/kitamura-tetsuo/outliner/actions/runs/17006383413/job/48216559181?pr=502"
             ],
-            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
-                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         },
         {
@@ -62,9 +62,9 @@
             "args": [
                 "auth-status"
             ],
-            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
-                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         },
         {
@@ -77,9 +77,9 @@
             "args": [
                 "process-issues"
             ],
-            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
-                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         },
         {
@@ -96,10 +96,12 @@
                 "--backend", "gemini",
                 "--backend", "codex-mcp",
                 "--backend", "codex",
-                "--backend", "auggie",            ],
-            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+                "--backend", "auggie",
+                "--model-auggie", "Claude Sonnet 4.5"
+            ],
+            "python": "${command:python.interpreterPath}",
             "env": {
-                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         },
         {
@@ -108,7 +110,7 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src3/outliner",
+            "cwd": "/workspace",
             "args": [
                 "fix-to-pass-tests",
                 "--backend", "qwen",
@@ -116,11 +118,12 @@
                 // "--backend", "codex-mcp",
                 "--backend", "codex",
                 "--backend", "auggie",
+                "--model-auggie", "Claude Sonnet 4.5",
                 "--max-attempts", "100000"
             ],
-            "python": "/home/ubuntu/src/auto-coder/venv/bin/python",
+            "python": "${command:python.interpreterPath}",
             "env": {
-                "PYTHONPATH": "/home/ubuntu/src/auto-coder/src"
+                "PYTHONPATH": "${workspaceFolder}/src"
             }
         }
     ]

@@ -1,9 +1,9 @@
-"""Test runner functionality for Auto-Coder automation engine."""
+"""Test execution functionality for Auto-Coder automation engine."""
 
 import csv
 import math
 import os
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
 import json
 import re
 from dataclasses import dataclass
@@ -15,6 +15,9 @@ from .automation_config import AutomationConfig
 from .logger_config import get_logger, log_calls
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
+
+if TYPE_CHECKING:
+    from .backend_manager import BackendManager
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -195,12 +198,12 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
 def apply_workspace_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
-    llm_client,
+    llm_backend_manager: "BackendManager",
     dry_run: bool = False,
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures."""
 
-    backend, model = _extract_backend_model(llm_client)
+    backend, model = _extract_backend_model(llm_backend_manager)
 
     try:
         error_summary = extract_important_errors(test_result)
@@ -231,23 +234,23 @@ def apply_workspace_test_fix(
             )
         logger.debug(            f"0"        )
 
-        # Use the LLM client/manager to run the prompt
-        if hasattr(llm_client, 'run_test_fix_prompt') and callable(getattr(llm_client, 'run_test_fix_prompt')):
+        # Use the LLM backend manager to run the prompt
+        if hasattr(llm_backend_manager, 'run_test_fix_prompt') and callable(getattr(llm_backend_manager, 'run_test_fix_prompt')):
             logger.debug(            f"0"        )
             logger.info(
                 f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)"
             )
-            response = llm_client.run_test_fix_prompt(fix_prompt)
+            response = llm_backend_manager.run_test_fix_prompt(fix_prompt)
         else:
             logger.debug(            f"0"        )
             logger.info(
                 f"Requesting LLM workspace fix using backend {backend} model {model}"
             )
-            response = llm_client._run_llm_cli(fix_prompt)
+            response = llm_backend_manager._run_llm_cli(fix_prompt)
 
         logger.debug(            f"0"        )
 
-        backend, model = _extract_backend_model(llm_client)
+        backend, model = _extract_backend_model(llm_backend_manager)
         raw_response = response.strip() if response and response.strip() else None
         if raw_response:
             logger.debug(            f"0"        )
@@ -276,7 +279,12 @@ def apply_workspace_test_fix(
         )
 
 
-def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attempts: Optional[int] = None, llm_client=None) -> Dict[str, Any]:
+def fix_to_pass_tests(
+    config: AutomationConfig,
+    dry_run: bool = False,
+    max_attempts: Optional[int] = None,
+    llm_backend_manager: Optional["BackendManager"] = None
+) -> Dict[str, Any]:
     """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
 
     If the LLM makes no edits (no changes to commit) in an iteration, raise an error and stop.
@@ -341,7 +349,7 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             return summary
 
         # Apply LLM-based fix
-        fix_response = apply_workspace_test_fix(config, test_result, llm_client, dry_run)
+        fix_response = apply_workspace_test_fix(config, test_result, llm_backend_manager, dry_run)
         action_msg = fix_response.summary
         summary['messages'].append(action_msg)
 
@@ -432,13 +440,14 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
             summary['messages'].append(errmsg)
             break
 
+        llm_backend_manager.switch_to_default_backend()
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
             config=config,
             error_summary=post_error_summary,
             action_summary=action_msg,
             attempt=attempt,
-            llm_client=llm_client,
+            llm_backend_manager=llm_backend_manager,
         )
         if not commit_msg:
             commit_msg = format_commit_message(config, action_msg, attempt)
@@ -474,19 +483,25 @@ def fix_to_pass_tests(config: AutomationConfig, dry_run: bool = False, max_attem
     return summary
 
 
-def generate_commit_message_via_llm(config: AutomationConfig, error_summary: str, action_summary: str, attempt: int, llm_client) -> str:
+def generate_commit_message_via_llm(
+    config: AutomationConfig,
+    error_summary: str,
+    action_summary: str,
+    attempt: int,
+    llm_backend_manager: Optional["BackendManager"]
+) -> str:
     """Use LLM to generate a concise commit message based on the fix context.
 
     Keeps the call minimal and instructs the model to output a single-line subject only.
     Never asks the LLM to run git commands.
     """
     try:
-        if llm_client is None:
+        if llm_backend_manager is None:
             return ""
 
         prompt = render_prompt("tests.commit_message")
 
-        response = llm_client._run_llm_cli(prompt)
+        response = llm_backend_manager._run_llm_cli(prompt)
         if not response:
             return ""
         # Take first non-empty line, sanitize length

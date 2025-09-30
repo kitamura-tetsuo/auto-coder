@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from src.auto_coder.backend_manager import BackendManager
-from src.auto_coder.test_runner import apply_workspace_test_fix
+from src.auto_coder.fix_to_pass_tests_runner import apply_workspace_test_fix
 from src.auto_coder.automation_config import AutomationConfig
 
 
@@ -36,7 +36,7 @@ def _make_manager(calls: list[str]) -> BackendManager:
     )
 
 
-@patch("src.auto_coder.test_runner.extract_important_errors", return_value="ERR_SUMMARY")
+@patch("src.auto_coder.fix_to_pass_tests_runner.extract_important_errors", return_value="ERR_SUMMARY")
 def test_apply_workspace_test_fix_switch_after_three_same_prompts(mock_extract):
     cfg = AutomationConfig()
     calls: list[str] = []

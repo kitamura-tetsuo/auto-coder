@@ -16,7 +16,7 @@ from .utils import CommandExecutor, log_action, slice_relevant_error_window
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .test_runner import run_local_tests
+from .fix_to_pass_tests_runner import run_local_tests
 from .update_manager import check_for_updates_and_restart
 
 logger = get_logger(__name__)

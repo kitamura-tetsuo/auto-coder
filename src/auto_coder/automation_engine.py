@@ -9,8 +9,8 @@ from datetime import datetime
 
 from .automation_config import AutomationConfig
 from .utils import log_action
-from .test_runner import fix_to_pass_tests
-from . import test_runner as test_runner_module
+from .fix_to_pass_tests_runner import fix_to_pass_tests
+from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .pr_processor import process_pull_requests, _create_pr_analysis_prompt as _engine_pr_prompt
 from .issue_processor import process_issues, create_feature_issues, process_single
 from .logger_config import get_logger
@@ -87,17 +87,17 @@ class AutomationEngine:
         apply_override = getattr(self, '_apply_workspace_test_fix', None)
 
         if callable(run_override) or callable(apply_override):
-            original_run = test_runner_module.run_local_tests
-            original_apply = test_runner_module.apply_workspace_test_fix
+            original_run = fix_to_pass_tests_runner_module.run_local_tests
+            original_apply = fix_to_pass_tests_runner_module.apply_workspace_test_fix
             try:
                 if callable(run_override):
-                    test_runner_module.run_local_tests = run_override
+                    fix_to_pass_tests_runner_module.run_local_tests = run_override
                 if callable(apply_override):
-                    test_runner_module.apply_workspace_test_fix = apply_override
+                    fix_to_pass_tests_runner_module.apply_workspace_test_fix = apply_override
                 return fix_to_pass_tests(self.config, self.dry_run, max_attempts, self.llm)
             finally:
-                test_runner_module.run_local_tests = original_run
-                test_runner_module.apply_workspace_test_fix = original_apply
+                fix_to_pass_tests_runner_module.run_local_tests = original_run
+                fix_to_pass_tests_runner_module.apply_workspace_test_fix = original_apply
 
         return fix_to_pass_tests(self.config, self.dry_run, max_attempts, self.llm)
 

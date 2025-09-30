@@ -5,9 +5,9 @@ Tests for fix-to-pass-tests mode.
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from src.auto_coder import test_runner as test_runner_module
+from src.auto_coder import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.test_runner import WorkspaceFixResult
+from src.auto_coder.fix_to_pass_tests_runner import WorkspaceFixResult
 from src.auto_coder.backend_manager import BackendManager
 
 
@@ -20,7 +20,7 @@ def test_engine_fix_to_pass_tests_small_change_retries_without_commit(
 ):
     engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
 
-    monkeypatch.setattr(test_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
 
     # Always failing output to simulate <10% change across retries
     engine._run_local_tests = Mock(return_value={
@@ -92,7 +92,7 @@ def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
 
     monkeypatch.chdir(tmp_path)
 
-    monkeypatch.setattr(test_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
 
     config = AutomationConfig()
 
@@ -121,7 +121,7 @@ def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
         result.setdefault('test_file', test_file)
         return result
 
-    monkeypatch.setattr(test_runner_module, 'run_local_tests', fake_run_local_tests)
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'run_local_tests', fake_run_local_tests)
 
     fix_response = WorkspaceFixResult(
         summary='Applied fix',
@@ -129,7 +129,7 @@ def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
         backend='codex',
         model='gpt-4',
     )
-    monkeypatch.setattr(test_runner_module, 'apply_workspace_test_fix', Mock(return_value=fix_response))
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'apply_workspace_test_fix', Mock(return_value=fix_response))
 
     class DummyCmd:
         DEFAULT_TIMEOUTS = {'test': 60}
@@ -142,15 +142,15 @@ def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
             return SimpleNamespace(success=True, stdout='', stderr='', returncode=0)
 
     dummy_cmd = DummyCmd()
-    monkeypatch.setattr(test_runner_module, 'cmd', dummy_cmd)
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'cmd', dummy_cmd)
 
     monkeypatch.setattr(
-        test_runner_module,
+        fix_to_pass_tests_runner_module,
         'generate_commit_message_via_llm',
         Mock(return_value='Auto-Coder: log test'),
     )
 
-    summary = test_runner_module.fix_to_pass_tests(config, dry_run=False, max_attempts=2, llm_client=Mock())
+    summary = fix_to_pass_tests_runner_module.fix_to_pass_tests(config, dry_run=False, max_attempts=2, llm_backend_manager=Mock())
 
     assert summary['success'] is True
 
@@ -167,8 +167,8 @@ def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
     log_files = list(log_dir.glob('*.txt'))
     assert len(log_files) == 1
     log_name = log_files[0].name
-    sanitized_test = test_runner_module._sanitize_for_filename(
-        test_runner_module._normalize_test_file('tests/test_sample.py::test_fail'),
+    sanitized_test = fix_to_pass_tests_runner_module._sanitize_for_filename(
+        fix_to_pass_tests_runner_module._normalize_test_file('tests/test_sample.py::test_fail'),
         default='tests',
     )
     assert sanitized_test in log_name
@@ -183,7 +183,7 @@ def test_fix_to_pass_tests_records_backend_manager_metadata(monkeypatch, tmp_pat
 
     monkeypatch.chdir(tmp_path)
 
-    monkeypatch.setattr(test_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'check_for_updates_and_restart', Mock(return_value=None))
 
     config = AutomationConfig()
 
@@ -220,10 +220,10 @@ def test_fix_to_pass_tests_records_backend_manager_metadata(monkeypatch, tmp_pat
         result.setdefault('test_file', test_file)
         return result
 
-    monkeypatch.setattr(test_runner_module, 'run_local_tests', fake_run_local_tests)
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'run_local_tests', fake_run_local_tests)
 
-    monkeypatch.setattr(test_runner_module, 'render_prompt', Mock(return_value='PROMPT'))
-    monkeypatch.setattr(test_runner_module, 'extract_important_errors', Mock(return_value='ERR BLOCK'))
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'render_prompt', Mock(return_value='PROMPT'))
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'extract_important_errors', Mock(return_value='ERR BLOCK'))
 
     class DummyCmd:
         DEFAULT_TIMEOUTS = {'test': 60}
@@ -236,9 +236,9 @@ def test_fix_to_pass_tests_records_backend_manager_metadata(monkeypatch, tmp_pat
             return SimpleNamespace(success=True, stdout='', stderr='', returncode=0)
 
     dummy_cmd = DummyCmd()
-    monkeypatch.setattr(test_runner_module, 'cmd', dummy_cmd)
+    monkeypatch.setattr(fix_to_pass_tests_runner_module, 'cmd', dummy_cmd)
     monkeypatch.setattr(
-        test_runner_module,
+        fix_to_pass_tests_runner_module,
         'generate_commit_message_via_llm',
         Mock(return_value='Auto-Coder: log test'),
     )
@@ -267,11 +267,11 @@ def test_fix_to_pass_tests_records_backend_manager_metadata(monkeypatch, tmp_pat
         order=['codex', 'gemini'],
     )
 
-    summary = test_runner_module.fix_to_pass_tests(
+    summary = fix_to_pass_tests_runner_module.fix_to_pass_tests(
         config,
         dry_run=False,
         max_attempts=3,
-        llm_client=manager,
+        llm_backend_manager=manager,
     )
 
     assert summary['success'] is True

@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder import test_runner as tr
+from src.auto_coder import fix_to_pass_tests_runner as tr
 
 
 def _res(success=True, stdout="", stderr="", returncode=0):
