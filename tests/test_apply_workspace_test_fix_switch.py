@@ -37,17 +37,17 @@ def _make_manager(calls: list[str]) -> BackendManager:
 
 
 @patch("src.auto_coder.fix_to_pass_tests_runner.extract_important_errors", return_value="ERR_SUMMARY")
-def test_apply_workspace_test_fix_switch_after_three_same_prompts(mock_extract):
+def test_apply_workspace_test_fix_switch_after_three_same_test_files(mock_extract):
     cfg = AutomationConfig()
     calls: list[str] = []
     mgr = _make_manager(calls)
 
     test_result = {"success": False, "output": "", "errors": "boom", "command": "bash test.sh"}
 
-    # Call three times with same prompt content
-    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False)
-    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False)
-    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False)
+    # Call three times with same current_test_file
+    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
+    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
+    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
 
     # First two on codex, third switched to gemini
     assert calls == ['codex', 'codex', 'gemini']

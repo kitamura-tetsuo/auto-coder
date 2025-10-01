@@ -214,3 +214,4 @@ playwright/.cache/
 
 <MagicMock *
 reports/
+.auto-coder/

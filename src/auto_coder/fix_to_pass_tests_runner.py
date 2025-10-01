@@ -200,6 +200,7 @@ def apply_workspace_test_fix(
     test_result: Dict[str, Any],
     llm_backend_manager: "BackendManager",
     dry_run: bool = False,
+    current_test_file: Optional[str] = None,
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures."""
 
@@ -240,7 +241,7 @@ def apply_workspace_test_fix(
             logger.info(
                 f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)"
             )
-            response = llm_backend_manager.run_test_fix_prompt(fix_prompt)
+            response = llm_backend_manager.run_test_fix_prompt(fix_prompt, current_test_file=current_test_file)
         else:
             logger.debug(            f"0"        )
             logger.info(
@@ -349,7 +350,7 @@ def fix_to_pass_tests(
             return summary
 
         # Apply LLM-based fix
-        fix_response = apply_workspace_test_fix(config, test_result, llm_backend_manager, dry_run)
+        fix_response = apply_workspace_test_fix(config, test_result, llm_backend_manager, dry_run, current_test_file=current_test_file)
         action_msg = fix_response.summary
         summary['messages'].append(action_msg)
 
