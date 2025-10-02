@@ -298,3 +298,54 @@ def test_fix_to_pass_tests_records_backend_manager_metadata(monkeypatch, tmp_pat
 
     assert calls == [('codex', 'PROMPT')]
     assert any(cmd == ('git', 'add', '.') for cmd, _ in dummy_cmd.calls)
+
+
+def test_generate_commit_message_via_llm_with_code_blocks():
+    """Test that generate_commit_message_via_llm correctly extracts messages from code blocks."""
+    from src.auto_coder.fix_to_pass_tests_runner import generate_commit_message_via_llm
+    from src.auto_coder.automation_config import AutomationConfig
+
+    # Mock BackendManager and config
+    mock_manager = Mock()
+    mock_config = AutomationConfig()
+
+    # Test case 1: Message wrapped in code blocks
+    mock_manager._run_llm_cli.return_value = "```\nFix test failure in authentication module\n```"
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, mock_manager)
+    assert result == "Auto-Coder: Fix test failure in authentication module"
+
+    # Test case 2: Message with multiple lines in code blocks (should take first line)
+    mock_manager._run_llm_cli.return_value = "```\nFix test failure\nAdditional details\n```"
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, mock_manager)
+    assert result == "Auto-Coder: Fix test failure"
+
+    # Test case 3: Message without code blocks
+    mock_manager._run_llm_cli.return_value = "Fix test failure without code blocks"
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, mock_manager)
+    assert result == "Auto-Coder: Fix test failure without code blocks"
+
+    # Test case 4: Message with quotes (quotes should be stripped, but backticks in content are preserved)
+    mock_manager._run_llm_cli.return_value = '```\n"Fix `test` failure"\n```'
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, mock_manager)
+    assert result == "Auto-Coder: Fix `test` failure"
+
+    # Test case 5: Long message should be truncated to 72 characters
+    long_message = "A" * 100
+    mock_manager._run_llm_cli.return_value = f"```\n{long_message}\n```"
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, mock_manager)
+    assert len(result) <= 72 + len("Auto-Coder: ")
+    assert result.startswith("Auto-Coder: ")
+
+    # Test case 6: Empty response
+    mock_manager._run_llm_cli.return_value = ""
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, mock_manager)
+    assert result == ""
+
+    # Test case 7: None manager
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, None)
+    assert result == ""
+
+    # Test case 8: Code blocks with only markers (edge case)
+    mock_manager._run_llm_cli.return_value = "```\n```"
+    result = generate_commit_message_via_llm(mock_config, "error", "action", 1, mock_manager)
+    assert result == ""

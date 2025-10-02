@@ -505,9 +505,19 @@ def generate_commit_message_via_llm(
         response = llm_backend_manager._run_llm_cli(prompt)
         if not response:
             return ""
+
+        # Extract message from code blocks if present (```...```)
+        response = response.strip()
+        if response.startswith("```") and response.endswith("```"):
+            # Remove opening and closing ```
+            lines = response.splitlines()
+            if len(lines) >= 2:
+                # Remove first and last lines (the ``` markers)
+                response = "\n".join(lines[1:-1]).strip()
+
         # Take first non-empty line, sanitize length
         for line in response.splitlines():
-            line = line.strip().strip('"').strip("'")
+            line = line.strip().strip('"').strip("'").strip("`")
             if line:
                 if len(line) > 72:
                     line = line[:72].rstrip()
