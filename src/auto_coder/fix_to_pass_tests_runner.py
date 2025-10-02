@@ -444,15 +444,19 @@ def fix_to_pass_tests(
         llm_backend_manager.switch_to_default_backend()
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
-            config=config,
-            error_summary=post_error_summary,
-            action_summary=action_msg,
-            attempt=attempt,
             llm_backend_manager=llm_backend_manager,
         )
         if not commit_msg:
             commit_msg = format_commit_message(config, action_msg, attempt)
-            
+
+        # Commit the changes with the generated message
+        if not dry_run and commit_msg:
+            commit_res = cmd.run_command(['git', 'commit', '-m', commit_msg])
+            if not commit_res.success:
+                logger.warning(f"Failed to commit changes: {commit_res.stderr}")
+            else:
+                logger.info(f"Committed changes: {commit_msg}")
+
         # If tests passed, mark success and return
         if post_result['success']:
             if current_test_file is not None:
@@ -485,10 +489,6 @@ def fix_to_pass_tests(
 
 
 def generate_commit_message_via_llm(
-    config: AutomationConfig,
-    error_summary: str,
-    action_summary: str,
-    attempt: int,
     llm_backend_manager: Optional["BackendManager"]
 ) -> str:
     """Use LLM to generate a concise commit message based on the fix context.
@@ -508,12 +508,22 @@ def generate_commit_message_via_llm(
 
         # Extract message from code blocks if present (```...```)
         response = response.strip()
-        if response.startswith("```") and response.endswith("```"):
-            # Remove opening and closing ```
-            lines = response.splitlines()
-            if len(lines) >= 2:
-                # Remove first and last lines (the ``` markers)
-                response = "\n".join(lines[1:-1]).strip()
+        # Find the first ``` and the last ``` in the response
+        first_marker = response.find("```")
+        if first_marker != -1:
+            # Find the closing ``` after the first one
+            last_marker = response.rfind("```", first_marker + 3)
+            if last_marker != -1 and last_marker > first_marker:
+                # Extract content between the markers
+                content = response[first_marker + 3:last_marker].strip()
+                # If the content starts with a language identifier (e.g., ```bash), remove it
+                lines = content.splitlines()
+                if lines:
+                    # Skip the first line if it looks like a language identifier (no spaces, short)
+                    first_line = lines[0].strip()
+                    if first_line and len(first_line) < 20 and ' ' not in first_line:
+                        content = "\n".join(lines[1:]).strip()
+                return content
 
         # Take first non-empty line, sanitize length
         for line in response.splitlines():

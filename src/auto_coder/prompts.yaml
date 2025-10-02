@@ -165,8 +165,8 @@ tests:
     You are an expert code reviewer and commit message generator.
 
     Before writing the commit message, **first review the changes** by running:
-    * `git diff --cached` to inspect staged changes
     * `git diff` to inspect unstaged changes
+    * `git diff --cached` to inspect staged changes
 
     Then, analyze the diff and write a high-quality Git commit message following these rules:
 
@@ -195,6 +195,7 @@ tests:
     5. **Output Format**:
       * Provide the final commit message **ready to use**, including summary, body, and footer if necessary.
       * Do **not** include explanations of your reasoning.
+      * Wrap the entire commit message in triple backticks (```) before and after.
 
 
 gemini:
