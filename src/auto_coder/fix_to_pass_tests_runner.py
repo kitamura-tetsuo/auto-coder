@@ -15,6 +15,7 @@ from .automation_config import AutomationConfig
 from .logger_config import get_logger, log_calls
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
+from .git_utils import git_commit_with_retry
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -449,9 +450,9 @@ def fix_to_pass_tests(
         if not commit_msg:
             commit_msg = format_commit_message(config, action_msg, attempt)
 
-        # Commit the changes with the generated message
+        # Commit the changes with the generated message using centralized helper
         if not dry_run and commit_msg:
-            commit_res = cmd.run_command(['git', 'commit', '-m', commit_msg])
+            commit_res = git_commit_with_retry(commit_msg)
             if not commit_res.success:
                 logger.warning(f"Failed to commit changes: {commit_res.stderr}")
             else:

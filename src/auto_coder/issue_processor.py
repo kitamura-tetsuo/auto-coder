@@ -9,6 +9,7 @@ from .utils import CommandExecutor
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .git_utils import git_commit_with_retry
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -130,6 +131,37 @@ def _take_issue_actions(repo_name: str, issue_data: Dict[str, Any], config: Auto
     return actions
 
 
+def _commit_changes(result_data: Dict[str, Any]) -> str:
+    """
+    Commit changes using centralized git helper.
+
+    Args:
+        result_data: Dictionary containing 'summary' key with commit message
+
+    Returns:
+        Action message describing the commit result
+    """
+    summary = result_data.get('summary', 'Auto-Coder: Automated changes')
+
+    # Check if there are any changes to commit
+    status_result = cmd.run_command(['git', 'status', '--porcelain'], check_success=False)
+    if not status_result.stdout.strip():
+        return "No changes to commit"
+
+    # Stage all changes
+    add_result = cmd.run_command(['git', 'add', '-A'], check_success=False)
+    if not add_result.success:
+        return f"Failed to stage changes: {add_result.stderr}"
+
+    # Commit using centralized helper with dprint retry logic
+    commit_result = git_commit_with_retry(summary)
+
+    if commit_result.success:
+        return f"Successfully committed changes: {summary}"
+    else:
+        return f"Failed to commit changes: {commit_result.stderr}"
+
+
 def _apply_issue_actions_directly(repo_name: str, issue_data: Dict[str, Any], config: AutomationConfig, dry_run: bool) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     actions = []
@@ -171,8 +203,8 @@ def _apply_issue_actions_directly(repo_name: str, issue_data: Dict[str, Any], co
                 actions.append(f"Added analysis comment to issue #{issue_data['number']}")
 
             # Commit any changes made
-            # commit_action = _commit_changes({'summary': f"Auto-Coder: Address issue #{issue_data['number']}"})
-            # actions.append(commit_action)
+            commit_action = _commit_changes({'summary': f"Auto-Coder: Address issue #{issue_data['number']}"})
+            actions.append(commit_action)
         else:
             actions.append("LLM CLI did not provide a clear response for issue analysis")
 

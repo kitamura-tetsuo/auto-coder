@@ -18,6 +18,7 @@ from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .fix_to_pass_tests_runner import run_local_tests
 from .update_manager import check_for_updates_and_restart
+from .git_utils import git_push
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -679,8 +680,8 @@ def _update_with_base_branch(repo_name: str, pr_data: Dict[str, Any], config: Au
         if result.success:
             actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
 
-            # Push the updated branch
-            push_result = cmd.run_command(['git', 'push'])
+            # Push the updated branch using centralized helper
+            push_result = git_push()
             if push_result.success:
                 actions.append(f"Pushed updated branch for PR #{pr_number}")
                 # Signal to skip further LLM analysis for this PR in this run
@@ -949,9 +950,9 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
         merge_result = cmd.run_command(['git', 'merge', f'origin/{config.MAIN_BRANCH}'])
 
         if merge_result.success:
-            # No conflicts, push the updated branch
+            # No conflicts, push the updated branch using centralized helper
             logger.info(f"Successfully merged main into PR #{pr_number}, pushing changes")
-            push_result = cmd.run_command(['git', 'push'])
+            push_result = git_push()
 
             if push_result.success:
                 logger.info(f"Successfully pushed updated branch for PR #{pr_number}")

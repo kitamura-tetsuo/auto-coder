@@ -71,10 +71,11 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 - Centralize all git commit and push operations through dedicated helper routines.
 - Do not invoke `git commit` or `git push` directly in multiple places across the codebase.
 - Rationale: scattering commit/push logic leads to duplicated behavior, inconsistent error handling, and subtle bugs (e.g., missing unified handling for formatter hooks like dprint).
-- Implementation guideline:
-  - Use a single commit helper that can auto-handle well-known hook failures (e.g., run `npx dprint fmt` on formatting errors and retry once).
-  - Use a single push helper for pushing the current branch.
-  - Existing direct invocations must be refactored to call these helpers.
+- Implementation:
+  - `git_utils.git_commit_with_retry(commit_message, cwd=None, max_retries=1)`: Centralized commit helper that automatically detects dprint formatting errors, runs `npx dprint fmt`, stages changes, and retries commit once.
+  - `git_utils.git_push(cwd=None, remote='origin', branch=None)`: Centralized push helper for consistent error handling.
+  - All git commit/push operations throughout the codebase use these helpers.
+  - Direct invocations of `git commit` or `git push` via CommandExecutor are prohibited outside of these helpers.
 
 ### MCP-PDB セットアップ支援
 - CLI `auto-coder mcp-pdb` グループを追加

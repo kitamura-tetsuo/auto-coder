@@ -474,8 +474,18 @@ special_features:
       - "Detects dprint-related failures from commit stdout/stderr (e.g., 'Formatting issues detected. Run \'npx dprint fmt\' to fix.')"
       - "Runs 'npx dprint fmt' and stages files, then retries 'git commit'"
       - "If formatting still fails, the commit is reported as failed with the original error"
+    implementation:
+      - "git_utils.git_commit_with_retry: Centralized commit helper with automatic dprint retry logic"
+      - "git_utils.git_push: Centralized push helper for consistent error handling"
+      - "All git commit/push operations use these helpers to avoid duplicated logic"
     tests:
-      - "tests/test_automation_engine.py::TestAutomationEngine::test_commit_changes_runs_dprint_on_format_failure"
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_successful_commit"
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_and_retry"
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_fmt_fails"
+      - "tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_non_dprint_error"
+      - "tests/test_git_utils.py::TestGitPush::test_successful_push"
+      - "tests/test_git_utils.py::TestGitPush::test_push_with_branch"
+      - "tests/test_git_utils.py::TestGitPush::test_push_failure"
 
   llm_invocation_warn_logging:
     name: "Warn log for LLM invocations"
