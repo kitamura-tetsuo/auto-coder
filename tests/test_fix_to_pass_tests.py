@@ -362,3 +362,237 @@ def test_generate_commit_message_via_llm_with_code_blocks():
     mock_manager._run_llm_cli.return_value = "```\nFirst message\n```\nSome text\n```\nSecond message\n```"
     result = generate_commit_message_via_llm(mock_manager)
     assert result == "Auto-Coder: First message"
+
+
+def test_run_local_tests_detects_stability_issue(monkeypatch, tmp_path):
+    """Test that run_local_tests detects when a test fails in full suite but passes in isolation."""
+    from src.auto_coder.automation_config import AutomationConfig
+    from src.auto_coder.fix_to_pass_tests_runner import run_local_tests
+    from src.auto_coder import fix_to_pass_tests_runner as fix_module
+
+    monkeypatch.chdir(tmp_path)
+    config = AutomationConfig()
+
+    # Mock extract_first_failed_test to return a test file
+    monkeypatch.setattr(fix_module, 'extract_first_failed_test', Mock(return_value='tests/test_example.py'))
+
+    # Mock CommandExecutor to simulate:
+    # 1. Full suite fails
+    # 2. Isolated test passes
+    call_count = [0]
+
+    def mock_run_command(cmd_list, timeout=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # Full suite fails
+            return _cmd_result(
+                success=False,
+                stdout='FAILED tests/test_example.py::test_something',
+                stderr='',
+                returncode=1
+            )
+        else:
+            # Isolated test passes
+            return _cmd_result(
+                success=True,
+                stdout='PASSED tests/test_example.py::test_something',
+                stderr='',
+                returncode=0
+            )
+
+    class DummyCmd:
+        DEFAULT_TIMEOUTS = {'test': 60}
+        run_command = staticmethod(mock_run_command)
+
+    monkeypatch.setattr(fix_module, 'cmd', DummyCmd())
+
+    result = run_local_tests(config)
+
+    # Should detect stability issue
+    assert result['stability_issue'] is True
+    assert result['test_file'] == 'tests/test_example.py'
+    assert result['success'] is False  # Overall result is still failure
+    assert 'full_suite_result' in result
+    assert result['full_suite_result']['success'] is False
+
+
+def test_apply_test_stability_fix(monkeypatch, tmp_path):
+    """Test that apply_test_stability_fix calls LLM with correct prompt."""
+    from src.auto_coder.automation_config import AutomationConfig
+    from src.auto_coder.fix_to_pass_tests_runner import apply_test_stability_fix
+    from src.auto_coder import fix_to_pass_tests_runner as fix_module
+
+    monkeypatch.chdir(tmp_path)
+    config = AutomationConfig()
+
+    # Mock render_prompt
+    mock_render = Mock(return_value="Test stability fix prompt")
+    monkeypatch.setattr(fix_module, 'render_prompt', mock_render)
+
+    # Create mock backend manager
+    class DummyLLM:
+        def __init__(self):
+            self.backend = 'codex'
+            self.model_name = 'gpt-4o-mini'
+
+        def _run_llm_cli(self, prompt):
+            return "Fixed test isolation issue"
+
+        def get_last_backend_and_model(self):
+            return self.backend, self.model_name
+
+    manager = DummyLLM()
+
+    full_suite_result = {
+        'success': False,
+        'output': 'FAILED tests/test_example.py',
+        'errors': 'AssertionError',
+    }
+
+    isolated_result = {
+        'success': True,
+        'output': 'PASSED tests/test_example.py',
+        'errors': '',
+    }
+
+    result = apply_test_stability_fix(
+        config,
+        'tests/test_example.py',
+        full_suite_result,
+        isolated_result,
+        manager,
+        dry_run=False,
+    )
+
+    # Verify render_prompt was called with correct template
+    mock_render.assert_called_once()
+    call_args = mock_render.call_args
+    assert call_args[0][0] == 'tests.test_stability_fix'
+    assert 'test_file' in call_args[1]
+    assert call_args[1]['test_file'] == 'tests/test_example.py'
+
+    # Verify result
+    assert result.summary == "Fixed test isolation issue"
+    assert result.backend == 'codex'
+    assert result.model == 'gpt-4o-mini'
+
+
+def test_fix_to_pass_tests_handles_stability_issue(monkeypatch, tmp_path):
+    """Test that fix_to_pass_tests properly handles stability issues."""
+    from src.auto_coder.automation_config import AutomationConfig
+    from src.auto_coder.fix_to_pass_tests_runner import fix_to_pass_tests, WorkspaceFixResult
+    from src.auto_coder import fix_to_pass_tests_runner as fix_module
+    from src.auto_coder.backend_manager import BackendManager
+
+    monkeypatch.chdir(tmp_path)
+    config = AutomationConfig()
+
+    monkeypatch.setattr(fix_module, 'check_for_updates_and_restart', Mock(return_value=None))
+
+    # Mock run_local_tests to return stability issue on first call, then success
+    call_count = [0]
+
+    def mock_run_local_tests(cfg, test_file=None):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            # First call: stability issue detected
+            return {
+                'success': False,
+                'output': 'PASSED tests/test_example.py',
+                'errors': '',
+                'return_code': 0,
+                'command': 'bash scripts/test.sh tests/test_example.py',
+                'test_file': 'tests/test_example.py',
+                'stability_issue': True,
+                'full_suite_result': {
+                    'success': False,
+                    'output': 'FAILED tests/test_example.py',
+                    'errors': 'AssertionError',
+                    'return_code': 1,
+                    'command': 'bash scripts/test.sh',
+                },
+            }
+        elif call_count[0] == 2:
+            # After stability fix: still failing (post-fix check)
+            return {
+                'success': False,
+                'output': 'FAILED tests/test_example.py',
+                'errors': 'Still failing',
+                'return_code': 1,
+                'command': 'bash scripts/test.sh tests/test_example.py',
+                'test_file': 'tests/test_example.py',
+                'stability_issue': False,
+            }
+        else:
+            # Final check: success
+            return {
+                'success': True,
+                'output': 'All tests passed',
+                'errors': '',
+                'return_code': 0,
+                'command': 'bash scripts/test.sh',
+                'test_file': None,
+                'stability_issue': False,
+            }
+
+    monkeypatch.setattr(fix_module, 'run_local_tests', mock_run_local_tests)
+
+    # Mock apply_test_stability_fix
+    mock_stability_fix = Mock(return_value=WorkspaceFixResult(
+        summary='Fixed test isolation',
+        raw_response='Fixed test isolation',
+        backend='codex',
+        model='gpt-4o-mini',
+    ))
+    monkeypatch.setattr(fix_module, 'apply_test_stability_fix', mock_stability_fix)
+
+    # Mock git commands
+    class DummyCmd:
+        DEFAULT_TIMEOUTS = {'test': 60}
+
+        def run_command(self, cmd_list, timeout=None):
+            return _cmd_result(success=True, stdout='', stderr='', returncode=0)
+
+    monkeypatch.setattr(fix_module, 'cmd', DummyCmd())
+
+    # Mock git_commit_with_retry
+    monkeypatch.setattr(fix_module, 'git_commit_with_retry', Mock(return_value=_cmd_result(success=True)))
+
+    # Mock generate_commit_message_via_llm
+    monkeypatch.setattr(fix_module, 'generate_commit_message_via_llm', Mock(return_value='Auto-Coder: Fix test stability'))
+
+    # Mock cleanup_llm_task_file
+    monkeypatch.setattr(fix_module, 'cleanup_llm_task_file', Mock())
+
+    # Create backend manager
+    class DummyLLM:
+        def __init__(self):
+            self.backend = 'codex'
+            self.model_name = 'gpt-4o-mini'
+
+        def _run_llm_cli(self, prompt):
+            return "Fixed"
+
+        def get_last_backend_and_model(self):
+            return self.backend, self.model_name
+
+        def switch_to_default_backend(self):
+            pass
+
+    manager = BackendManager(
+        default_backend='codex',
+        default_client=DummyLLM(),
+        factories={'codex': lambda: DummyLLM()},
+        order=['codex'],
+    )
+
+    result = fix_to_pass_tests(config, dry_run=False, max_attempts=5, llm_backend_manager=manager)
+
+    # Verify stability fix was called
+    assert mock_stability_fix.call_count == 1
+
+    # Verify the result contains stability issue message
+    assert any('stability issue' in msg.lower() for msg in result['messages'])
+
+    # Eventually succeeds
+    assert result['success'] is True

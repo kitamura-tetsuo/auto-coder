@@ -161,6 +161,54 @@ tests:
     Run tests again after applying the fix to verify that the fix resolves the issue.
     Return a single concise line summarizing the change.
 
+  test_stability_fix: |-
+    You are operating directly in this repository workspace with write access.
+
+    Goal: Fix test stability and dependency issues.
+
+    PROBLEM DETECTED:
+    A test file failed when run as part of the full test suite, but passed when run in isolation.
+    This indicates one of the following issues:
+    1. Test isolation problem: Tests are not properly cleaning up after themselves
+    2. Test order dependency: Tests depend on execution order or state from other tests
+    3. Shared state: Tests are sharing mutable state (global variables, class attributes, etc.)
+    4. Resource conflicts: Tests are competing for shared resources (files, ports, database connections, etc.)
+    5. Timing issues: Race conditions or timing-dependent behavior
+
+    Test File: $test_file
+
+    Full Test Suite Output (FAILED):
+    $full_suite_output
+
+    Isolated Test Output (PASSED):
+    $isolated_test_output
+
+    Task Memory File: ./llm_task.md
+    - If the file exists, review the "Logging Protocol" section before making changes.
+    - After completing your attempt, insert a new entry at the top of "## Experiment Log" using this exact template:
+    ```
+    ### YYYY-MM-DD HH:MM (local)
+    - Change Summary:
+    - Expected Outcome:
+    - Tests Run: `bash scripts/test.sh ...`
+    - Actual Outcome:
+    - Variance Analysis:
+    - Follow-ups / Notes:
+    ```
+    - Keep earlier log entries intact and maintain the newest entry first ordering.
+
+    STRICT RULES:
+    - Do NOT run git commit/push; the system will handle that.
+    - Focus on fixing test isolation, removing dependencies between tests, and ensuring proper cleanup
+    - Consider using pytest fixtures with proper scope (function, class, module, session)
+    - Ensure tests clean up any resources they create (files, database records, etc.)
+    - Avoid relying on test execution order
+    - Use mocking/patching appropriately to isolate tests from external dependencies
+
+    Now apply the fix directly in the repository.
+    Run the full test suite again after applying the fix to verify that the fix resolves the issue.
+    Return a single concise line summarizing the change.
+
   commit_message: |-
     You are an expert code reviewer and commit message generator.
 

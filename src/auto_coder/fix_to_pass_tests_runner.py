@@ -144,7 +144,9 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
     If test_file is specified, only that test file will be run.
     Otherwise, all tests will be run.
 
-    Returns a dict: {success, output, errors, return_code}
+    Returns a dict: {success, output, errors, return_code, test_file, stability_issue}
+    - stability_issue: True if test failed in full suite but passed in isolation
+    - full_suite_result: Original full suite result (only present if stability_issue is True)
     """
     try:
         # If a specific test file is specified, run only that test (always via TEST_SCRIPT_PATH)
@@ -159,6 +161,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
                 'return_code': result.returncode,
                 'command': ' '.join(cmd_list),
                 'test_file': test_file,
+                'stability_issue': False,
             }
 
         # Always run via test script
@@ -174,7 +177,45 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
                 logger.info(
                     f"Detected failing test file {first_failed_test}; rerunning targeted script"
                 )
-                return run_local_tests(config, test_file=first_failed_test)
+                # Store the full suite result for comparison
+                full_suite_result = {
+                    'success': result.success,
+                    'output': result.stdout,
+                    'errors': result.stderr,
+                    'return_code': result.returncode,
+                    'command': ' '.join(cmd_list),
+                }
+
+                # Run the isolated test
+                isolated_cmd_list = ['bash', config.TEST_SCRIPT_PATH, first_failed_test]
+                isolated_result = cmd.run_command(isolated_cmd_list, timeout=cmd.DEFAULT_TIMEOUTS['test'])
+
+                # Check for stability issue: failed in full suite but passed in isolation
+                if isolated_result.success:
+                    logger.warning(
+                        f"Test stability issue detected: {first_failed_test} failed in full suite but passed in isolation"
+                    )
+                    return {
+                        'success': False,
+                        'output': isolated_result.stdout,
+                        'errors': isolated_result.stderr,
+                        'return_code': isolated_result.returncode,
+                        'command': ' '.join(isolated_cmd_list),
+                        'test_file': first_failed_test,
+                        'stability_issue': True,
+                        'full_suite_result': full_suite_result,
+                    }
+                else:
+                    # Test still fails in isolation, return the isolated result
+                    return {
+                        'success': isolated_result.success,
+                        'output': isolated_result.stdout,
+                        'errors': isolated_result.stderr,
+                        'return_code': isolated_result.returncode,
+                        'command': ' '.join(isolated_cmd_list),
+                        'test_file': first_failed_test,
+                        'stability_issue': False,
+                    }
 
         return {
             'success': result.success,
@@ -183,6 +224,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
             'return_code': result.returncode,
             'command': ' '.join(cmd_list),
             'test_file': None,
+            'stability_issue': False,
         }
     except Exception as e:
         logger.error(f"Local test execution failed: {e}")
@@ -193,7 +235,78 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
             'return_code': -1,
             'command': '',
             'test_file': None,
+            'stability_issue': False,
         }
+
+@log_calls
+def apply_test_stability_fix(
+    config: AutomationConfig,
+    test_file: str,
+    full_suite_result: Dict[str, Any],
+    isolated_result: Dict[str, Any],
+    llm_backend_manager: "BackendManager",
+    dry_run: bool = False,
+) -> WorkspaceFixResult:
+    """Ask the LLM to fix test stability/dependency issues.
+
+    Called when a test fails in the full suite but passes in isolation,
+    indicating test isolation or dependency problems.
+    """
+    backend, model = _extract_backend_model(llm_backend_manager)
+
+    try:
+        full_suite_output = f"{full_suite_result.get('errors', '')}\n{full_suite_result.get('output', '')}".strip()
+        isolated_output = f"{isolated_result.get('errors', '')}\n{isolated_result.get('output', '')}".strip()
+
+        fix_prompt = render_prompt(
+            "tests.test_stability_fix",
+            test_file=test_file,
+            full_suite_output=full_suite_output[: config.MAX_PROMPT_SIZE],
+            isolated_test_output=isolated_output[: config.MAX_PROMPT_SIZE // 2],
+        )
+
+        if dry_run:
+            return WorkspaceFixResult(
+                summary="[DRY RUN] Would apply test stability fixes",
+                raw_response=None,
+                backend=backend,
+                model=model,
+            )
+
+        logger.info(
+            f"Requesting LLM test stability fix for {test_file} using backend {backend} model {model}"
+        )
+
+        # Use the LLM backend manager to run the prompt
+        if hasattr(llm_backend_manager, 'run_test_fix_prompt') and callable(getattr(llm_backend_manager, 'run_test_fix_prompt')):
+            response = llm_backend_manager.run_test_fix_prompt(fix_prompt, current_test_file=test_file)
+        else:
+            response = llm_backend_manager._run_llm_cli(fix_prompt)
+
+        backend, model = _extract_backend_model(llm_backend_manager)
+        raw_response = response.strip() if response and response.strip() else None
+        if raw_response:
+            first_line = raw_response.splitlines()[0]
+            summary = first_line[: config.MAX_RESPONSE_SIZE]
+        else:
+            summary = "LLM produced no response"
+
+        logger.info(f"LLM test stability fix summary: {summary if summary else '<empty response>'}")
+
+        return WorkspaceFixResult(
+            summary=summary,
+            raw_response=raw_response,
+            backend=backend,
+            model=model,
+        )
+    except Exception as e:
+        return WorkspaceFixResult(
+            summary=f"Error applying test stability fix: {e}",
+            raw_response=None,
+            backend=backend,
+            model=model,
+        )
+
 
 @log_calls
 def apply_workspace_test_fix(
@@ -350,10 +463,28 @@ def fix_to_pass_tests(
                 cleanup_llm_task_file()
             return summary
 
-        # Apply LLM-based fix
-        fix_response = apply_workspace_test_fix(config, test_result, llm_backend_manager, dry_run, current_test_file=current_test_file)
-        action_msg = fix_response.summary
-        summary['messages'].append(action_msg)
+        # Check for test stability issue (failed in full suite but passed in isolation)
+        if test_result.get('stability_issue', False):
+            stability_msg = f"Test stability issue detected for {test_result.get('test_file')}"
+            logger.warning(stability_msg)
+            summary['messages'].append(stability_msg)
+
+            # Apply LLM-based stability fix
+            fix_response = apply_test_stability_fix(
+                config,
+                test_result['test_file'],
+                test_result['full_suite_result'],
+                test_result,
+                llm_backend_manager,
+                dry_run,
+            )
+            action_msg = fix_response.summary
+            summary['messages'].append(action_msg)
+        else:
+            # Apply LLM-based fix for regular test failures
+            fix_response = apply_workspace_test_fix(config, test_result, llm_backend_manager, dry_run, current_test_file=current_test_file)
+            action_msg = fix_response.summary
+            summary['messages'].append(action_msg)
 
         if dry_run:
             # In dry-run we do not commit; just continue attempts
