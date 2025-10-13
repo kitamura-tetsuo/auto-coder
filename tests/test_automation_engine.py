@@ -148,7 +148,11 @@ class TestAutomationEngine:
 
     @patch("src.auto_coder.automation_engine.process_issues")
     def test_run_with_error(
-        self, mock_process_issues, mock_github_client, mock_gemini_client, test_repo_name
+        self,
+        mock_process_issues,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
     ):
         """Test automation run with error."""
         # Setup

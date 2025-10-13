@@ -56,7 +56,9 @@ def _process_issues_normal(
                 }
 
                 # 単回実行での直接アクション（CLI）
-                actions = _take_issue_actions(repo_name, issue_data, config, dry_run, llm_client)
+                actions = _take_issue_actions(
+                    repo_name, issue_data, config, dry_run, llm_client
+                )
                 processed_issue["actions_taken"] = actions
 
                 processed_issues.append(processed_issue)
