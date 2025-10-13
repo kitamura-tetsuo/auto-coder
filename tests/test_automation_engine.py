@@ -62,27 +62,32 @@ class TestAutomationEngine:
 
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
-        with patch("os.makedirs"):
-            engine = AutomationEngine(
-                mock_github_client, mock_gemini_client, dry_run=True
-            )
+        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
 
-            assert engine.github == mock_github_client
-            assert engine.llm == mock_gemini_client
-            assert engine.dry_run is True
-            assert engine.config.REPORTS_DIR == "reports"
+        assert engine.github == mock_github_client
+        assert engine.llm == mock_gemini_client
+        assert engine.dry_run is True
+        assert engine.config.REPORTS_DIR == "reports"
 
+    @patch("src.auto_coder.automation_engine.process_pull_requests")
+    @patch("src.auto_coder.automation_engine.process_issues")
     @patch("src.auto_coder.automation_engine.datetime")
     def test_run_success(
-        self, mock_datetime, mock_github_client, mock_gemini_client, test_repo_name
+        self,
+        mock_datetime,
+        mock_process_issues,
+        mock_process_prs,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
     ):
         """Test successful automation run."""
         # Setup
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
+        mock_process_issues.return_value = [{"issue": "processed"}]
+        mock_process_prs.return_value = [{"pr": "processed"}]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._process_issues = Mock(return_value=[{"issue": "processed"}])
-        engine._process_pull_requests = Mock(return_value=[{"pr": "processed"}])
         engine._save_report = Mock()
 
         # Execute
@@ -91,25 +96,35 @@ class TestAutomationEngine:
         # Assert
         assert result["repository"] == test_repo_name
         assert result["dry_run"] is True
+        assert result["llm_backend"] == "gemini"  # GeminiClientから推測
+        assert result["llm_model"] is not None
         assert result["issues_processed"] == [{"issue": "processed"}]
         assert result["prs_processed"] == [{"pr": "processed"}]
         assert len(result["errors"]) == 0
 
-        engine._process_issues.assert_called_once_with(test_repo_name)
-        engine._process_pull_requests.assert_called_once_with(test_repo_name)
+        mock_process_issues.assert_called_once()
+        mock_process_prs.assert_called_once()
         engine._save_report.assert_called_once()
 
+    @patch("src.auto_coder.automation_engine.process_pull_requests")
+    @patch("src.auto_coder.automation_engine.process_issues")
     @patch("src.auto_coder.automation_engine.datetime")
     def test_run_jules_mode_success(
-        self, mock_datetime, mock_github_client, mock_gemini_client, test_repo_name
+        self,
+        mock_datetime,
+        mock_process_issues,
+        mock_process_prs,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
     ):
         """Test successful run with jules mode."""
         # Setup
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
+        mock_process_issues.return_value = [{"issue": "labeled"}]
+        mock_process_prs.return_value = [{"pr": "processed"}]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._process_issues_jules_mode = Mock(return_value=[{"issue": "labeled"}])
-        engine._process_pull_requests = Mock(return_value=[{"pr": "processed"}])
         engine._save_report = Mock()
 
         # Execute
@@ -119,24 +134,27 @@ class TestAutomationEngine:
         assert result["repository"] == test_repo_name
         assert result["dry_run"] is True
         assert result["jules_mode"] is True
+        assert result["llm_backend"] == "gemini"  # GeminiClientから推測
+        assert result["llm_model"] is not None
         assert result["issues_processed"] == [{"issue": "labeled"}]
         assert result["prs_processed"] == [
             {"pr": "processed"}
         ]  # PRs still processed normally
         assert len(result["errors"]) == 0
 
-        engine._process_issues_jules_mode.assert_called_once_with(test_repo_name)
-        engine._process_pull_requests.assert_called_once_with(test_repo_name)
+        mock_process_issues.assert_called_once()
+        mock_process_prs.assert_called_once()
         engine._save_report.assert_called_once()
 
+    @patch("src.auto_coder.automation_engine.process_issues")
     def test_run_with_error(
-        self, mock_github_client, mock_gemini_client, test_repo_name
+        self, mock_process_issues, mock_github_client, mock_gemini_client, test_repo_name
     ):
         """Test automation run with error."""
         # Setup
+        mock_process_issues.side_effect = Exception("Test error")
+
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._process_issues = Mock(side_effect=Exception("Test error"))
-        engine._process_pull_requests = Mock(return_value=[])
         engine._save_report = Mock()
 
         # Execute
@@ -147,8 +165,10 @@ class TestAutomationEngine:
         assert len(result["errors"]) == 1
         assert "Test error" in result["errors"][0]
 
+    @patch("src.auto_coder.automation_engine.create_feature_issues")
     def test_create_feature_issues_success(
         self,
+        mock_create_feature_issues,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -156,16 +176,15 @@ class TestAutomationEngine:
     ):
         """Test successful feature issues creation."""
         # Setup
-        mock_issue = Mock()
-        mock_issue.number = 123
-        mock_issue.html_url = "https://github.com/test/repo/issues/123"
-
-        mock_github_client.create_issue.return_value = mock_issue
-        mock_gemini_client.suggest_features.return_value = [sample_feature_suggestion]
+        mock_create_feature_issues.return_value = [
+            {
+                "number": 123,
+                "title": sample_feature_suggestion["title"],
+                "url": "https://github.com/test/repo/issues/123",
+            }
+        ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
-        engine._get_repository_context = Mock(return_value={"name": "test-repo"})
-        engine._save_report = Mock()
 
         # Execute
         result = engine.create_feature_issues(test_repo_name)
@@ -175,11 +194,12 @@ class TestAutomationEngine:
         assert result[0]["number"] == 123
         assert result[0]["title"] == sample_feature_suggestion["title"]
 
-        mock_gemini_client.suggest_features.assert_called_once()
-        mock_github_client.create_issue.assert_called_once()
+        mock_create_feature_issues.assert_called_once()
 
+    @patch("src.auto_coder.automation_engine.create_feature_issues")
     def test_create_feature_issues_dry_run(
         self,
+        mock_create_feature_issues,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -187,11 +207,11 @@ class TestAutomationEngine:
     ):
         """Test feature issues creation in dry run mode."""
         # Setup
-        mock_gemini_client.suggest_features.return_value = [sample_feature_suggestion]
+        mock_create_feature_issues.return_value = [
+            {"title": sample_feature_suggestion["title"], "dry_run": True}
+        ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._get_repository_context = Mock(return_value={"name": "test-repo"})
-        engine._save_report = Mock()
 
         # Execute
         result = engine.create_feature_issues(test_repo_name)
@@ -201,430 +221,18 @@ class TestAutomationEngine:
         assert result[0]["title"] == sample_feature_suggestion["title"]
         assert result[0]["dry_run"] is True
 
-        mock_gemini_client.suggest_features.assert_called_once()
-        mock_github_client.create_issue.assert_not_called()
+        mock_create_feature_issues.assert_called_once()
 
-    def test_process_issues_success(
-        self,
-        mock_github_client,
-        mock_gemini_client,
-        sample_issue_data,
-        sample_analysis_result,
-    ):
-        """Test successful issues processing with single-run direct actions (no analysis phase)."""
-        # Setup
-        mock_issue = Mock()
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = sample_issue_data
+    # Note: _process_issues and _process_issues_jules_mode are now functions in issue_processor.py
+    # These tests are covered by test_issue_processor.py
 
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._take_issue_actions = Mock(return_value=["action1", "action2"])
+    # Note: _resolve_merge_conflicts_with_gemini is now in conflict_resolver.py
+    # These tests are covered by test_conflict_resolver.py
 
-        # Execute
-        result = engine._process_issues("test/repo")
+    # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
+    # These tests are covered by test_issue_processor.py and test_pr_processor.py
 
-        # Assert
-        assert len(result) == 1
-        assert result[0]["issue_data"] == sample_issue_data
-        assert result[0]["analysis"] is None
-        assert result[0]["solution"] is None
-        assert result[0]["actions_taken"] == ["action1", "action2"]
-
-        mock_github_client.get_open_issues.assert_called_once()
-
-    def test_process_issues_jules_mode(self, mock_github_client):
-        """Test processing issues in jules mode."""
-        # Setup
-        mock_issue = Mock()
-        mock_issue.number = 1
-
-        sample_issue_data = {
-            "number": 1,
-            "title": "Test Issue",
-            "labels": ["bug"],  # No 'jules' label initially
-        }
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = sample_issue_data
-
-        engine = AutomationEngine(
-            mock_github_client, None, dry_run=False
-        )  # No gemini client
-
-        # Execute
-        result = engine._process_issues_jules_mode("test/repo")
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]["issue_data"] == sample_issue_data
-        assert len(result[0]["actions_taken"]) == 1
-        assert "Added 'jules' label to issue #1" in result[0]["actions_taken"][0]
-
-        mock_github_client.get_open_issues.assert_called_once()
-        mock_github_client.add_labels_to_issue.assert_called_once_with(
-            "test/repo", 1, ["jules"]
-        )
-
-    def test_process_issues_jules_mode_already_labeled(self, mock_github_client):
-        """Test processing issues in jules mode when jules label already exists."""
-        # Setup
-        mock_issue = Mock()
-        mock_issue.number = 1
-
-        sample_issue_data = {
-            "number": 1,
-            "title": "Test Issue",
-            "labels": ["bug", "jules"],  # Already has 'jules' label
-        }
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = sample_issue_data
-
-        engine = AutomationEngine(
-            mock_github_client, None, dry_run=False
-        )  # No gemini client
-
-        # Execute
-        result = engine._process_issues_jules_mode("test/repo")
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]["issue_data"] == sample_issue_data
-        assert len(result[0]["actions_taken"]) == 1
-        assert "already has 'jules' label" in result[0]["actions_taken"][0]
-
-        mock_github_client.get_open_issues.assert_called_once()
-        # Should not call add_labels_to_issue since label already exists
-        mock_github_client.add_labels_to_issue.assert_not_called()
-
-    def test_resolve_merge_conflicts_with_gemini_model_switching(
-        self, mock_github_client, mock_gemini_client
-    ):
-        """Test that model switching occurs during conflict resolution."""
-        # Setup
-        pr_data = {"number": 1, "title": "Test PR", "body": "Test PR description"}
-        conflict_info = "Conflict in file.py"
-
-        # Setup mock gemini client attributes
-        mock_gemini_client.model_name = "gemini-2.5-flash"
-        mock_gemini_client._run_gemini_cli.return_value = (
-            "Conflicts resolved successfully"
-        )
-
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
-
-        # Execute
-        result = engine._resolve_merge_conflicts_with_gemini(pr_data, conflict_info)
-
-        # Assert
-        assert (
-            len(result) >= 3
-        )  # Should have switch to conflict, resolution, and switch back actions
-
-        # Verify model switching methods were called
-        mock_gemini_client.switch_to_conflict_model.assert_called_once()
-        mock_gemini_client.switch_to_default_model.assert_called_once()
-
-        # Verify Gemini CLI was called
-        mock_gemini_client._run_gemini_cli.assert_called_once()
-
-        # Check that actions include model switching
-        action_text = " ".join(result)
-        assert "Switched to" in action_text
-        assert "Switched back to" in action_text
-
-    def test_process_issues_no_analysis_phase(
-        self, mock_github_client, mock_gemini_client, sample_issue_data
-    ):
-        """Ensure no analysis or solution generation occurs in issue processing."""
-        # Setup
-        mock_issue = Mock()
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = sample_issue_data
-
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._take_issue_actions = Mock(return_value=[])
-
-        # Execute
-        result = engine._process_issues("test/repo")
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]["analysis"] is None
-        assert result[0]["solution"] is None
-
-    def test_process_pull_requests_success(
-        self, mock_github_client, mock_gemini_client, sample_pr_data
-    ):
-        """Test successful pull requests processing with single-run direct actions (no analysis phase)."""
-        # Setup
-        mock_pr = Mock()
-
-        mock_github_client.get_open_pull_requests.return_value = [mock_pr]
-        mock_github_client.get_pr_details.return_value = sample_pr_data
-
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._take_pr_actions = Mock(return_value=["pr_action"])
-
-        # Execute
-        result = engine._process_pull_requests("test/repo")
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]["pr_data"] == sample_pr_data
-        assert result[0]["analysis"] is None
-        assert result[0]["actions_taken"] == ["pr_action"]
-
-        mock_github_client.get_open_pull_requests.assert_called_once()
-
-    def test_process_pull_requests_two_loop_priority(
-        self, mock_github_client, mock_gemini_client
-    ):
-        """Test that PRs are processed in two loops: merge first, then fix."""
-        # Setup - only one PR that passes Actions
-        passing_pr_data = {"number": 1, "title": "Passing PR"}
-
-        mock_pr1 = Mock()
-        mock_pr1.number = 1
-
-        mock_github_client.get_open_pull_requests.return_value = [mock_pr1]
-        mock_github_client.get_pr_details.return_value = passing_pr_data
-
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-
-        # Mock GitHub Actions status - PR passes
-        engine._check_github_actions_status = Mock(return_value={"success": True})
-
-        # Mock processing methods
-        engine._process_pr_for_merge = Mock(
-            return_value={
-                "pr_data": passing_pr_data,
-                "actions_taken": ["Successfully merged PR #1"],
-                "priority": "merge",
-            }
-        )
-
-        # Execute
-        result = engine._process_pull_requests("test/repo")
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]["pr_data"]["number"] == 1
-        assert result[0]["priority"] == "merge"
-        assert "Successfully merged" in result[0]["actions_taken"][0]
-
-        # Verify method calls
-        engine._process_pr_for_merge.assert_called_once_with(
-            "test/repo", passing_pr_data
-        )
-
-    def test_process_pull_requests_failing_actions(
-        self, mock_github_client, mock_gemini_client
-    ):
-        """Test that PRs with failing Actions are processed in second loop."""
-        # Setup - only one PR that fails Actions
-        failing_pr_data = {"number": 2, "title": "Failing PR"}
-
-        mock_pr2 = Mock()
-        mock_pr2.number = 2
-
-        mock_github_client.get_open_pull_requests.return_value = [mock_pr2]
-        mock_github_client.get_pr_details.return_value = failing_pr_data
-
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-
-        # Mock GitHub Actions status - PR fails
-        engine._check_github_actions_status = Mock(return_value={"success": False})
-
-        # Mock processing methods
-        engine._process_pr_for_fixes = Mock(
-            return_value={
-                "pr_data": failing_pr_data,
-                "actions_taken": ["Fixed PR #2"],
-                "priority": "fix",
-            }
-        )
-
-        # Execute
-        result = engine._process_pull_requests("test/repo")
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]["pr_data"]["number"] == 2
-        assert result[0]["priority"] == "fix"
-
-        # Verify method calls
-        engine._process_pr_for_fixes.assert_called_once_with(
-            "test/repo", failing_pr_data
-        )
-
-    def test_process_pr_for_merge_success(
-        self, mock_github_client, mock_gemini_client, sample_pr_data
-    ):
-        """Test processing PR for merge when Actions are passing."""
-        # Setup
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=False)
-        engine._merge_pr = Mock(return_value=True)
-
-        # Execute
-        result = engine._process_pr_for_merge("test/repo", sample_pr_data)
-
-        # Assert
-        assert result["pr_data"] == sample_pr_data
-        assert result["priority"] == "merge"
-        assert len(result["actions_taken"]) == 1
-        assert "Successfully merged" in result["actions_taken"][0]
-        engine._merge_pr.assert_called_once_with(
-            "test/repo", sample_pr_data["number"], {}
-        )
-
-    def test_process_pr_for_fixes_success(
-        self, mock_github_client, mock_gemini_client, sample_pr_data
-    ):
-        """Test processing PR for fixes when Actions are failing."""
-        # Setup
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        engine._take_pr_actions = Mock(return_value=["Fixed issue"])
-
-        # Execute
-        result = engine._process_pr_for_fixes("test/repo", sample_pr_data)
-
-        # Assert
-        assert result["pr_data"] == sample_pr_data
-        assert result["priority"] == "fix"
-        assert result["actions_taken"] == ["Fixed issue"]
-        engine._take_pr_actions.assert_called_once_with("test/repo", sample_pr_data)
-
-    def test_process_pull_requests_ignores_dependabot_when_configured(
-        self, mock_github_client, mock_gemini_client
-    ):
-        """When IGNORE_DEPENDABOT_PRS=True, Dependabot PRs are skipped entirely."""
-        # Setup PR mocks
-        from unittest.mock import Mock as _Mock
-
-        dep_pr = _Mock()
-        dep_pr.number = 1
-        dep_pr.user = _Mock()
-        dep_pr.user.login = "dependabot[bot]"
-
-        user_pr = _Mock()
-        user_pr.number = 2
-        user_pr.user = _Mock()
-        user_pr.user.login = "alice"
-
-        mock_github_client.get_open_pull_requests.return_value = [dep_pr, user_pr]
-        mock_github_client.get_pr_details.return_value = {
-            "number": 2,
-            "title": "User PR",
-        }
-
-        # Configure engine to ignore dependabot
-        from src.auto_coder.automation_engine import AutomationConfig
-
-        cfg = AutomationConfig()
-        cfg.IGNORE_DEPENDABOT_PRS = True
-
-        engine = AutomationEngine(
-            mock_github_client, mock_gemini_client, dry_run=True, config=cfg
-        )
-        # Force second loop path for simplicity
-        engine._check_github_actions_status = _Mock(return_value={"success": False})
-        engine._process_pr_for_fixes = _Mock(
-            return_value={
-                "pr_data": {"number": 2, "title": "User PR"},
-                "actions_taken": ["Fixed PR #2"],
-                "priority": "fix",
-            }
-        )
-
-        result = engine._process_pull_requests("test/repo")
-
-        # Assert only the user PR was processed
-        assert len(result) == 1
-        assert result[0]["pr_data"]["number"] == 2
-        # Ensure we never tried to get details for the dependabot PR
-        for call in mock_github_client.get_pr_details.call_args_list:
-            assert call.args[0] is user_pr
-
-    def test_process_prs_first_loop_actions_passing_and_mergeable(
-        self, mock_github_client, mock_gemini_client
-    ):
-        """Test first loop processes PRs with passing Actions AND mergeable status."""
-        # Setup
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-
-        # Mock PR data - Actions passing and mergeable
-        passing_mergeable_pr = Mock()
-        passing_mergeable_pr.number = 1
-        passing_mergeable_pr_data = {
-            "number": 1,
-            "title": "Passing Mergeable PR",
-            "mergeable": True,
-        }
-
-        # Mock PR data - Actions passing but not mergeable
-        passing_not_mergeable_pr = Mock()
-        passing_not_mergeable_pr.number = 2
-        passing_not_mergeable_pr_data = {
-            "number": 2,
-            "title": "Passing Not Mergeable PR",
-            "mergeable": False,
-        }
-
-        mock_github_client.get_open_pull_requests.return_value = [
-            passing_mergeable_pr,
-            passing_not_mergeable_pr,
-        ]
-        mock_github_client.get_pr_details.side_effect = [
-            passing_mergeable_pr_data,
-            passing_not_mergeable_pr_data,
-            passing_not_mergeable_pr_data,  # Second loop
-        ]
-
-        # Mock GitHub Actions status
-        engine._check_github_actions_status = Mock(return_value={"success": True})
-        engine._process_pr_for_merge = Mock(
-            return_value={
-                "pr_data": passing_mergeable_pr_data,
-                "actions_taken": ["Successfully merged PR #1"],
-                "priority": "merge",
-            }
-        )
-        engine._process_pr_for_fixes = Mock(
-            return_value={
-                "pr_data": passing_not_mergeable_pr_data,
-                "actions_taken": ["Fixed PR #2"],
-                "priority": "fix",
-            }
-        )
-
-        # Execute
-        result = engine._process_pull_requests("test/repo")
-
-        # Assert
-        # Should have at least 2 results (may have error entries)
-        assert len(result) >= 2
-
-        # First PR should be processed for merge (Actions passing AND mergeable)
-        engine._process_pr_for_merge.assert_called_once_with(
-            "test/repo", passing_mergeable_pr_data
-        )
-
-        # Second PR should be processed for fixes in second loop (Actions passing but NOT mergeable)
-        engine._process_pr_for_fixes.assert_called_once_with(
-            "test/repo", passing_not_mergeable_pr_data
-        )
-
-        # Check that the first result is the merge result
-        merge_result = next((r for r in result if r.get("priority") == "merge"), None)
-        assert merge_result is not None
-        assert merge_result["pr_data"]["number"] == 1
-
-        # Check that the second result is the fix result
-        fix_result = next((r for r in result if r.get("priority") == "fix"), None)
-        assert fix_result is not None
-        assert fix_result["pr_data"]["number"] == 2
+    # Note: Dependabot filtering tests and PR processing tests moved to test_pr_processor.py
 
     @patch("src.auto_coder.automation_engine.CommandExecutor.run_command")
     def test_merge_pr_with_conflict_resolution_success(
@@ -802,13 +410,7 @@ class TestAutomationEngine:
         assert "Added analysis comment" in result[1]
         assert "Committed changes" in result[2]
 
-    def test_take_pr_actions_success(
-        self, mock_github_client, mock_gemini_client, sample_pr_data
-    ):
-        """Test PR actions execution."""
-        # Setup
-        engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
-        assert isinstance(engine, AutomationEngine)
+    # Note: test_take_pr_actions_success removed - _take_pr_actions is now in pr_processor.py
 
     @patch("src.auto_coder.automation_engine.CommandExecutor.run_command")
     def test_resolve_pr_merge_conflicts_uses_base_branch(
@@ -938,7 +540,7 @@ class TestAutomationEngine:
         mock_github_client,
         mock_gemini_client,
     ):
-        """Test successful report saving."""
+        """Test successful report saving without repo_name (legacy behavior)."""
         # Setup
         mock_join.return_value = "reports/test_report.json"
         mock_file = Mock()
@@ -947,10 +549,47 @@ class TestAutomationEngine:
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
         test_data = {"test": "data"}
 
-        # Execute
+        # Execute - repo_name が指定されていない場合は従来の reports/ を使用
         engine._save_report(test_data, "test_report")
 
         # Assert
+        mock_makedirs.assert_called_once_with("reports", exist_ok=True)
+        mock_open.assert_called_once()
+        mock_json_dump.assert_called_once_with(
+            test_data, mock_file, indent=2, ensure_ascii=False
+        )
+
+    @patch("builtins.open")
+    @patch("json.dump")
+    @patch("os.path.join")
+    @patch("os.makedirs")
+    def test_save_report_with_repo_name(
+        self,
+        mock_makedirs,
+        mock_join,
+        mock_json_dump,
+        mock_open,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test report saving with repo_name to ~/.auto-coder/{repository}/."""
+        # Setup
+        from pathlib import Path
+
+        repo_name = "owner/repo"
+        expected_dir = str(Path.home() / ".auto-coder" / "owner_repo")
+        mock_join.return_value = f"{expected_dir}/test_report_20240101_120000.json"
+        mock_file = Mock()
+        mock_open.return_value.__enter__.return_value = mock_file
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+        test_data = {"test": "data"}
+
+        # Execute - repo_name が指定されている場合は ~/.auto-coder/{repository}/ を使用
+        engine._save_report(test_data, "test_report", repo_name)
+
+        # Assert
+        mock_makedirs.assert_called_once_with(expected_dir, exist_ok=True)
         mock_open.assert_called_once()
         mock_json_dump.assert_called_once_with(
             test_data, mock_file, indent=2, ensure_ascii=False
@@ -1552,6 +1191,58 @@ class TestAutomationConfig:
         assert config.MERGE_METHOD == "--squash"
         assert config.MERGE_AUTO is True
 
+    def test_get_reports_dir(self):
+        """Test get_reports_dir method returns correct path."""
+        from pathlib import Path
+
+        config = AutomationConfig()
+
+        # Test with typical repo name
+        repo_name = "owner/repo"
+        expected_path = str(Path.home() / ".auto-coder" / "owner_repo")
+        assert config.get_reports_dir(repo_name) == expected_path
+
+        # Test with different repo name
+        repo_name2 = "another-owner/another-repo"
+        expected_path2 = str(Path.home() / ".auto-coder" / "another-owner_another-repo")
+        assert config.get_reports_dir(repo_name2) == expected_path2
+
+    def test_get_llm_backend_info_with_gemini_client(
+        self, mock_github_client, mock_gemini_client
+    ):
+        """Test _get_llm_backend_info with GeminiClient."""
+        mock_gemini_client.model_name = "gemini-2.5-pro"
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        info = engine._get_llm_backend_info()
+
+        assert info["backend"] == "gemini"
+        assert info["model"] == "gemini-2.5-pro"
+
+    def test_get_llm_backend_info_with_backend_manager(self, mock_github_client):
+        """Test _get_llm_backend_info with BackendManager."""
+        mock_backend_manager = Mock()
+        mock_backend_manager.get_last_backend_and_model.return_value = (
+            "codex",
+            "codex-model",
+        )
+
+        engine = AutomationEngine(mock_github_client, mock_backend_manager)
+
+        info = engine._get_llm_backend_info()
+
+        assert info["backend"] == "codex"
+        assert info["model"] == "codex-model"
+
+    def test_get_llm_backend_info_with_no_client(self, mock_github_client):
+        """Test _get_llm_backend_info with no LLM client."""
+        engine = AutomationEngine(mock_github_client, None)
+
+        info = engine._get_llm_backend_info()
+
+        assert info["backend"] is None
+        assert info["model"] is None
+
     @patch("subprocess.run")
     def test_commit_changes_runs_dprint_on_format_failure(
         self, mock_run, mock_github_client, mock_gemini_client
@@ -1599,28 +1290,7 @@ class TestAutomationConfig:
 class TestAutomationEngineExtended:
     """Extended test cases for AutomationEngine."""
 
-    def test_take_pr_actions_skips_analysis_when_flag_set(
-        self, mock_github_client, mock_gemini_client
-    ):
-        """Verify that _take_pr_actions skips LLM analysis when FLAG_SKIP_ANALYSIS is present."""
-        engine = AutomationEngine(mock_github_client, mock_gemini_client)
-        pr_data = {"number": 999, "title": "Flag Test PR"}
-
-        with patch.object(
-            engine, "_handle_pr_merge"
-        ) as mock_handle_merge, patch.object(
-            engine, "_apply_pr_actions_directly"
-        ) as mock_apply_actions:
-            mock_handle_merge.return_value = [
-                "All GitHub Actions checks passed for PR #999",
-                "Pushed updated branch for PR #999",
-                AutomationEngine.FLAG_SKIP_ANALYSIS,
-            ]
-
-            actions = engine._take_pr_actions("test/repo", pr_data)
-
-            assert any("skipping analysis" in a for a in actions)
-            mock_apply_actions.assert_not_called()
+    # Note: test_take_pr_actions_skips_analysis_when_flag_set removed - _take_pr_actions is now in pr_processor.py
 
     def test_handle_pr_merge_in_progress(self, mock_github_client, mock_gemini_client):
         """Test PR merge handling when GitHub Actions are in progress."""

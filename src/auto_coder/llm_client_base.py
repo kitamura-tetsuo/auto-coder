@@ -7,17 +7,17 @@ from typing import Optional
 
 class LLMClientBase(ABC):
     """Base class for all LLM clients.
-    
+
     All LLM clients must implement the _run_llm_cli method.
     """
 
     @abstractmethod
     def _run_llm_cli(self, prompt: str) -> str:
         """Execute LLM with the given prompt.
-        
+
         Args:
             prompt: The prompt to send to the LLM
-            
+
         Returns:
             The LLM's response as a string
         """
@@ -42,7 +42,7 @@ class LLMClientBase(ABC):
 
 class LLMBackendManagerBase(LLMClientBase):
     """Base class for LLM backend managers.
-    
+
     Backend managers must implement additional methods for managing backends.
     """
 
@@ -51,11 +51,11 @@ class LLMBackendManagerBase(LLMClientBase):
         self, prompt: str, current_test_file: Optional[str] = None
     ) -> str:
         """Execute LLM for test fix with optional test file tracking.
-        
+
         Args:
             prompt: The prompt to send to the LLM
             current_test_file: Optional test file being fixed
-            
+
         Returns:
             The LLM's response as a string
         """
@@ -63,9 +63,8 @@ class LLMBackendManagerBase(LLMClientBase):
 
     def close(self) -> None:
         """Close the backend manager and clean up resources.
-        
+
         This is optional and can be overridden by subclasses.
         Default implementation does nothing.
         """
         pass
-

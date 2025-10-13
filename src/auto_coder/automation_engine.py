@@ -15,8 +15,7 @@ from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
-from .pr_processor import get_github_actions_logs_from_url
-from .pr_processor import process_pull_requests
+from .pr_processor import get_github_actions_logs_from_url, process_pull_requests
 from .utils import log_action
 
 logger = get_logger(__name__)
@@ -38,18 +37,23 @@ class AutomationEngine:
         self.dry_run = dry_run
         self.config = config or AutomationConfig()
 
-        # Create reports directory if it doesn't exist
-        os.makedirs(self.config.REPORTS_DIR, exist_ok=True)
+        # Note: レポートディレクトリはリポジトリごとに作成されるため、
+        # ここでは作成しない（_save_reportで作成）
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
+
+        # LLMバックエンド情報を取得
+        llm_backend_info = self._get_llm_backend_info()
 
         results = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
             "dry_run": self.dry_run,
             "jules_mode": jules_mode,
+            "llm_backend": llm_backend_info["backend"],
+            "llm_model": llm_backend_info["model"],
             "issues_processed": [],
             "prs_processed": [],
             "errors": [],
@@ -69,8 +73,9 @@ class AutomationEngine:
             results["prs_processed"] = prs_result
 
             # Save results report
-            report_name = f"{'jules_' if jules_mode else ''}automation_report_{repo_name.replace('/', '_')}"
-            self._save_report(results, report_name)
+            # ファイル名からリポジトリ名を除く（ディレクトリで区別するため）
+            report_name = f"{'jules_' if jules_mode else ''}automation_report"
+            self._save_report(results, report_name, repo_name)
 
             logger.info(f"Automation completed for {repo_name}")
             return results
@@ -128,14 +133,63 @@ class AutomationEngine:
 
         return fix_to_pass_tests(self.config, self.dry_run, max_attempts, self.llm)
 
-    def _save_report(self, data: Dict[str, Any], filename: str) -> None:
-        """Save report to file."""
+    def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
+        """Get LLM backend and model information.
+
+        Returns:
+            Dictionary with 'backend' and 'model' keys.
+        """
+        if self.llm is None:
+            return {"backend": None, "model": None}
+
+        # BackendManagerの場合
+        if hasattr(self.llm, "get_last_backend_and_model"):
+            backend, model = self.llm.get_last_backend_and_model()
+            return {"backend": backend, "model": model}
+
+        # 個別クライアントの場合
+        backend = None
+        model = getattr(self.llm, "model_name", None)
+
+        # クラス名からバックエンド名を推測
+        class_name = self.llm.__class__.__name__
+        if "Gemini" in class_name:
+            backend = "gemini"
+        elif "Codex" in class_name:
+            if "MCP" in class_name:
+                backend = "codex-mcp"
+            else:
+                backend = "codex"
+        elif "Qwen" in class_name:
+            backend = "qwen"
+        elif "Auggie" in class_name:
+            backend = "auggie"
+
+        return {"backend": backend, "model": model}
+
+    def _save_report(
+        self, data: Dict[str, Any], filename: str, repo_name: Optional[str] = None
+    ) -> None:
+        """Save report to file.
+
+        Args:
+            data: Report data to save
+            filename: Base filename (without timestamp and extension)
+            repo_name: Repository name (e.g., 'owner/repo'). If provided, saves to
+                      ~/.auto-coder/{repository}/ instead of the default reports/ directory.
+        """
         try:
+            # リポジトリ名が指定されている場合は、リポジトリごとのディレクトリを使用
+            if repo_name:
+                reports_dir = self.config.get_reports_dir(repo_name)
+            else:
+                reports_dir = self.config.REPORTS_DIR
+
             # レポートディレクトリが存在しない場合は作成
-            os.makedirs(self.config.REPORTS_DIR, exist_ok=True)
+            os.makedirs(reports_dir, exist_ok=True)
 
             filepath = os.path.join(
-                self.config.REPORTS_DIR,
+                reports_dir,
                 f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
             )
             with open(filepath, "w", encoding="utf-8") as f:
@@ -165,4 +219,6 @@ class AutomationEngine:
         self, repo_name: str, pr_data: Dict[str, Any]
     ) -> List[str]:
         """Ask LLM CLI to apply PR fixes directly; avoid posting PR comments."""
-        return _pr_apply_actions(repo_name, pr_data, self.config, self.dry_run, self.llm)
+        return _pr_apply_actions(
+            repo_name, pr_data, self.config, self.dry_run, self.llm
+        )

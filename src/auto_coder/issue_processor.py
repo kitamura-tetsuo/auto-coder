@@ -52,17 +52,11 @@ def _process_issues_normal(
 
                 processed_issue = {
                     "issue_data": issue_data,
-                    "analysis": None,
-                    "solution": None,
                     "actions_taken": [],
                 }
 
-                # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
-                processed_issue["analysis"] = None
-                processed_issue["solution"] = None
-
                 # 単回実行での直接アクション（CLI）
-                actions = _take_issue_actions(repo_name, issue_data, config, dry_run)
+                actions = _take_issue_actions(repo_name, issue_data, config, dry_run, llm_client)
                 processed_issue["actions_taken"] = actions
 
                 processed_issues.append(processed_issue)
@@ -209,6 +203,32 @@ def _apply_issue_actions_directly(
     actions = []
 
     try:
+        # ブランチ切り替え: PRで指定されているブランチがあればそこへ、なければデフォルトブランチへ
+        target_branch = None
+        if "head_branch" in issue_data:
+            # PRの場合はhead_branchに切り替え
+            target_branch = issue_data.get("head_branch")
+            logger.info(f"Switching to PR branch: {target_branch}")
+        else:
+            # 通常のissueの場合はデフォルトブランチに切り替え
+            target_branch = config.MAIN_BRANCH
+            logger.info(f"Switching to default branch: {target_branch}")
+
+        if target_branch:
+            # ブランチを切り替え
+            checkout_result = cmd.run_command(
+                ["git", "checkout", target_branch], check_success=False
+            )
+            if checkout_result.success:
+                actions.append(f"Switched to branch: {target_branch}")
+                logger.info(f"Successfully switched to branch: {target_branch}")
+            else:
+                # ブランチ切り替えに失敗した場合は処理を終了
+                error_msg = f"Failed to switch to branch {target_branch}: {checkout_result.stderr}"
+                actions.append(error_msg)
+                logger.error(error_msg)
+                return actions
+
         # Create a comprehensive prompt for LLM CLI
         action_prompt = render_prompt(
             "issue.action",

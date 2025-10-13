@@ -110,7 +110,7 @@ features:
 
   automation_engine:
     name: "Automation Engine"
-    description: "Main orchestration engine that coordinates GitHub and Gemini integration"
+    description: "Main orchestration engine that coordinates GitHub and LLM integration"
     components:
       - name: "AutomationEngine"
         file: "src/auto_coder/automation_engine.py"
@@ -118,7 +118,34 @@ features:
           - name: "run"
             description: "Execute the main automation process for a repository"
             parameters: ["repo_name", "jules_mode (optional)"]
-            returns: "Dictionary with automation results"
+            returns: "Dictionary with automation results including llm_backend and llm_model"
+            report_fields:
+              - "repository: Repository name"
+              - "timestamp: ISO format timestamp"
+              - "dry_run: Boolean indicating dry run mode"
+              - "jules_mode: Boolean indicating Jules mode"
+              - "llm_backend: LLM backend used (e.g., 'codex', 'gemini', 'qwen', 'auggie')"
+              - "llm_model: LLM model name used"
+              - "issues_processed: List of processed issues (analysis/solution fields removed)"
+              - "prs_processed: List of processed PRs"
+              - "errors: List of errors encountered"
+          - name: "_get_llm_backend_info"
+            description: "Get LLM backend and model information from the LLM client"
+            parameters: []
+            returns: "Dictionary with 'backend' and 'model' keys"
+            behavior:
+              - "If llm client is None, returns {backend: None, model: None}"
+              - "If llm client has get_last_backend_and_model method (BackendManager), uses it"
+              - "Otherwise, infers backend from class name and gets model_name attribute"
+          - name: "_save_report"
+            description: "Save automation report to file. When repo_name is provided, saves to ~/.auto-coder/{repository}/ instead of reports/"
+            parameters: ["data", "filename", "repo_name (optional)"]
+            returns: "None"
+            behavior:
+              - "If repo_name is provided, saves to ~/.auto-coder/{repository}/"
+              - "If repo_name is not provided, saves to reports/ (legacy behavior)"
+              - "Filename format: {filename}_{timestamp}.json"
+              - "Repository name is excluded from filename (directory distinguishes repos)"
           - name: "fix_to_pass_tests"
             description: "Run local tests and iteratively request LLM fixes until tests pass; commits are gated and happen only when the test output or the LLM error summary changes by >=10%; at the beginning of each iteration the loop checks for Auto-Coder updates and restarts with the original CLI arguments when an upgrade is applied; errors if LLM makes no edits"
             parameters: ["max_attempts (optional)"]
@@ -306,6 +333,16 @@ features:
     name: "Configuration Management"
     description: "Application configuration and settings management"
     components:
+      - name: "AutomationConfig"
+        file: "src/auto_coder/automation_config.py"
+        methods:
+          - name: "get_reports_dir"
+            description: "Get the reports directory for a specific repository"
+            parameters: ["repo_name"]
+            returns: "Path to ~/.auto-coder/{repository}/"
+            behavior:
+              - "Converts repo_name (e.g., 'owner/repo') to safe directory name (e.g., 'owner_repo')"
+              - "Returns path: ~/.auto-coder/{safe_repo_name}/"
       - name: "Settings"
         file: "src/auto_coder/config.py"
         settings:
@@ -344,9 +381,10 @@ workflows:
     description: "Automated workflow for processing GitHub issues (single-run, no analysis phase)"
     steps:
       1. "Fetch open issues from repository (oldest first)"
-      2. "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
-      3. "Add comments or close issues as appropriate"
-      4. "Generate automation report"
+      2. "Switch to appropriate branch: PR head_branch if present, otherwise default branch"
+      3. "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
+      4. "Add comments or close issues as appropriate"
+      5. "Generate automation report"
 
   pr_processing:
     name: "Pull Request Processing Workflow"

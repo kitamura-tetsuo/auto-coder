@@ -311,10 +311,12 @@ src/auto_coder/
 
 ## 出力とレポート
 
-実行結果は `reports/` ディレクトリにJSON形式で保存されます:
+実行結果は `~/.auto-coder/{repository}/` ディレクトリにJSON形式で保存されます:
 
-- `automation_report_*.json`: 自動化処理の結果
-- `feature_suggestions_*.json`: 機能提案の結果
+- `automation_report_*.json`: 自動化処理の結果（リポジトリごとに保存）
+- `jules_automation_report_*.json`: Jules モードでの自動化処理の結果
+
+例: `owner/repo` リポジトリの場合、レポートは `~/.auto-coder/owner_repo/` に保存されます。
 
 ## トラブルシューティング
 

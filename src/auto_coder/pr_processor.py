@@ -1565,7 +1565,9 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                                 else ""
                                             ) + "\n".join(norm_lines)
                                         else:
-                                            snippet = snippet + "\n" + "\n".join(norm_lines)
+                                            snippet = (
+                                                snippet + "\n" + "\n".join(norm_lines)
+                                            )
                                     # エラーがないステップは出力しない（さらに厳格化）
                                     if snippet and snippet.strip():
                                         s = snippet
@@ -1618,7 +1620,9 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             for ln in job_txt2.stdout.split("\n"):
                                                 parts = ln.split("\t", 2)
                                                 if len(parts) >= 3:
-                                                    step_field = parts[1].strip().lower()
+                                                    step_field = (
+                                                        parts[1].strip().lower()
+                                                    )
                                                     if any(
                                                         n
                                                         and (

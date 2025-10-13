@@ -1,6 +1,8 @@
 """Configuration classes for Auto-Coder automation engine."""
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
@@ -10,6 +12,22 @@ class AutomationConfig:
     # File paths
     REPORTS_DIR: str = "reports"
     TEST_SCRIPT_PATH: str = "scripts/test.sh"
+
+    def get_reports_dir(self, repo_name: str) -> str:
+        """Get the reports directory for a specific repository.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+
+        Returns:
+            Path to the reports directory: ~/.auto-coder/{repository}/
+        """
+        # リポジトリ名から安全なディレクトリ名を生成
+        safe_repo_name = repo_name.replace("/", "_")
+
+        # ホームディレクトリ配下の .auto-coder/{repository}/ を返す
+        reports_path = Path.home() / ".auto-coder" / safe_repo_name
+        return str(reports_path)
 
     # Limits
     MAX_PR_DIFF_SIZE: int = 2000
