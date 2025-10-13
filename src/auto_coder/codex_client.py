@@ -4,14 +4,15 @@ Codex CLI client for Auto-Coder.
 
 import subprocess
 
-from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
+from .llm_client_base import LLMClientBase
+from .logger_config import get_logger
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
 
-class CodexClient:
+class CodexClient(LLMClientBase):
     """Codex CLI client for analyzing issues and generating solutions.
 
     Note: Provides a GeminiClient-compatible surface for integration.
@@ -48,7 +49,7 @@ class CodexClient:
         """Escape special characters that may confuse shell/CLI.
         Keep behavior aligned with GeminiClient for consistency.
         """
-        return prompt.replace('@', '\\@').strip()
+        return prompt.replace("@", "\\@").strip()
 
     def _run_gemini_cli(self, prompt: str) -> str:
         """Run codex CLI with the given prompt and show real-time output.
@@ -57,16 +58,24 @@ class CodexClient:
         try:
             escaped_prompt = self._escape_prompt(prompt)
             cmd = [
-                "codex", "exec",
-                "-s", "workspace-write",
+                "codex",
+                "exec",
+                "-s",
+                "workspace-write",
                 "--dangerously-bypass-approvals-and-sandbox",
                 escaped_prompt,
             ]
 
             # Warn that we are invoking an LLM (minimize calls)
-            logger.warning("LLM invocation: codex CLI is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running codex CLI with prompt length: {len(prompt)} characters")
-            logger.info("🤖 Running: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]")
+            logger.warning(
+                "LLM invocation: codex CLI is being called. Keep LLM calls minimized."
+            )
+            logger.debug(
+                f"Running codex CLI with prompt length: {len(prompt)} characters"
+            )
+            logger.info(
+                "🤖 Running: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]"
+            )
             logger.info("=" * 60)
 
             usage_markers = (
@@ -92,7 +101,11 @@ class CodexClient:
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
             combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+            full_output = (
+                "\n".join(combined_parts)
+                if combined_parts
+                else (result.stderr or result.stdout or "")
+            )
             full_output = full_output.strip()
             low = full_output.lower()
             if result.returncode != 0:
@@ -111,7 +124,6 @@ class CodexClient:
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to run codex CLI: {e}")
-
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Neutral alias: delegate to _run_gemini_cli (migration helper)."""

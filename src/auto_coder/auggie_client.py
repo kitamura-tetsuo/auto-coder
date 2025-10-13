@@ -16,8 +16,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
+from .llm_client_base import LLMClientBase
+from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
@@ -27,7 +28,7 @@ _USAGE_FILENAME = "auggie_usage.json"
 _DAILY_LIMIT = 20
 
 
-class AuggieClient:
+class AuggieClient(LLMClientBase):
     """Auggie CLI client wrapper."""
 
     DAILY_CALL_LIMIT = _DAILY_LIMIT
@@ -110,11 +111,11 @@ class AuggieClient:
         payload = {"date": date_str, "count": count}
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.warning(
-                "Unable to persist Auggie usage state at %s: %s", path, exc
+            path.write_text(
+                json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
             )
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("Unable to persist Auggie usage state at %s: %s", path, exc)
 
     def _check_and_increment_usage(self) -> None:
         """Ensure the daily usage limit allows another Auggie invocation."""
@@ -142,7 +143,7 @@ class AuggieClient:
 
     def _escape_prompt(self, prompt: str) -> str:
         """Escape characters that can confuse shell commands."""
-        return prompt.replace('@', '\\@').strip()
+        return prompt.replace("@", "\\@").strip()
 
     def _run_auggie_cli(self, prompt: str) -> str:
         """Execute Auggie CLI and stream output via logger."""
@@ -156,7 +157,9 @@ class AuggieClient:
             escaped_prompt,
         ]
 
-        logger.warning("LLM invocation: auggie CLI is being called. Keep LLM calls minimized.")
+        logger.warning(
+            "LLM invocation: auggie CLI is being called. Keep LLM calls minimized."
+        )
         logger.debug(f"Running auggie CLI with prompt length: {len(prompt)} characters")
         logger.info("🤖 Running: auggie --print --model %s [prompt]" % self.model_name)
         logger.info("=" * 60)
@@ -186,7 +189,9 @@ class AuggieClient:
         if return_code != 0:
             if ("rate limit" in low) or ("quota" in low) or ("429" in low):
                 raise AutoCoderUsageLimitError(full_output)
-            raise RuntimeError(f"auggie CLI failed with return code {return_code}\n{full_output}")
+            raise RuntimeError(
+                f"auggie CLI failed with return code {return_code}\n{full_output}"
+            )
         if ("rate limit" in low) or ("quota" in low):
             raise AutoCoderUsageLimitError(full_output)
         return full_output
@@ -198,4 +203,3 @@ class AuggieClient:
     def _run_llm_cli(self, prompt: str) -> str:
         """BackendManager entry-point."""
         return self._run_auggie_cli(prompt)
-

@@ -8,29 +8,35 @@ Design: mirror GeminiClient/CodexClient public surface so AutomationEngine can u
 """
 from __future__ import annotations
 
-import os
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .logger_config import get_logger
 from .exceptions import AutoCoderUsageLimitError
-from .utils import CommandExecutor
+from .llm_client_base import LLMClientBase
+from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .qwen_provider_config import load_qwen_provider_configs
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
 
-class QwenClient:
+class QwenClient(LLMClientBase):
     """Qwen Code CLI client.
 
     Note: Qwen Code is adapted from Gemini CLI. We assume a similar non-interactive CLI interface.
     Tests mock subprocess, so no external dependency is required to run tests.
     """
 
-    def __init__(self, model_name: str = "qwen3-coder-plus", openai_api_key: Optional[str] = None, openai_base_url: Optional[str] = None):
+    def __init__(
+        self,
+        model_name: str = "qwen3-coder-plus",
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
+    ):
         self.model_name = model_name or "qwen3-coder-plus"
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
@@ -46,7 +52,9 @@ class QwenClient:
 
         # Verify qwen CLI is available
         try:
-            result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(
+                ["qwen", "--version"], capture_output=True, text=True, timeout=10
+            )
             if result.returncode != 0:
                 raise RuntimeError("qwen CLI not available or not working")
         except Exception as e:
@@ -56,12 +64,16 @@ class QwenClient:
     def switch_to_conflict_model(self) -> None:
         # Keep same model by default. In future, allow switching to a lighter model.
         self.model_name = self.conflict_model
-        logger.debug("QwenClient.switch_to_conflict_model: active model -> %s", self.model_name)
+        logger.debug(
+            "QwenClient.switch_to_conflict_model: active model -> %s", self.model_name
+        )
 
     def switch_to_default_model(self) -> None:
         # Restore to the initially configured default model.
         self.model_name = self.default_model
-        logger.debug("QwenClient.switch_to_default_model: active model -> %s", self.model_name)
+        logger.debug(
+            "QwenClient.switch_to_default_model: active model -> %s", self.model_name
+        )
 
     # ----- Helpers -----
     def _escape_prompt(self, prompt: str) -> str:
@@ -135,8 +147,12 @@ class QwenClient:
             cmd.extend(["-m", model_to_use])
         cmd.extend(["-p", escaped_prompt])
 
-        logger.warning("LLM invocation: qwen CLI is being called. Keep LLM calls minimized.")
-        logger.debug("Running qwen CLI with prompt length: %d characters", len(original_prompt))
+        logger.warning(
+            "LLM invocation: qwen CLI is being called. Keep LLM calls minimized."
+        )
+        logger.debug(
+            "Running qwen CLI with prompt length: %d characters", len(original_prompt)
+        )
         logger.info(
             "🤖 Running (%s): qwen %s",
             provider.display_name,
@@ -155,7 +171,11 @@ class QwenClient:
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         combined_parts = [part for part in (stdout, stderr) if part]
-        full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+        full_output = (
+            "\n".join(combined_parts)
+            if combined_parts
+            else (result.stderr or result.stdout or "")
+        )
         full_output = full_output.strip()
 
         if self._is_usage_limit(full_output, result.returncode):
@@ -217,7 +237,6 @@ class QwenClient:
 
         return providers
 
-
     def _run_gemini_cli(self, prompt: str) -> str:
         """Temporary alias for backward compatibility.
         Prefer calling _run_qwen_cli going forward; this delegates to _run_qwen_cli.
@@ -243,23 +262,25 @@ class QwenClient:
     def _create_feature_suggestion_prompt(self, repo_context: Dict[str, Any]) -> str:
         return render_prompt(
             "feature.suggestion",
-            repo_name=repo_context.get('name', 'Unknown'),
-            description=repo_context.get('description', 'No description'),
-            language=repo_context.get('language', 'Unknown'),
-            recent_issues=repo_context.get('recent_issues', []),
-            recent_prs=repo_context.get('recent_prs', []),
+            repo_name=repo_context.get("name", "Unknown"),
+            description=repo_context.get("description", "No description"),
+            language=repo_context.get("language", "Unknown"),
+            recent_issues=repo_context.get("recent_issues", []),
+            recent_prs=repo_context.get("recent_prs", []),
         )
 
     def _parse_feature_suggestions(self, response_text: str) -> List[Dict[str, Any]]:
         try:
-            start_idx = response_text.find('[')
-            end_idx = response_text.rfind(']') + 1
+            start_idx = response_text.find("[")
+            end_idx = response_text.rfind("]") + 1
             if start_idx != -1 and end_idx != -1:
                 json_str = response_text[start_idx:end_idx]
                 return json.loads(json_str)
             return []
         except json.JSONDecodeError:
             return []
+
+
 @dataclass
 class _QwenProviderOption:
     name: str
@@ -267,4 +288,3 @@ class _QwenProviderOption:
     api_key: Optional[str]
     base_url: Optional[str]
     model: Optional[str]
-

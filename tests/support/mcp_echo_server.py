@@ -1,5 +1,5 @@
-import sys
 import json
+import sys
 
 
 def _read_headers(stdin):
@@ -24,6 +24,7 @@ essential_server_info = {
     "capabilities": {"tools": {}},
     "serverInfo": {"name": "mcp-echo-server", "version": "0.0.2"},
 }
+
 
 def _send(obj):
     b = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -61,105 +62,130 @@ def main():
             arguments = (params or {}).get("arguments") or {}
             if name == "default":
                 text = str(arguments.get("input", ""))
-                _send({
-                    "jsonrpc": "2.0",
-                    "id": mid,
-                    "result": {
-                        "content": [{"type": "text", "text": f"PROMPT: {text}"}]
-                    },
-                })
+                _send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "result": {
+                            "content": [{"type": "text", "text": f"PROMPT: {text}"}]
+                        },
+                    }
+                )
             else:
-                _send({
-                    "jsonrpc": "2.0",
-                    "id": mid,
-                    "error": {"code": -32601, "message": f"Unknown prompt: {name}"},
-                })
+                _send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "error": {"code": -32601, "message": f"Unknown prompt: {name}"},
+                    }
+                )
         elif method == "inference/create":
             arguments = (params or {}).get("arguments") or {}
             text = str(arguments.get("input", ""))
-            _send({
-                "jsonrpc": "2.0",
-                "id": mid,
-                "result": {"content": [{"type": "text", "text": f"INFER: {text}"}]},
-            })
+            _send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": mid,
+                    "result": {"content": [{"type": "text", "text": f"INFER: {text}"}]},
+                }
+            )
         elif method == "tools/list":
-            _send({
-                "jsonrpc": "2.0",
-                "id": mid,
-                "result": {
-                    "tools": [
-                        {
-                            "name": "run",
-                            "description": "Run a prompt as a single-shot command",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {"text": {"type": "string"}, "input": {"type": "string"}},
-                                "required": ["text"],
+            _send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": mid,
+                    "result": {
+                        "tools": [
+                            {
+                                "name": "run",
+                                "description": "Run a prompt as a single-shot command",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {"type": "string"},
+                                        "input": {"type": "string"},
+                                    },
+                                    "required": ["text"],
+                                },
                             },
-                        },
-                        {
-                            "name": "execute",
-                            "description": "Alias of run",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {"text": {"type": "string"}, "input": {"type": "string"}},
-                                "required": ["text"],
+                            {
+                                "name": "execute",
+                                "description": "Alias of run",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {"type": "string"},
+                                        "input": {"type": "string"},
+                                    },
+                                    "required": ["text"],
+                                },
                             },
-                        },
-                        {
-                            "name": "workspace-write",
-                            "description": "Write to workspace based on prompt",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {"text": {"type": "string"}, "input": {"type": "string"}},
-                                "required": ["text"],
+                            {
+                                "name": "workspace-write",
+                                "description": "Write to workspace based on prompt",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "text": {"type": "string"},
+                                        "input": {"type": "string"},
+                                    },
+                                    "required": ["text"],
+                                },
                             },
-                        },
-                        {
-                            "name": "echo",
-                            "description": "Echo back text",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {"text": {"type": "string"}},
-                                "required": ["text"],
+                            {
+                                "name": "echo",
+                                "description": "Echo back text",
+                                "inputSchema": {
+                                    "type": "object",
+                                    "properties": {"text": {"type": "string"}},
+                                    "required": ["text"],
+                                },
                             },
-                        },
-                    ]
-                },
-            })
+                        ]
+                    },
+                }
+            )
         elif method == "tools/call":
             name = (params or {}).get("name")
             arguments = (params or {}).get("arguments") or {}
             if name in ("run", "execute", "workspace-write"):
                 text = str(arguments.get("text") or arguments.get("input", ""))
-                _send({
-                    "jsonrpc": "2.0",
-                    "id": mid,
-                    "result": {
-                        "content": [{"type": "text", "text": f"RUN: {text}"}]
-                    },
-                })
+                _send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "result": {
+                            "content": [{"type": "text", "text": f"RUN: {text}"}]
+                        },
+                    }
+                )
             elif name == "echo":
                 text = str(arguments.get("text", ""))
-                _send({
-                    "jsonrpc": "2.0",
-                    "id": mid,
-                    "result": {
-                        "content": [{"type": "text", "text": f"ECHO: {text}"}]
-                    },
-                })
+                _send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "result": {
+                            "content": [{"type": "text", "text": f"ECHO: {text}"}]
+                        },
+                    }
+                )
             else:
-                _send({
+                _send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": mid,
+                        "error": {"code": -32601, "message": f"Unknown tool: {name}"},
+                    }
+                )
+        else:
+            _send(
+                {
                     "jsonrpc": "2.0",
                     "id": mid,
-                    "error": {"code": -32601, "message": f"Unknown tool: {name}"},
-                })
-        else:
-            _send({
-                "jsonrpc": "2.0",
-                "id": mid,
-                "error": {"code": -32601, "message": f"Method not found: {method}"},
-            })
+                    "error": {"code": -32601, "message": f"Method not found: {method}"},
+                }
+            )
 
 
 if __name__ == "__main__":

@@ -4,8 +4,8 @@ import subprocess
 from pathlib import Path
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.logger_config import setup_logger
 from src.auto_coder.fix_to_pass_tests_runner import fix_to_pass_tests
+from src.auto_coder.logger_config import setup_logger
 
 
 class StubLLMClient:
@@ -100,12 +100,23 @@ def test_fix_to_pass_tests_verbose_flow_logging_e2e(tmp_path):
     utils_module.subprocess = real_subprocess
 
     subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
-    subprocess.run(["git", "config", "user.email", "auto@example.com"], cwd=repo_dir, check=True)
-    subprocess.run(["git", "config", "user.name", "Auto Coder"], cwd=repo_dir, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "auto@example.com"], cwd=repo_dir, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Auto Coder"], cwd=repo_dir, check=True
+    )
 
     (repo_dir / "README.md").write_text("sample", encoding="utf-8")
-    subprocess.run(["git", "add", "README.md", "scripts/test.sh"], cwd=repo_dir, check=True)
-    subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo_dir, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "add", "README.md", "scripts/test.sh"], cwd=repo_dir, check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "Initial commit"],
+        cwd=repo_dir,
+        check=True,
+        capture_output=True,
+    )
 
     log_file = repo_dir / "runner.log"
     setup_logger(log_level="DEBUG", log_file=str(log_file))
@@ -120,7 +131,12 @@ def test_fix_to_pass_tests_verbose_flow_logging_e2e(tmp_path):
         llm_marker = markers_dir / "llm_applied.txt"
         llm_backend_manager = StubLLMClient(llm_marker)
 
-        result = fix_to_pass_tests(config, dry_run=False, max_attempts=5, llm_backend_manager=llm_backend_manager)
+        result = fix_to_pass_tests(
+            config,
+            dry_run=False,
+            max_attempts=5,
+            llm_backend_manager=llm_backend_manager,
+        )
 
         assert result["success"] is True
         assert result["attempts"] >= 3
@@ -128,12 +144,18 @@ def test_fix_to_pass_tests_verbose_flow_logging_e2e(tmp_path):
         assert llm_backend_manager.invocations, "LLM should be invoked at least once"
 
         log_text = log_file.read_text(encoding="utf-8")
-        assert "Detected failing test file src/tests/unit/cursor/cursor-core.spec.ts" in log_text
+        assert (
+            "Detected failing test file src/tests/unit/cursor/cursor-core.spec.ts"
+            in log_text
+        )
         assert (
             "Targeted test src/tests/unit/cursor/cursor-core.spec.ts passed after LLM fix"
             in log_text
         )
-        assert "Requesting LLM workspace fix using backend codex model gpt-4o-mini" in log_text
+        assert (
+            "Requesting LLM workspace fix using backend codex model gpt-4o-mini"
+            in log_text
+        )
         assert "LLM workspace fix summary: Applied stub workspace fix" in log_text
     finally:
         os.chdir(original_cwd)
@@ -142,4 +164,3 @@ def test_fix_to_pass_tests_verbose_flow_logging_e2e(tmp_path):
         else:
             os.environ["AUTO_CODER_DISABLE_AUTO_UPDATE"] = original_update_flag
         utils_module.subprocess = original_utils_subprocess
-

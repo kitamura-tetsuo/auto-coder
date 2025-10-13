@@ -24,7 +24,15 @@ class RecordingPopen:
 
     calls: list[list[str]] = []
 
-    def __init__(self, cmd, stdout=None, stderr=None, text=False, bufsize=1, universal_newlines=True):
+    def __init__(
+        self,
+        cmd,
+        stdout=None,
+        stderr=None,
+        text=False,
+        bufsize=1,
+        universal_newlines=True,
+    ):
         type(self).calls.append(list(cmd))
         self.stdout = io.StringIO("stub-response line 1\nstub-response line 2\n")
 
@@ -84,7 +92,9 @@ def test_auggie_usage_resets_when_date_changes(monkeypatch, tmp_path):
 
     yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
     state_path = tmp_path / "auggie_usage.json"
-    state_path.write_text(json.dumps({"date": yesterday, "count": AuggieClient.DAILY_CALL_LIMIT}))
+    state_path.write_text(
+        json.dumps({"date": yesterday, "count": AuggieClient.DAILY_CALL_LIMIT})
+    )
 
     client = AuggieClient()
     output = client._run_auggie_cli("allowed prompt")
@@ -95,4 +105,3 @@ def test_auggie_usage_resets_when_date_changes(monkeypatch, tmp_path):
     state = json.loads(state_path.read_text())
     assert state["count"] == 1
     assert state["date"] == datetime.now().date().isoformat()
-

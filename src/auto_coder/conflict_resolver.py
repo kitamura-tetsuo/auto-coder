@@ -2,40 +2,48 @@
 
 import json
 import os
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
-from .utils import CommandExecutor
 from .automation_config import AutomationConfig
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool) -> List[str]:
+def resolve_merge_conflicts_with_llm(
+    pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool
+) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
 
     try:
         # Create a prompt for LLM to resolve conflicts
-        base_branch = pr_data.get('base_branch') or pr_data.get('base', {}).get('ref') or config.MAIN_BRANCH
+        base_branch = (
+            pr_data.get("base_branch")
+            or pr_data.get("base", {}).get("ref")
+            or config.MAIN_BRANCH
+        )
         prompt = render_prompt(
             "pr.merge_conflict_resolution",
             base_branch=base_branch,
-            pr_number=pr_data.get('number', 'unknown'),
-            pr_title=pr_data.get('title', 'Unknown'),
-            pr_body=(pr_data.get('body') or '')[:500],
+            pr_number=pr_data.get("number", "unknown"),
+            pr_title=pr_data.get("title", "Unknown"),
+            pr_body=(pr_data.get("body") or "")[:500],
             conflict_info=conflict_info,
         )
         logger.debug(
             "Generated merge-conflict resolution prompt for PR #%s (preview: %s)",
-            pr_data.get('number', 'unknown'),
-            prompt[:160].replace('\n', ' '),
+            pr_data.get("number", "unknown"),
+            prompt[:160].replace("\n", " "),
         )
 
         # Use LLM to resolve conflicts
-        logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}")
+        logger.info(
+            f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}"
+        )
         response = "Resolved merge conflicts"  # Placeholder
 
         # Parse the response
@@ -43,7 +51,7 @@ def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str
             actions.append(f"LLM resolved merge conflicts: {response[:200]}...")
 
             # Stage any changes made by LLM
-            add_res = cmd.run_command(['git', 'add', '.'])
+            add_res = cmd.run_command(["git", "add", "."])
             if not add_res.success:
                 actions.append(f"Failed to stage resolved files: {add_res.stderr}")
                 return actions
@@ -73,7 +81,9 @@ def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str
             # else:
             #     actions.append(f"Failed to push resolved merge: {push_res.stderr}")
         else:
-            actions.append("LLM did not provide a clear response for merge conflict resolution")
+            actions.append(
+                "LLM did not provide a clear response for merge conflict resolution"
+            )
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts with LLM: {e}")
@@ -82,18 +92,16 @@ def resolve_merge_conflicts_with_llm(pr_data: Dict[str, Any], conflict_info: str
     return actions
 
 
-
-
 def is_package_lock_only_conflict(conflict_info: str) -> bool:
     """Check if conflicts are only in package-lock.json files."""
     try:
         # Parse git status output to find conflicted files
         conflicted_files = []
-        for line in conflict_info.strip().split('\n'):
+        for line in conflict_info.strip().split("\n"):
             if line.strip():
                 # Git status --porcelain format: XY filename
                 # UU means both modified (merge conflict)
-                if line.startswith('UU '):
+                if line.startswith("UU "):
                     filename = line[3:].strip()
                     conflicted_files.append(filename)
 
@@ -101,8 +109,11 @@ def is_package_lock_only_conflict(conflict_info: str) -> bool:
         if not conflicted_files:
             return False
 
-        dependency_files = {'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml'}
-        return all(any(dep_file in file for dep_file in dependency_files) for file in conflicted_files)
+        dependency_files = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
+        return all(
+            any(dep_file in file for dep_file in dependency_files)
+            for file in conflicted_files
+        )
 
     except Exception as e:
         logger.error(f"Error checking package-lock conflict: {e}")
@@ -120,10 +131,10 @@ def is_package_json_deps_only_conflict(conflict_info: str) -> bool:
     """
     try:
         conflicted_files: List[str] = []
-        for line in conflict_info.strip().split('\n'):
-            if line.strip() and line.startswith('UU '):
+        for line in conflict_info.strip().split("\n"):
+            if line.strip() and line.startswith("UU "):
                 filename = line[3:].strip()
-                if filename.endswith('package.json'):
+                if filename.endswith("package.json"):
                     conflicted_files.append(filename)
                 else:
                     # Any non-package.json conflict disqualifies this specialized resolver
@@ -132,16 +143,21 @@ def is_package_json_deps_only_conflict(conflict_info: str) -> bool:
         if not conflicted_files:
             return False
 
-        dep_keys = {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
+        dep_keys = {
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+        }
 
         for path in conflicted_files:
-            ours = cmd.run_command(['git', 'show', f':2:{path}'])
-            theirs = cmd.run_command(['git', 'show', f':3:{path}'])
+            ours = cmd.run_command(["git", "show", f":2:{path}"])
+            theirs = cmd.run_command(["git", "show", f":3:{path}"])
             if not (ours.success and theirs.success):
                 return False
             try:
-                ours_json = json.loads(ours.stdout or '{}')
-                theirs_json = json.loads(theirs.stdout or '{}')
+                ours_json = json.loads(ours.stdout or "{}")
+                theirs_json = json.loads(theirs.stdout or "{}")
             except Exception:
                 return False
 
@@ -166,25 +182,30 @@ def get_deps_only_conflicted_package_json_paths(conflict_info: str) -> List[str]
     """
     try:
         conflicted_paths: List[str] = []
-        for line in conflict_info.strip().split('\n'):
-            if line.strip() and line.startswith('UU '):
+        for line in conflict_info.strip().split("\n"):
+            if line.strip() and line.startswith("UU "):
                 filename = line[3:].strip()
-                if filename.endswith('package.json'):
+                if filename.endswith("package.json"):
                     conflicted_paths.append(filename)
 
         if not conflicted_paths:
             return []
 
-        dep_keys = {"dependencies", "devDependencies", "peerDependencies", "optionalDependencies"}
+        dep_keys = {
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies",
+        }
         eligible: List[str] = []
         for path in conflicted_paths:
-            ours = cmd.run_command(['git', 'show', f':2:{path}'])
-            theirs = cmd.run_command(['git', 'show', f':3:{path}'])
+            ours = cmd.run_command(["git", "show", f":2:{path}"])
+            theirs = cmd.run_command(["git", "show", f":3:{path}"])
             if not (ours.success and theirs.success):
                 continue
             try:
-                ours_json = json.loads(ours.stdout or '{}')
-                theirs_json = json.loads(theirs.stdout or '{}')
+                ours_json = json.loads(ours.stdout or "{}")
+                theirs_json = json.loads(theirs.stdout or "{}")
             except Exception:
                 continue
 
@@ -209,13 +230,13 @@ def parse_semver_to_tuple(v: str) -> Optional[tuple]:
         return None
     # Strip range operators and spaces
     s = v.strip()
-    while s and s[0] in ('^', '~', '>', '<', '=', 'v'):
+    while s and s[0] in ("^", "~", ">", "<", "=", "v"):
         s = s[1:]
     # Remove leading = if any remain
-    s = s.lstrip('=')
+    s = s.lstrip("=")
     # Split on hyphen (prerelease) and plus (build)
-    s = s.split('+', 1)[0].split('-', 1)[0]
-    parts = s.split('.')
+    s = s.split("+", 1)[0].split("-", 1)[0]
+    parts = s.split(".")
     nums: List[int] = []
     for p in parts:
         if p.isdigit():
@@ -246,7 +267,9 @@ def compare_semver(a: str, b: str) -> int:
     return 0
 
 
-def merge_dep_maps(ours: Dict[str, str], theirs: Dict[str, str], prefer_side: str) -> Dict[str, str]:
+def merge_dep_maps(
+    ours: Dict[str, str], theirs: Dict[str, str], prefer_side: str
+) -> Dict[str, str]:
     """Merge two dependency maps choosing newer version when conflict.
     prefer_side: 'ours' or 'theirs' used as tie-breaker when versions equal/unknown.
     """
@@ -267,14 +290,20 @@ def merge_dep_maps(ours: Dict[str, str], theirs: Dict[str, str], prefer_side: st
                 result[k] = vb
             else:
                 # Equal or unknown: prefer side with "more" deps overall
-                if prefer_side == 'ours':
+                if prefer_side == "ours":
                     result[k] = va
                 else:
                     result[k] = vb
     return result
 
 
-def resolve_package_json_dependency_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool, eligible_paths: Optional[List[str]] = None) -> List[str]:
+def resolve_package_json_dependency_conflicts(
+    pr_data: Dict[str, Any],
+    conflict_info: str,
+    config: AutomationConfig,
+    dry_run: bool,
+    eligible_paths: Optional[List[str]] = None,
+) -> List[str]:
     """Resolve package.json dependency-only conflicts by merging dependency sections.
 
     Rules:
@@ -287,41 +316,48 @@ def resolve_package_json_dependency_conflicts(pr_data: Dict[str, Any], conflict_
     """
     actions: List[str] = []
     try:
-        pr_number = pr_data['number']
-        actions.append(f"Detected package.json dependency-only conflicts for PR #{pr_number}")
+        pr_number = pr_data["number"]
+        actions.append(
+            f"Detected package.json dependency-only conflicts for PR #{pr_number}"
+        )
 
         conflicted_paths: List[str] = []
         if eligible_paths is not None:
             conflicted_paths = list(eligible_paths)
         else:
-            for line in conflict_info.strip().split('\n'):
-                if line.strip() and line.startswith('UU '):
+            for line in conflict_info.strip().split("\n"):
+                if line.strip() and line.startswith("UU "):
                     p = line[3:].strip()
-                    if p.endswith('package.json'):
+                    if p.endswith("package.json"):
                         conflicted_paths.append(p)
 
         updated_files: List[str] = []
         for path in conflicted_paths:
-            ours = cmd.run_command(['git', 'show', f':2:{path}'])
-            theirs = cmd.run_command(['git', 'show', f':3:{path}'])
+            ours = cmd.run_command(["git", "show", f":2:{path}"])
+            theirs = cmd.run_command(["git", "show", f":3:{path}"])
             if not (ours.success and theirs.success):
                 actions.append(f"Failed to read staged versions for {path}")
                 continue
             try:
-                ours_json = json.loads(ours.stdout or '{}')
-                theirs_json = json.loads(theirs.stdout or '{}')
+                ours_json = json.loads(ours.stdout or "{}")
+                theirs_json = json.loads(theirs.stdout or "{}")
             except Exception as e:
                 actions.append(f"Invalid JSON in staged package.json for {path}: {e}")
                 continue
 
-            dep_keys = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]
+            dep_keys = [
+                "dependencies",
+                "devDependencies",
+                "peerDependencies",
+                "optionalDependencies",
+            ]
 
             # Decide tie-breaker side per section by larger map size
             prefer_map = {}
             for k in dep_keys:
                 oa = ours_json.get(k) or {}
                 ob = theirs_json.get(k) or {}
-                prefer_map[k] = 'ours' if len(oa) >= len(ob) else 'theirs'
+                prefer_map[k] = "ours" if len(oa) >= len(ob) else "theirs"
 
             merged = dict(ours_json)  # start from ours
             for k in dep_keys:
@@ -333,10 +369,10 @@ def resolve_package_json_dependency_conflicts(pr_data: Dict[str, Any], conflict_
                 merged[k] = merge_dep_maps(oa, ob, prefer_map[k])
 
             # Write merged JSON back to file
-            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(merged, f, ensure_ascii=False, indent=2, sort_keys=True)
-                f.write('\n')
+                f.write("\n")
             updated_files.append(path)
             actions.append(f"Merged dependency sections in {path}")
 
@@ -344,7 +380,7 @@ def resolve_package_json_dependency_conflicts(pr_data: Dict[str, Any], conflict_
             actions.append("No package.json files updated; skipping commit")
             return actions
 
-        add = cmd.run_command(['git', 'add'] + updated_files)
+        add = cmd.run_command(["git", "add"] + updated_files)
         if not add.success:
             actions.append(f"Failed to stage merged package.json files: {add.stderr}")
             return actions
@@ -372,7 +408,9 @@ def resolve_package_json_dependency_conflicts(pr_data: Dict[str, Any], conflict_
     return actions
 
 
-def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool) -> List[str]:
+def resolve_package_lock_conflicts(
+    pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool
+) -> List[str]:
     """Resolve package-lock.json conflicts by deleting and regenerating the file.
 
     Monorepo-friendly: for each conflicted lockfile, if a sibling package.json exists,
@@ -381,28 +419,32 @@ def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, 
     actions = []
 
     try:
-        logger.info(f"Resolving package-lock.json conflicts for PR #{pr_data['number']}")
-        actions.append(f"Detected package-lock.json only conflicts for PR #{pr_data['number']}")
+        logger.info(
+            f"Resolving package-lock.json conflicts for PR #{pr_data['number']}"
+        )
+        actions.append(
+            f"Detected package-lock.json only conflicts for PR #{pr_data['number']}"
+        )
 
         # Parse conflicted files
         conflicted_files = []
-        for line in conflict_info.strip().split('\n'):
-            if line.strip() and line.startswith('UU '):
+        for line in conflict_info.strip().split("\n"):
+            if line.strip() and line.startswith("UU "):
                 filename = line[3:].strip()
                 conflicted_files.append(filename)
 
         # Remove conflicted dependency files
-        lockfile_names = ['package-lock.json', 'yarn.lock', 'pnpm-lock.yaml']
+        lockfile_names = ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]
         lockfile_dirs: List[str] = []
         for file in conflicted_files:
             if any(dep in file for dep in lockfile_names):
-                remove_result = cmd.run_command(['rm', '-f', file])
+                remove_result = cmd.run_command(["rm", "-f", file])
                 if remove_result.success:
                     actions.append(f"Removed conflicted file: {file}")
                 else:
                     actions.append(f"Failed to remove {file}: {remove_result.stderr}")
                 # Track directory for regeneration attempts
-                lockfile_dirs.append(os.path.dirname(file) or '.')
+                lockfile_dirs.append(os.path.dirname(file) or ".")
 
         # Deduplicate directories while preserving order
         seen = set()
@@ -415,39 +457,57 @@ def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, 
         # For each directory, if package.json exists there, try to regenerate lock files
         any_regenerated = False
         for d in unique_dirs:
-            pkg_path = os.path.join(d, 'package.json') if d not in ('', '.') else 'package.json'
+            pkg_path = (
+                os.path.join(d, "package.json")
+                if d not in ("", ".")
+                else "package.json"
+            )
             if os.path.exists(pkg_path):
                 # Try npm install first in that directory
-                if d in ('', '.'):
-                    npm_result = cmd.run_command(['npm', 'install'], timeout=300)
+                if d in ("", "."):
+                    npm_result = cmd.run_command(["npm", "install"], timeout=300)
                 else:
-                    npm_result = cmd.run_command(['npm', 'install'], timeout=300, cwd=d)
+                    npm_result = cmd.run_command(["npm", "install"], timeout=300, cwd=d)
                 if npm_result.success:
-                    actions.append(f"Successfully ran npm install in {d or '.'} to regenerate lock file")
+                    actions.append(
+                        f"Successfully ran npm install in {d or '.'} to regenerate lock file"
+                    )
                     any_regenerated = True
                 else:
                     # Try yarn if npm fails
-                    if d in ('', '.'):
-                        yarn_result = cmd.run_command(['yarn', 'install'], timeout=300)
+                    if d in ("", "."):
+                        yarn_result = cmd.run_command(["yarn", "install"], timeout=300)
                     else:
-                        yarn_result = cmd.run_command(['yarn', 'install'], timeout=300, cwd=d)
+                        yarn_result = cmd.run_command(
+                            ["yarn", "install"], timeout=300, cwd=d
+                        )
                     if yarn_result.success:
-                        actions.append(f"Successfully ran yarn install in {d or '.'} to regenerate lock file")
+                        actions.append(
+                            f"Successfully ran yarn install in {d or '.'} to regenerate lock file"
+                        )
                         any_regenerated = True
                     else:
-                        actions.append(f"Failed to regenerate lock file in {d or '.'} with npm or yarn: {npm_result.stderr}")
+                        actions.append(
+                            f"Failed to regenerate lock file in {d or '.'} with npm or yarn: {npm_result.stderr}"
+                        )
             else:
-                if d in ('', '.'):
-                    actions.append("No package.json found, skipping dependency installation")
+                if d in ("", "."):
+                    actions.append(
+                        "No package.json found, skipping dependency installation"
+                    )
                 else:
-                    actions.append(f"No package.json found in {d or '.'}, skipping dependency installation for this path")
+                    actions.append(
+                        f"No package.json found in {d or '.'}, skipping dependency installation for this path"
+                    )
 
         if not any_regenerated and not unique_dirs:
             # Fallback message when no lockfile dirs were identified (shouldn't happen)
-            actions.append("No lockfile directories identified, skipping dependency installation")
+            actions.append(
+                "No lockfile directories identified, skipping dependency installation"
+            )
 
         # Stage the regenerated files
-        add_result = cmd.run_command(['git', 'add', '.'])
+        add_result = cmd.run_command(["git", "add", "."])
         if add_result.success:
             actions.append("Staged regenerated dependency files")
         else:

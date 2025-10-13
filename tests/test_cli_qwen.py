@@ -1,7 +1,12 @@
-from click.testing import CliRunner
 from unittest.mock import Mock, patch
 
-from src.auto_coder.cli import process_issues, create_feature_issues, fix_to_pass_tests_command
+from click.testing import CliRunner
+
+from src.auto_coder.cli import (
+    create_feature_issues,
+    fix_to_pass_tests_command,
+    process_issues,
+)
 
 
 @patch("src.auto_coder.cli.check_qwen_cli_or_fail")
@@ -98,4 +103,3 @@ def test_fix_to_pass_tests_backend_qwen(
     assert result.exit_code == 0
     assert "Using backends: qwen (default: qwen)" in result.output
     assert "Using model: qwen3-coder-plus" in result.output
-

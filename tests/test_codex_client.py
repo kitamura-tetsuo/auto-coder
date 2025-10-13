@@ -19,6 +19,7 @@ class TestCodexClient:
         mock_run.return_value.returncode = 0
         client = CodexClient()
         assert client.model_name == "codex"
+
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_llm_invocation_warn_log(self, mock_run_command, mock_run):
@@ -30,7 +31,6 @@ class TestCodexClient:
         _ = client._run_gemini_cli("hello world")
         # We cannot easily capture loguru here without handler tweaks; rely on absence of exceptions
         # The warn path is at least executed without error.
-
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")

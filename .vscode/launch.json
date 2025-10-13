@@ -88,16 +88,23 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src3/outliner",
+            "cwd": "/workspace",
             "args": [
                 "process-issues",
                 "--ignore-dependabot-prs",
-                "--backend", "qwen",
-                "--backend", "gemini",
-                "--backend", "codex-mcp",
-                "--backend", "codex",
-                "--backend", "auggie",
-                "--model-auggie", "Claude Sonnet 4.5"
+                "--no-jules-mode",
+                "--backend",
+                "qwen",
+                "--backend",
+                "gemini",
+                // "--backend",
+                // "codex-mcp",
+                "--backend",
+                "codex",
+                "--backend",
+                "auggie",
+                "--model-auggie",
+                "sonnet4.5"
             ],
             "python": "${command:python.interpreterPath}",
             "env": {
@@ -105,7 +112,7 @@
             }
         },
         {
-            "name": "Process Issues (Live Fix to pass tests) - Outliner",
+            "name": "Fix to pass tests - Outliner",
             "type": "debugpy",
             "request": "launch",
             "module": "auto_coder.cli",
@@ -113,13 +120,19 @@
             "cwd": "/workspace",
             "args": [
                 "fix-to-pass-tests",
-                "--backend", "qwen",
-                "--backend", "gemini",
+                "--backend",
+                "qwen",
+                "--backend",
+                "gemini",
                 // "--backend", "codex-mcp",
-                "--backend", "codex",
-                "--backend", "auggie",
-                "--model-auggie", "Claude Sonnet 4.5",
-                "--max-attempts", "100000"
+                "--backend",
+                "codex",
+                "--backend",
+                "auggie",
+                "--model-auggie",
+                "sonnet4.5",
+                "--max-attempts",
+                "100000"
             ],
             "python": "${command:python.interpreterPath}",
             "env": {

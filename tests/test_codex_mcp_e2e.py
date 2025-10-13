@@ -1,5 +1,5 @@
-import sys
 import pathlib
+import sys
 
 from src.auto_coder.codex_mcp_client import CodexMCPClient
 
@@ -20,4 +20,3 @@ def test_codex_mcp_jsonrpc_handshake_and_tool_call_e2e(tmp_path, monkeypatch):
         assert "PROMPT: hello world" in out
     finally:
         client.close()
-

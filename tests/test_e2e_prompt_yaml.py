@@ -12,14 +12,14 @@ from src.auto_coder.pr_processor import _create_pr_analysis_prompt
 @pytest.fixture
 def sample_pr(sample_pr_data):
     data = dict(sample_pr_data)
-    data['body'] = 'Example body text for YAML prompt test.'
-    data['user'] = {'login': 'octocat'}
+    data["body"] = "Example body text for YAML prompt test."
+    data["user"] = {"login": "octocat"}
     return data
 
 
 def test_pr_prompt_uses_yaml_template(tmp_path, sample_pr):
     """Customizing the YAML template should affect generated prompts end-to-end."""
-    custom_yaml = tmp_path / 'prompts.yaml'
+    custom_yaml = tmp_path / "prompts.yaml"
     custom_yaml.write_text(
         dedent(
             """
@@ -30,7 +30,7 @@ def test_pr_prompt_uses_yaml_template(tmp_path, sample_pr):
                 Number: $pr_number
             """
         ),
-        encoding='utf-8',
+        encoding="utf-8",
     )
 
     prompt_loader.clear_prompt_cache()
@@ -38,15 +38,15 @@ def test_pr_prompt_uses_yaml_template(tmp_path, sample_pr):
     prompt_loader.DEFAULT_PROMPTS_PATH = custom_yaml
     try:
         prompt = _create_pr_analysis_prompt(
-            repo_name='owner/repo',
+            repo_name="owner/repo",
             pr_data=sample_pr,
-            pr_diff='diff-data',
+            pr_diff="diff-data",
             config=AutomationConfig(),
         )
     finally:
         prompt_loader.DEFAULT_PROMPTS_PATH = original_path
         prompt_loader.clear_prompt_cache()
 
-    assert 'CUSTOM DIRECTIVE' in prompt
-    assert 'owner/repo' in prompt
-    assert str(sample_pr['number']) in prompt
+    assert "CUSTOM DIRECTIVE" in prompt
+    assert "owner/repo" in prompt
+    assert str(sample_pr["number"]) in prompt

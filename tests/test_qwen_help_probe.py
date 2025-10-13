@@ -16,6 +16,7 @@ Options:
   --help              Show this message and exit.
 """
         stderr = ""
+
     mock_run.return_value = Dummy()
 
     assert qwen_help_has_flags(["-p", "-m"]) is True
@@ -33,18 +34,17 @@ Options:
   --help              Show this message and exit.
 """
         stderr = ""
+
     mock_run.return_value = Dummy()
 
     assert qwen_help_has_flags(["-p", "-m"]) is False
-
 
 
 @patch("subprocess.run")
 def test_qwen_help_probe_accepts_long_form_for_short_flags(mock_run):
     class Dummy:
         returncode = 0
-        stdout = (
-            """
+        stdout = """
 Usage: qwen [OPTIONS]
 
 Options:
@@ -52,8 +52,8 @@ Options:
   --model TEXT    Specify model name
   --help          Show this message and exit.
 """
-        )
         stderr = ""
+
     mock_run.return_value = Dummy()
 
     # Require short flags, but help only shows long forms
@@ -64,8 +64,7 @@ Options:
 def test_qwen_help_probe_accepts_short_form_for_long_flags(mock_run):
     class Dummy:
         returncode = 0
-        stdout = (
-            """
+        stdout = """
 Usage: qwen [OPTIONS]
 
 Options:
@@ -73,8 +72,8 @@ Options:
   -m TEXT    Specify model name
   --help              Show this message and exit.
 """
-        )
         stderr = ""
+
     mock_run.return_value = Dummy()
 
     # Require long flags, but help only shows short forms

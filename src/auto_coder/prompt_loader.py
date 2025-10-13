@@ -64,7 +64,7 @@ def clear_prompt_cache() -> None:
 def _traverse(prompts: Dict[str, Any], key: str) -> Any:
     """Traverse nested dictionaries using dot-separated keys."""
     current: Any = prompts
-    for segment in key.split('.'):
+    for segment in key.split("."):
         if not isinstance(current, dict):
             raise KeyError(f"Prompt path '{key}' does not resolve to a mapping")
         if segment not in current:
@@ -90,8 +90,15 @@ def get_prompt_template(key: str, path: Optional[str] = None) -> str:
         raise ValueError(f"Prompt '{key}' must map to a string template")
     return template
 
+
 @log_calls
-def render_prompt(key: str, *, path: Optional[str] = None, data: Optional[Dict[str, Any]] = None, **kwargs: Any) -> str:
+def render_prompt(
+    key: str,
+    *,
+    path: Optional[str] = None,
+    data: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
+) -> str:
     """Render a prompt template identified by key with provided parameters."""
     template_str = get_prompt_template(key, path=path)
     template = Template(template_str)
@@ -101,9 +108,13 @@ def render_prompt(key: str, *, path: Optional[str] = None, data: Optional[Dict[s
         params.update(data)
     params.update(kwargs)
 
-    safe_params = {name: "" if value is None else str(value) for name, value in params.items()}
+    safe_params = {
+        name: "" if value is None else str(value) for name, value in params.items()
+    }
     try:
         return template.safe_substitute(safe_params)
-    except Exception as exc:  # pragma: no cover - Template handles placeholders gracefully
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - Template handles placeholders gracefully
         logger.error(f"Failed to render prompt '{key}': {exc}")
         raise

@@ -2,18 +2,20 @@
 Pytest configuration and fixtures for Auto-Coder tests.
 """
 
-import pytest
 from unittest.mock import Mock
 
-from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.gemini_client import GeminiClient
+import pytest
+
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.gemini_client import GeminiClient
+from src.auto_coder.github_client import GitHubClient
 
 
 # テストの安定化: 外部環境変数とユーザホームの影響を排除（CLIの挙動を一定にするため）
 @pytest.fixture(autouse=True)
 def _clear_sensitive_env(monkeypatch):
     import tempfile
+
     # 影響のある環境変数をクリア
     for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
         monkeypatch.delenv(key, raising=False)
@@ -65,17 +67,17 @@ def mock_automation_engine(mock_github_client, mock_gemini_client):
 def sample_issue_data():
     """Sample issue data for testing."""
     return {
-        'number': 123,
-        'title': 'Test Issue',
-        'body': 'This is a test issue description',
-        'state': 'open',
-        'labels': ['bug', 'high-priority'],
-        'assignees': ['testuser'],
-        'created_at': '2024-01-01T00:00:00Z',
-        'updated_at': '2024-01-01T00:00:00Z',
-        'url': 'https://github.com/test/repo/issues/123',
-        'author': 'testuser',
-        'comments_count': 2
+        "number": 123,
+        "title": "Test Issue",
+        "body": "This is a test issue description",
+        "state": "open",
+        "labels": ["bug", "high-priority"],
+        "assignees": ["testuser"],
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "url": "https://github.com/test/repo/issues/123",
+        "author": "testuser",
+        "comments_count": 2,
     }
 
 
@@ -83,26 +85,26 @@ def sample_issue_data():
 def sample_pr_data():
     """Sample PR data for testing."""
     return {
-        'number': 456,
-        'title': 'Test Pull Request',
-        'body': 'This is a test pull request description',
-        'state': 'open',
-        'labels': ['feature'],
-        'assignees': ['testuser'],
-        'created_at': '2024-01-01T00:00:00Z',
-        'updated_at': '2024-01-01T00:00:00Z',
-        'url': 'https://github.com/test/repo/pull/456',
-        'author': 'testuser',
-        'head_branch': 'feature-branch',
-        'base_branch': 'main',
-        'mergeable': True,
-        'draft': False,
-        'comments_count': 1,
-        'review_comments_count': 0,
-        'commits_count': 3,
-        'additions': 50,
-        'deletions': 10,
-        'changed_files': 2
+        "number": 456,
+        "title": "Test Pull Request",
+        "body": "This is a test pull request description",
+        "state": "open",
+        "labels": ["feature"],
+        "assignees": ["testuser"],
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-01T00:00:00Z",
+        "url": "https://github.com/test/repo/pull/456",
+        "author": "testuser",
+        "head_branch": "feature-branch",
+        "base_branch": "main",
+        "mergeable": True,
+        "draft": False,
+        "comments_count": 1,
+        "review_comments_count": 0,
+        "commits_count": 3,
+        "additions": 50,
+        "deletions": 10,
+        "changed_files": 2,
     }
 
 
@@ -110,19 +112,19 @@ def sample_pr_data():
 def sample_analysis_result():
     """Sample analysis result for testing."""
     return {
-        'category': 'bug',
-        'priority': 'high',
-        'complexity': 'moderate',
-        'estimated_effort': 'days',
-        'tags': ['backend', 'api'],
-        'recommendations': [
+        "category": "bug",
+        "priority": "high",
+        "complexity": "moderate",
+        "estimated_effort": "days",
+        "tags": ["backend", "api"],
+        "recommendations": [
             {
-                'action': 'Fix the API endpoint',
-                'rationale': 'The endpoint is returning incorrect data'
+                "action": "Fix the API endpoint",
+                "rationale": "The endpoint is returning incorrect data",
             }
         ],
-        'related_components': ['api', 'database'],
-        'summary': 'API endpoint returning incorrect data'
+        "related_components": ["api", "database"],
+        "summary": "API endpoint returning incorrect data",
     }
 
 
@@ -130,18 +132,18 @@ def sample_analysis_result():
 def sample_feature_suggestion():
     """Sample feature suggestion for testing."""
     return {
-        'title': 'Add user authentication',
-        'description': 'Implement user authentication system with JWT tokens',
-        'rationale': 'Users need to be able to securely access their data',
-        'priority': 'high',
-        'complexity': 'complex',
-        'estimated_effort': 'weeks',
-        'labels': ['enhancement', 'security'],
-        'acceptance_criteria': [
-            'Users can register with email and password',
-            'Users can login and receive JWT token',
-            'Protected routes require valid JWT token'
-        ]
+        "title": "Add user authentication",
+        "description": "Implement user authentication system with JWT tokens",
+        "rationale": "Users need to be able to securely access their data",
+        "priority": "high",
+        "complexity": "complex",
+        "estimated_effort": "weeks",
+        "labels": ["enhancement", "security"],
+        "acceptance_criteria": [
+            "Users can register with email and password",
+            "Users can login and receive JWT token",
+            "Protected routes require valid JWT token",
+        ],
     }
 
 
@@ -174,7 +176,16 @@ def stub_git_and_gh_commands(monkeypatch):
         # bytes 出力
         return text_output.encode("utf-8"), b""
 
-    def fake_run(cmd, capture_output=False, text=False, timeout=None, cwd=None, check=False, input=None, env=None):
+    def fake_run(
+        cmd,
+        capture_output=False,
+        text=False,
+        timeout=None,
+        cwd=None,
+        check=False,
+        input=None,
+        env=None,
+    ):
         try:
             program = None
             if isinstance(cmd, (list, tuple)) and cmd:
@@ -183,14 +194,27 @@ def stub_git_and_gh_commands(monkeypatch):
                 program = cmd.split()[0]
 
             if program not in ("git", "gh", "gemini", "codex", "uv"):
-                return orig_run(cmd, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, check=check, input=input, env=env)
+                return orig_run(
+                    cmd,
+                    capture_output=capture_output,
+                    text=text,
+                    timeout=timeout,
+                    cwd=cwd,
+                    check=check,
+                    input=input,
+                    env=env,
+                )
 
             # デフォルトの成功レスポンス
             out_text = ""
 
             if program == "git":
                 # 代表的な呼び出しに対する最小限の正常系出力
-                if isinstance(cmd, (list, tuple)) and "status" in cmd and "--porcelain" in cmd:
+                if (
+                    isinstance(cmd, (list, tuple))
+                    and "status" in cmd
+                    and "--porcelain" in cmd
+                ):
                     out_text = ""  # 変更なし
                 elif isinstance(cmd, (list, tuple)) and "rev-parse" in cmd:
                     out_text = "main"
@@ -199,17 +223,42 @@ def stub_git_and_gh_commands(monkeypatch):
                 else:
                     out_text = ""
             elif program == "gh":
-                if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "auth" and cmd[2] == "status":
+                if (
+                    isinstance(cmd, (list, tuple))
+                    and len(cmd) >= 3
+                    and cmd[1] == "auth"
+                    and cmd[2] == "status"
+                ):
                     # 認証なしをシミュレーション（トークン未設定のテストを通すため）
-                    return types.SimpleNamespace(stdout="", stderr="not logged in", returncode=1)
-                if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "pr" and cmd[2] == "checks":
+                    return types.SimpleNamespace(
+                        stdout="", stderr="not logged in", returncode=1
+                    )
+                if (
+                    isinstance(cmd, (list, tuple))
+                    and len(cmd) >= 3
+                    and cmd[1] == "pr"
+                    and cmd[2] == "checks"
+                ):
                     # タブ区切り形式の一例（PASS）
                     out_text = "CI / build\tPASS\t1m\thttps://example/check\n"
-                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "list":
+                elif (
+                    isinstance(cmd, (list, tuple))
+                    and len(cmd) >= 3
+                    and cmd[1] == "run"
+                    and cmd[2] == "list"
+                ):
                     out_text = "[]"
-                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "view" and "--json" in cmd:
-                    out_text = "{\"jobs\":[]}"
-                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "api":
+                elif (
+                    isinstance(cmd, (list, tuple))
+                    and len(cmd) >= 3
+                    and cmd[1] == "run"
+                    and cmd[2] == "view"
+                    and "--json" in cmd
+                ):
+                    out_text = '{"jobs":[]}'
+                elif (
+                    isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "api"
+                ):
                     # zip ログ取得など。text=False の呼び出しにも対応
                     pass  # 出力は下で text フラグに応じて生成
                 else:
@@ -218,7 +267,12 @@ def stub_git_and_gh_commands(monkeypatch):
                 # --version チェックや exec をダミー成功
                 out_text = ""
 
-            if isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == "gh" and cmd[1] == "api":
+            if (
+                isinstance(cmd, (list, tuple))
+                and len(cmd) >= 2
+                and cmd[0] == "gh"
+                and cmd[1] == "api"
+            ):
                 # API 呼び出しはバイナリ or テキスト空出力でOK
                 if text:
                     stdout, stderr = _as_text_or_bytes("", True)
@@ -233,12 +287,32 @@ def stub_git_and_gh_commands(monkeypatch):
             return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
         except Exception:
             # 想定外は元の run にフォールバック
-            return orig_run(cmd, capture_output=capture_output, text=text, timeout=timeout, cwd=cwd, check=check, input=input, env=env)
+            return orig_run(
+                cmd,
+                capture_output=capture_output,
+                text=text,
+                timeout=timeout,
+                cwd=cwd,
+                check=check,
+                input=input,
+                env=env,
+            )
 
-    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, text=False, bufsize=1, universal_newlines=None, cwd=None, env=None):
+    def fake_popen(
+        cmd,
+        stdin=None,
+        stdout=None,
+        stderr=None,
+        text=False,
+        bufsize=1,
+        universal_newlines=None,
+        cwd=None,
+        env=None,
+    ):
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
             if program in ("git", "gh", "gemini", "codex", "uv"):
+
                 class DummyPopen:
                     def __init__(self):
                         # stdout をイテレータにして、逐次読み取りを安全に終了
@@ -246,17 +320,38 @@ def stub_git_and_gh_commands(monkeypatch):
                         self.stdout = iter(self._lines)
                         self.stderr = iter([""])
                         self.pid = 0
+
                     def wait(self):
                         return 0
+
                     def poll(self):
                         return 0
+
                 return DummyPopen()
             # universal_newlines は Python3.12 で text と同義。両方指定の齟齬を避ける
             if universal_newlines is not None and text is None:
                 text = bool(universal_newlines)
-            return orig_popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
+            return orig_popen(
+                cmd,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                text=text,
+                bufsize=bufsize,
+                cwd=cwd,
+                env=env,
+            )
         except Exception:
-            return orig_popen(cmd, stdin=stdin, stdout=stdout, stderr=stderr, text=text, bufsize=bufsize, cwd=cwd, env=env)
+            return orig_popen(
+                cmd,
+                stdin=stdin,
+                stdout=stdout,
+                stderr=stderr,
+                text=text,
+                bufsize=bufsize,
+                cwd=cwd,
+                env=env,
+            )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)

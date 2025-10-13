@@ -2,9 +2,10 @@
 Tests for GitHub client functionality.
 """
 
-import pytest
 from unittest.mock import Mock, patch
-from github import Github, Repository, Issue, PullRequest
+
+import pytest
+from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
 from src.auto_coder.github_client import GitHubClient
@@ -19,7 +20,7 @@ class TestGitHubClient:
         assert client.token == mock_github_token
         assert isinstance(client.github, Github)
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_get_repository_success(self, mock_github_class, mock_github_token):
         """Test successful repository retrieval."""
         # Setup
@@ -37,7 +38,7 @@ class TestGitHubClient:
         assert result == mock_repo
         mock_github.get_repo.assert_called_once_with("test/repo")
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_get_repository_failure(self, mock_github_class, mock_github_token):
         """Test repository retrieval failure."""
         # Setup
@@ -51,7 +52,7 @@ class TestGitHubClient:
         with pytest.raises(GithubException):
             client.get_repository("test/nonexistent")
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_get_open_issues_success(self, mock_github_class, mock_github_token):
         """Test successful open issues retrieval."""
         # Setup
@@ -78,9 +79,11 @@ class TestGitHubClient:
         assert mock_issue1 in result
         assert mock_issue2 in result
         assert mock_pr not in result
-        mock_repo.get_issues.assert_called_once_with(state='open', sort='created', direction='asc')
+        mock_repo.get_issues.assert_called_once_with(
+            state="open", sort="created", direction="asc"
+        )
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_get_open_pull_requests_success(self, mock_github_class, mock_github_token):
         """Test successful open pull requests retrieval."""
         # Setup
@@ -101,12 +104,14 @@ class TestGitHubClient:
         # Assert
         assert len(result) == 1
         assert mock_pr1 in result
-        mock_repo.get_pulls.assert_called_once_with(state='open', sort='created', direction='asc')
+        mock_repo.get_pulls.assert_called_once_with(
+            state="open", sort="created", direction="asc"
+        )
 
     def test_get_open_issues_sorted_oldest_first(self, mock_github_token):
         """Test that issues are sorted by creation date (oldest first)."""
         # Setup
-        with patch('src.auto_coder.github_client.Github') as mock_github_class:
+        with patch("src.auto_coder.github_client.Github") as mock_github_class:
             mock_github = Mock()
             mock_repo = Mock(spec=Repository.Repository)
 
@@ -135,12 +140,14 @@ class TestGitHubClient:
             assert len(result) == 2
             assert result[0] == mock_issue1  # Oldest first
             assert result[1] == mock_issue2
-            mock_repo.get_issues.assert_called_once_with(state='open', sort='created', direction='asc')
+            mock_repo.get_issues.assert_called_once_with(
+                state="open", sort="created", direction="asc"
+            )
 
     def test_get_open_pull_requests_sorted_oldest_first(self, mock_github_token):
         """Test that pull requests are sorted by creation date (oldest first)."""
         # Setup
-        with patch('src.auto_coder.github_client.Github') as mock_github_class:
+        with patch("src.auto_coder.github_client.Github") as mock_github_class:
             mock_github = Mock()
             mock_repo = Mock(spec=Repository.Repository)
 
@@ -167,7 +174,9 @@ class TestGitHubClient:
             assert len(result) == 2
             assert result[0] == mock_pr1  # Oldest first
             assert result[1] == mock_pr2
-            mock_repo.get_pulls.assert_called_once_with(state='open', sort='created', direction='asc')
+            mock_repo.get_pulls.assert_called_once_with(
+                state="open", sort="created", direction="asc"
+            )
 
     def test_get_issue_details(self, mock_github_token):
         """Test issue details extraction."""
@@ -198,17 +207,17 @@ class TestGitHubClient:
 
         # Assert
         expected = {
-            'number': 123,
-            'title': "Test Issue",
-            'body': "Test body",
-            'state': "open",
-            'labels': ["bug", "high-priority"],
-            'assignees': ["testuser"],
-            'created_at': "2024-01-01T00:00:00Z",
-            'updated_at': "2024-01-01T00:00:00Z",
-            'url': "https://github.com/test/repo/issues/123",
-            'author': "author",
-            'comments_count': 5
+            "number": 123,
+            "title": "Test Issue",
+            "body": "Test body",
+            "state": "open",
+            "labels": ["bug", "high-priority"],
+            "assignees": ["testuser"],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "url": "https://github.com/test/repo/issues/123",
+            "author": "author",
+            "comments_count": 5,
         }
         assert result == expected
 
@@ -248,31 +257,33 @@ class TestGitHubClient:
 
         # Assert
         expected = {
-            'number': 456,
-            'title': "Test PR",
-            'body': "Test PR body",
-            'state': "open",
-            'labels': ["feature"],
-            'assignees': ["testuser"],
-            'created_at': "2024-01-01T00:00:00Z",
-            'updated_at': "2024-01-01T00:00:00Z",
-            'url': "https://github.com/test/repo/pull/456",
-            'author': "author",
-            'head_branch': "feature-branch",
-            'base_branch': "main",
-            'mergeable': True,
-            'draft': False,
-            'comments_count': 2,
-            'review_comments_count': 1,
-            'commits_count': 3,
-            'additions': 50,
-            'deletions': 10,
-            'changed_files': 2
+            "number": 456,
+            "title": "Test PR",
+            "body": "Test PR body",
+            "state": "open",
+            "labels": ["feature"],
+            "assignees": ["testuser"],
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "url": "https://github.com/test/repo/pull/456",
+            "author": "author",
+            "head_branch": "feature-branch",
+            "base_branch": "main",
+            "mergeable": True,
+            "draft": False,
+            "comments_count": 2,
+            "review_comments_count": 1,
+            "commits_count": 3,
+            "additions": 50,
+            "deletions": 10,
+            "changed_files": 2,
         }
         assert result == expected
 
-    @patch('src.auto_coder.github_client.Github')
-    def test_get_pr_details_by_number_success(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.Github")
+    def test_get_pr_details_by_number_success(
+        self, mock_github_class, mock_github_token
+    ):
         """Test successful PR details retrieval by number."""
         # Setup
         mock_github = Mock()
@@ -313,12 +324,14 @@ class TestGitHubClient:
         result = client.get_pr_details_by_number("test/repo", 123)
 
         # Assert
-        assert result['number'] == 123
-        assert result['title'] == "Test PR"
-        assert result['body'] == "Test PR body"
+        assert result["number"] == 123
+        assert result["title"] == "Test PR"
+        assert result["body"] == "Test PR body"
 
-    @patch('src.auto_coder.github_client.Github')
-    def test_get_issue_details_by_number_success(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.Github")
+    def test_get_issue_details_by_number_success(
+        self, mock_github_class, mock_github_token
+    ):
         """Test successful Issue details retrieval by number."""
         # Setup
         mock_github = Mock()
@@ -351,14 +364,14 @@ class TestGitHubClient:
         result = client.get_issue_details_by_number("test/repo", 456)
 
         # Assert
-        assert result['number'] == 456
-        assert result['title'] == "Test Issue"
-        assert result['body'] == "Test Issue body"
-        assert result['state'] == "open"
-        assert result['labels'] == ["bug"]
-        assert result['url'] == "https://github.com/test/repo/issues/456"
+        assert result["number"] == 456
+        assert result["title"] == "Test Issue"
+        assert result["body"] == "Test Issue body"
+        assert result["state"] == "open"
+        assert result["labels"] == ["bug"]
+        assert result["url"] == "https://github.com/test/repo/issues/456"
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_create_issue_success(self, mock_github_class, mock_github_token):
         """Test successful issue creation."""
         # Setup
@@ -379,12 +392,10 @@ class TestGitHubClient:
         # Assert
         assert result == mock_issue
         mock_repo.create_issue.assert_called_once_with(
-            title="New Issue",
-            body="Issue body",
-            labels=["bug"]
+            title="New Issue", body="Issue body", labels=["bug"]
         )
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_add_comment_to_issue_success(self, mock_github_class, mock_github_token):
         """Test successful comment addition to issue."""
         # Setup
@@ -405,7 +416,7 @@ class TestGitHubClient:
         mock_repo.get_issue.assert_called_once_with(123)
         mock_issue.create_comment.assert_called_once_with("Test comment")
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_close_issue_success(self, mock_github_class, mock_github_token):
         """Test successful issue closure."""
         # Setup
@@ -425,9 +436,9 @@ class TestGitHubClient:
         # Assert
         mock_repo.get_issue.assert_called_once_with(123)
         mock_issue.create_comment.assert_called_once_with("Closing comment")
-        mock_issue.edit.assert_called_once_with(state='closed')
+        mock_issue.edit.assert_called_once_with(state="closed")
 
-    @patch('src.auto_coder.github_client.Github')
+    @patch("src.auto_coder.github_client.Github")
     def test_add_labels_to_issue_success(self, mock_github_class, mock_github_token):
         """Test successful label addition to issue."""
         # Setup
@@ -457,12 +468,14 @@ class TestGitHubClient:
         # Check that edit was called once and contains all expected labels
         mock_issue.edit.assert_called_once()
         call_args = mock_issue.edit.call_args
-        actual_labels = call_args[1]['labels']  # Get labels from kwargs
+        actual_labels = call_args[1]["labels"]  # Get labels from kwargs
         expected_labels = {"bug", "high-priority", "jules", "enhancement"}
         assert set(actual_labels) == expected_labels
 
-    @patch('src.auto_coder.github_client.Github')
-    def test_add_labels_to_issue_no_duplicates(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.Github")
+    def test_add_labels_to_issue_no_duplicates(
+        self, mock_github_class, mock_github_token
+    ):
         """Test that duplicate labels are not added."""
         # Setup
         mock_github = Mock()
@@ -490,6 +503,6 @@ class TestGitHubClient:
         # Should call edit with all labels (no duplicates)
         mock_issue.edit.assert_called_once()
         call_args = mock_issue.edit.call_args
-        actual_labels = call_args[1]['labels']  # Get labels from kwargs
+        actual_labels = call_args[1]["labels"]  # Get labels from kwargs
         expected_labels = {"bug", "jules", "enhancement"}
         assert set(actual_labels) == expected_labels

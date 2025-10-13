@@ -8,10 +8,10 @@ import shlex
 import signal
 import subprocess
 import sys
-import time
 import threading
+import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Callable, Set
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from .logger_config import get_logger
 
@@ -24,6 +24,7 @@ VERBOSE_ENV_FLAG = "AUTOCODER_VERBOSE"
 @dataclass
 class CommandResult:
     """Result of a command execution."""
+
     success: bool
     stdout: str
     stderr: str
@@ -35,21 +36,21 @@ class CommandExecutor:
 
     # Default timeouts for different command types
     DEFAULT_TIMEOUTS = {
-        'git': 120,
-        'gh': 60,
-        'test': 3600,
-        'codex': 3600,
-        'gemini': 3600,
-        'qwen': 3600,
-        'default': 60
+        "git": 120,
+        "gh": 60,
+        "test": 3600,
+        "codex": 3600,
+        "gemini": 3600,
+        "qwen": 3600,
+        "default": 60,
     }
 
     DEBUGGER_ENV_MARKERS = (
-        'PYDEVD_USE_FRAME_EVAL',
-        'PYDEVD_LOAD_VALUES_ASYNC',
-        'DEBUGPY_LAUNCHER_PORT',
-        'PYDEV_DEBUG',
-        'VSCODE_PID',
+        "PYDEVD_USE_FRAME_EVAL",
+        "PYDEVD_LOAD_VALUES_ASYNC",
+        "DEBUGPY_LAUNCHER_PORT",
+        "PYDEV_DEBUG",
+        "VSCODE_PID",
     )
 
     # Interval for polling worker queue while streaming output (seconds)
@@ -62,7 +63,7 @@ class CommandExecutor:
             return stream_output
 
         # Allow forcing via env var for manual debugging sessions
-        if os.environ.get('AUTOCODER_STREAM_COMMANDS'):
+        if os.environ.get("AUTOCODER_STREAM_COMMANDS"):
             return True
 
         # Detect common debugger environment markers (debugpy, VS Code, PyCharm)
@@ -78,22 +79,22 @@ class CommandExecutor:
 
     @staticmethod
     def _spawn_reader(
-        stream,
-        stream_name: str,
-        out_queue: "queue.Queue[Tuple[str, Optional[str]]]"
+        stream, stream_name: str, out_queue: "queue.Queue[Tuple[str, Optional[str]]]"
     ) -> threading.Thread:
         """Spawn a background reader thread for the given stream."""
 
         def _reader() -> None:
             try:
-                for line in iter(stream.readline, ''):
+                for line in iter(stream.readline, ""):
                     out_queue.put((stream_name, line))
             except Exception as exc:  # pragma: no cover - defensive
                 logger.error(f"Streaming reader failed for {stream_name}: {exc}")
             finally:
                 out_queue.put((stream_name, None))
 
-        thread = threading.Thread(target=_reader, name=f"CommandStream-{stream_name}", daemon=True)
+        thread = threading.Thread(
+            target=_reader, name=f"CommandStream-{stream_name}", daemon=True
+        )
         thread.start()
         return thread
 
@@ -118,7 +119,7 @@ class CommandExecutor:
             text=True,
             bufsize=1,
             cwd=cwd,
-            env=env
+            env=env,
         )
 
         stdout_lines: List[str] = []
@@ -129,11 +130,11 @@ class CommandExecutor:
         readers: List[threading.Thread] = []
 
         if process.stdout is not None:
-            streams_active.add('stdout')
-            readers.append(cls._spawn_reader(process.stdout, 'stdout', output_queue))
+            streams_active.add("stdout")
+            readers.append(cls._spawn_reader(process.stdout, "stdout", output_queue))
         if process.stderr is not None:
-            streams_active.add('stderr')
-            readers.append(cls._spawn_reader(process.stderr, 'stderr', output_queue))
+            streams_active.add("stderr")
+            readers.append(cls._spawn_reader(process.stderr, "stderr", output_queue))
 
         start = time.monotonic()
 
@@ -144,21 +145,27 @@ class CommandExecutor:
                     remaining = timeout - elapsed
                     if remaining <= 0:
                         process.kill()
-                        raise subprocess.TimeoutExpired(cmd, timeout, ''.join(stdout_lines), ''.join(stderr_lines))
+                        raise subprocess.TimeoutExpired(
+                            cmd, timeout, "".join(stdout_lines), "".join(stderr_lines)
+                        )
 
-                poll_interval = min(cls.STREAM_POLL_INTERVAL, remaining) if timeout is not None else cls.STREAM_POLL_INTERVAL
+                poll_interval = (
+                    min(cls.STREAM_POLL_INTERVAL, remaining)
+                    if timeout is not None
+                    else cls.STREAM_POLL_INTERVAL
+                )
 
                 try:
                     stream_name, chunk = output_queue.get(timeout=poll_interval)
                     if chunk is None:
                         streams_active.discard(stream_name)
                     else:
-                        if stream_name == 'stdout':
+                        if stream_name == "stdout":
                             stdout_lines.append(chunk)
-                            logger.info(chunk.rstrip('\n'))
+                            logger.info(chunk.rstrip("\n"))
                         else:
                             stderr_lines.append(chunk)
-                            logger.error(chunk.rstrip('\n'))
+                            logger.error(chunk.rstrip("\n"))
 
                         # Optional per-chunk callback for early aborts
                         if on_stream is not None:
@@ -173,12 +180,16 @@ class CommandExecutor:
                 except queue.Empty:
                     pass
 
-                if process.poll() is not None and not streams_active and output_queue.empty():
+                if (
+                    process.poll() is not None
+                    and not streams_active
+                    and output_queue.empty()
+                ):
                     break
 
             return_code = process.returncode
-            stdout = ''.join(stdout_lines)
-            stderr = ''.join(stderr_lines)
+            stdout = "".join(stdout_lines)
+            stderr = "".join(stderr_lines)
             return return_code, stdout, stderr
         except KeyboardInterrupt:
             process.send_signal(signal.SIGINT)
@@ -230,14 +241,14 @@ class CommandExecutor:
         """Run a command with consistent error handling."""
         if timeout is None:
             # Auto-detect timeout based on command type
-            cmd_type = cmd[0] if cmd else 'default'
-            timeout = cls.DEFAULT_TIMEOUTS.get(cmd_type, cls.DEFAULT_TIMEOUTS['default'])
+            cmd_type = cmd[0] if cmd else "default"
+            timeout = cls.DEFAULT_TIMEOUTS.get(
+                cmd_type, cls.DEFAULT_TIMEOUTS["default"]
+            )
 
-        command_display = shlex.join(cmd) if cmd else ''
+        command_display = shlex.join(cmd) if cmd else ""
         should_stream = cls._should_stream_output(stream_output)
-        log_message = (
-            f"Executing command (timeout={timeout}s, stream={should_stream}): {command_display}"
-        )
+        log_message = f"Executing command (timeout={timeout}s, stream={should_stream}): {command_display}"
 
         verbose_requested = os.environ.get(VERBOSE_ENV_FLAG, "").strip().lower() in {
             "1",
@@ -252,7 +263,9 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, env, on_stream)
+                return_code, stdout, stderr = cls._run_with_streaming(
+                    cmd, timeout, cwd, env, on_stream
+                )
             else:
                 result = subprocess.run(
                     cmd,
@@ -260,7 +273,7 @@ class CommandExecutor:
                     text=True,
                     timeout=timeout,
                     cwd=cwd,
-                    env=env
+                    env=env,
                 )
                 return_code = result.returncode
                 stdout = result.stdout
@@ -269,10 +282,7 @@ class CommandExecutor:
             success = return_code == 0 if check_success else True
 
             return CommandResult(
-                success=success,
-                stdout=stdout,
-                stderr=stderr,
-                returncode=return_code
+                success=success, stdout=stdout, stderr=stderr, returncode=return_code
             )
 
         except subprocess.TimeoutExpired:
@@ -281,16 +291,11 @@ class CommandExecutor:
                 success=False,
                 stdout="",
                 stderr=f"Command timed out after {timeout}s",
-                returncode=-1
+                returncode=-1,
             )
         except Exception as e:
             logger.error(f"Command execution failed: {' '.join(cmd)}: {e}")
-            return CommandResult(
-                success=False,
-                stdout="",
-                stderr=str(e),
-                returncode=-1
-            )
+            return CommandResult(success=False, stdout="", stderr=str(e), returncode=-1)
 
 
 def change_fraction(old: str, new: str) -> float:
@@ -315,7 +320,11 @@ def change_fraction(old: str, new: str) -> float:
             # 末尾1000文字
             tail_by_chars = s[-1000:]
             # より短い方を採用
-            return tail_by_lines if len(tail_by_lines) <= len(tail_by_chars) else tail_by_chars
+            return (
+                tail_by_lines
+                if len(tail_by_lines) <= len(tail_by_chars)
+                else tail_by_chars
+            )
 
         old_s = old or ""
         new_s = new or ""
@@ -340,13 +349,13 @@ def slice_relevant_error_window(text: str) -> str:
     """
     if not text:
         return text
-    lines = text.split('\n')
+    lines = text.split("\n")
     # 優先度の高い順でグルーピング
     priority_groups = [
-        ['Expected substring:', 'Received string:', 'expect(received)'],
-        ['Error:   ', '.spec.ts', '##[error]'],
-        ['Command failed with exit code', 'Process completed with exit code'],
-        ['error was not a part of any test', 'Notice:', '##[notice]', 'notice'],
+        ["Expected substring:", "Received string:", "expect(received)"],
+        ["Error:   ", ".spec.ts", "##[error]"],
+        ["Command failed with exit code", "Process completed with exit code"],
+        ["error was not a part of any test", "Notice:", "##[notice]", "notice"],
     ]
     start_idx = None
     # 末尾から優先トリガを探索
@@ -360,12 +369,12 @@ def slice_relevant_error_window(text: str) -> str:
             break
     if start_idx is None:
         # トリガが無ければ、末尾のみ（最大300行）
-        return '\n'.join(lines[-300:])
+        return "\n".join(lines[-300:])
     # 末尾はそのまま。さらに最大800行に制限
     sliced = lines[start_idx:]
     if len(sliced) > 800:
         sliced = sliced[:800]
-    return '\n'.join(sliced)
+    return "\n".join(sliced)
 
 
 def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
@@ -404,16 +413,22 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
                 break
 
         # 2) pytest のトレースバック行から tests/ 配下の .py を抽出
-        m = re.search(r"(^|\s)((?:tests?/|^tests?/)[^:\s]+\.py):\d+", text, re.MULTILINE)
+        m = re.search(
+            r"(^|\s)((?:tests?/|^tests?/)[^:\s]+\.py):\d+", text, re.MULTILINE
+        )
         if m:
             py_path = m.group(2)
             if py_path not in found:
                 found.append(py_path)
 
         # 3) Playwright の失敗行から .spec.ts を抽出
-        lines = text.split('\n')
-        fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
-        fail_heading_re = re.compile(r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
+        lines = text.split("\n")
+        fail_bullet_re = re.compile(
+            r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+"
+        )
+        fail_heading_re = re.compile(
+            r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+"
+        )
 
         def _normalize_spec(path: str) -> str:
             m_e2e = re.search(r"(?:^|/)(e2e/[A-Za-z0-9_./-]+\.spec\.ts)$", path)

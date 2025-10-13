@@ -42,4 +42,3 @@ def test_change_fraction_none_and_equal_cases():
     assert change_fraction("", "") == 0.0
     assert change_fraction("a", "a") == 0.0
     assert change_fraction("a", "b") > 0.0
-

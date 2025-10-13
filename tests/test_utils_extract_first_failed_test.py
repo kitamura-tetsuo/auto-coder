@@ -69,7 +69,6 @@ def test_extract_playwright_candidate_returned_even_if_not_exists():
     assert path == "e2e/basic/00-foo-bar.spec.ts"
 
 
-
 def test_extract_playwright_from_sample_full_output_excerpt():
     # ユーザー提供のフォーマットに近い抜粋（ANSIカラーや記号・日本語含む）
     stdout = (
@@ -82,7 +81,6 @@ def test_extract_playwright_from_sample_full_output_excerpt():
     stderr = ""
     path = extract_first_failed_test(stdout, stderr)
     assert path == "e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts"
-
 
 
 def test_playwright_prefers_fail_over_pass_when_both_present():

@@ -1,11 +1,13 @@
 from types import SimpleNamespace
 
-from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder import fix_to_pass_tests_runner as tr
+from src.auto_coder.automation_config import AutomationConfig
 
 
 def _res(success=True, stdout="", stderr="", returncode=0):
-    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
+    return SimpleNamespace(
+        success=success, stdout=stdout, stderr=stderr, returncode=returncode
+    )
 
 
 def test_run_local_tests_uses_script_for_single_file(monkeypatch, tmp_path):
@@ -61,7 +63,9 @@ def test_run_local_tests_reruns_first_failed_via_script(monkeypatch):
 
     monkeypatch.setattr(tr.cmd, "run_command", fake_run_command)
     # Force extractor to return a specific failed test path
-    monkeypatch.setattr(tr, "extract_first_failed_test", lambda *_: "e2e/new/fail-example.spec.ts")
+    monkeypatch.setattr(
+        tr, "extract_first_failed_test", lambda *_: "e2e/new/fail-example.spec.ts"
+    )
 
     cfg = AutomationConfig()
     result = tr.run_local_tests(cfg)
@@ -70,4 +74,3 @@ def test_run_local_tests_reruns_first_failed_via_script(monkeypatch):
     # First call: run all via script; Second: rerun only the extracted test via script with arg
     assert calls[0] == ["bash", cfg.TEST_SCRIPT_PATH]
     assert calls[1] == ["bash", cfg.TEST_SCRIPT_PATH, "e2e/new/fail-example.spec.ts"]
-

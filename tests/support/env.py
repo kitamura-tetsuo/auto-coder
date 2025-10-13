@@ -24,4 +24,3 @@ class patch_environment(ContextDecorator):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = original
-

@@ -1,10 +1,11 @@
-from click.testing import CliRunner
 from unittest.mock import Mock, patch
 
+from click.testing import CliRunner
+
 from src.auto_coder.cli import (
-    process_issues,
     create_feature_issues,
     fix_to_pass_tests_command,
+    process_issues,
 )
 
 
@@ -143,4 +144,3 @@ def test_fix_to_pass_tests_backend_auggie_default_model(
     assert "Using model: GPT-5" in result.output
     mock_auggie_client_class.assert_called_once()
     engine.fix_to_pass_tests.assert_called_once()
-

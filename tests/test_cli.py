@@ -2,12 +2,13 @@
 Tests for CLI functionality.
 """
 
-import click
 from unittest.mock import Mock, patch
+
+import click
 from click.testing import CliRunner
 
 from src.auto_coder.backend_manager import BackendManager
-from src.auto_coder.cli import main, process_issues, create_feature_issues
+from src.auto_coder.cli import create_feature_issues, main, process_issues
 
 
 class TestCLI:
@@ -148,11 +149,11 @@ class TestCLI:
         assert args[0] is mock_github_client
         manager = args[1]
         assert isinstance(manager, BackendManager)
-        assert manager._default_backend == 'codex'
-        assert manager._all_backends == ['codex']
-        assert kwargs.get('dry_run') is True
-        assert 'config' in kwargs
-        assert getattr(kwargs['config'], 'SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL') is True
+        assert manager._default_backend == "codex"
+        assert manager._all_backends == ["codex"]
+        assert kwargs.get("dry_run") is True
+        assert "config" in kwargs
+        assert getattr(kwargs["config"], "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL") is True
 
         mock_automation_engine.run.assert_called_once_with("test/repo", jules_mode=True)
 
@@ -185,11 +186,16 @@ class TestCLI:
         result = runner.invoke(
             process_issues,
             [
-                "--repo", "test/repo",
-                "--github-token", "token",
-                "--backend", "codex",
-                "--backend", "gemini",
-                "--model-gemini", "gemini-2.5-pro",
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "token",
+                "--backend",
+                "codex",
+                "--backend",
+                "gemini",
+                "--model-gemini",
+                "gemini-2.5-pro",
             ],
         )
 
@@ -202,19 +208,25 @@ class TestCLI:
         assert args[0] is mock_github_client
         manager = args[1]
         assert isinstance(manager, BackendManager)
-        assert manager._default_backend == 'codex'
-        assert manager._all_backends == ['codex', 'gemini']
+        assert manager._default_backend == "codex"
+        assert manager._all_backends == ["codex", "gemini"]
 
         # Ensure the codex client was used and gemini client not instantiated yet
-        mock_codex_client_class.assert_called_once_with(model_name='codex')
+        mock_codex_client_class.assert_called_once_with(model_name="codex")
         mock_gemini_client_class.assert_not_called()
-        mock_engine.run.assert_called_once_with('test/repo', jules_mode=True)
+        mock_engine.run.assert_called_once_with("test/repo", jules_mode=True)
 
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
     @patch("src.auto_coder.cli.CodexClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_no_skip_main_update_flag(self, mock_github_client_class, mock_codex_client_class, mock_automation_engine_class, mock_check_cli):
+    def test_process_issues_no_skip_main_update_flag(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+    ):
         """--no-skip-main-update should set config flag to False."""
         mock_github_client = Mock()
         mock_codex_client = Mock()
@@ -228,8 +240,10 @@ class TestCLI:
         result = runner.invoke(
             process_issues,
             [
-                "--repo", "test/repo",
-                "--github-token", "test_token",
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
                 "--dry-run",
                 "--no-skip-main-update",
             ],
@@ -237,7 +251,7 @@ class TestCLI:
         assert result.exit_code == 0
         # Verify config flag is False
         args, kwargs = mock_automation_engine_class.call_args
-        assert getattr(kwargs['config'], 'SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL') is False
+        assert getattr(kwargs["config"], "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL") is False
 
     def test_process_issues_help_includes_skip_flag(self):
         runner = CliRunner()
@@ -245,7 +259,6 @@ class TestCLI:
         assert result.exit_code == 0
         # Click help may split flag across lines; check presence of at least one alias
         assert "--skip-main-update" in result.output
-
 
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
@@ -271,11 +284,7 @@ class TestCLI:
         runner = CliRunner()
         result = runner.invoke(
             process_issues,
-            [
-                "--repo", "test/repo",
-                "--github-token", "test-token",
-                "--jules-mode"
-            ]
+            ["--repo", "test/repo", "--github-token", "test-token", "--jules-mode"],
         )
 
         assert result.exit_code == 0
@@ -292,17 +301,19 @@ class TestCLI:
         assert args[0] is mock_github_client
         manager = args[1]
         assert isinstance(manager, BackendManager)
-        assert manager._default_backend == 'codex'
-        assert kwargs.get('dry_run') is False
-        assert 'config' in kwargs
-        assert getattr(kwargs['config'], 'SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL') is True
+        assert manager._default_backend == "codex"
+        assert kwargs.get("dry_run") is False
+        assert "config" in kwargs
+        assert getattr(kwargs["config"], "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL") is True
 
         # Verify run was called with jules_mode=True
+
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
     @patch("src.auto_coder.cli.CodexClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_only_number_calls_single_auto(self,
+    def test_process_issues_only_number_calls_single_auto(
+        self,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -320,14 +331,19 @@ class TestCLI:
         result = runner.invoke(
             process_issues,
             [
-                "--repo", "test/repo",
-                "--github-token", "test_token",
-                "--only", "123",
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+                "--only",
+                "123",
             ],
         )
         assert result.exit_code == 0
         # Should call process_single with target_type='auto'
-        mock_engine.process_single.assert_called_once_with("test/repo", "auto", 123, jules_mode=True)
+        mock_engine.process_single.assert_called_once_with(
+            "test/repo", "auto", 123, jules_mode=True
+        )
         # Should not call bulk run
         mock_engine.run.assert_not_called()
 
@@ -335,7 +351,8 @@ class TestCLI:
     @patch("src.auto_coder.cli.AutomationEngine")
     @patch("src.auto_coder.cli.CodexClient")
     @patch("src.auto_coder.cli.GitHubClient")
-    def test_process_issues_only_url_issue(self,
+    def test_process_issues_only_url_issue(
+        self,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -353,14 +370,19 @@ class TestCLI:
         result = runner.invoke(
             process_issues,
             [
-                "--repo", "test/repo",
-                "--github-token", "test_token",
-                "--only", "https://github.com/owner/repo/issues/456",
-                "--no-jules-mode"
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+                "--only",
+                "https://github.com/owner/repo/issues/456",
+                "--no-jules-mode",
             ],
         )
         assert result.exit_code == 0
-        mock_engine.process_single.assert_called_once_with("test/repo", "issue", 456, jules_mode=False)
+        mock_engine.process_single.assert_called_once_with(
+            "test/repo", "issue", 456, jules_mode=False
+        )
         mock_engine.run.assert_not_called()
 
     def test_process_issues_help_includes_only_flag(self):
@@ -419,16 +441,15 @@ class TestCLI:
                 "test/repo",
                 "--github-token",
                 "test_token",
-                "--backend", "gemini",
+                "--backend",
+                "gemini",
                 "--model-gemini",
                 "gemini-custom",
             ],
         )
 
         assert result.exit_code == 0
-        mock_gemini_client_class.assert_called_once_with(
-            model_name="gemini-custom"
-        )
+        mock_gemini_client_class.assert_called_once_with(model_name="gemini-custom")
 
     @patch.dict("os.environ", {"GITHUB_TOKEN": "env_github_token"})
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
@@ -488,16 +509,15 @@ class TestCLI:
                 "test/repo",
                 "--github-token",
                 "test_token",
-                "--backend", "gemini",
+                "--backend",
+                "gemini",
                 "--model-gemini",
                 "gemini-custom",
             ],
         )
 
         assert result.exit_code == 0
-        mock_gemini_client_class.assert_called_once_with(
-            model_name="gemini-custom"
-        )
+        mock_gemini_client_class.assert_called_once_with(model_name="gemini-custom")
 
     @patch("src.auto_coder.cli.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli.AutomationEngine")
@@ -552,11 +572,10 @@ class TestCLI:
         assert args[0] is mock_github_client
         manager = args[1]
         assert isinstance(manager, BackendManager)
-        assert manager._all_backends == ['codex']
+        assert manager._all_backends == ["codex"]
         mock_automation_engine.create_feature_issues.assert_called_once_with(
             "test/repo"
         )
-
 
     def test_create_feature_issues_missing_github_token(self):
         """Test create-feature-issues command with missing GitHub token."""
@@ -642,16 +661,15 @@ class TestCLI:
                 "test/repo",
                 "--github-token",
                 "test_token",
-                "--backend", "gemini",
+                "--backend",
+                "gemini",
                 "--model-gemini",
                 "gemini-custom",
             ],
         )
 
         assert result.exit_code == 0
-        mock_gemini_client_class.assert_called_once_with(
-            model_name="gemini-custom"
-        )
+        mock_gemini_client_class.assert_called_once_with(model_name="gemini-custom")
 
     def test_process_issues_help(self):
         """Test process-issues command help."""
@@ -660,7 +678,8 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert (
-            "Process GitHub issues and PRs using AI CLI (codex or gemini)" in result.output
+            "Process GitHub issues and PRs using AI CLI (codex or gemini)"
+            in result.output
         )
         assert "--repo" in result.output
         assert "--github-token" in result.output
@@ -695,8 +714,10 @@ class TestCLI:
         result = runner.invoke(
             process_issues,
             [
-                "--repo", "test/repo",
-                "--github-token", "test_token",
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
                 "--ignore-dependabot-prs",
             ],
         )
@@ -705,7 +726,7 @@ class TestCLI:
         assert "Ignore Dependabot PRs: True" in result.output
         # Engine config is set
         _, kwargs = mock_automation_engine_class.call_args
-        assert getattr(kwargs['config'], 'IGNORE_DEPENDABOT_PRS') is True
+        assert getattr(kwargs["config"], "IGNORE_DEPENDABOT_PRS") is True
 
     def test_create_feature_issues_help(self):
         """Test create-feature-issues command help."""
@@ -714,8 +735,7 @@ class TestCLI:
 
         assert result.exit_code == 0
         assert (
-            "Analyze repository and create feature enhancement issues"
-            in result.output
+            "Analyze repository and create feature enhancement issues" in result.output
         )
         assert "--repo" in result.output
         assert "--github-token" in result.output

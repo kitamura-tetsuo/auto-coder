@@ -6,8 +6,8 @@ from unittest.mock import Mock
 
 from click.testing import CliRunner
 
-from src.auto_coder.cli import process_issues
 from src.auto_coder.auggie_client import AuggieClient
+from src.auto_coder.cli import process_issues
 
 
 class DummyPopen:
@@ -15,7 +15,15 @@ class DummyPopen:
 
     calls = 0
 
-    def __init__(self, cmd, stdout=None, stderr=None, text=False, bufsize=1, universal_newlines=True):
+    def __init__(
+        self,
+        cmd,
+        stdout=None,
+        stderr=None,
+        text=False,
+        bufsize=1,
+        universal_newlines=True,
+    ):
         type(self).calls += 1
         self.stdout = io.StringIO("should-not-run\n")
 
@@ -48,7 +56,9 @@ class FakeAutomationEngine:
         type(self).instances.append(self)
 
     def run(self, repo_name, jules_mode=False):  # pragma: no cover - exercised via CLI
-        type(self).last_output = self.llm._run_llm_cli("Daily limit fallback verification prompt")
+        type(self).last_output = self.llm._run_llm_cli(
+            "Daily limit fallback verification prompt"
+        )
         return {"llm_output": type(self).last_output}
 
 
@@ -99,10 +109,11 @@ def test_process_issues_rotates_when_auggie_daily_limit_reached(monkeypatch, tmp
     assert result.exit_code == 0, result.output
     assert DummyPopen.calls == 0
     assert RecordingGeminiClient.calls == ["Daily limit fallback verification prompt"]
-    assert FakeAutomationEngine.instances, "Automation engine should have been instantiated"
+    assert (
+        FakeAutomationEngine.instances
+    ), "Automation engine should have been instantiated"
     assert FakeAutomationEngine.last_output == "gemini-fallback"
 
     state = json.loads(state_path.read_text())
     assert state["count"] == AuggieClient.DAILY_CALL_LIMIT
     assert state["date"] == datetime.now().date().isoformat()
-

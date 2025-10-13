@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from unittest.mock import patch
 
 import pytest
@@ -11,7 +12,9 @@ from tests.support.env import patch_environment
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, mock_run, tmp_path) -> None:
+def test_qwen_client_prefers_configured_api_keys_before_oauth(
+    mock_run_command, mock_run, tmp_path
+) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
     config_path.write_text(
@@ -41,7 +44,10 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
     # The first provider should be the configured ModelStudio API key.
     first_env = mock_run_command.call_args_list[0].kwargs["env"]
     assert first_env["OPENAI_API_KEY"] == "dashscope-xyz"
-    assert first_env["OPENAI_BASE_URL"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    assert (
+        first_env["OPENAI_BASE_URL"]
+        == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    )
     assert first_env["OPENAI_MODEL"] == "qwen3-coder-plus"
 
     # After a successful call the active provider index should remain at zero.
@@ -51,7 +57,9 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path) -> None:
+def test_qwen_client_fallback_to_openrouter(
+    mock_run_command, mock_run, tmp_path
+) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
     config_path.write_text(
@@ -96,7 +104,9 @@ def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_run, tmp_path) -> None:
+def test_qwen_client_fallbacks_to_oauth_after_api_keys(
+    mock_run_command, mock_run, tmp_path
+) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
     config_path.write_text(
@@ -171,4 +181,3 @@ def test_qwen_client_all_limits_raise(mock_run_command, mock_run, tmp_path) -> N
     # Final call should come from OAuth with no API key present.
     final_env = mock_run_command.call_args_list[-1].kwargs["env"]
     assert "OPENAI_API_KEY" not in final_env
-

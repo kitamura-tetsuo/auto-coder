@@ -10,10 +10,12 @@ from src.auto_coder.utils import CommandResult
 
 
 class TestGeminiClient:
-    @patch('src.auto_coder.gemini_client.logger')
-    @patch('subprocess.run')
-    @patch('src.auto_coder.gemini_client.CommandExecutor.run_command')
-    def test_llm_invocation_warn_log(self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key):
+    @patch("src.auto_coder.gemini_client.logger")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    def test_llm_invocation_warn_log(
+        self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key
+    ):
         """Verify that LLM invocation emits a warning log before running CLI."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
@@ -25,7 +27,7 @@ class TestGeminiClient:
 
     """Test cases for GeminiClient class."""
 
-    @patch('src.auto_coder.gemini_client.genai')
+    @patch("src.auto_coder.gemini_client.genai")
     def test_init(self, mock_genai, mock_gemini_api_key):
         """Test GeminiClient initialization."""
         mock_model = Mock()
@@ -38,36 +40,40 @@ class TestGeminiClient:
         mock_genai.configure.assert_called_once_with(api_key=mock_gemini_api_key)
         mock_genai.GenerativeModel.assert_called_once_with("test-model")
 
-    @patch('src.auto_coder.gemini_client.genai')
+    @patch("src.auto_coder.gemini_client.genai")
     def test_analyze_issue_removed(self, mock_genai, mock_gemini_api_key):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
-        assert not hasattr(client, 'analyze_issue')
+        assert not hasattr(client, "analyze_issue")
 
-    @patch('src.auto_coder.gemini_client.genai')
-    def test_analyze_pull_request_removed(self, mock_genai, mock_gemini_api_key, sample_pr_data):
+    @patch("src.auto_coder.gemini_client.genai")
+    def test_analyze_pull_request_removed(
+        self, mock_genai, mock_gemini_api_key, sample_pr_data
+    ):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
-        assert not hasattr(client, 'analyze_pull_request')
+        assert not hasattr(client, "analyze_pull_request")
 
-    @patch('src.auto_coder.gemini_client.genai')
+    @patch("src.auto_coder.gemini_client.genai")
     def test_suggest_features_success(self, mock_genai, mock_gemini_api_key):
         """Test successful feature suggestions."""
         # Setup
         mock_model = Mock()
         mock_response = Mock()
-        mock_response.text = json.dumps([
-            {
-                "title": "Add authentication",
-                "description": "User authentication system",
-                "rationale": "Security requirement",
-                "priority": "high",
-                "complexity": "complex",
-                "estimated_effort": "weeks",
-                "labels": ["enhancement", "security"],
-                "acceptance_criteria": ["Users can login", "JWT tokens"]
-            }
-        ])
+        mock_response.text = json.dumps(
+            [
+                {
+                    "title": "Add authentication",
+                    "description": "User authentication system",
+                    "rationale": "Security requirement",
+                    "priority": "high",
+                    "complexity": "complex",
+                    "estimated_effort": "weeks",
+                    "labels": ["enhancement", "security"],
+                    "acceptance_criteria": ["Users can login", "JWT tokens"],
+                }
+            ]
+        )
         mock_model.generate_content.return_value = mock_response
         mock_genai.GenerativeModel.return_value = mock_model
 
@@ -79,22 +85,24 @@ class TestGeminiClient:
 
         # Assert
         assert len(result) == 1
-        assert result[0]['title'] == 'Add authentication'
-        assert result[0]['priority'] == 'high'
-        assert 'security' in result[0]['labels']
+        assert result[0]["title"] == "Add authentication"
+        assert result[0]["priority"] == "high"
+        assert "security" in result[0]["labels"]
         mock_model.generate_content.assert_called_once()
 
-    @patch('src.auto_coder.gemini_client.genai')
-    def test_generate_solution_removed(self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
+    @patch("src.auto_coder.gemini_client.genai")
+    def test_generate_solution_removed(
+        self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result
+    ):
         """Ensure generation helper is removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
-        assert not hasattr(client, 'generate_solution')
+        assert not hasattr(client, "generate_solution")
 
     def test_parse_analysis_response_valid_json(self, mock_gemini_api_key):
         """Test parsing valid JSON response."""
         client = GeminiClient(mock_gemini_api_key)
 
-        response_text = '''
+        response_text = """
         Here is the analysis:
         {
             "category": "bug",
@@ -102,13 +110,13 @@ class TestGeminiClient:
             "summary": "Test summary"
         }
         Additional text after JSON.
-        '''
+        """
 
         result = client._parse_analysis_response(response_text)
 
-        assert result['category'] == 'bug'
-        assert result['priority'] == 'high'
-        assert result['summary'] == 'Test summary'
+        assert result["category"] == "bug"
+        assert result["priority"] == "high"
+        assert result["summary"] == "Test summary"
 
     def test_parse_analysis_response_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid JSON response."""
@@ -118,15 +126,15 @@ class TestGeminiClient:
 
         result = client._parse_analysis_response(response_text)
 
-        assert result['category'] == 'unknown'
-        assert result['priority'] == 'medium'
-        assert 'This is not JSON' in result['summary']
+        assert result["category"] == "unknown"
+        assert result["priority"] == "medium"
+        assert "This is not JSON" in result["summary"]
 
     def test_parse_feature_suggestions_valid_json(self, mock_gemini_api_key):
         """Test parsing valid feature suggestions JSON."""
         client = GeminiClient(mock_gemini_api_key)
 
-        response_text = '''
+        response_text = """
         [
             {
                 "title": "Feature 1",
@@ -137,13 +145,13 @@ class TestGeminiClient:
                 "description": "Second feature"
             }
         ]
-        '''
+        """
 
         result = client._parse_feature_suggestions(response_text)
 
         assert len(result) == 2
-        assert result[0]['title'] == 'Feature 1'
-        assert result[1]['title'] == 'Feature 2'
+        assert result[0]["title"] == "Feature 1"
+        assert result[1]["title"] == "Feature 2"
 
     def test_parse_feature_suggestions_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid feature suggestions JSON."""
@@ -159,21 +167,21 @@ class TestGeminiClient:
         """Test parsing valid solution response JSON."""
         client = GeminiClient(mock_gemini_api_key)
 
-        response_text = '''
+        response_text = """
         {
             "solution_type": "code_fix",
             "summary": "Fix the bug",
             "steps": [],
             "code_changes": []
         }
-        '''
+        """
 
         result = client._parse_solution_response(response_text)
 
-        assert result['solution_type'] == 'code_fix'
-        assert result['summary'] == 'Fix the bug'
-        assert result['steps'] == []
-        assert result['code_changes'] == []
+        assert result["solution_type"] == "code_fix"
+        assert result["summary"] == "Fix the bug"
+        assert result["steps"] == []
+        assert result["code_changes"] == []
 
     def test_parse_solution_response_invalid_json(self, mock_gemini_api_key):
         """Test parsing invalid solution response JSON."""
@@ -183,12 +191,12 @@ class TestGeminiClient:
 
         result = client._parse_solution_response(response_text)
 
-        assert result['solution_type'] == 'investigation'
-        assert 'Invalid JSON' in result['summary']
-        assert result['steps'] == []
-        assert result['code_changes'] == []
+        assert result["solution_type"] == "investigation"
+        assert "Invalid JSON" in result["summary"]
+        assert result["steps"] == []
+        assert result["code_changes"] == []
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_switch_to_conflict_model(self, mock_subprocess):
         """Test switching to conflict resolution model."""
         # Mock subprocess for version check
@@ -209,8 +217,10 @@ class TestGeminiClient:
         client.switch_to_default_model()
         assert client.model_name == "gemini-2.5-pro"
 
-    @patch('subprocess.run')
-    def test_switch_to_conflict_model_no_change_if_already_conflict(self, mock_subprocess):
+    @patch("subprocess.run")
+    def test_switch_to_conflict_model_no_change_if_already_conflict(
+        self, mock_subprocess
+    ):
         """Test that switching to conflict model when already using it doesn't change anything."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
@@ -224,7 +234,7 @@ class TestGeminiClient:
         client.switch_to_conflict_model()
         assert client.model_name == "gemini-2.5-flash"
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_escape_prompt_basic(self, mock_subprocess):
         """Test basic @ character escaping in prompts."""
         # Mock subprocess for version check
@@ -237,7 +247,7 @@ class TestGeminiClient:
         escaped = client._escape_prompt(prompt)
         assert escaped == "Please analyze \\@user's code"
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_escape_prompt_multiple_at_symbols(self, mock_subprocess):
         """Test escaping multiple @ characters in prompts."""
         # Mock subprocess for version check
@@ -250,7 +260,7 @@ class TestGeminiClient:
         escaped = client._escape_prompt(prompt)
         assert escaped == "Check \\@user1 and \\@user2 mentions in \\@file"
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_escape_prompt_no_at_symbols(self, mock_subprocess):
         """Test prompt without @ characters remains unchanged."""
         # Mock subprocess for version check
@@ -263,7 +273,7 @@ class TestGeminiClient:
         escaped = client._escape_prompt(prompt)
         assert escaped == prompt
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_escape_prompt_empty_string(self, mock_subprocess):
         """Test escaping empty string."""
         # Mock subprocess for version check

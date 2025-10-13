@@ -1,8 +1,8 @@
 from unittest.mock import patch
 
+from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.backend_manager import BackendManager
 from src.auto_coder.fix_to_pass_tests_runner import apply_workspace_test_fix
-from src.auto_coder.automation_config import AutomationConfig
 
 
 class DummyClient:
@@ -20,35 +20,48 @@ class DummyClient:
 
 
 def _make_manager(calls: list[str]) -> BackendManager:
-    a_client = DummyClient('codex', 'm1', calls)
+    a_client = DummyClient("codex", "m1", calls)
 
     def fac_codex():
-        return DummyClient('codex', 'm1', calls)
+        return DummyClient("codex", "m1", calls)
 
     def fac_gemini():
-        return DummyClient('gemini', 'm2', calls)
+        return DummyClient("gemini", "m2", calls)
 
     return BackendManager(
-        default_backend='codex',
+        default_backend="codex",
         default_client=a_client,
-        factories={'codex': fac_codex, 'gemini': fac_gemini},
-        order=['codex', 'gemini'],
+        factories={"codex": fac_codex, "gemini": fac_gemini},
+        order=["codex", "gemini"],
     )
 
 
-@patch("src.auto_coder.fix_to_pass_tests_runner.extract_important_errors", return_value="ERR_SUMMARY")
+@patch(
+    "src.auto_coder.fix_to_pass_tests_runner.extract_important_errors",
+    return_value="ERR_SUMMARY",
+)
 def test_apply_workspace_test_fix_switch_after_three_same_test_files(mock_extract):
     cfg = AutomationConfig()
     calls: list[str] = []
     mgr = _make_manager(calls)
 
-    test_result = {"success": False, "output": "", "errors": "boom", "command": "bash test.sh"}
+    test_result = {
+        "success": False,
+        "output": "",
+        "errors": "boom",
+        "command": "bash test.sh",
+    }
 
     # Call three times with same current_test_file
-    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
-    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
-    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
+    apply_workspace_test_fix(
+        cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py"
+    )
+    apply_workspace_test_fix(
+        cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py"
+    )
+    apply_workspace_test_fix(
+        cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py"
+    )
 
     # First two on codex, third switched to gemini
-    assert calls == ['codex', 'codex', 'gemini']
-
+    assert calls == ["codex", "codex", "gemini"]

@@ -37,11 +37,11 @@ def test_fix_to_pass_tests_loop_triggers_restart_on_update(tmp_path):
     codex_stub = bin_dir / "codex"
     codex_stub.write_text(
         "#!/usr/bin/env bash\n"
-        "if [ \"$1\" = \"--version\" ]; then\n"
+        'if [ "$1" = "--version" ]; then\n'
         "  echo 'codex stub'\n"
         "  exit 0\n"
         "fi\n"
-        "if [ \"$1\" = \"exec\" ]; then\n"
+        'if [ "$1" = "exec" ]; then\n'
         "  echo 'codex exec stub'\n"
         "  exit 0\n"
         "fi\n"
@@ -90,7 +90,9 @@ def test_fix_to_pass_tests_loop_triggers_restart_on_update(tmp_path):
     )
 
     assert completed.returncode == 0
-    assert not marker_file.exists(), "test script should not run when restart happens first"
+    assert (
+        not marker_file.exists()
+    ), "test script should not run when restart happens first"
 
     restart_marker = tmp_path / "restart.json"
     assert restart_marker.exists()

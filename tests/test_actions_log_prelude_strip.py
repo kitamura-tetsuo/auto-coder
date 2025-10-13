@@ -27,6 +27,14 @@ def test_cli_get_actions_logs_strips_prelude_and_is_compact():
     # Body should be compact due to slicing
     assert len(result.stdout.splitlines()) < 1000
     # If failure summary lines are present, they should be placed under a Summary block
-    if any(x in result.stdout.lower() for x in [" failed", "did not run", "error was not a part of any test", "command failed with exit code", "process completed with exit code"]):
+    if any(
+        x in result.stdout.lower()
+        for x in [
+            " failed",
+            "did not run",
+            "error was not a part of any test",
+            "command failed with exit code",
+            "process completed with exit code",
+        ]
+    ):
         assert "--- Summary ---" in result.stdout
-

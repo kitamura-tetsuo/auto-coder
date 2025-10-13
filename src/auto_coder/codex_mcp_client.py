@@ -24,6 +24,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
+from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -43,7 +44,7 @@ def _pump_bytes(stream, log_fn) -> None:
             pass
 
 
-class CodexMCPClient:
+class CodexMCPClient(LLMClientBase):
     """Codex MCP client maintaining a persistent MCP subprocess.
 
     Exposes a GeminiClient-compatible API used by AutomationEngine:
@@ -60,7 +61,9 @@ class CodexMCPClient:
 
         # Verify codex CLI is available
         try:
-            chk = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
+            chk = subprocess.run(
+                ["codex", "--version"], capture_output=True, text=True, timeout=10
+            )
             if chk.returncode != 0:
                 raise RuntimeError("codex CLI not available or not working")
         except Exception as e:
@@ -98,14 +101,20 @@ class CodexMCPClient:
             raise RuntimeError(f"Failed to start MCP subprocess: {e}")
 
         # Prepare JSON-RPC state
-        self._stdin = getattr(self.proc, "stdin", None) if self.proc is not None else None
-        self._stdout = getattr(self.proc, "stdout", None) if self.proc is not None else None
+        self._stdin = (
+            getattr(self.proc, "stdin", None) if self.proc is not None else None
+        )
+        self._stdout = (
+            getattr(self.proc, "stdout", None) if self.proc is not None else None
+        )
         self._req_id = 0
         self._initialized = False
 
         # Try minimal JSON-RPC handshake (non-fatal if it fails)
         self._default_timeout = float(os.environ.get("AUTOCODER_MCP_TIMEOUT", "60"))
-        self._handshake_timeout = float(os.environ.get("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "1.0"))
+        self._handshake_timeout = float(
+            os.environ.get("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "1.0")
+        )
 
         try:
             _ = self._rpc_call(
@@ -120,7 +129,9 @@ class CodexMCPClient:
             self._initialized = True
             logger.info("MCP JSON-RPC initialized successfully")
         except Exception as e:
-            logger.warning(f"MCP initialize failed or not supported; will fallback to 'codex exec' for actions: {e}")
+            logger.warning(
+                f"MCP initialize failed or not supported; will fallback to 'codex exec' for actions: {e}"
+            )
 
     # Compatibility no-ops (Codex has no model switching)
     def switch_to_conflict_model(self) -> None:  # pragma: no cover - trivial
@@ -248,7 +259,11 @@ class CodexMCPClient:
         # Fallbacks
         if isinstance(result, str):
             return result
-        if isinstance(result, dict) and "text" in result and isinstance(result["text"], str):
+        if (
+            isinstance(result, dict)
+            and "text" in result
+            and isinstance(result["text"], str)
+        ):
             return result["text"]
         return json.dumps(result, ensure_ascii=False)
 
@@ -304,7 +319,13 @@ class CodexMCPClient:
                 try:
                     res = self._rpc_call(
                         method="tools/call",
-                        params={"name": tool_name, "arguments": {"text": escaped_prompt, "input": escaped_prompt}},
+                        params={
+                            "name": tool_name,
+                            "arguments": {
+                                "text": escaped_prompt,
+                                "input": escaped_prompt,
+                            },
+                        },
                     )
                     return self._extract_text_from_result(res)
                 except Exception:
@@ -325,8 +346,12 @@ class CodexMCPClient:
                 "--dangerously-bypass-approvals-and-sandbox",
                 escaped_prompt,
             ]
-            logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
+            logger.warning(
+                "LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized."
+            )
+            logger.debug(
+                f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)"
+            )
             logger.info(
                 "🤖 Running under MCP session: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]"
             )

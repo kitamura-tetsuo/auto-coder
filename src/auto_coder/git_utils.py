@@ -4,11 +4,12 @@ Git utilities for Auto-Coder.
 
 import os
 import re
-from typing import Optional, List
+from typing import List, Optional
 from urllib.parse import urlparse
 
 try:
-    from git import Repo, InvalidGitRepositoryError
+    from git import InvalidGitRepositoryError, Repo
+
     GIT_AVAILABLE = True
 except ImportError:
     GIT_AVAILABLE = False
@@ -41,7 +42,7 @@ def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
         repo = Repo(repo_path, search_parent_directories=True)
 
         # Get remote origin URL
-        if 'origin' not in repo.remotes:
+        if "origin" not in repo.remotes:
             logger.debug("No 'origin' remote found in repository")
             return None
 
@@ -79,18 +80,18 @@ def parse_github_repo_from_url(url: str) -> Optional[str]:
         return None
 
     # Remove .git suffix if present
-    url = url.rstrip('/')
-    if url.endswith('.git'):
+    url = url.rstrip("/")
+    if url.endswith(".git"):
         url = url[:-4]
 
     # Handle different URL formats
     patterns = [
         # HTTPS: https://github.com/owner/repo
-        r'https://github\.com/([^/]+)/([^/]+)',
+        r"https://github\.com/([^/]+)/([^/]+)",
         # SSH: git@github.com:owner/repo
-        r'git@github\.com:([^/]+)/([^/]+)',
+        r"git@github\.com:([^/]+)/([^/]+)",
         # SSH alternative: ssh://git@github.com/owner/repo
-        r'ssh://git@github\.com/([^/]+)/([^/]+)',
+        r"ssh://git@github\.com/([^/]+)/([^/]+)",
     ]
 
     for pattern in patterns:
@@ -102,9 +103,9 @@ def parse_github_repo_from_url(url: str) -> Optional[str]:
     # Try parsing as URL
     try:
         parsed = urlparse(url)
-        if parsed.hostname == 'github.com' and parsed.path:
+        if parsed.hostname == "github.com" and parsed.path:
             # Remove leading slash and split path
-            path_parts = parsed.path.lstrip('/').split('/')
+            path_parts = parsed.path.lstrip("/").split("/")
             if len(path_parts) >= 2:
                 owner, repo = path_parts[0], path_parts[1]
                 return f"{owner}/{repo}"
@@ -137,11 +138,8 @@ def is_git_repository(path: Optional[str] = None) -> bool:
         return False
 
 
-
 def git_commit_with_retry(
-    commit_message: str,
-    cwd: Optional[str] = None,
-    max_retries: int = 1
+    commit_message: str, cwd: Optional[str] = None, max_retries: int = 1
 ) -> CommandResult:
     """
     Commit changes with automatic handling of formatter hook failures.
@@ -162,40 +160,47 @@ def git_commit_with_retry(
 
     for attempt in range(max_retries + 1):
         result = cmd.run_command(
-            ['git', 'commit', '-m', commit_message],
-            cwd=cwd,
-            check_success=False
+            ["git", "commit", "-m", commit_message], cwd=cwd, check_success=False
         )
 
         # Check if the failure is due to dprint formatting issues
-        if 'dprint fmt' in result.stderr or 'Formatting issues detected' in result.stderr or 'dprint fmt' in result.stdout or 'Formatting issues detected' in result.stdout:
+        if (
+            "dprint fmt" in result.stderr
+            or "Formatting issues detected" in result.stderr
+            or "dprint fmt" in result.stdout
+            or "Formatting issues detected" in result.stdout
+        ):
             if attempt < max_retries:
-                logger.info("Detected dprint formatting issues, running 'npx dprint fmt' and retrying...")
+                logger.info(
+                    "Detected dprint formatting issues, running 'npx dprint fmt' and retrying..."
+                )
 
                 # Run dprint formatter
                 fmt_result = cmd.run_command(
-                    ['npx', 'dprint', 'fmt'],
-                    cwd=cwd,
-                    check_success=False
+                    ["npx", "dprint", "fmt"], cwd=cwd, check_success=False
                 )
 
                 if fmt_result.success:
                     logger.info("Successfully ran dprint formatter")
                     # Stage the formatted files
                     add_result = cmd.run_command(
-                        ['git', 'add', '-u'],
-                        cwd=cwd,
-                        check_success=False
+                        ["git", "add", "-u"], cwd=cwd, check_success=False
                     )
                     if add_result.success:
                         logger.info("Staged formatted files, retrying commit...")
                         continue
                     else:
-                        logger.warning(f"Failed to stage formatted files: {add_result.stderr}")
+                        logger.warning(
+                            f"Failed to stage formatted files: {add_result.stderr}"
+                        )
                 else:
-                    logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
+                    logger.warning(
+                        f"Failed to run dprint formatter: {fmt_result.stderr}"
+                    )
             else:
-                logger.warning(f"Max retries ({max_retries}) reached for commit with dprint formatting")
+                logger.warning(
+                    f"Max retries ({max_retries}) reached for commit with dprint formatting"
+                )
 
         # If we get here, either it's not a dprint error or we've exhausted retries
         logger.warning(f"Failed to commit changes: {result.stderr}")
@@ -206,9 +211,7 @@ def git_commit_with_retry(
 
 
 def git_push(
-    cwd: Optional[str] = None,
-    remote: str = 'origin',
-    branch: Optional[str] = None
+    cwd: Optional[str] = None, remote: str = "origin", branch: Optional[str] = None
 ) -> CommandResult:
     """
     Push changes to remote repository.
@@ -225,14 +228,17 @@ def git_push(
     """
     cmd = CommandExecutor()
 
-    push_cmd: List[str] = ['git', 'push']
+    push_cmd: List[str] = ["git", "push"]
     if branch:
         push_cmd.extend([remote, branch])
 
     result = cmd.run_command(push_cmd, cwd=cwd, check_success=False)
 
     if result.success:
-        logger.info(f"Successfully pushed changes to {remote}" + (f"/{branch}" if branch else ""))
+        logger.info(
+            f"Successfully pushed changes to {remote}"
+            + (f"/{branch}" if branch else "")
+        )
     else:
         logger.warning(f"Failed to push changes: {result.stderr}")
 

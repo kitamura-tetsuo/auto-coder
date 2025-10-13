@@ -4,15 +4,16 @@ apply_workspace_test_fix での同一 current_test_file 3連続時の自動切�
 """
 from __future__ import annotations
 
-from typing import Callable, Dict, List, Optional, Any, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .logger_config import get_logger, log_calls
 from .exceptions import AutoCoderUsageLimitError
+from .llm_client_base import LLMBackendManagerBase
+from .logger_config import get_logger, log_calls
 
 logger = get_logger(__name__)
 
 
-class BackendManager:
+class BackendManager(LLMBackendManagerBase):
     """LLMクライアントを循環的に切替管理するラッパー。
 
     - _run_llm_cli(prompt) を提供（クライアント互換）
@@ -79,17 +80,18 @@ class BackendManager:
         try:
             # モデル切替連動：デフォルト戻し
             cli = self._get_or_create_client(self._current_backend_name())
-            if hasattr(cli, 'switch_to_default_model') and callable(getattr(cli, 'switch_to_default_model')):
-                try:
-                    cli.switch_to_default_model()
-                except Exception:
-                    pass
+            try:
+                cli.switch_to_default_model()
+            except Exception:
+                pass
         except Exception:
             pass
 
     def switch_to_next_backend(self) -> None:
         self._switch_to_index(self._current_idx + 1)
-        logger.info(f"BackendManager: switched to next backend -> {self._current_backend_name()}")
+        logger.info(
+            f"BackendManager: switched to next backend -> {self._current_backend_name()}"
+        )
 
     def switch_to_default_backend(self) -> None:
         # デフォルトの位置へ
@@ -98,7 +100,9 @@ class BackendManager:
         except ValueError:
             idx = 0
         self._switch_to_index(idx)
-        logger.info(f"BackendManager: switched back to default backend -> {self._current_backend_name()}")
+        logger.info(
+            f"BackendManager: switched back to default backend -> {self._current_backend_name()}"
+        )
 
     # ---------- 直接互換メソッド ----------
     @log_calls
@@ -122,7 +126,9 @@ class BackendManager:
                 self._last_model = getattr(cli, "model_name", None)
                 return out
             except AutoCoderUsageLimitError as e:
-                logger.warning(f"Backend '{name}' hit usage limit: {e}. Rotating to next backend.")
+                logger.warning(
+                    f"Backend '{name}' hit usage limit: {e}. Rotating to next backend."
+                )
                 last_error = e
                 self.switch_to_next_backend()
                 attempts += 1
@@ -137,7 +143,9 @@ class BackendManager:
 
     # ---------- apply_workspace_test_fix 専用 ----------
     @log_calls
-    def run_test_fix_prompt(self, prompt: str, current_test_file: Optional[str] = None) -> str:
+    def run_test_fix_prompt(
+        self, prompt: str, current_test_file: Optional[str] = None
+    ) -> str:
         """apply_workspace_test_fix 用の実行。
         - 同一 current_test_file が3回連続で与えられたら次のバックエンドへ切替
         - 異なる current_test_file が来たらデフォルトに戻す
@@ -180,7 +188,7 @@ class BackendManager:
         if model is None:
             try:
                 cli = self._get_or_create_client(self._current_backend_name())
-                model = getattr(cli, 'model_name', None)
+                model = getattr(cli, "model_name", None)
             except Exception:
                 model = None
         return backend, model
@@ -189,7 +197,9 @@ class BackendManager:
     def switch_to_conflict_model(self) -> None:
         try:
             cli = self._get_or_create_client(self._current_backend_name())
-            if hasattr(cli, 'switch_to_conflict_model') and callable(getattr(cli, 'switch_to_conflict_model')):
+            if hasattr(cli, "switch_to_conflict_model") and callable(
+                getattr(cli, "switch_to_conflict_model")
+            ):
                 cli.switch_to_conflict_model()
         except Exception:
             pass
@@ -197,8 +207,7 @@ class BackendManager:
     def switch_to_default_model(self) -> None:
         try:
             cli = self._get_or_create_client(self._current_backend_name())
-            if hasattr(cli, 'switch_to_default_model') and callable(getattr(cli, 'switch_to_default_model')):
-                cli.switch_to_default_model()
+            cli.switch_to_default_model()
         except Exception:
             pass
 
@@ -206,8 +215,7 @@ class BackendManager:
         """クライアントの close があれば呼ぶ。"""
         for _, cli in list(self._clients.items()):
             try:
-                if cli and hasattr(cli, 'close') and callable(getattr(cli, 'close')):
+                if cli:
                     cli.close()
             except Exception:
                 pass
-

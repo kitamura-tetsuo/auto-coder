@@ -1,7 +1,8 @@
 from unittest.mock import Mock, patch
+
 from click.testing import CliRunner
 
-from src.auto_coder.cli import process_issues, fix_to_pass_tests_command
+from src.auto_coder.cli import fix_to_pass_tests_command, process_issues
 
 
 @patch("src.auto_coder.cli.check_codex_cli_or_fail")
@@ -37,7 +38,9 @@ def test_process_issues_backend_codex_mcp_warns_and_closes(
 
     assert result.exit_code == 0
     assert "Using backends: codex-mcp (default: codex-mcp)" in result.output
-    assert "Warning: --model is ignored when backend=codex or codex-mcp" in result.output
+    assert (
+        "Warning: --model is ignored when backend=codex or codex-mcp" in result.output
+    )
     # ensured the MCP client was used and closed
     mock_codex_mcp_client_class.assert_called_once()
     mock_ai_client.close.assert_called_once()
@@ -66,4 +69,3 @@ def test_fix_to_pass_tests_backend_codex_mcp_closes(
     assert result.exit_code == 0
     assert "Using backends: codex-mcp (default: codex-mcp)" in result.output
     mock_ai_client.close.assert_called_once()
-

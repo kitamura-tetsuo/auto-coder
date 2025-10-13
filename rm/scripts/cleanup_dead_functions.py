@@ -22,11 +22,10 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from loguru import logger
 import libcst as cst
 from libcst import metadata
 from libcst.metadata import PositionProvider
-
+from loguru import logger
 
 VULTURE_LINE = re.compile(
     r"^(?P<path>.+?):(?P<line>\d+):\s+unused\s+(function|method)\s+'(?P<name>[^']+)'",
@@ -34,7 +33,9 @@ VULTURE_LINE = re.compile(
 )
 
 
-def run_vulture(paths: List[str], min_conf: int, exclude: List[str], whitelist: List[str]) -> str:
+def run_vulture(
+    paths: List[str], min_conf: int, exclude: List[str], whitelist: List[str]
+) -> str:
     """Run vulture and return stdout text."""
     cmd = [sys.executable, "-m", "vulture"]
     cmd += paths
@@ -46,7 +47,12 @@ def run_vulture(paths: List[str], min_conf: int, exclude: List[str], whitelist: 
     proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
     if proc.returncode not in (0, 1, 3):
         # vulture exits 1 when issues found, 3 when issues found with some internal warnings; treat 0/1/3 as normal
-        logger.error("vulture failed (code={}):\nSTDOUT:\n{}\nSTDERR:\n{}", proc.returncode, proc.stdout, proc.stderr)
+        logger.error(
+            "vulture failed (code={}):\nSTDOUT:\n{}\nSTDERR:\n{}",
+            proc.returncode,
+            proc.stdout,
+            proc.stderr,
+        )
         sys.exit(proc.returncode)
     return proc.stdout
 
@@ -97,7 +103,9 @@ class PerFileRemover(cst.CSTTransformer):
                 return True
         return False
 
-    def leave_FunctionDef(self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef):
+    def leave_FunctionDef(
+        self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef
+    ):
         if self._should_remove(original_node):
             pos = self.get_metadata(PositionProvider, original_node).start.line
             self.removed.append((original_node.name.value, pos))
@@ -105,7 +113,9 @@ class PerFileRemover(cst.CSTTransformer):
         return updated_node
 
 
-def process_file(path: Path, targets: List[Tuple[str, int]], apply: bool, keep: List[re.Pattern]) -> List[Tuple[str, int]]:
+def process_file(
+    path: Path, targets: List[Tuple[str, int]], apply: bool, keep: List[re.Pattern]
+) -> List[Tuple[str, int]]:
     """Remove targeted functions from a single file. Return removed (name, line)."""
     try:
         code = path.read_text(encoding="utf-8")
@@ -133,7 +143,9 @@ def process_file(path: Path, targets: List[Tuple[str, int]], apply: bool, keep: 
         except Exception as e:
             logger.error("Failed to write {}: {}", path, e)
     else:
-        logger.info("[dry-run] Would update {} (remove {} functions).", path, len(removed))
+        logger.info(
+            "[dry-run] Would update {} (remove {} functions).", path, len(removed)
+        )
 
     for name, ln in removed:
         logger.debug("  - removed {} at line {}", name, ln)
@@ -145,14 +157,44 @@ def compile_keep_patterns(exprs: List[str]) -> List[re.Pattern]:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Bulk-remove unused functions reported by vulture, via LibCST.")
-    parser.add_argument("paths", nargs="+", help="Code paths to scan (e.g. src/ package/)")
-    parser.add_argument("--apply", action="store_true", help="Actually modify files. Default: dry-run.")
-    parser.add_argument("--min-confidence", type=int, default=80, help="vulture min confidence (0-100). Default: 80")
-    parser.add_argument("--exclude", action="append", default=[], help="Comma-separated glob(s) to exclude (can repeat).")
-    parser.add_argument("--whitelist", action="append", default=[], help="Additional vulture whitelist .py files (can repeat).")
-    parser.add_argument("--keep-pattern", action="append", default=[], help="Regex of function names to keep (can repeat).")
-    parser.add_argument("--log-file", default="deadcode.log", help="Log file path. Default: deadcode.log")
+    parser = argparse.ArgumentParser(
+        description="Bulk-remove unused functions reported by vulture, via LibCST."
+    )
+    parser.add_argument(
+        "paths", nargs="+", help="Code paths to scan (e.g. src/ package/)"
+    )
+    parser.add_argument(
+        "--apply", action="store_true", help="Actually modify files. Default: dry-run."
+    )
+    parser.add_argument(
+        "--min-confidence",
+        type=int,
+        default=80,
+        help="vulture min confidence (0-100). Default: 80",
+    )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        help="Comma-separated glob(s) to exclude (can repeat).",
+    )
+    parser.add_argument(
+        "--whitelist",
+        action="append",
+        default=[],
+        help="Additional vulture whitelist .py files (can repeat).",
+    )
+    parser.add_argument(
+        "--keep-pattern",
+        action="append",
+        default=[],
+        help="Regex of function names to keep (can repeat).",
+    )
+    parser.add_argument(
+        "--log-file",
+        default="deadcode.log",
+        help="Log file path. Default: deadcode.log",
+    )
     args = parser.parse_args()
 
     # Set up loguru: stdout + file
@@ -173,11 +215,19 @@ def main():
     keep_patterns = compile_keep_patterns(args.keep_pattern)
 
     # 1) Run vulture
-    stdout = run_vulture(paths=args.paths, min_conf=args.min_confidence, exclude=exclude, whitelist=whitelist)
+    stdout = run_vulture(
+        paths=args.paths,
+        min_conf=args.min_confidence,
+        exclude=exclude,
+        whitelist=whitelist,
+    )
     hits = parse_vulture_output(stdout)
 
     if not hits:
-        logger.info("No unused functions/methods found at >= {}% confidence.", args.min_confidence)
+        logger.info(
+            "No unused functions/methods found at >= {}% confidence.",
+            args.min_confidence,
+        )
         sys.exit(0)
 
     total_removed = 0
@@ -186,9 +236,15 @@ def main():
         total_removed += len(removed)
 
     if args.apply:
-        logger.info("Done. Removed {} functions across {} files.", total_removed, len(hits))
+        logger.info(
+            "Done. Removed {} functions across {} files.", total_removed, len(hits)
+        )
     else:
-        logger.info("[dry-run] Would remove {} functions across {} files. Use --apply to write changes.", total_removed, len(hits))
+        logger.info(
+            "[dry-run] Would remove {} functions across {} files. Use --apply to write changes.",
+            total_removed,
+            len(hits),
+        )
 
 
 if __name__ == "__main__":

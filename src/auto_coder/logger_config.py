@@ -13,23 +13,20 @@ environment specific prefixes and report file paths relative to the
 """
 
 import sys
+from functools import wraps
+from inspect import iscoroutinefunction, signature
 from pathlib import Path
 from typing import Optional
 
-from functools import wraps
-from inspect import iscoroutinefunction, signature
 from loguru import logger
 
 from .config import settings
-
 
 # Determine the base directory that should be removed from log paths.  When the
 # package is installed this resolves to ``.../site-packages``.  When running
 # directly from the repository it resolves to ``.../src``.
 _PACKAGE_DIR = Path(__file__).resolve().parent
-_PATH_TRIM_BASES = (
-    _PACKAGE_DIR.parent.resolve(),
-)
+_PATH_TRIM_BASES = (_PACKAGE_DIR.parent.resolve(),)
 
 
 def format_path_for_log(file_path: str) -> str:
@@ -71,7 +68,7 @@ def setup_logger(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
     include_file_info: bool = True,
-    stream = sys.stdout,
+    stream=sys.stdout,
 ) -> None:
     """
     Setup loguru logger with file and line information.
@@ -93,9 +90,11 @@ def setup_logger(
     level = log_level or settings.log_level
 
     # Validate log level
-    valid_levels = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']
+    valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     if level.upper() not in valid_levels:
-        raise ValueError(f"Invalid log level '{level}'. Must be one of: {', '.join(valid_levels)}")
+        raise ValueError(
+            f"Invalid log level '{level}'. Must be one of: {', '.join(valid_levels)}"
+        )
 
     level = level.upper()
 
@@ -121,13 +120,7 @@ def setup_logger(
         )
 
     # Add console handler (to specified stream)
-    logger.add(
-        stream,
-        format=format_string,
-        level=level,
-        colorize=True,
-        enqueue=True
-    )
+    logger.add(stream, format=format_string, level=level, colorize=True, enqueue=True)
 
     # Add file handler if specified
     if log_file:
@@ -158,17 +151,17 @@ def setup_logger(
             rotation="10 MB",
             retention="7 days",
             compression="zip",
-            enqueue=True
+            enqueue=True,
         )
 
 
 def get_logger(name: str):
     """
     Get a logger instance with the specified name.
-    
+
     Args:
         name: Logger name (typically __name__)
-        
+
     Returns:
         Logger instance
     """
@@ -184,6 +177,7 @@ def _format_args(func, args, kwargs, max_len=120):
         s = s[:max_len] + "…"
     return s
 
+
 def log_calls(func):
     """Decorator: log the fully qualified name on every call (sync & async)."""
     qualname = getattr(func, "__qualname__", getattr(func, "__name__", "<?>"))
@@ -191,21 +185,30 @@ def log_calls(func):
     where = f"{module}.{qualname}"
 
     if iscoroutinefunction(func):
+
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
+            logger.opt(depth=1).debug(
+                f"CALL {where}({_format_args(func, args, kwargs)})"
+            )
             result = await func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
+
         return wrapper
     else:
+
         @wraps(func)
         def wrapper(*args, **kwargs):
-            logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
+            logger.opt(depth=1).debug(
+                f"CALL {where}({_format_args(func, args, kwargs)})"
+            )
             result = func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
+
         return wrapper
-    
+
+
 # Initialize logger on module import
 setup_logger()

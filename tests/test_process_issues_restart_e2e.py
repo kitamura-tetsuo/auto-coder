@@ -67,7 +67,7 @@ def test_process_issues_pr_loop_triggers_restart_on_update(tmp_path: Path) -> No
     codex_stub = bin_dir / "codex"
     codex_stub.write_text(
         "#!/usr/bin/env bash\n"
-        "if [ \"$1\" = \"--version\" ]; then\n"
+        'if [ "$1" = "--version" ]; then\n'
         "  echo 'codex stub'\n"
         "  exit 0\n"
         "fi\n"

@@ -61,7 +61,9 @@ def _resolve_config_path() -> Path:
     return Path.home() / ".auto-coder" / CONFIG_FILENAME
 
 
-def _iter_provider_entries(raw_providers: Iterable[dict]) -> Iterable[QwenProviderConfig]:
+def _iter_provider_entries(
+    raw_providers: Iterable[dict],
+) -> Iterable[QwenProviderConfig]:
     """Convert raw provider dicts into ``QwenProviderConfig`` objects."""
 
     for entry in raw_providers:
@@ -77,7 +79,9 @@ def _iter_provider_entries(raw_providers: Iterable[dict]) -> Iterable[QwenProvid
 
         api_key = entry.get("api_key")
         if not api_key:
-            logger.info("Skipping Qwen provider '%s' because no api_key was provided", name)
+            logger.info(
+                "Skipping Qwen provider '%s' because no api_key was provided", name
+            )
             continue
 
         defaults = _PROVIDER_DEFAULTS.get(name.lower(), {})
@@ -125,9 +129,9 @@ def load_qwen_provider_configs() -> List[QwenProviderConfig]:
     providers = data.get("qwen", {}).get("providers", [])
     if not isinstance(providers, list):
         logger.error(
-            "Invalid Qwen provider config at %s: expected list under qwen.providers", path
+            "Invalid Qwen provider config at %s: expected list under qwen.providers",
+            path,
         )
         return []
 
     return list(_iter_provider_entries(providers))
-

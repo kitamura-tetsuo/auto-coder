@@ -1,6 +1,6 @@
+import importlib
 import subprocess
 import sys
-import importlib
 
 
 def test_get_actions_logs_cli():

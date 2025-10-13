@@ -16,6 +16,7 @@ Options:
   --help             Show this message and exit.
 """
         stderr = ""
+
     mock_run.return_value = Dummy()
 
     # Require short flags, but only long forms appear
@@ -37,11 +38,10 @@ Options:
   | --help            | Show this message and exit.      |
 """
         stderr = ""
+
     mock_run.return_value = Dummy()
 
     assert qwen_help_has_flags(["--prompt", "--model"]) is True
-
-
 
 
 @patch("subprocess.run")
@@ -61,6 +61,7 @@ Options:
   --help                Show this message and exit.
 """
         stderr = ""
+
     mock_run.return_value = Dummy()
 
     assert qwen_help_has_flags(["-p", "--model"]) is True

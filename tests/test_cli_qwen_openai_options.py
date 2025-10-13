@@ -1,5 +1,6 @@
-from click.testing import CliRunner
 from unittest.mock import Mock, patch
+
+from click.testing import CliRunner
 
 from src.auto_coder.cli import process_issues
 
@@ -45,4 +46,3 @@ def test_process_issues_qwen_receives_openai_options(
     assert kwargs.get("model_name") == "qwen3-coder-plus"
     assert kwargs.get("openai_api_key") == "sk-cli-xyz"
     assert kwargs.get("openai_base_url") == "https://api.local"
-

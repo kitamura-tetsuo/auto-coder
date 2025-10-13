@@ -1,19 +1,19 @@
 """Tests for git_utils module."""
 
 import os
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.auto_coder.git_utils import (
+    get_current_repo_name,
     git_commit_with_retry,
     git_push,
-    get_current_repo_name,
-    parse_github_repo_from_url,
     is_git_repository,
+    parse_github_repo_from_url,
 )
 from src.auto_coder.utils import CommandResult
 
@@ -23,14 +23,11 @@ class TestGitCommitWithRetry:
 
     def test_successful_commit(self):
         """Test successful commit without retry."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="",
-                stderr="",
-                returncode=0
+                success=True, stdout="", stderr="", returncode=0
             )
 
             result = git_commit_with_retry("Test commit message")
@@ -38,14 +35,14 @@ class TestGitCommitWithRetry:
             assert result.success is True
             mock_cmd.run_command.assert_called_once()
             call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ['git', 'commit', '-m', 'Test commit message']
+            assert call_args[0][0] == ["git", "commit", "-m", "Test commit message"]
 
     def test_commit_with_dprint_error_and_retry(self):
         """Test commit with dprint formatting error triggers retry."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            
+
             # First call: commit fails with dprint error
             # Second call: dprint fmt succeeds
             # Third call: git add succeeds
@@ -55,30 +52,36 @@ class TestGitCommitWithRetry:
                     success=False,
                     stdout="",
                     stderr="Formatting issues detected. Run 'npx dprint fmt' to fix.",
-                    returncode=1
+                    returncode=1,
                 ),
-                CommandResult(success=True, stdout="", stderr="", returncode=0),  # dprint fmt
-                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git add
-                CommandResult(success=True, stdout="", stderr="", returncode=0),  # commit retry
+                CommandResult(
+                    success=True, stdout="", stderr="", returncode=0
+                ),  # dprint fmt
+                CommandResult(
+                    success=True, stdout="", stderr="", returncode=0
+                ),  # git add
+                CommandResult(
+                    success=True, stdout="", stderr="", returncode=0
+                ),  # commit retry
             ]
 
             result = git_commit_with_retry("Test commit message")
 
             assert result.success is True
             assert mock_cmd.run_command.call_count == 4
-            
+
             # Check that dprint fmt was called
             calls = mock_cmd.run_command.call_args_list
-            assert calls[1][0][0] == ['npx', 'dprint', 'fmt']
-            assert calls[2][0][0] == ['git', 'add', '-u']
-            assert calls[3][0][0] == ['git', 'commit', '-m', 'Test commit message']
+            assert calls[1][0][0] == ["npx", "dprint", "fmt"]
+            assert calls[2][0][0] == ["git", "add", "-u"]
+            assert calls[3][0][0] == ["git", "commit", "-m", "Test commit message"]
 
     def test_commit_with_dprint_error_fmt_fails(self):
         """Test commit with dprint error but formatter fails."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            
+
             # First call: commit fails with dprint error
             # Second call: dprint fmt fails
             mock_cmd.run_command.side_effect = [
@@ -86,13 +89,13 @@ class TestGitCommitWithRetry:
                     success=False,
                     stdout="",
                     stderr="Formatting issues detected. Run 'npx dprint fmt' to fix.",
-                    returncode=1
+                    returncode=1,
                 ),
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="dprint command not found",
-                    returncode=1
+                    returncode=1,
                 ),
             ]
 
@@ -103,14 +106,14 @@ class TestGitCommitWithRetry:
 
     def test_commit_with_non_dprint_error(self):
         """Test commit with non-dprint error does not trigger retry."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
                 success=False,
                 stdout="",
                 stderr="nothing to commit, working tree clean",
-                returncode=1
+                returncode=1,
             )
 
             result = git_commit_with_retry("Test commit message")
@@ -121,21 +124,18 @@ class TestGitCommitWithRetry:
 
     def test_commit_with_cwd(self):
         """Test commit with custom working directory."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="",
-                stderr="",
-                returncode=0
+                success=True, stdout="", stderr="", returncode=0
             )
 
             result = git_commit_with_retry("Test commit", cwd="/custom/path")
 
             assert result.success is True
             call_args = mock_cmd.run_command.call_args
-            assert call_args[1]['cwd'] == "/custom/path"
+            assert call_args[1]["cwd"] == "/custom/path"
 
 
 class TestGitPush:
@@ -143,68 +143,59 @@ class TestGitPush:
 
     def test_successful_push(self):
         """Test successful push without branch specified."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="",
-                stderr="",
-                returncode=0
+                success=True, stdout="", stderr="", returncode=0
             )
 
             result = git_push()
 
             assert result.success is True
             call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ['git', 'push']
+            assert call_args[0][0] == ["git", "push"]
 
     def test_push_with_branch(self):
         """Test push with specific branch."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="",
-                stderr="",
-                returncode=0
+                success=True, stdout="", stderr="", returncode=0
             )
 
             result = git_push(branch="feature-branch")
 
             assert result.success is True
             call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ['git', 'push', 'origin', 'feature-branch']
+            assert call_args[0][0] == ["git", "push", "origin", "feature-branch"]
 
     def test_push_with_custom_remote(self):
         """Test push with custom remote."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="",
-                stderr="",
-                returncode=0
+                success=True, stdout="", stderr="", returncode=0
             )
 
             result = git_push(remote="upstream", branch="main")
 
             assert result.success is True
             call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ['git', 'push', 'upstream', 'main']
+            assert call_args[0][0] == ["git", "push", "upstream", "main"]
 
     def test_push_failure(self):
         """Test push failure."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
                 success=False,
                 stdout="",
                 stderr="error: failed to push some refs",
-                returncode=1
+                returncode=1,
             )
 
             result = git_push()
@@ -214,21 +205,18 @@ class TestGitPush:
 
     def test_push_with_cwd(self):
         """Test push with custom working directory."""
-        with patch('src.auto_coder.git_utils.CommandExecutor') as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="",
-                stderr="",
-                returncode=0
+                success=True, stdout="", stderr="", returncode=0
             )
 
             result = git_push(cwd="/custom/path")
 
             assert result.success is True
             call_args = mock_cmd.run_command.call_args
-            assert call_args[1]['cwd'] == "/custom/path"
+            assert call_args[1]["cwd"] == "/custom/path"
 
 
 class TestParseGithubRepoFromUrl:
@@ -285,4 +273,3 @@ class TestParseGithubRepoFromUrl:
         """Test parsing None URL returns None."""
         result = parse_github_repo_from_url(None)
         assert result is None
-

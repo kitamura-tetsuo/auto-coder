@@ -1,5 +1,5 @@
-from unittest.mock import patch
 import threading
+from unittest.mock import patch
 
 import pytest
 
@@ -30,17 +30,23 @@ class _FakeStream:
 
 
 class _FakePopen:
-    def __init__(self, cmd, stdout=None, stderr=None, text=True, bufsize=1, cwd=None, env=None):
+    def __init__(
+        self, cmd, stdout=None, stderr=None, text=True, bufsize=1, cwd=None, env=None
+    ):
         # Provide a few lines to simulate Gemini streaming 429/RESOURCE_EXHAUSTED
-        self.stdout = _FakeStream([
-            "config: {...}\n",
-            "some info line\n",
-            "done prelude\n",
-        ])
-        self.stderr = _FakeStream([
-            "data: {\"error\": {\"code\": 429}}\n",
-            "status: RESOURCE_EXHAUSTED\n",
-        ])
+        self.stdout = _FakeStream(
+            [
+                "config: {...}\n",
+                "some info line\n",
+                "done prelude\n",
+            ]
+        )
+        self.stderr = _FakeStream(
+            [
+                'data: {"error": {"code": 429}}\n',
+                "status: RESOURCE_EXHAUSTED\n",
+            ]
+        )
         self._killed = False
         self.returncode = None
 
@@ -79,6 +85,7 @@ class _FakeCompleted:
         self.stdout = stdout
         self.stderr = stderr
 
+
 @patch("subprocess.run")
 @patch("subprocess.Popen", new=_FakePopen)
 def test_streaming_detects_usage_limit_and_aborts_early(mock_run):
@@ -86,4 +93,3 @@ def test_streaming_detects_usage_limit_and_aborts_early(mock_run):
     client = GeminiClient(model_name="gemini-2.5-pro")
     with pytest.raises(AutoCoderUsageLimitError):
         client._run_gemini_cli("hello")
-
