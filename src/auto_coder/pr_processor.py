@@ -65,59 +65,105 @@ def process_pull_requests(
                 )
             try:
                 pr_data = github_client.get_pr_details(pr)
-                github_checks = _check_github_actions_status(repo_name, pr_data, config)
+                pr_number = pr_data["number"]
 
-                # Check both GitHub Actions success AND mergeable status (default True if unknown)
-                mergeable = pr_data.get("mergeable", True)
-                if github_checks["success"] and mergeable:
-                    # If tests explicitly mock the merge path, honor it; otherwise analyze and take actions
-                    try:
-                        from unittest.mock import Mock as _Mock
-                    except Exception:
-                        _Mock = None
-                    if _Mock is not None and isinstance(_process_pr_for_merge, _Mock):
+                # Skip if PR already has @auto-coder label (being processed by another instance)
+                if not dry_run:
+                    if not github_client.try_add_work_in_progress_label(
+                        repo_name, pr_number
+                    ):
                         logger.info(
-                            f"PR #{pr_data['number']}: Actions PASSING and MERGEABLE - attempting merge"
-                        )
-                        processed_pr = _process_pr_for_merge(
-                            repo_name, pr_data, config, dry_run
-                        )
-                        processed_prs.append(processed_pr)
-                        handled_pr_numbers.add(pr_data["number"])
-
-                        actions_taken = processed_pr.get("actions_taken", [])
-                        if any(
-                            "Successfully merged" in a for a in actions_taken
-                        ) or any("Would merge" in a for a in actions_taken):
-                            merged_pr_numbers.add(pr_data["number"])
-                    else:
-                        # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
-                        actions = _take_pr_actions(
-                            repo_name, pr_data, config, dry_run, llm_client
+                            f"Skipping PR #{pr_number} - already has @auto-coder label"
                         )
                         processed_prs.append(
                             {
                                 "pr_data": pr_data,
-                                "analysis": None,
-                                "actions_taken": actions,
+                                "actions_taken": [
+                                    "Skipped - already being processed (@auto-coder label present)"
+                                ],
                             }
                         )
-                        handled_pr_numbers.add(pr_data["number"])
-                elif github_checks["success"] and not mergeable:
-                    logger.info(
-                        f"PR #{pr_data['number']}: Actions PASSING but NOT MERGEABLE - deferring to second pass"
+                        continue
+
+                try:
+                    github_checks = _check_github_actions_status(
+                        repo_name, pr_data, config
                     )
-                elif not github_checks["success"] and mergeable:
-                    logger.info(
-                        f"PR #{pr_data['number']}: MERGEABLE but Actions FAILING - deferring to second pass"
-                    )
-                else:
-                    logger.info(
-                        f"PR #{pr_data['number']}: Actions FAILING and NOT MERGEABLE - deferring to second pass"
-                    )
+
+                    # Check both GitHub Actions success AND mergeable status (default True if unknown)
+                    mergeable = pr_data.get("mergeable", True)
+                    if github_checks["success"] and mergeable:
+                        # If tests explicitly mock the merge path, honor it; otherwise analyze and take actions
+                        try:
+                            from unittest.mock import Mock as _Mock
+                        except Exception:
+                            _Mock = None
+                        if _Mock is not None and isinstance(
+                            _process_pr_for_merge, _Mock
+                        ):
+                            logger.info(
+                                f"PR #{pr_number}: Actions PASSING and MERGEABLE - attempting merge"
+                            )
+                            processed_pr = _process_pr_for_merge(
+                                repo_name, pr_data, config, dry_run
+                            )
+                            processed_prs.append(processed_pr)
+                            handled_pr_numbers.add(pr_number)
+
+                            actions_taken = processed_pr.get("actions_taken", [])
+                            if any(
+                                "Successfully merged" in a for a in actions_taken
+                            ) or any("Would merge" in a for a in actions_taken):
+                                merged_pr_numbers.add(pr_number)
+                        else:
+                            # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
+                            actions = _take_pr_actions(
+                                repo_name, pr_data, config, dry_run, llm_client
+                            )
+                            processed_prs.append(
+                                {
+                                    "pr_data": pr_data,
+                                    "analysis": None,
+                                    "actions_taken": actions,
+                                }
+                            )
+                            handled_pr_numbers.add(pr_number)
+                    elif github_checks["success"] and not mergeable:
+                        logger.info(
+                            f"PR #{pr_number}: Actions PASSING but NOT MERGEABLE - deferring to second pass"
+                        )
+                    elif not github_checks["success"] and mergeable:
+                        logger.info(
+                            f"PR #{pr_number}: MERGEABLE but Actions FAILING - deferring to second pass"
+                        )
+                    else:
+                        logger.info(
+                            f"PR #{pr_number}: Actions FAILING and NOT MERGEABLE - deferring to second pass"
+                        )
+                finally:
+                    # Remove @auto-coder label after processing
+                    # - Always remove if handled in first pass
+                    # - Also remove if deferred to second pass (not in handled_pr_numbers)
+                    if not dry_run:
+                        try:
+                            github_client.remove_labels_from_issue(
+                                repo_name, pr_number, ["@auto-coder"]
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove @auto-coder label from PR #{pr_number}: {e}"
+                            )
 
             except Exception as e:
                 logger.error(f"Failed to process PR #{pr.number} in merge pass: {e}")
+                # Try to remove @auto-coder label on error
+                if not dry_run:
+                    try:
+                        github_client.remove_labels_from_issue(
+                            repo_name, pr.number, ["@auto-coder"]
+                        )
+                    except Exception:
+                        pass
 
         # Second loop: Process remaining PRs (fix issues)
         logger.info("Second pass: Processing remaining PRs for issue resolution...")
@@ -132,24 +178,60 @@ def process_pull_requests(
                 )
             try:
                 pr_data = github_client.get_pr_details(pr)
+                pr_number = pr_data["number"]
 
                 # Skip PRs that were already merged or otherwise handled in first pass
-                if (
-                    pr_data["number"] in merged_pr_numbers
-                    or pr_data["number"] in handled_pr_numbers
-                ):
+                if pr_number in merged_pr_numbers or pr_number in handled_pr_numbers:
                     continue
 
-                logger.info(f"PR #{pr_data['number']}: Processing for issue resolution")
-                processed_pr = _process_pr_for_fixes(
-                    repo_name, pr_data, config, dry_run, llm_client
-                )
-                # Ensure priority is fix in second pass
-                processed_pr["priority"] = "fix"
-                processed_prs.append(processed_pr)
+                # Skip if PR already has @auto-coder label (being processed by another instance)
+                if not dry_run:
+                    if not github_client.try_add_work_in_progress_label(
+                        repo_name, pr_number
+                    ):
+                        logger.info(
+                            f"Skipping PR #{pr_number} - already has @auto-coder label"
+                        )
+                        processed_prs.append(
+                            {
+                                "pr_data": pr_data,
+                                "actions_taken": [
+                                    "Skipped - already being processed (@auto-coder label present)"
+                                ],
+                            }
+                        )
+                        continue
+
+                try:
+                    logger.info(f"PR #{pr_number}: Processing for issue resolution")
+                    processed_pr = _process_pr_for_fixes(
+                        repo_name, pr_data, config, dry_run, llm_client
+                    )
+                    # Ensure priority is fix in second pass
+                    processed_pr["priority"] = "fix"
+                    processed_prs.append(processed_pr)
+                finally:
+                    # Remove @auto-coder label after processing
+                    if not dry_run:
+                        try:
+                            github_client.remove_labels_from_issue(
+                                repo_name, pr_number, ["@auto-coder"]
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove @auto-coder label from PR #{pr_number}: {e}"
+                            )
 
             except Exception as e:
                 logger.error(f"Failed to process PR #{pr.number} in fix pass: {e}")
+                # Try to remove @auto-coder label on error
+                if not dry_run:
+                    try:
+                        github_client.remove_labels_from_issue(
+                            repo_name, pr.number, ["@auto-coder"]
+                        )
+                    except Exception:
+                        pass
                 processed_prs.append({"pr_number": pr.number, "error": str(e)})
 
         return processed_prs

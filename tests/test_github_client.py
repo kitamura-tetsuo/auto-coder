@@ -2,6 +2,7 @@
 Tests for GitHub client functionality.
 """
 
+import json
 from unittest.mock import Mock, patch
 
 import pytest
@@ -119,12 +120,14 @@ class TestGitHubClient:
             mock_issue1 = Mock(spec=Issue.Issue)
             mock_issue1.pull_request = None  # Not a PR
             mock_issue1.created_at = Mock()
-            mock_issue1.created_at.isoformat.return_value = "2024-01-01T00:00:00Z"
+            iso_mock = mock_issue1.created_at.isoformat
+            iso_mock.return_value = "2024-01-01T00:00:00Z"
 
             mock_issue2 = Mock(spec=Issue.Issue)
             mock_issue2.pull_request = None  # Not a PR
             mock_issue2.created_at = Mock()
-            mock_issue2.created_at.isoformat.return_value = "2024-01-02T00:00:00Z"
+            iso_mock2 = mock_issue2.created_at.isoformat
+            iso_mock2.return_value = "2024-01-02T00:00:00Z"
 
             # GitHub API should return in ascending order (oldest first)
             mock_repo.get_issues.return_value = [mock_issue1, mock_issue2]
@@ -145,7 +148,9 @@ class TestGitHubClient:
             )
 
     def test_get_open_pull_requests_sorted_oldest_first(self, mock_github_token):
-        """Test that pull requests are sorted by creation date (oldest first)."""
+        """Test that pull requests are sorted by
+        creation date (oldest first).
+        """
         # Setup
         with patch("src.auto_coder.github_client.Github") as mock_github_class:
             mock_github = Mock()
@@ -387,7 +392,8 @@ class TestGitHubClient:
         client = GitHubClient(mock_github_token)
 
         # Execute
-        result = client.create_issue("test/repo", "New Issue", "Issue body", ["bug"])
+        params = ("test/repo", "New Issue", "Issue body", ["bug"])
+        result = client.create_issue(*params)
 
         # Assert
         assert result == mock_issue
@@ -506,3 +512,233 @@ class TestGitHubClient:
         actual_labels = call_args[1]["labels"]  # Get labels from kwargs
         expected_labels = {"bug", "jules", "enhancement"}
         assert set(actual_labels) == expected_labels
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_has_linked_pr_with_linked_pr(self, mock_github_class, mock_github_token):
+        """Test has_linked_pr returns True when PR references the issue."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+
+        # Create a PR that references issue #123
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+        mock_pr.number = 456
+        mock_pr.title = "Fix bug"
+        mock_pr.body = "This PR fixes #123"
+
+        mock_repo.get_pulls.return_value = [mock_pr]
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.has_linked_pr("test/repo", 123)
+
+        # Assert
+        assert result is True
+        mock_repo.get_pulls.assert_called_once_with(state="open")
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_has_linked_pr_with_no_linked_pr(
+        self, mock_github_class, mock_github_token
+    ):
+        """Test has_linked_pr returns False when no PR references the issue."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+
+        # Create a PR that does not reference issue #123
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+        mock_pr.number = 456
+        mock_pr.title = "Fix another bug"
+        mock_pr.body = "This PR fixes #999"
+
+        mock_repo.get_pulls.return_value = [mock_pr]
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.has_linked_pr("test/repo", 123)
+
+        # Assert
+        assert result is False
+        mock_repo.get_pulls.assert_called_once_with(state="open")
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_has_linked_pr_with_multiple_patterns(
+        self, mock_github_class, mock_github_token
+    ):
+        """Test has_linked_pr detects various reference patterns."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+
+        test_cases = [
+            ("Fix bug", "closes #123"),
+            ("Resolve issue", "resolves #123"),
+            ("Fix", "issue #123"),
+            ("Update #123", "Some description"),
+        ]
+
+        for title, body in test_cases:
+            mock_pr = Mock(spec=PullRequest.PullRequest)
+            mock_pr.number = 456
+            mock_pr.title = title
+            mock_pr.body = body
+
+            mock_repo.get_pulls.return_value = [mock_pr]
+            mock_github.get_repo.return_value = mock_repo
+            mock_github_class.return_value = mock_github
+
+            client = GitHubClient(mock_github_token)
+
+            # Execute
+            result = client.has_linked_pr("test/repo", 123)
+
+            # Assert
+            assert result is True, f"Failed for title='{title}', body='{body}'"
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_has_linked_pr_handles_exception(
+        self, mock_github_class, mock_github_token
+    ):
+        """Test has_linked_pr handles exceptions gracefully."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+        mock_repo.get_pulls.side_effect = GithubException(500, "Server Error")
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.has_linked_pr("test/repo", 123)
+
+        # Assert
+        assert result is False
+
+    @patch("subprocess.run")
+    def test_get_linked_prs_via_graphql_success(self, mock_run, mock_github_token):
+        """Test get_linked_prs_via_graphql returns linked PR numbers."""
+        # Setup
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "timelineItems": {
+                            "nodes": [
+                                {"source": {"number": 456, "state": "OPEN"}},
+                                {"source": {"number": 789, "state": "CLOSED"}},
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.get_linked_prs_via_graphql("test/repo", 123)
+
+        # Assert
+        assert result == [456]  # Only OPEN PRs
+        mock_run.assert_called_once()
+        call_args = mock_run.call_args[0][0]
+        assert call_args[0] == "gh"
+        assert call_args[1] == "api"
+        assert call_args[2] == "graphql"
+
+    @patch("subprocess.run")
+    def test_get_linked_prs_via_graphql_no_linked_prs(
+        self, mock_run, mock_github_token
+    ):
+        """Test get_linked_prs_via_graphql returns
+        empty list when no PRs linked.
+        """
+        # Setup
+        graphql_response = {
+            "data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.get_linked_prs_via_graphql("test/repo", 123)
+
+        # Assert
+        assert result == []
+
+    @patch("subprocess.run")
+    def test_get_linked_prs_via_graphql_handles_error(
+        self, mock_run, mock_github_token
+    ):
+        """Test get_linked_prs_via_graphql handles subprocess errors."""
+        # Setup
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "GraphQL error"
+        mock_run.return_value = mock_result
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.get_linked_prs_via_graphql("test/repo", 123)
+
+        # Assert
+        assert result == []
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.github_client.Github")
+    def test_has_linked_pr_uses_graphql_first(
+        self, mock_github_class, mock_run, mock_github_token
+    ):
+        """Test has_linked_pr uses GraphQL API first."""
+        # Setup GraphQL to return a linked PR
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "timelineItems": {
+                            "nodes": [{"source": {"number": 456, "state": "OPEN"}}]
+                        }
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        mock_github = Mock()
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.has_linked_pr("test/repo", 123)
+
+        # Assert
+        assert result is True
+        # Should not call get_pulls since GraphQL found a PR
+        mock_github.get_repo.assert_not_called()

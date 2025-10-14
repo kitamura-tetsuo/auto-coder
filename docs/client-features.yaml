@@ -59,6 +59,59 @@ features:
             description: "Add labels to an existing issue (avoids duplicates)"
             parameters: ["repo_name", "issue_number", "labels"]
             returns: "None"
+          - name: "remove_labels_from_issue"
+            description: "Remove labels from an existing issue"
+            parameters: ["repo_name", "issue_number", "labels"]
+            returns: "None"
+          - name: "has_label"
+            description: "Check if an issue has a specific label"
+            parameters: ["repo_name", "issue_number", "label"]
+            returns: "Boolean indicating if the label exists"
+          - name: "try_add_work_in_progress_label"
+            description: "Try to add work-in-progress label (@auto-coder) to an issue/PR for exclusive processing"
+            parameters: ["repo_name", "issue_number", "label (default: @auto-coder)"]
+            returns: "Boolean - True if label was added (not being processed), False if label already exists (being processed)"
+            behavior:
+              - "Checks if @auto-coder label already exists on the issue/PR"
+              - "Returns False if label exists (indicates another instance is processing)"
+              - "Adds label and returns True if label doesn't exist"
+              - "Provides basic exclusive processing control"
+            tests:
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_try_add_work_in_progress_label_success"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_try_add_work_in_progress_label_already_exists"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_remove_labels_from_issue"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_has_label_true"
+              - "tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_has_label_false"
+          - name: "get_linked_prs_via_graphql"
+            description: "Get linked PRs for an issue using GitHub GraphQL API (Development section)"
+            parameters: ["repo_name", "issue_number"]
+            returns: "List of PR numbers linked to the issue"
+            behavior:
+              - "Uses gh CLI to query GraphQL API for ConnectedEvent timeline items"
+              - "Returns only OPEN PRs that are linked in the Development section"
+              - "Returns empty list on errors (graceful degradation)"
+            implementation:
+              - "Queries repository.issue.timelineItems with CONNECTED_EVENT filter"
+              - "Extracts PR numbers from source.number where state is OPEN"
+          - name: "has_linked_pr"
+            description: "Check if an issue has a linked pull request (GraphQL + text search fallback)"
+            parameters: ["repo_name", "issue_number"]
+            returns: "Boolean indicating if a linked PR exists"
+            behavior:
+              - "First tries GraphQL API to check Development section (most accurate)"
+              - "Falls back to searching PR titles/bodies for issue references"
+              - "Detects patterns: #123, fixes #123, closes #123, resolves #123, issue #123"
+              - "Returns True if any open PR references the issue"
+              - "Returns False on exceptions (graceful degradation)"
+            tests:
+              - "tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_success"
+              - "tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_no_linked_prs"
+              - "tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_handles_error"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_uses_graphql_first"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_linked_pr"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_no_linked_pr"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_multiple_patterns"
+              - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_handles_exception"
 
   gemini_integration:
     name: "Gemini AI Integration"
@@ -378,23 +431,49 @@ features:
 workflows:
   issue_processing:
     name: "Issue Processing Workflow"
-    description: "Automated workflow for processing GitHub issues (single-run, no analysis phase)"
+    description: "Automated workflow for processing GitHub issues (single-run, no analysis phase) with exclusive processing control"
     steps:
       1. "Fetch open issues from repository (oldest first)"
-      2. "Switch to appropriate branch: PR head_branch if present, otherwise default branch"
-      3. "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
-      4. "Add comments or close issues as appropriate"
-      5. "Generate automation report"
+      2. "Try to add @auto-coder label to issue for exclusive processing"
+      3. "Skip if @auto-coder label already exists (being processed by another instance)"
+      4. "Check if issue has a linked PR (via GraphQL Development section or text search)"
+      5. "Skip issues that already have linked PRs to avoid duplicate work"
+      6. "Switch to appropriate branch: PR head_branch if present, otherwise default branch"
+      7. "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
+      8. "Add comments or close issues as appropriate"
+      9. "Remove @auto-coder label after processing (success or error)"
+      10. "Generate automation report"
+    exclusive_processing:
+      - "Uses @auto-coder label as work-in-progress flag"
+      - "Label is added at start of processing"
+      - "Label is removed after processing completes or on error"
+      - "Provides basic protection against concurrent processing"
+    tests:
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_skips_issue_with_linked_pr"
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_processes_all_when_no_linked_prs"
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_skips_all_when_all_have_linked_prs"
+      - "tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_handles_has_linked_pr_exception"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_skips_when_label_exists"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_processes_when_label_added"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_removes_label_on_error"
+      - "tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_jules_mode_skips_when_label_exists"
 
   pr_processing:
     name: "Pull Request Processing Workflow"
-    description: "Automated workflow for processing GitHub pull requests with two-loop priority order"
+    description: "Automated workflow for processing GitHub pull requests with two-loop priority order and exclusive processing control"
     steps:
       1. "Fetch open pull requests from repository (oldest first)"
       2. "At the beginning of each pass iteration, check for Auto-Coder updates and restart with the original CLI arguments when an upgrade is applied"
-      3. "First loop: Check GitHub Actions status AND mergeable status, merge qualifying PRs"
-      4. "Second loop: Process remaining PRs for issue resolution"
+      3. "First loop: Try to add @auto-coder label, skip if already exists, check GitHub Actions status AND mergeable status, merge qualifying PRs, remove @auto-coder label"
+      4. "Second loop: Try to add @auto-coder label, skip if already exists or already handled, process remaining PRs for issue resolution, remove @auto-coder label"
       5. "Generate automation report"
+    exclusive_processing:
+      - "Uses @auto-coder label as work-in-progress flag"
+      - "Label is added at start of processing in each loop"
+      - "Label is removed after processing completes or on error"
+      - "Provides basic protection against concurrent processing"
+    tests:
+      - "tests/test_exclusive_processing_label.py::TestPRProcessorExclusiveProcessing::test_process_pull_requests_skips_when_label_exists"
 
   feature_suggestion:
     name: "Feature Suggestion Workflow"
@@ -407,13 +486,21 @@ workflows:
 
   jules_mode:
     name: "Jules Mode Workflow"
-    description: "Jules mode - simple label addition for issues; PRs processed without analysis-only phase"
+    description: "Jules mode - simple label addition for issues; PRs processed without analysis-only phase, with exclusive processing control"
     steps:
       1. "Fetch open issues from repository (oldest first)"
-      2. "Check if 'jules' label already exists on each issue"
-      3. "Add 'jules' label to issues that don't have it"
-      4. "Process PRs with single-run direct actions (no analysis-only phase)"
-      5. "Generate automation report"
+      2. "Try to add @auto-coder label to issue for exclusive processing"
+      3. "Skip if @auto-coder label already exists (being processed by another instance)"
+      4. "Check if 'jules' label already exists on each issue"
+      5. "Add 'jules' label to issues that don't have it"
+      6. "Remove @auto-coder label after processing"
+      7. "Process PRs with single-run direct actions (no analysis-only phase)"
+      8. "Generate automation report"
+    exclusive_processing:
+      - "Uses @auto-coder label as work-in-progress flag"
+      - "Label is added at start of processing"
+      - "Label is removed after processing completes or on error"
+      - "Provides basic protection against concurrent processing"
 
 special_features:
   prompt_escaping:

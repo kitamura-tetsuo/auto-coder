@@ -2,6 +2,8 @@
 GitHub API client for Auto-Coder.
 """
 
+import json
+import subprocess
 from typing import Any, Dict, List, Optional
 
 from github import Github, Issue, PullRequest, Repository
@@ -160,6 +162,135 @@ class GitHubClient:
             logger.error(f"Failed to get Issue #{issue_number} from {repo_name}: {e}")
             raise
 
+    def get_linked_prs_via_graphql(
+        self, repo_name: str, issue_number: int
+    ) -> List[int]:
+        """Get linked PRs for an issue using GitHub GraphQL API.
+
+        Uses gh CLI to query GraphQL API for PRs that have this issue in their
+        closingIssuesReferences (Development section).
+
+        Returns list of PR numbers that are linked to this issue.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+            query = """
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
+                  timelineItems(itemTypes: CONNECTED_EVENT, first: 100) {
+                    nodes {
+                      ... on ConnectedEvent {
+                        source {
+                          ... on PullRequest {
+                            number
+                            state
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            """
+
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-f",
+                    f"query={query}",
+                    "-F",
+                    f"owner={owner}",
+                    "-F",
+                    f"repo={repo}",
+                    "-F",
+                    f"issueNumber={issue_number}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode != 0:
+                logger.warning(
+                    f"GraphQL query failed for issue #{issue_number}: {result.stderr}"
+                )
+                return []
+
+            data = json.loads(result.stdout)
+            timeline_items = (
+                data.get("data", {})
+                .get("repository", {})
+                .get("issue", {})
+                .get("timelineItems", {})
+                .get("nodes", [])
+            )
+
+            pr_numbers = []
+            for item in timeline_items:
+                if item and "source" in item:
+                    source = item["source"]
+                    if source and "number" in source:
+                        # Only include open PRs
+                        if source.get("state") == "OPEN":
+                            pr_numbers.append(source["number"])
+
+            if pr_numbers:
+                logger.info(
+                    f"Found {len(pr_numbers)} linked PR(s) for issue #{issue_number} via GraphQL: {pr_numbers}"
+                )
+
+            return pr_numbers
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to get linked PRs via GraphQL for issue #{issue_number}: {e}"
+            )
+            return []
+
+    def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
+        """Check if an issue has a linked pull request.
+
+        First tries GraphQL API to check Development section, then falls back to
+        searching PR titles/bodies for issue references.
+
+        Returns True if there is an open PR that references this issue.
+        """
+        try:
+            # First try GraphQL API (more accurate, checks Development section)
+            linked_prs = self.get_linked_prs_via_graphql(repo_name, issue_number)
+            if linked_prs:
+                return True
+
+            # Fallback: Search for PRs that reference this issue in title/body
+            repo = self.get_repository(repo_name)
+            prs = repo.get_pulls(state="open")
+
+            issue_ref_patterns = [
+                f"#{issue_number}",
+                f"issue #{issue_number}",
+                f"fixes #{issue_number}",
+                f"closes #{issue_number}",
+                f"resolves #{issue_number}",
+            ]
+
+            for pr in prs:
+                pr_text = f"{pr.title} {pr.body or ''}".lower()
+                if any(pattern.lower() in pr_text for pattern in issue_ref_patterns):
+                    logger.info(
+                        f"Found linked PR #{pr.number} for issue #{issue_number} (via text search)"
+                    )
+                    return True
+
+            return False
+
+        except GithubException as e:
+            logger.error(f"Failed to check linked PRs for issue #{issue_number}: {e}")
+            return False
+
     def create_issue(
         self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None
     ) -> Issue.Issue:
@@ -226,4 +357,77 @@ class GitHubClient:
 
         except GithubException as e:
             logger.error(f"Failed to add labels to issue #{issue_number}: {e}")
+            raise
+
+    def remove_labels_from_issue(
+        self, repo_name: str, issue_number: int, labels: List[str]
+    ) -> None:
+        """Remove labels from an existing issue."""
+        try:
+            repo = self.get_repository(repo_name)
+            issue = repo.get_issue(issue_number)
+
+            # Get current labels
+            current_labels = [label.name for label in issue.labels]
+
+            # Remove specified labels
+            remaining_labels = [
+                label for label in current_labels if label not in labels
+            ]
+
+            # Update issue with remaining labels
+            issue.edit(labels=remaining_labels)
+            logger.info(f"Removed labels {labels} from issue #{issue_number}")
+
+        except GithubException as e:
+            logger.error(f"Failed to remove labels from issue #{issue_number}: {e}")
+            raise
+
+    def has_label(self, repo_name: str, issue_number: int, label: str) -> bool:
+        """Check if an issue has a specific label."""
+        try:
+            repo = self.get_repository(repo_name)
+            issue = repo.get_issue(issue_number)
+
+            # Get current labels
+            current_labels = [lbl.name for lbl in issue.labels]
+
+            return label in current_labels
+
+        except GithubException as e:
+            logger.error(f"Failed to check labels for issue #{issue_number}: {e}")
+            raise
+
+    def try_add_work_in_progress_label(
+        self, repo_name: str, issue_number: int, label: str = "@auto-coder"
+    ) -> bool:
+        """Try to add work-in-progress label to an issue.
+
+        Returns True if the label was successfully added (issue was not already being processed).
+        Returns False if the label already exists (issue is being processed by another instance).
+        """
+        try:
+            repo = self.get_repository(repo_name)
+            issue = repo.get_issue(issue_number)
+
+            # Get current labels
+            current_labels = [lbl.name for lbl in issue.labels]
+
+            # Check if label already exists
+            if label in current_labels:
+                logger.info(
+                    f"Issue #{issue_number} already has '{label}' label - skipping"
+                )
+                return False
+
+            # Add the label
+            all_labels = list(set(current_labels + [label]))
+            issue.edit(labels=all_labels)
+            logger.info(f"Added '{label}' label to issue #{issue_number}")
+            return True
+
+        except GithubException as e:
+            logger.error(
+                f"Failed to add work-in-progress label to issue #{issue_number}: {e}"
+            )
             raise

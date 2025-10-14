@@ -42,9 +42,9 @@ class AutomationConfig:
     MAIN_BRANCH: str = "main"
 
     # Behavior flags
-    # When GitHub Actions checks fail for a PR, skip merging the PR's 
+    # When GitHub Actions checks fail for a PR, skip merging the PR's
     # base branch into the PR branch before LLM fixes.
-    # This changes previous behavior to default-skipping 
+    # This changes previous behavior to default-skipping
     # to reduce noisy rebases.
     SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: bool = True
 
