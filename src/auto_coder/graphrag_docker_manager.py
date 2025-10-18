@@ -24,6 +24,9 @@ class GraphRAGDockerManager:
 
         Args:
             compose_file: Path to docker-compose file. If None, uses default location.
+
+        Raises:
+            RuntimeError: If docker compose command is not available
         """
         if compose_file is None:
             # Default to docker-compose.graphrag.yml in repository root
@@ -32,22 +35,106 @@ class GraphRAGDockerManager:
 
         self.compose_file = compose_file
         self.executor = CommandExecutor()
+        self._docker_compose_cmd = self._detect_docker_compose_command()
+
+    def _detect_docker_compose_command(self) -> list[str]:
+        """Detect which docker compose command is available.
+
+        Returns:
+            List of command parts for docker compose (either ['docker', 'compose'] or ['docker-compose'])
+
+        Raises:
+            RuntimeError: If neither docker compose command is available
+        """
+        # Try 'docker compose' (newer Docker CLI plugin)
+        try:
+            result = subprocess.run(
+                ["docker", "compose", "version"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.debug("Using 'docker compose' command")
+                return ["docker", "compose"]
+        except Exception:
+            pass
+
+        # Try 'docker-compose' (legacy standalone)
+        try:
+            result = subprocess.run(
+                ["docker-compose", "version"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.debug("Using 'docker-compose' command")
+                return ["docker-compose"]
+        except Exception:
+            pass
+
+        # Neither command is available
+        error_msg = (
+            "Neither 'docker compose' nor 'docker-compose' is available.\n"
+            "Please install Docker Compose:\n"
+            "  - For Docker Desktop: Docker Compose is included\n"
+            "  - For Docker Engine: Install docker-compose-plugin\n"
+            "    Ubuntu/Debian: sudo apt-get install docker-compose-plugin\n"
+            "    Or install standalone: https://docs.docker.com/compose/install/"
+        )
+        logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+    def _is_permission_error(self, stderr: str) -> bool:
+        """Check if error message indicates a permission error.
+
+        Args:
+            stderr: Error message from command
+
+        Returns:
+            True if error is a permission error
+        """
+        permission_indicators = [
+            "permission denied",
+            "dial unix /var/run/docker.sock: connect: permission denied",
+            "Got permission denied while trying to connect to the Docker daemon socket",
+        ]
+        stderr_lower = stderr.lower()
+        return any(indicator in stderr_lower for indicator in permission_indicators)
 
     def _run_docker_compose(
-        self, args: list[str], timeout: int = 60
+        self, args: list[str], timeout: int = 60, retry_with_sudo: bool = True
     ) -> CommandResult:
         """Run docker-compose command.
 
         Args:
             args: Arguments to pass to docker-compose
             timeout: Command timeout in seconds
+            retry_with_sudo: If True, retry with sudo on permission error
 
         Returns:
             CommandResult with execution results
         """
-        cmd = ["docker-compose", "-f", self.compose_file] + args
-        logger.debug(f"Running docker-compose command: {' '.join(cmd)}")
-        return self.executor.run_command(cmd, timeout=timeout)
+        # For 'docker compose', the -f flag must come after 'compose'
+        # For 'docker-compose', the -f flag comes after 'docker-compose'
+        # Both cases are handled the same way: cmd + ["-f", file] + args
+        cmd = self._docker_compose_cmd + ["-f", self.compose_file] + args
+        logger.debug(f"Running docker compose command: {' '.join(cmd)}")
+        result = self.executor.run_command(cmd, timeout=timeout)
+
+        # If permission error and retry is enabled, try with sudo
+        if (
+            not result.success
+            and retry_with_sudo
+            and self._is_permission_error(result.stderr)
+        ):
+            logger.warning(
+                "Permission denied when accessing Docker. Retrying with sudo..."
+            )
+            sudo_cmd = ["sudo"] + cmd
+            logger.debug(f"Running docker compose command with sudo: {' '.join(sudo_cmd)}")
+            result = self.executor.run_command(sudo_cmd, timeout=timeout)
+
+        return result
 
     def start(self, wait_for_health: bool = True, timeout: int = 120) -> bool:
         """Start Neo4j and Qdrant containers.

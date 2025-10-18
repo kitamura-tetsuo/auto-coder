@@ -36,9 +36,15 @@ def graphrag_start(wait: bool, timeout: int) -> None:
     from .graphrag_docker_manager import GraphRAGDockerManager
 
     setup_logger()
-    manager = GraphRAGDockerManager()
 
     click.echo("Starting GraphRAG Docker containers (Neo4j and Qdrant)...")
+
+    try:
+        manager = GraphRAGDockerManager()
+    except RuntimeError as e:
+        click.echo()
+        click.echo(f"❌ {e}")
+        raise click.ClickException("Docker Compose is not available")
 
     try:
         success = manager.start(wait_for_health=wait, timeout=timeout)
@@ -55,7 +61,7 @@ def graphrag_start(wait: bool, timeout: int) -> None:
                 if not status['neo4j'] or not status['qdrant']:
                     click.echo()
                     click.echo("⚠️  Some containers are unhealthy. Troubleshooting tips:")
-                    click.echo("   1. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs")
+                    click.echo("   1. Check Docker logs: docker compose -f docker-compose.graphrag.yml logs")
                     click.echo("   2. Verify ports are not in use: lsof -i :7474 -i :7687 -i :6333")
                     click.echo("   3. Try restarting: auto-coder graphrag stop && auto-coder graphrag start")
         else:
@@ -64,9 +70,11 @@ def graphrag_start(wait: bool, timeout: int) -> None:
             click.echo()
             click.echo("Troubleshooting tips:")
             click.echo("   1. Ensure Docker is running: docker ps")
-            click.echo("   2. Check docker-compose.graphrag.yml exists in repository root")
-            click.echo("   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs")
-            click.echo("   4. Try manual start: docker-compose -f docker-compose.graphrag.yml up -d")
+            click.echo("   2. Check Docker permissions: sudo usermod -aG docker $USER")
+            click.echo("      (then logout and login again)")
+            click.echo("   3. Check docker-compose.graphrag.yml exists in repository root")
+            click.echo("   4. Check Docker logs: docker compose -f docker-compose.graphrag.yml logs")
+            click.echo("   5. Try manual start: docker compose -f docker-compose.graphrag.yml up -d")
             raise click.ClickException("Failed to start GraphRAG containers")
     except click.ClickException:
         raise
@@ -76,8 +84,10 @@ def graphrag_start(wait: bool, timeout: int) -> None:
         click.echo()
         click.echo("Troubleshooting tips:")
         click.echo("   1. Ensure Docker is installed and running")
-        click.echo("   2. Check if docker-compose is installed: docker-compose --version")
-        click.echo("   3. Verify docker-compose.graphrag.yml exists")
+        click.echo("   2. Check if docker compose is available: docker compose version")
+        click.echo("   3. Check Docker permissions: sudo usermod -aG docker $USER")
+        click.echo("      (then logout and login again)")
+        click.echo("   4. Verify docker-compose.graphrag.yml exists")
         raise click.ClickException(f"Error starting containers: {e}")
 
 

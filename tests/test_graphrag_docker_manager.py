@@ -18,23 +18,26 @@ def mock_executor():
 def docker_manager(mock_executor):
     """Create a GraphRAGDockerManager instance for testing."""
     with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor", return_value=mock_executor):
-        manager = GraphRAGDockerManager()
-        return manager
+        with mock.patch.object(GraphRAGDockerManager, "_detect_docker_compose_command", return_value=["docker", "compose"]):
+            manager = GraphRAGDockerManager()
+            return manager
 
 
 def test_init_default_compose_file():
     """Test initialization with default compose file."""
     with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
-        manager = GraphRAGDockerManager()
-        assert manager.compose_file.endswith("docker-compose.graphrag.yml")
+        with mock.patch.object(GraphRAGDockerManager, "_detect_docker_compose_command", return_value=["docker", "compose"]):
+            manager = GraphRAGDockerManager()
+            assert manager.compose_file.endswith("docker-compose.graphrag.yml")
 
 
 def test_init_custom_compose_file():
     """Test initialization with custom compose file."""
     custom_path = "/custom/path/docker-compose.yml"
     with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
-        manager = GraphRAGDockerManager(compose_file=custom_path)
-        assert manager.compose_file == custom_path
+        with mock.patch.object(GraphRAGDockerManager, "_detect_docker_compose_command", return_value=["docker", "compose"]):
+            manager = GraphRAGDockerManager(compose_file=custom_path)
+            assert manager.compose_file == custom_path
 
 
 def test_start_success(docker_manager, mock_executor):
@@ -233,4 +236,120 @@ def test_restart_start_failure(docker_manager):
             result = docker_manager.restart()
 
     assert result is False
+
+
+def test_detect_docker_compose_command_docker_compose():
+    """Test detection of 'docker compose' command."""
+    with mock.patch("subprocess.run") as mock_run:
+        # Mock successful 'docker compose version'
+        mock_run.return_value = mock.MagicMock(returncode=0)
+
+        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+            manager = GraphRAGDockerManager()
+            assert manager._docker_compose_cmd == ["docker", "compose"]
+
+
+def test_detect_docker_compose_command_docker_compose_legacy():
+    """Test detection of legacy 'docker-compose' command."""
+    with mock.patch("subprocess.run") as mock_run:
+        # First call (docker compose) fails, second call (docker-compose) succeeds
+        mock_run.side_effect = [
+            mock.MagicMock(returncode=1),  # docker compose fails
+            mock.MagicMock(returncode=0),  # docker-compose succeeds
+        ]
+
+        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+            manager = GraphRAGDockerManager()
+            assert manager._docker_compose_cmd == ["docker-compose"]
+
+
+def test_detect_docker_compose_command_not_found():
+    """Test when neither docker compose command is found."""
+    with mock.patch("subprocess.run") as mock_run:
+        # Both commands fail
+        mock_run.return_value = mock.MagicMock(returncode=1)
+
+        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+            with pytest.raises(RuntimeError, match="Neither 'docker compose' nor 'docker-compose' is available"):
+                GraphRAGDockerManager()
+
+
+def test_is_permission_error(docker_manager):
+    """Test permission error detection."""
+    # Test various permission error messages
+    assert docker_manager._is_permission_error("permission denied while trying to connect")
+    assert docker_manager._is_permission_error("dial unix /var/run/docker.sock: connect: permission denied")
+    assert docker_manager._is_permission_error("Got permission denied while trying to connect to the Docker daemon socket")
+
+    # Test non-permission errors
+    assert not docker_manager._is_permission_error("connection refused")
+    assert not docker_manager._is_permission_error("command not found")
+    assert not docker_manager._is_permission_error("timeout")
+
+
+def test_run_docker_compose_with_sudo_retry(docker_manager, mock_executor):
+    """Test that docker compose retries with sudo on permission error."""
+    # First call fails with permission error
+    permission_error_result = mock.MagicMock()
+    permission_error_result.success = False
+    permission_error_result.stderr = "permission denied while trying to connect to the Docker daemon socket"
+    permission_error_result.stdout = ""
+
+    # Second call (with sudo) succeeds
+    success_result = mock.MagicMock()
+    success_result.success = True
+    success_result.stderr = ""
+    success_result.stdout = "Started containers"
+
+    mock_executor.run_command.side_effect = [permission_error_result, success_result]
+
+    result = docker_manager._run_docker_compose(["up", "-d"])
+
+    # Should have been called twice
+    assert mock_executor.run_command.call_count == 2
+
+    # First call without sudo
+    first_call_args = mock_executor.run_command.call_args_list[0][0][0]
+    assert "sudo" not in first_call_args
+
+    # Second call with sudo
+    second_call_args = mock_executor.run_command.call_args_list[1][0][0]
+    assert second_call_args[0] == "sudo"
+
+    # Result should be the successful one
+    assert result.success is True
+
+
+def test_run_docker_compose_no_retry_on_other_errors(docker_manager, mock_executor):
+    """Test that docker compose does not retry on non-permission errors."""
+    # Fail with non-permission error
+    error_result = mock.MagicMock()
+    error_result.success = False
+    error_result.stderr = "connection refused"
+    error_result.stdout = ""
+
+    mock_executor.run_command.return_value = error_result
+
+    result = docker_manager._run_docker_compose(["up", "-d"])
+
+    # Should have been called only once (no retry)
+    assert mock_executor.run_command.call_count == 1
+    assert result.success is False
+
+
+def test_run_docker_compose_no_retry_when_disabled(docker_manager, mock_executor):
+    """Test that docker compose does not retry when retry_with_sudo is False."""
+    # Fail with permission error
+    permission_error_result = mock.MagicMock()
+    permission_error_result.success = False
+    permission_error_result.stderr = "permission denied"
+    permission_error_result.stdout = ""
+
+    mock_executor.run_command.return_value = permission_error_result
+
+    result = docker_manager._run_docker_compose(["up", "-d"], retry_with_sudo=False)
+
+    # Should have been called only once (no retry)
+    assert mock_executor.run_command.call_count == 1
+    assert result.success is False
 
