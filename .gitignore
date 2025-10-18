@@ -215,3 +215,4 @@ playwright/.cache/
 <MagicMock *
 reports/
 .auto-coder/
+.gemini/settings.json
