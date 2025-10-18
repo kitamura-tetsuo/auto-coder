@@ -76,7 +76,7 @@ class TestGeminiClientMCP(unittest.TestCase):
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = GeminiClient()
             result = client.add_mcp_server_config(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
 
@@ -92,10 +92,10 @@ class TestGeminiClientMCP(unittest.TestCase):
             self.assertEqual(cmd[0], "gemini")
             self.assertEqual(cmd[1], "mcp")
             self.assertEqual(cmd[2], "add")
-            self.assertEqual(cmd[3], "graphrag")
-            self.assertEqual(cmd[4], "npx")
-            self.assertIn("-y", cmd)
-            self.assertIn("@modelcontextprotocol/server-graphrag", cmd)
+            self.assertEqual(cmd[3], "mcp-pdb")
+            self.assertEqual(cmd[4], "uv")
+            self.assertIn("run", cmd)
+            self.assertIn("mcp-pdb", cmd)
 
     @patch("subprocess.run")
     def test_ensure_mcp_server_configured(self, mock_run):
@@ -111,7 +111,7 @@ class TestGeminiClientMCP(unittest.TestCase):
             elif "mcp" in cmd and "add" in cmd:
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = "MCP server 'graphrag' added successfully"
+                mock_result.stdout = "MCP server 'mcp-pdb' added successfully"
                 return mock_result
             elif "mcp" in cmd and "list" in cmd:
                 call_count["mcp_list"] += 1
@@ -121,7 +121,7 @@ class TestGeminiClientMCP(unittest.TestCase):
                 if call_count["mcp_list"] == 1:
                     mock_result.stdout = "other-server\n"
                 else:
-                    mock_result.stdout = "graphrag\nother-server\n"
+                    mock_result.stdout = "mcp-pdb\nother-server\n"
                 return mock_result
             else:
                 raise FileNotFoundError()
@@ -131,12 +131,12 @@ class TestGeminiClientMCP(unittest.TestCase):
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = GeminiClient()
             result = client.ensure_mcp_server_configured(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
 
             # Verify it's now configured
-            result2 = client.check_mcp_server_configured("graphrag")
+            result2 = client.check_mcp_server_configured("mcp-pdb")
             self.assertTrue(result2)
 
 
@@ -157,7 +157,7 @@ class TestQwenClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = QwenClient()
-            result = client.check_mcp_server_configured("graphrag")
+            result = client.check_mcp_server_configured("mcp-pdb")
             self.assertFalse(result)
 
     @patch("subprocess.run")
@@ -174,13 +174,13 @@ class TestQwenClientMCP(unittest.TestCase):
                 if call_count["check"] == 1:
                     mock_result.stdout = "No MCP servers configured.\n"
                 else:
-                    mock_result.stdout = "✗ graphrag: npx -y @modelcontextprotocol/server-graphrag (stdio) - Disconnected\n"
+                    mock_result.stdout = "✓ mcp-pdb: uv run mcp-pdb (stdio) - Connected\n"
                 return mock_result
             elif "mcp" in cmd and "add" in cmd:
                 call_count["add"] += 1
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = 'MCP server "graphrag" added to user settings. (stdio)\n'
+                mock_result.stdout = 'MCP server "mcp-pdb" added to user settings. (stdio)\n'
                 return mock_result
             elif "--version" in cmd:
                 mock_result = MagicMock()
@@ -194,7 +194,7 @@ class TestQwenClientMCP(unittest.TestCase):
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = QwenClient()
             result = client.add_mcp_server_config(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
 
@@ -220,13 +220,13 @@ class TestQwenClientMCP(unittest.TestCase):
                 if call_count["check"] == 1:
                     mock_result.stdout = "No MCP servers configured.\n"
                 else:
-                    mock_result.stdout = "✗ graphrag: npx -y @modelcontextprotocol/server-graphrag (stdio) - Disconnected\n"
+                    mock_result.stdout = "✓ mcp-pdb: uv run mcp-pdb (stdio) - Connected\n"
                 return mock_result
             elif "mcp" in cmd and "add" in cmd:
                 call_count["add"] += 1
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = 'MCP server "graphrag" added to user settings. (stdio)\n'
+                mock_result.stdout = 'MCP server "mcp-pdb" added to user settings. (stdio)\n'
                 return mock_result
             else:
                 raise FileNotFoundError()
@@ -236,7 +236,7 @@ class TestQwenClientMCP(unittest.TestCase):
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = QwenClient()
             result = client.ensure_mcp_server_configured(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
 
@@ -287,7 +287,7 @@ class TestAuggieClientMCP(unittest.TestCase):
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = AuggieClient()
             result = client.add_mcp_server_config(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
 
@@ -303,9 +303,9 @@ class TestAuggieClientMCP(unittest.TestCase):
             self.assertEqual(cmd[0], "auggie")
             self.assertEqual(cmd[1], "mcp")
             self.assertEqual(cmd[2], "add")
-            self.assertEqual(cmd[3], "graphrag")
+            self.assertEqual(cmd[3], "mcp-pdb")
             self.assertIn("--command", cmd)
-            self.assertIn("npx", cmd)
+            self.assertIn("uv", cmd)
             self.assertIn("--args", cmd)
 
 
@@ -334,7 +334,7 @@ class TestCodexClientMCP(unittest.TestCase):
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = CodexClient()
             result = client.add_mcp_server_config(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
 
@@ -343,7 +343,7 @@ class TestCodexClientMCP(unittest.TestCase):
             with open(self.config_path, "r") as f:
                 config = json.load(f)
             self.assertIn("mcpServers", config)
-            self.assertIn("graphrag", config["mcpServers"])
+            self.assertIn("mcp-pdb", config["mcpServers"])
 
 
 class TestCodexMCPClientMCP(unittest.TestCase):
@@ -386,7 +386,7 @@ class TestCodexMCPClientMCP(unittest.TestCase):
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = CodexMCPClient()
             result = client.add_mcp_server_config(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
 
@@ -395,7 +395,7 @@ class TestCodexMCPClientMCP(unittest.TestCase):
             with open(self.config_path, "r") as f:
                 config = json.load(f)
             self.assertIn("mcpServers", config)
-            self.assertIn("graphrag", config["mcpServers"])
+            self.assertIn("mcp-pdb", config["mcpServers"])
             client.close()
 
 
@@ -441,11 +441,11 @@ class TestBackendManagerMCP(unittest.TestCase):
             )
 
             result = manager.add_mcp_server_config(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             self.assertTrue(result)
             mock_client.add_mcp_server_config.assert_called_once_with(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
 
     def test_ensure_mcp_server_configured_all_backends(self):
@@ -483,7 +483,7 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             # Ensure MCP server is configured for all backends
             result = manager.ensure_mcp_server_configured(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
 
             # Should succeed for all backends
@@ -491,13 +491,13 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             # Verify ensure_mcp_server_configured was called for all backends
             mock_gemini.ensure_mcp_server_configured.assert_called_once_with(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             mock_qwen.ensure_mcp_server_configured.assert_called_once_with(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             mock_codex.ensure_mcp_server_configured.assert_called_once_with(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
 
     def test_ensure_mcp_server_configured_partial_failure(self):
@@ -524,7 +524,7 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             # Ensure MCP server is configured
             result = manager.ensure_mcp_server_configured(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
 
             # Should fail because gemini failed
@@ -532,10 +532,10 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             # Verify both backends were attempted
             mock_gemini.ensure_mcp_server_configured.assert_called_once_with(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
             mock_qwen.ensure_mcp_server_configured.assert_called_once_with(
-                "graphrag", "npx", ["-y", "@modelcontextprotocol/server-graphrag"]
+                "mcp-pdb", "uv", ["run", "mcp-pdb"]
             )
 
 

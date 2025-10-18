@@ -37,8 +37,8 @@ class TestMCPChecker:
         config = {
             "mcpServers": {
                 "graphrag": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-graphrag"]
+                    "command": "/path/to/graphrag_mcp/run_server.sh",
+                    "args": []
                 }
             }
         }
@@ -94,8 +94,8 @@ class TestMCPChecker:
         
         config_content = """
 [mcp_servers.graphrag]
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-graphrag"]
+command = "/path/to/graphrag_mcp/run_server.sh"
+args = []
 """
         
         with open(config_file, "w") as f:
@@ -117,8 +117,8 @@ args = ["-y", "@modelcontextprotocol/server-graphrag"]
         config = {
             "mcpServers": {
                 "graphrag": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-graphrag"]
+                    "command": "/path/to/graphrag_mcp/run_server.sh",
+                    "args": []
                 }
             }
         }
@@ -142,8 +142,8 @@ args = ["-y", "@modelcontextprotocol/server-graphrag"]
         config = {
             "mcpServers": {
                 "graphrag": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-graphrag"]
+                    "command": "/path/to/graphrag_mcp/run_server.sh",
+                    "args": []
                 }
             }
         }
@@ -162,28 +162,34 @@ args = ["-y", "@modelcontextprotocol/server-graphrag"]
     def test_suggest_graphrag_mcp_setup_gemini(self):
         """Test setup suggestion for Gemini."""
         suggestion = suggest_graphrag_mcp_setup("gemini")
+        # Check for automatic setup command
+        assert "auto-coder graphrag setup-mcp" in suggestion
         assert "Gemini CLI" in suggestion
-        assert "~/.gemini/config.json" in suggestion
-        assert "mcpServers" in suggestion
+        assert "Restart Gemini CLI" in suggestion
+        assert "gemini" in suggestion
 
     def test_suggest_graphrag_mcp_setup_qwen(self):
         """Test setup suggestion for Qwen."""
         suggestion = suggest_graphrag_mcp_setup("qwen")
+        # Check for automatic setup command
+        assert "auto-coder graphrag setup-mcp" in suggestion
         assert "Qwen Code CLI" in suggestion
-        assert "~/.qwen/config.toml" in suggestion
-        assert "mcp_servers.graphrag" in suggestion
+        assert "qwen mcp list" in suggestion
 
     def test_suggest_graphrag_mcp_setup_auggie(self):
         """Test setup suggestion for Auggie."""
         suggestion = suggest_graphrag_mcp_setup("auggie")
-        assert "Auggie CLI" in suggestion
-        assert "Windsurf" in suggestion or "Claude Desktop" in suggestion
+        # Check for automatic setup command
+        assert "auto-coder graphrag setup-mcp" in suggestion
+        assert "Windsurf" in suggestion or "Claude" in suggestion
 
     def test_suggest_graphrag_mcp_setup_codex(self):
         """Test setup suggestion for Codex."""
         suggestion = suggest_graphrag_mcp_setup("codex")
+        # Check for automatic setup command
+        assert "auto-coder graphrag setup-mcp" in suggestion
         assert "Codex CLI" in suggestion
-        assert "~/.codex/config.json" in suggestion
+        assert "Restart Codex CLI" in suggestion
 
     def test_suggest_graphrag_mcp_setup_unknown(self):
         """Test setup suggestion for unknown backend."""
@@ -191,94 +197,49 @@ args = ["-y", "@modelcontextprotocol/server-graphrag"]
         assert "No setup instructions available" in suggestion
 
     def test_add_gemini_mcp_config(self, tmp_path, monkeypatch):
-        """Test adding Gemini MCP configuration."""
+        """Test adding Gemini MCP configuration returns False (manual setup required)."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # Add configuration
+        # Add configuration - should return False because manual setup is required
         result = add_graphrag_mcp_config("gemini")
-        assert result is True
-
-        # Verify configuration was added
-        config_file = tmp_path / ".gemini" / "config.json"
-        assert config_file.exists()
-
-        with open(config_file, "r") as f:
-            config = json.load(f)
-
-        assert "mcpServers" in config
-        assert "graphrag" in config["mcpServers"]
-        assert config["mcpServers"]["graphrag"]["command"] == "npx"
+        assert result is False
 
     def test_add_qwen_mcp_config(self, tmp_path, monkeypatch):
-        """Test adding Qwen MCP configuration."""
+        """Test adding Qwen MCP configuration returns False (manual setup required)."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # Add configuration
+        # Add configuration - should return False because manual setup is required
         result = add_graphrag_mcp_config("qwen")
-        assert result is True
-
-        # Verify configuration was added
-        config_file = tmp_path / ".qwen" / "config.toml"
-        assert config_file.exists()
-
-        with open(config_file, "r") as f:
-            config_content = f.read()
-
-        assert "graphrag" in config_content.lower()
-        assert "npx" in config_content
+        assert result is False
 
     def test_add_auggie_mcp_config(self, tmp_path, monkeypatch):
-        """Test adding Auggie MCP configuration."""
+        """Test adding Auggie MCP configuration returns False (manual setup required)."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # Add configuration
+        # Add configuration - should return False because manual setup is required
         result = add_graphrag_mcp_config("auggie")
-        assert result is True
-
-        # Verify configuration was added
-        config_file = tmp_path / ".windsurf" / "settings.json"
-        assert config_file.exists()
-
-        with open(config_file, "r") as f:
-            config = json.load(f)
-
-        assert "mcpServers" in config
-        assert "graphrag" in config["mcpServers"]
+        assert result is False
 
     def test_add_codex_mcp_config(self, tmp_path, monkeypatch):
-        """Test adding Codex MCP configuration."""
+        """Test adding Codex MCP configuration returns False (manual setup required)."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # Add configuration
+        # Add configuration - should return False because manual setup is required
         result = add_graphrag_mcp_config("codex")
-        assert result is True
-
-        # Verify configuration was added
-        config_file = tmp_path / ".codex" / "config.json"
-        assert config_file.exists()
-
-        with open(config_file, "r") as f:
-            config = json.load(f)
-
-        assert "mcpServers" in config
-        assert "graphrag" in config["mcpServers"]
+        assert result is False
 
     def test_ensure_graphrag_mcp_configured_adds_config(self, tmp_path, monkeypatch):
-        """Test ensure_graphrag_mcp_configured adds configuration when not present."""
+        """Test ensure_graphrag_mcp_configured returns False when not present (manual setup required)."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-        # Ensure configuration
+        # Ensure configuration - should return False because manual setup is required
         result = ensure_graphrag_mcp_configured("gemini")
-        assert result is True
-
-        # Verify configuration was added
-        config_file = tmp_path / ".gemini" / "config.json"
-        assert config_file.exists()
+        assert result is False
 
     def test_ensure_graphrag_mcp_configured_already_configured(self, tmp_path, monkeypatch):
         """Test ensure_graphrag_mcp_configured when already configured."""
@@ -293,8 +254,8 @@ args = ["-y", "@modelcontextprotocol/server-graphrag"]
         config = {
             "mcpServers": {
                 "graphrag": {
-                    "command": "npx",
-                    "args": ["-y", "@modelcontextprotocol/server-graphrag"]
+                    "command": "/path/to/graphrag_mcp/run_server.sh",
+                    "args": []
                 }
             }
         }

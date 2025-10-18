@@ -159,76 +159,43 @@ def _check_codex_mcp() -> bool:
 
 def suggest_graphrag_mcp_setup(backend: str) -> str:
     """Generate setup instructions for graphrag MCP for the given backend.
-    
+
     Args:
         backend: Backend name (gemini, qwen, auggie, codex, codex-mcp)
-        
+
     Returns:
         Setup instructions as a string
     """
+    base_setup = """
+To enable GraphRAG MCP:
+
+1. Run the automatic setup command:
+   auto-coder graphrag setup-mcp
+
+   This will:
+   - Clone https://github.com/rileylemm/graphrag_mcp
+   - Install dependencies with uv
+   - Create .env file with Neo4j and Qdrant configuration
+   - Automatically update all backend configuration files
+
+2. Start GraphRAG containers:
+   auto-coder graphrag start
+
+"""
+
     if backend == "gemini":
-        return """
-To enable GraphRAG MCP for Gemini CLI:
-
-1. Edit ~/.gemini/config.json and add:
-   {
-     "mcpServers": {
-       "graphrag": {
-         "command": "npx",
-         "args": ["-y", "@modelcontextprotocol/server-graphrag"]
-       }
-     }
-   }
-
-2. Restart Gemini CLI
-3. Verify with: gemini (then type /mcp)
+        return base_setup + """3. Restart Gemini CLI
+4. Verify with: gemini (then type /mcp)
 """
     elif backend == "qwen":
-        return """
-To enable GraphRAG MCP for Qwen Code CLI:
-
-1. Edit ~/.qwen/config.toml and add:
-   [mcp_servers.graphrag]
-   command = "npx"
-   args = ["-y", "@modelcontextprotocol/server-graphrag"]
-
-2. Restart Qwen Code CLI
-3. Verify with: qwen --mcp-status
+        return base_setup + """3. Restart Qwen Code CLI
+4. Verify with: qwen mcp list
 """
     elif backend == "auggie":
-        return """
-To enable GraphRAG MCP for Auggie CLI:
-
-1. For Windsurf, edit ~/.windsurf/settings.json and add:
-   {
-     "mcpServers": {
-       "graphrag": {
-         "command": "npx",
-         "args": ["-y", "@modelcontextprotocol/server-graphrag"]
-       }
-     }
-   }
-
-2. For Claude Desktop, run:
-   claude mcp add graphrag -- npx -y @modelcontextprotocol/server-graphrag
-
-3. Restart the application
+        return base_setup + """3. Restart Windsurf/Claude application
 """
     elif backend in ("codex", "codex-mcp"):
-        return """
-To enable GraphRAG MCP for Codex CLI:
-
-1. Edit ~/.codex/config.json and add:
-   {
-     "mcpServers": {
-       "graphrag": {
-         "command": "npx",
-         "args": ["-y", "@modelcontextprotocol/server-graphrag"]
-       }
-     }
-   }
-
-2. Restart Codex CLI
+        return base_setup + """3. Restart Codex CLI
 """
     else:
         return f"No setup instructions available for backend: {backend}"
@@ -257,156 +224,83 @@ def add_graphrag_mcp_config(backend: str) -> bool:
 
 
 def _add_gemini_mcp_config() -> bool:
-    """Add graphrag MCP configuration to Gemini CLI config."""
-    try:
-        config_dir = Path.home() / ".gemini"
-        config_path = config_dir / "config.json"
+    """Add graphrag MCP configuration to Gemini CLI config.
 
-        # Create directory if it doesn't exist
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-        # Read existing config or create new one
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            config = {}
-
-        # Add graphrag MCP server
-        if "mcpServers" not in config:
-            config["mcpServers"] = {}
-
-        config["mcpServers"]["graphrag"] = {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-graphrag"]
-        }
-
-        # Write config
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-
-        logger.info(f"Added graphrag MCP configuration to {config_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to add Gemini MCP config: {e}")
-        return False
+    Note: This function requires setup of GraphRAG MCP server.
+    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    """
+    logger.warning(
+        "GraphRAG MCP requires setup. "
+        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
+    )
+    logger.info(
+        "The setup command will:\n"
+        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
+        "2. Install dependencies with uv\n"
+        "3. Create .env file with Neo4j and Qdrant configuration\n"
+        "4. Automatically update ~/.gemini/config.json with GraphRAG MCP configuration"
+    )
+    return False
 
 
 def _add_qwen_mcp_config() -> bool:
-    """Add graphrag MCP configuration to Qwen Code CLI config."""
-    try:
-        config_dir = Path.home() / ".qwen"
-        config_path = config_dir / "config.toml"
+    """Add graphrag MCP configuration to Qwen Code CLI config.
 
-        # Create directory if it doesn't exist
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-        # Read existing config or create new one
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config_content = f.read()
-        else:
-            config_content = ""
-
-        # Check if graphrag is already configured
-        if "graphrag" in config_content.lower():
-            logger.info("GraphRAG MCP already configured in Qwen config")
-            return True
-
-        # Add graphrag MCP server configuration
-        graphrag_config = """
-[mcp_servers.graphrag]
-command = "npx"
-args = ["-y", "@modelcontextprotocol/server-graphrag"]
-"""
-
-        # Append to existing config
-        if config_content and not config_content.endswith("\n"):
-            config_content += "\n"
-        config_content += graphrag_config
-
-        # Write config
-        with open(config_path, "w", encoding="utf-8") as f:
-            f.write(config_content)
-
-        logger.info(f"Added graphrag MCP configuration to {config_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to add Qwen MCP config: {e}")
-        return False
+    Note: This function requires setup of GraphRAG MCP server.
+    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    """
+    logger.warning(
+        "GraphRAG MCP requires setup. "
+        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
+    )
+    logger.info(
+        "The setup command will:\n"
+        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
+        "2. Install dependencies with uv\n"
+        "3. Create .env file with Neo4j and Qdrant configuration\n"
+        "4. Automatically update ~/.qwen/config.toml with GraphRAG MCP configuration"
+    )
+    return False
 
 
 def _add_auggie_mcp_config() -> bool:
-    """Add graphrag MCP configuration to Auggie CLI config (Windsurf)."""
-    try:
-        # Try Windsurf config first
-        config_dir = Path.home() / ".windsurf"
-        config_path = config_dir / "settings.json"
+    """Add graphrag MCP configuration to Auggie CLI config (Windsurf).
 
-        # Create directory if it doesn't exist
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-        # Read existing config or create new one
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            config = {}
-
-        # Add graphrag MCP server
-        if "mcpServers" not in config:
-            config["mcpServers"] = {}
-
-        config["mcpServers"]["graphrag"] = {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-graphrag"]
-        }
-
-        # Write config
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-
-        logger.info(f"Added graphrag MCP configuration to {config_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to add Auggie MCP config: {e}")
-        return False
+    Note: This function requires setup of GraphRAG MCP server.
+    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    """
+    logger.warning(
+        "GraphRAG MCP requires setup. "
+        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
+    )
+    logger.info(
+        "The setup command will:\n"
+        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
+        "2. Install dependencies with uv\n"
+        "3. Create .env file with Neo4j and Qdrant configuration\n"
+        "4. Automatically update Windsurf settings.json with GraphRAG MCP configuration"
+    )
+    return False
 
 
 def _add_codex_mcp_config() -> bool:
-    """Add graphrag MCP configuration to Codex CLI config."""
-    try:
-        config_dir = Path.home() / ".codex"
-        config_path = config_dir / "config.json"
+    """Add graphrag MCP configuration to Codex CLI config.
 
-        # Create directory if it doesn't exist
-        config_dir.mkdir(parents=True, exist_ok=True)
-
-        # Read existing config or create new one
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                config = json.load(f)
-        else:
-            config = {}
-
-        # Add graphrag MCP server
-        if "mcpServers" not in config:
-            config["mcpServers"] = {}
-
-        config["mcpServers"]["graphrag"] = {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-graphrag"]
-        }
-
-        # Write config
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-
-        logger.info(f"Added graphrag MCP configuration to {config_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Failed to add Codex MCP config: {e}")
-        return False
+    Note: This function requires setup of GraphRAG MCP server.
+    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    """
+    logger.warning(
+        "GraphRAG MCP requires setup. "
+        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
+    )
+    logger.info(
+        "The setup command will:\n"
+        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
+        "2. Install dependencies with uv\n"
+        "3. Create .env file with Neo4j and Qdrant configuration\n"
+        "4. Automatically update ~/.codex/config.json with GraphRAG MCP configuration"
+    )
+    return False
 
 
 def ensure_graphrag_mcp_configured(backend: str) -> bool:

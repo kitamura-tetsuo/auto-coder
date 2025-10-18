@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "graphrag": {
-      "command": "npx",
+      "command": "uv",
       "args": [
-        "-y",
-        "@modelcontextprotocol/server-graphrag"
+        "run",
+        "/home/node/graphrag_mcp/main.py"
       ]
     }
   }

@@ -2,6 +2,7 @@
 Pytest configuration and fixtures for Auto-Coder tests.
 """
 
+import os
 from unittest.mock import Mock
 
 import pytest
@@ -13,8 +14,15 @@ from src.auto_coder.github_client import GitHubClient
 
 # テストの安定化: 外部環境変数とユーザホームの影響を排除（CLIの挙動を一定にするため）
 @pytest.fixture(autouse=True)
-def _clear_sensitive_env(monkeypatch):
+def _clear_sensitive_env(monkeypatch, request):
     import tempfile
+
+    # Skip HOME mocking for tests that need real HOME directory
+    if "_use_real_home" in request.fixturenames:
+        # Only clear sensitive env vars, keep real HOME
+        for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        return
 
     # 影響のある環境変数をクリア
     for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
@@ -22,6 +30,26 @@ def _clear_sensitive_env(monkeypatch):
     # ホームディレクトリを一時ディレクトリに切り替え、~/.config/gh/hosts.yml 等の実ファイル影響を遮断
     tmp_home = tempfile.mkdtemp(prefix="ac_test_home_")
     monkeypatch.setenv("HOME", tmp_home)
+
+
+@pytest.fixture
+def _use_real_home():
+    """Marker fixture to indicate that a test needs the real HOME directory.
+
+    Tests using this fixture will not have their HOME directory mocked.
+    This is useful for integration tests that need to access real configuration files.
+    """
+    pass
+
+
+@pytest.fixture
+def _use_real_commands():
+    """Marker fixture to indicate that a test needs real command execution.
+
+    Tests using this fixture will not have git/gh/uv commands mocked.
+    This is useful for integration tests that need to run actual commands.
+    """
+    pass
 
 
 @pytest.fixture
@@ -163,9 +191,13 @@ def temp_reports_dir(tmp_path):
 
 # 実際の git/gh コマンドをテスト中に実行しないようにスタブする
 @pytest.fixture(autouse=True)
-def stub_git_and_gh_commands(monkeypatch):
+def stub_git_and_gh_commands(monkeypatch, request):
     import subprocess
     import types
+
+    # Skip command stubbing for tests that need real commands
+    if "_use_real_commands" in request.fixturenames:
+        return
 
     orig_run = subprocess.run
     orig_popen = subprocess.Popen

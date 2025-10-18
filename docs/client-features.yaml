@@ -257,8 +257,8 @@ features:
       - "tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_add_mcp_server_config"
 
   graphrag_mcp_checker:
-    name: "GraphRAG MCP Configuration Auto-Setup (Legacy)"
-    description: "File-based GraphRAG MCP configuration checker (fallback when client is not available)"
+    name: "GraphRAG MCP Configuration Checker"
+    description: "File-based GraphRAG MCP configuration checker (fallback when client is not available). Guides users to run 'auto-coder graphrag setup-mcp' for automatic setup and configuration."
     components:
       - name: "MCPChecker"
         file: "src/auto_coder/mcp_checker.py"
@@ -295,9 +295,9 @@ features:
               - "Verifies configuration after adding"
               - "Logs success or failure messages"
           - name: "suggest_graphrag_mcp_setup"
-            description: "Provide setup instructions for configuring graphrag MCP for a specific backend"
+            description: "Provide setup instructions for configuring graphrag MCP for a specific backend. Guides users to run 'auto-coder graphrag setup-mcp' for automatic setup and configuration."
             parameters: ["backend"]
-            returns: "String containing setup instructions"
+            returns: "String containing setup instructions with automatic setup command"
           - name: "check_and_warn_graphrag_mcp"
             description: "Check graphrag MCP configuration and log warning with setup instructions if not found"
             parameters: ["backend"]
@@ -338,6 +338,89 @@ features:
       - "tests/test_mcp_checker.py::TestMCPChecker::test_add_codex_mcp_config"
       - "tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_adds_config"
       - "tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_already_configured"
+
+  graphrag_mcp_connection:
+    name: "GraphRAG MCP Server Connection Testing"
+    description: "Tests for verifying connection to graphrag MCP server and basic JSON-RPC operations. Uses real HOME directory and real commands (not mocked)."
+    components:
+      - name: "GraphRAG MCP Connection Tests"
+        file: "tests/test_graphrag_mcp_connection.py"
+        notes:
+          - "Tests use _use_real_home and _use_real_commands fixtures to bypass conftest.py mocking"
+          - "Tests will skip if graphrag_mcp server is not installed"
+          - "Install with: auto-coder graphrag setup-mcp"
+          - "setup-mcp automatically:"
+          - "  - Creates run_server.sh script for proper environment handling"
+          - "  - Patches main.py to load .env from script directory (using Path(__file__).parent)"
+          - "  - Configures all backends with: uv --directory /path/to/graphrag_mcp run main.py"
+          - "  - Qwen: Uses uv --directory option"
+          - "  - Gemini: Uses uv --directory option"
+          - "  - Auggie (Windsurf/Claude): Uses run_server.sh if available, otherwise uv --directory"
+          - "After setup, restart CLI (qwen/gemini/auggie) to connect to graphrag MCP server"
+        methods:
+          - name: "find_graphrag_mcp_server"
+            description: "Find graphrag_mcp server installation path"
+            returns: "Path to graphrag_mcp main.py if found, None otherwise"
+            behavior:
+              - "Checks common installation locations: ~/graphrag_mcp, ~/.local/share/graphrag_mcp, /opt/graphrag_mcp"
+              - "Also checks GRAPHRAG_MCP_SERVER_PATH environment variable"
+              - "Returns first found path or None"
+          - name: "check_graphrag_dependencies"
+            description: "Check if graphrag_mcp dependencies (uv) are available"
+            returns: "Boolean indicating if dependencies are available"
+            behavior:
+              - "Checks if 'uv' command is available"
+              - "Returns True if uv is available, False otherwise"
+          - name: "check_graphrag_env_config"
+            description: "Check if graphrag_mcp .env file is properly configured"
+            parameters: ["server_path"]
+            returns: "Boolean indicating if .env file exists and has required variables"
+            behavior:
+              - "Checks for .env file in graphrag_mcp directory"
+              - "Verifies presence of required variables: NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, QDRANT_URL"
+              - "Returns True if all required variables are present, False otherwise"
+          - name: "send_jsonrpc_message"
+            description: "Send JSON-RPC message to MCP server and read response"
+            parameters: ["process", "message"]
+            returns: "JSON-RPC response dictionary"
+            behavior:
+              - "Sends JSON-RPC message to MCP server via stdin"
+              - "Reads response from stdout"
+              - "Parses and returns JSON response"
+          - name: "test_graphrag_mcp_server_starts"
+            description: "Test that graphrag_mcp server starts successfully"
+            behavior:
+              - "Starts graphrag_mcp server using 'uv run main.py'"
+              - "Verifies process is running"
+              - "Skips if server not found or dependencies missing"
+          - name: "test_graphrag_mcp_initialize"
+            description: "Test MCP initialize handshake"
+            behavior:
+              - "Sends JSON-RPC initialize request with protocol version 2024-11-05"
+              - "Verifies response contains result or no error"
+              - "Verifies response ID matches request ID"
+          - name: "test_graphrag_mcp_list_tools"
+            description: "Test listing available MCP tools"
+            behavior:
+              - "Sends initialize request first"
+              - "Sends tools/list request"
+              - "Verifies response contains tools list"
+              - "Checks that at least one tool is available"
+          - name: "test_graphrag_mcp_connection_from_python"
+            description: "Test connecting to graphrag_mcp server from Python code"
+            behavior:
+              - "Simulates actual connection flow without fixtures"
+              - "Starts server, sends initialize request, verifies response"
+              - "Tests real-world usage pattern"
+    tests:
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_server_starts"
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_initialize"
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_list_tools"
+      - "tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_connection_from_python"
+    notes:
+      - "Tests are skipped if graphrag_mcp server is not installed"
+      - "Run 'auto-coder graphrag setup-mcp' to install and configure graphrag_mcp server"
+      - "Tests verify JSON-RPC protocol compliance and basic MCP operations"
 
   automation_engine:
     name: "Automation Engine"
@@ -1324,6 +1407,39 @@ deployment:
         tests:
           - "tests/test_graphrag_mcp_integration.py"
     cli_commands:
+      - command: "auto-coder graphrag setup-mcp"
+        description: "Automatically setup GraphRAG MCP server (clone, install dependencies, configure all backends)"
+        options:
+          - "--install-dir: Installation directory (default: ~/graphrag_mcp)"
+          - "--neo4j-uri: Neo4j connection URI (default: bolt://localhost:7687)"
+          - "--neo4j-user: Neo4j username (default: neo4j)"
+          - "--neo4j-password: Neo4j password (default: password)"
+          - "--qdrant-url: Qdrant connection URL (default: http://localhost:6333)"
+          - "--skip-clone: Use existing directory (skip cloning)"
+          - "--backends: Specify backends to configure (choices: codex, gemini, qwen, windsurf; default: all)"
+        behavior:
+          - "Clones https://github.com/rileylemm/graphrag_mcp to specified directory"
+          - "Installs dependencies using uv sync"
+          - "Creates .env file with Neo4j and Qdrant configuration"
+          - "Creates run_server.sh script for proper environment handling"
+          - "Patches main.py to load .env from script directory (using Path(__file__).parent)"
+          - "Automatically updates configuration files for all supported backends (Codex, Gemini, Qwen, Windsurf/Claude)"
+          - "Codex: Updates ~/.codex/config.json or ~/.config/codex/config.json"
+          - "Gemini: Updates ~/.gemini/config.json with uv --directory option"
+          - "Qwen: Updates ~/.qwen/settings.json with uv --directory option"
+          - "Windsurf/Claude: Updates ~/.windsurf/settings.json or ~/Library/Application Support/Claude/claude_desktop_config.json with run_server.sh"
+          - "After setup, restart CLI (qwen/gemini/auggie) to connect to graphrag MCP server"
+        automatic_setup:
+          description: "GraphRAG MCP is automatically set up when not configured"
+          trigger: "When check_graphrag_mcp_for_backends detects missing configuration"
+          implementation:
+            - "cli_helpers.py::check_graphrag_mcp_for_backends calls run_graphrag_setup_mcp_programmatically"
+            - "Automatically runs setup with default parameters (silent=False for user visibility)"
+            - "Configures all backends by default, or specific backend if called from backend-specific check"
+            - "No user confirmation required for automatic setup (uses existing directory if present)"
+          files:
+            - "src/auto_coder/cli_helpers.py: check_graphrag_mcp_for_backends function"
+            - "src/auto_coder/cli_commands_graphrag.py: run_graphrag_setup_mcp_programmatically function"
       - command: "auto-coder graphrag start"
         description: "Start Neo4j and Qdrant Docker containers"
         options:
@@ -1417,6 +1533,12 @@ deployment:
 
       # GraphRAG Integration Examples
       # Note: GraphRAG is always enabled. Containers are automatically started if not running.
+      - command: "auto-coder graphrag setup-mcp"
+        description: "Automatically setup GraphRAG MCP server (clone, install, configure all backends)"
+      - command: "auto-coder graphrag setup-mcp --install-dir /custom/path"
+        description: "Setup GraphRAG MCP server in a custom directory"
+      - command: "auto-coder graphrag setup-mcp --backends codex --backends gemini"
+        description: "Setup GraphRAG MCP server and configure only Codex and Gemini backends"
       - command: "auto-coder graphrag start"
         description: "Manually start Neo4j and Qdrant Docker containers for GraphRAG"
       - command: "auto-coder graphrag stop"

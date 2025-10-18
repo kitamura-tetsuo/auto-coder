@@ -41,8 +41,8 @@ class LLMClientBase(ABC):
 
         Args:
             server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
-            command: Command to run the MCP server (e.g., 'npx', 'uv')
-            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+            command: Command to run the MCP server (e.g., 'uv', '/path/to/script.sh')
+            args: Arguments for the command (e.g., ['run', 'main.py'] or [])
 
         Returns:
             True if configuration was added successfully, False otherwise
@@ -59,8 +59,8 @@ class LLMClientBase(ABC):
 
         Args:
             server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
-            command: Command to run the MCP server (e.g., 'npx', 'uv')
-            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+            command: Command to run the MCP server (e.g., 'uv', '/path/to/script.sh')
+            args: Arguments for the command (e.g., ['run', 'main.py'] or [])
 
         Returns:
             True if the MCP server is configured (or was successfully added), False otherwise
