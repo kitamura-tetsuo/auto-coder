@@ -219,3 +219,60 @@ class BackendManager(LLMBackendManagerBase):
                     cli.close()
             except Exception:
                 pass
+
+    def check_mcp_server_configured(self, server_name: str) -> bool:
+        """Check if a specific MCP server is configured for the current backend.
+
+        Args:
+            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+
+        Returns:
+            True if the MCP server is configured, False otherwise
+        """
+        cli = self._get_or_create_client(self._current_backend_name())
+        return cli.check_mcp_server_configured(server_name)
+
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+        """Add MCP server configuration for the current backend.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            command: Command to run the MCP server (e.g., 'npx', 'uv')
+            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+
+        Returns:
+            True if configuration was added successfully, False otherwise
+        """
+        cli = self._get_or_create_client(self._current_backend_name())
+        return cli.add_mcp_server_config(server_name, command, args)
+
+    def ensure_mcp_server_configured(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
+        """Ensure a specific MCP server is configured for all backends, adding it if necessary.
+
+        This method checks if the server is configured for each backend,
+        and if not, adds the configuration.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            command: Command to run the MCP server (e.g., 'npx', 'uv')
+            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+
+        Returns:
+            True if the MCP server is configured (or was successfully added) for all backends, False otherwise
+        """
+        all_success = True
+        for backend_name in self._all_backends:
+            try:
+                cli = self._get_or_create_client(backend_name)
+                # Use the client's ensure_mcp_server_configured method
+                # which handles check and add internally
+                if not cli.ensure_mcp_server_configured(server_name, command, args):
+                    all_success = False
+
+            except Exception as e:
+                logger.error(f"Error configuring MCP server '{server_name}' for backend '{backend_name}': {e}")
+                all_success = False
+
+        return all_success

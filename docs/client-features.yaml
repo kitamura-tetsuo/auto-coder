@@ -161,6 +161,184 @@ features:
             parameters: []
             returns: "None"
 
+  llm_client_mcp:
+    name: "LLM Client MCP Configuration"
+    description: |
+      Abstract MCP configuration interface for all LLM clients with automatic setup capability.
+
+      MCP availability checking strategy:
+      - Uses CLI command exclusively (e.g., 'gemini mcp list', 'qwen mcp list', 'codex mcp list', 'auggie mcp list')
+      - No fallback to config file parsing
+
+      This ensures accurate detection using the official CLI tools.
+    components:
+      - name: "LLMClientBase"
+        file: "src/auto_coder/llm_client_base.py"
+        methods:
+          - name: "check_mcp_server_configured"
+            description: "Abstract method to check if a specific MCP server is configured"
+            parameters: ["server_name"]
+            returns: "Boolean indicating if the MCP server is configured"
+            behavior:
+              - "Must be implemented by all LLM client subclasses"
+              - "Uses CLI command exclusively (e.g., 'gemini mcp list')"
+              - "No fallback to config file parsing"
+          - name: "add_mcp_server_config"
+            description: "Abstract method to add MCP server configuration"
+            parameters: ["server_name", "command", "args"]
+            returns: "Boolean indicating if configuration was added successfully"
+            behavior:
+              - "Must be implemented by all LLM client subclasses"
+              - "Adds MCP server to backend-specific configuration files"
+          - name: "ensure_mcp_server_configured"
+            description: "Convenience method to ensure MCP server is configured"
+            parameters: ["server_name", "command", "args"]
+            returns: "Boolean indicating if the MCP server is configured"
+            behavior:
+              - "Checks if server is configured, adds if not"
+              - "Verifies configuration after adding"
+              - "Default implementation provided in base class"
+      - name: "GeminiClient"
+        file: "src/auto_coder/gemini_client.py"
+        description: "Gemini CLI client with MCP configuration support"
+        config_location: "~/.gemini/config.json"
+        config_format: "JSON"
+        mcp_check_command: "gemini mcp list"
+      - name: "QwenClient"
+        file: "src/auto_coder/qwen_client.py"
+        description: "Qwen Code CLI client with MCP configuration support"
+        config_location: "~/.qwen/config.toml (managed via qwen mcp add command)"
+        config_format: "TOML"
+        mcp_check_command: "qwen mcp list"
+        mcp_add_command: "qwen mcp add --scope user <name> <command> [args...]"
+        behavior:
+          - "Uses 'qwen mcp add' command to add MCP servers instead of manual file editing"
+          - "Automatically adds servers to user scope (--scope user)"
+          - "Verifies configuration via 'qwen mcp list' command"
+      - name: "AuggieClient"
+        file: "src/auto_coder/auggie_client.py"
+        description: "Auggie CLI client with MCP configuration support"
+        config_location: "~/.windsurf/settings.json or Claude Desktop config"
+        config_format: "JSON"
+        mcp_check_command: "auggie mcp list"
+      - name: "CodexClient"
+        file: "src/auto_coder/codex_client.py"
+        description: "Codex CLI client with MCP configuration support"
+        config_location: "~/.codex/config.json or ~/.config/codex/config.json"
+        config_format: "JSON"
+        mcp_check_command: "codex mcp list"
+      - name: "CodexMCPClient"
+        file: "src/auto_coder/codex_mcp_client.py"
+        description: "Codex MCP client with MCP configuration support"
+        config_location: "~/.codex/config.json or ~/.config/codex/config.json"
+        config_format: "JSON"
+        mcp_check_command: "codex mcp list"
+      - name: "BackendManager"
+        file: "src/auto_coder/backend_manager.py"
+        description: "Backend manager with MCP configuration delegation"
+        behavior:
+          - "Delegates MCP configuration to current backend client"
+          - "Supports all MCP operations through active client"
+    tests:
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_check_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_ensure_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestQwenClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestQwenClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestQwenClientMCP::test_ensure_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestCodexClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestCodexClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestCodexMCPClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestCodexMCPClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_check_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_add_mcp_server_config"
+
+  graphrag_mcp_checker:
+    name: "GraphRAG MCP Configuration Auto-Setup (Legacy)"
+    description: "File-based GraphRAG MCP configuration checker (fallback when client is not available)"
+    components:
+      - name: "MCPChecker"
+        file: "src/auto_coder/mcp_checker.py"
+        methods:
+          - name: "check_graphrag_mcp_for_backend"
+            description: "Check if graphrag MCP server is configured for a specific backend"
+            parameters: ["backend"]
+            returns: "Boolean indicating if graphrag MCP is configured"
+            behavior:
+              - "Reads backend-specific configuration files to check for graphrag MCP server"
+              - "Supports gemini, qwen, auggie, and codex backends"
+              - "Returns False for unknown backends"
+            config_locations:
+              - "Gemini: ~/.gemini/config.json"
+              - "Qwen: ~/.qwen/config.toml"
+              - "Auggie: ~/.windsurf/settings.json or Claude Desktop config"
+              - "Codex: ~/.codex/config.json or ~/.config/codex/config.json"
+          - name: "add_graphrag_mcp_config"
+            description: "Add graphrag MCP configuration for a specific backend"
+            parameters: ["backend"]
+            returns: "Boolean indicating if configuration was added successfully"
+            behavior:
+              - "Creates configuration directory if it doesn't exist"
+              - "Adds graphrag MCP server configuration to backend config file"
+              - "Preserves existing configuration when adding graphrag MCP"
+              - "Returns True on success, False on failure"
+          - name: "ensure_graphrag_mcp_configured"
+            description: "Ensure graphrag MCP is configured for a backend, adding configuration if needed"
+            parameters: ["backend"]
+            returns: "Boolean indicating if graphrag MCP is configured (or was successfully added)"
+            behavior:
+              - "Checks if graphrag MCP is already configured"
+              - "If not configured, automatically adds the configuration"
+              - "Verifies configuration after adding"
+              - "Logs success or failure messages"
+          - name: "suggest_graphrag_mcp_setup"
+            description: "Provide setup instructions for configuring graphrag MCP for a specific backend"
+            parameters: ["backend"]
+            returns: "String containing setup instructions"
+          - name: "check_and_warn_graphrag_mcp"
+            description: "Check graphrag MCP configuration and log warning with setup instructions if not found"
+            parameters: ["backend"]
+            returns: "None"
+            behavior:
+              - "Calls check_graphrag_mcp_for_backend to verify configuration"
+              - "Logs info message if graphrag MCP is configured"
+              - "Logs warning with setup instructions if not configured"
+      - name: "CLI Integration"
+        file: "src/auto_coder/cli_helpers.py"
+        methods:
+          - name: "check_graphrag_mcp_for_backends"
+            description: "Ensure GraphRAG MCP is configured for all selected backends"
+            parameters: ["backends"]
+            returns: "None"
+            behavior:
+              - "Called during CLI initialization for process-issues, create-feature-issues, and fix-to-pass-tests commands"
+              - "Iterates through all selected backends and ensures graphrag MCP configuration"
+              - "Automatically adds configuration if not present"
+              - "Verifies configuration after adding"
+    tests:
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_not_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_other_servers_only"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_qwen_mcp_not_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_qwen_mcp_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_auggie_mcp_windsurf_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_codex_mcp_configured"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_check_unknown_backend"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_gemini"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_qwen"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_auggie"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_codex"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_unknown"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_gemini_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_qwen_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_auggie_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_add_codex_mcp_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_adds_config"
+      - "tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_already_configured"
+
   automation_engine:
     name: "Automation Engine"
     description: "Main orchestration engine that coordinates GitHub and LLM integration"

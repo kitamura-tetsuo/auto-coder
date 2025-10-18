@@ -2,7 +2,9 @@
 Codex CLI client for Auto-Coder.
 """
 
+import json
 import subprocess
+from pathlib import Path
 
 from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMClientBase
@@ -128,3 +130,75 @@ class CodexClient(LLMClientBase):
     def _run_llm_cli(self, prompt: str) -> str:
         """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
         return self._run_gemini_cli(prompt)
+
+    def check_mcp_server_configured(self, server_name: str) -> bool:
+        """Check if a specific MCP server is configured for Codex CLI.
+
+        Args:
+            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+
+        Returns:
+            True if the MCP server is configured, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ["codex", "mcp", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                output = result.stdout.lower()
+                if server_name.lower() in output:
+                    logger.info(f"Found MCP server '{server_name}' via 'codex mcp list'")
+                    return True
+                logger.debug(f"MCP server '{server_name}' not found via 'codex mcp list'")
+                return False
+            else:
+                logger.debug(f"'codex mcp list' command failed with return code {result.returncode}")
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.debug(f"Failed to check Codex MCP config: {e}")
+            return False
+
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+        """Add MCP server configuration to Codex CLI config.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            command: Command to run the MCP server (e.g., 'npx', 'uv')
+            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+
+        Returns:
+            True if configuration was added successfully, False otherwise
+        """
+        try:
+            # Use ~/.codex/config.json as primary location
+            config_dir = Path.home() / ".codex"
+            config_path = config_dir / "config.json"
+
+            # Create directory if it doesn't exist
+            config_dir.mkdir(parents=True, exist_ok=True)
+
+            # Read existing config or create new one
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = json.load(f)
+            else:
+                config = {}
+
+            # Add MCP server
+            if "mcpServers" not in config:
+                config["mcpServers"] = {}
+
+            config["mcpServers"][server_name] = {"command": command, "args": args}
+
+            # Write config
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2)
+
+            logger.info(f"Added MCP server '{server_name}' to {config_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to add Codex MCP config: {e}")
+            return False

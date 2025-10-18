@@ -203,3 +203,72 @@ class AuggieClient(LLMClientBase):
     def _run_llm_cli(self, prompt: str) -> str:
         """BackendManager entry-point."""
         return self._run_auggie_cli(prompt)
+
+    def check_mcp_server_configured(self, server_name: str) -> bool:
+        """Check if a specific MCP server is configured for Auggie CLI.
+
+        Args:
+            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+
+        Returns:
+            True if the MCP server is configured, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ["auggie", "mcp", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                output = result.stdout.lower()
+                if server_name.lower() in output:
+                    logger.info(f"Found MCP server '{server_name}' via 'auggie mcp list'")
+                    return True
+                logger.debug(f"MCP server '{server_name}' not found via 'auggie mcp list'")
+                return False
+            else:
+                logger.debug(f"'auggie mcp list' command failed with return code {result.returncode}")
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.debug(f"Failed to check Auggie MCP config: {e}")
+            return False
+
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+        """Add MCP server configuration to Auggie CLI config (Windsurf).
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            command: Command to run the MCP server (e.g., 'npx', 'uv')
+            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+
+        Returns:
+            True if configuration was added successfully, False otherwise
+        """
+        try:
+            # Use auggie mcp add command
+            # Format: auggie mcp add <name> --command <command> --args "<args>"
+            args_str = " ".join(args)
+            cmd = [
+                "auggie", "mcp", "add", server_name,
+                "--command", command,
+                "--args", args_str,
+                "--replace"  # Overwrite existing entry without prompt
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Added MCP server '{server_name}' to Auggie config")
+                return True
+            else:
+                logger.error(f"Failed to add Auggie MCP config: {result.stderr}")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to add Auggie MCP config: {e}")
+            return False

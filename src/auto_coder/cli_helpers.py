@@ -3,7 +3,7 @@
 import os
 import shlex
 import subprocess
-from typing import Optional
+from typing import Any, Optional
 
 import click
 
@@ -72,6 +72,45 @@ def initialize_graphrag() -> None:
         click.echo("   2. Check docker-compose.graphrag.yml exists")
         click.echo("   3. Verify GRAPHRAG_MCP_SERVER_PATH if using MCP server")
         raise click.ClickException(f"Error initializing GraphRAG: {e}")
+
+
+def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> None:
+    """Ensure GraphRAG MCP is configured for all selected backends.
+
+    This function checks if graphrag MCP server is configured for each backend,
+    and if not, automatically adds the configuration using the client's MCP methods.
+
+    Args:
+        backends: List of backend names to check
+        client: Optional LLM client instance to use for MCP configuration
+    """
+    from .logger_config import get_logger
+
+    logger = get_logger(__name__)
+    logger.info("Ensuring GraphRAG MCP configuration for backends...")
+
+    # GraphRAG MCP server configuration
+    server_name = "graphrag"
+    command = "npx"
+    args = ["-y", "@modelcontextprotocol/server-graphrag"]
+
+    # If client is provided, use its MCP methods
+    if client is not None:
+        logger.info(f"Checking GraphRAG MCP configuration for client...")
+        if not client.ensure_mcp_server_configured(server_name, command, args):
+            logger.error(
+                f"Failed to ensure GraphRAG MCP configuration for client. "
+                f"Please configure manually."
+            )
+            exit(1)
+        else:
+            logger.info(f"✅ GraphRAG MCP server configured for client")
+    else:
+        # Fallback to file-based configuration for each backend
+        from .mcp_checker import ensure_graphrag_mcp_configured
+
+        for backend in backends:
+            ensure_graphrag_mcp_configured(backend)
 
 
 def check_gemini_cli_or_fail() -> None:

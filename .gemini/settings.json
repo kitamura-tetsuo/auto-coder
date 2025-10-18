@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "graphrag": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-graphrag"
+      ]
+    }
+  }
+}

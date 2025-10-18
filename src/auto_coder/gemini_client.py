@@ -280,3 +280,66 @@ class GeminiClient(LLMClientBase):
     def _run_llm_cli(self, prompt: str) -> str:
         """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
         return self._run_gemini_cli(prompt)
+
+    def check_mcp_server_configured(self, server_name: str) -> bool:
+        """Check if a specific MCP server is configured for Gemini CLI.
+
+        Args:
+            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+
+        Returns:
+            True if the MCP server is configured, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ["gemini", "mcp", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                output = result.stdout.lower()
+                if server_name.lower() in output:
+                    logger.info(f"Found MCP server '{server_name}' via 'gemini mcp list'")
+                    return True
+                logger.debug(f"MCP server '{server_name}' not found via 'gemini mcp list'")
+                return False
+            else:
+                logger.debug(f"'gemini mcp list' command failed with return code {result.returncode}")
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.debug(f"Failed to check Gemini MCP config: {e}")
+            return False
+
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+        """Add MCP server configuration to Gemini CLI config.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            command: Command to run the MCP server (e.g., 'npx', 'uv')
+            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+
+        Returns:
+            True if configuration was added successfully, False otherwise
+        """
+        try:
+            # Use gemini mcp add command
+            # Format: gemini mcp add <name> <command> [args...]
+            cmd = ["gemini", "mcp", "add", server_name, command] + args
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Added MCP server '{server_name}' to Gemini config")
+                return True
+            else:
+                logger.error(f"Failed to add Gemini MCP config: {result.stderr}")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to add Gemini MCP config: {e}")
+            return False

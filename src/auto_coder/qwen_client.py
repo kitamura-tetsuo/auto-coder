@@ -280,6 +280,80 @@ class QwenClient(LLMClientBase):
         except json.JSONDecodeError:
             return []
 
+    def check_mcp_server_configured(self, server_name: str) -> bool:
+        """Check if a specific MCP server is configured for Qwen Code CLI.
+
+        Args:
+            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+
+        Returns:
+            True if the MCP server is configured, False otherwise
+        """
+        try:
+            result = subprocess.run(
+                ["qwen", "mcp", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                output = result.stdout.lower()
+                if server_name.lower() in output:
+                    logger.info(f"Found MCP server '{server_name}' via 'qwen mcp list'")
+                    return True
+                logger.debug(f"MCP server '{server_name}' not found via 'qwen mcp list'")
+                return False
+            else:
+                logger.debug(f"'qwen mcp list' command failed with return code {result.returncode}")
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.debug(f"Failed to check Qwen MCP config: {e}")
+            return False
+
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+        """Add MCP server configuration to Qwen Code CLI config.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            command: Command to run the MCP server (e.g., 'npx', 'uv')
+            args: Arguments for the command (e.g., ['-y', '@modelcontextprotocol/server-graphrag'])
+
+        Returns:
+            True if configuration was added successfully, False otherwise
+        """
+        try:
+            # Use qwen mcp add command to add the server
+            # Format: qwen mcp add --scope user <name> <command> [args...]
+            cmd = ["qwen", "mcp", "add", "--scope", "user", server_name, command] + args
+
+            logger.debug(f"Running command: {' '.join(cmd)}")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Added MCP server '{server_name}' via 'qwen mcp add'")
+                return True
+            else:
+                # Check if it's already configured (qwen mcp add may fail if already exists)
+                if "already" in result.stderr.lower() or "exists" in result.stderr.lower():
+                    logger.info(f"MCP server '{server_name}' already configured in Qwen")
+                    return True
+                logger.error(
+                    f"Failed to add MCP server '{server_name}': "
+                    f"returncode={result.returncode}, stderr={result.stderr}"
+                )
+                return False
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.error(f"Failed to add Qwen MCP config: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error adding Qwen MCP config: {e}")
+            return False
+
 
 @dataclass
 class _QwenProviderOption:

@@ -13,6 +13,7 @@ from .cli_helpers import (
     build_backend_manager,
     build_models_map,
     check_backend_prerequisites,
+    check_graphrag_mcp_for_backends,
     ensure_test_script_or_fail,
     initialize_graphrag,
     normalize_backends,
@@ -178,6 +179,9 @@ def process_issues(
         openai_base_url,
         enable_graphrag=True,  # Always enable GraphRAG
     )
+
+    # Check GraphRAG MCP configuration for selected backends using client
+    check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
@@ -346,6 +350,9 @@ def create_feature_issues(
         enable_graphrag=True,  # Always enable GraphRAG
     )
 
+    # Check GraphRAG MCP configuration for selected backends using client
+    check_graphrag_mcp_for_backends(selected_backends, client=manager)
+
     automation_engine = AutomationEngine(github_client, manager)
 
     # Analyze and create feature issues
@@ -475,6 +482,9 @@ def fix_to_pass_tests_command(
         openai_base_url,
         enable_graphrag=True,  # Always enable GraphRAG
     )
+
+    # Check GraphRAG MCP configuration for selected backends using client
+    check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     engine = AutomationEngine(github_client, manager, dry_run=dry_run)
 
