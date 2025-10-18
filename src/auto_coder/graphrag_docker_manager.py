@@ -254,12 +254,26 @@ class GraphRAGDockerManager:
             True if Neo4j is healthy, False otherwise
         """
         try:
+            # Use docker inspect to check health status
+            cmd = ["docker", "inspect", "--format={{.State.Health.Status}}", "auto-coder-neo4j"]
             result = subprocess.run(
-                ["curl", "-f", "http://localhost:7474"],
+                cmd,
                 capture_output=True,
                 timeout=5,
             )
-            return result.returncode == 0
+            if result.returncode != 0:
+                # Try with sudo if permission denied
+                cmd = ["sudo"] + cmd
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=5,
+                )
+
+            if result.returncode == 0:
+                status = result.stdout.decode().strip()
+                return status == "healthy"
+            return False
         except Exception as e:
             logger.debug(f"Neo4j health check failed: {e}")
             return False
@@ -271,12 +285,26 @@ class GraphRAGDockerManager:
             True if Qdrant is healthy, False otherwise
         """
         try:
+            # Use docker inspect to check health status
+            cmd = ["docker", "inspect", "--format={{.State.Health.Status}}", "auto-coder-qdrant"]
             result = subprocess.run(
-                ["curl", "-f", "http://localhost:6333/healthz"],
+                cmd,
                 capture_output=True,
                 timeout=5,
             )
-            return result.returncode == 0
+            if result.returncode != 0:
+                # Try with sudo if permission denied
+                cmd = ["sudo"] + cmd
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    timeout=5,
+                )
+
+            if result.returncode == 0:
+                status = result.stdout.decode().strip()
+                return status == "healthy"
+            return False
         except Exception as e:
             logger.debug(f"Qdrant health check failed: {e}")
             return False

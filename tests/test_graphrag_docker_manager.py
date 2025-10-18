@@ -163,7 +163,10 @@ def test_get_status(docker_manager):
 def test_check_neo4j_health_success(docker_manager):
     """Test Neo4j health check success."""
     with mock.patch("subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(returncode=0)
+        mock_run.return_value = mock.MagicMock(
+            returncode=0,
+            stdout=b"healthy\n"
+        )
         result = docker_manager._check_neo4j_health()
 
     assert result is True
@@ -189,7 +192,10 @@ def test_check_neo4j_health_exception(docker_manager):
 def test_check_qdrant_health_success(docker_manager):
     """Test Qdrant health check success."""
     with mock.patch("subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(returncode=0)
+        mock_run.return_value = mock.MagicMock(
+            returncode=0,
+            stdout=b"healthy\n"
+        )
         result = docker_manager._check_qdrant_health()
 
     assert result is True
