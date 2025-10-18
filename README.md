@@ -33,6 +33,9 @@ git clone https://github.com/your-username/auto-coder.git
 cd auto-coder
 ```
 
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv sync
+
 2. 依存関係をインストールして、任意のディレクトリから実行可能にします:
 ```bash
 source ./venv/bin/activate

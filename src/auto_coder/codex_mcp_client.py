@@ -24,6 +24,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
+from .graphrag_mcp_integration import GraphRAGMCPIntegration
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
@@ -53,11 +54,22 @@ class CodexMCPClient(LLMClientBase):
     - close() to terminate the persistent MCP process
     """
 
-    def __init__(self, model_name: str = "codex-mcp") -> None:
+    def __init__(
+        self,
+        model_name: str = "codex-mcp",
+        enable_graphrag: bool = False,
+    ) -> None:
         self.model_name = model_name or "codex-mcp"
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.proc: Optional[subprocess.Popen] = None
+        self.enable_graphrag = enable_graphrag
+        self.graphrag_integration: Optional[GraphRAGMCPIntegration] = None
+
+        # Initialize GraphRAG integration if enabled
+        if self.enable_graphrag:
+            logger.info("GraphRAG integration enabled for CodexMCPClient")
+            self.graphrag_integration = GraphRAGMCPIntegration()
 
         # Verify codex CLI is available
         try:
@@ -292,6 +304,14 @@ class CodexMCPClient(LLMClientBase):
         4) tools/call name=echo
         Finally, fallback to `codex exec`.
         """
+        # Ensure GraphRAG environment is ready if enabled
+        if self.graphrag_integration:
+            try:
+                if not self.graphrag_integration.ensure_ready():
+                    logger.warning("GraphRAG environment not ready, continuing without it")
+            except Exception as e:
+                logger.warning(f"Failed to ensure GraphRAG environment: {e}")
+
         escaped_prompt = self._escape_prompt(prompt)
 
         # Try MCP single-shot first
@@ -383,6 +403,13 @@ class CodexMCPClient(LLMClientBase):
     def close(self) -> None:
         """Terminate the persistent MCP process if running."""
         try:
+            # Cleanup GraphRAG integration
+            if self.graphrag_integration:
+                try:
+                    self.graphrag_integration.cleanup()
+                except Exception as e:
+                    logger.warning(f"Error cleaning up GraphRAG integration: {e}")
+
             if self.proc is not None:
                 try:
                     # Try a graceful wait first (short)

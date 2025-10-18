@@ -721,8 +721,8 @@ special_features:
       - "CLI flag --skip-main-update/--no-skip-main-update wires to the config"
       - "CLI and AutomationEngine log the main-update policy explicitly at runtime"
     tests:
-      - "tests/test_cli.py::TestCLI::test_process_issues_no_skip_main_update_flag"
-      - "tests/test_cli.py::TestCLI::test_process_issues_success_default_codex (verifies default True)"
+      - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_no_skip_main_update_flag"
+      - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_success_default_codex (verifies default True)"
       - "tests/test_automation_engine.py::TestAutomationEngineExtended::test_handle_pr_merge_skips_main_update_when_flag_true"
 
       - "AutomationEngine._merge_pr updated to use these fallbacks"
@@ -766,7 +766,9 @@ testing:
       - "tests/test_github_client.py"
       - "tests/test_gemini_client.py"
       - "tests/test_automation_engine.py"
-      - "tests/test_cli.py"
+      - "tests/test_cli_main.py"
+      - "tests/test_cli_process_issues.py"
+      - "tests/test_cli_create_feature_issues.py"
       - "tests/test_config.py"
     coverage: "All public methods and error conditions"
 
@@ -975,7 +977,7 @@ deployment:
 
         probes:
           - name: "qwen_help_has_flags"
-            file: "src/auto_coder/cli.py"
+            file: "src/auto_coder/cli_helpers.py"
             description: "Lightweight probe executing 'qwen --help' to verify required flags; tolerates short/long forms (-p/--prompt, -m/--model) and normalizes ANSI/whitespace/dashes; fully mocked in CI"
             tests:
               - "tests/test_qwen_help_probe.py::test_qwen_help_probe_detects_required_flags"
@@ -1032,30 +1034,153 @@ deployment:
         - "tests/test_auggie_client_daily_limit.py::test_auggie_usage_limit_blocks_21st_call"
         - "tests/test_cli_auggie_usage_limit_e2e.py::test_process_issues_rotates_when_auggie_daily_limit_reached"
 
+  graphrag_integration:
+    name: "GraphRAG Integration"
+    description: "Integration with GraphRAG MCP server for enhanced code context using Neo4j (graph database) and Qdrant (vector database). GraphRAG is always enabled and automatically initialized at startup for all commands (process-issues, create-feature-issues, fix-to-pass-tests)."
+    components:
+      - name: "GraphRAGDockerManager"
+        file: "src/auto_coder/graphrag_docker_manager.py"
+        description: "Manages Neo4j and Qdrant Docker containers"
+        methods:
+          - name: "start"
+            description: "Start Neo4j and Qdrant containers"
+            parameters: ["wait_for_health", "timeout"]
+            returns: "Boolean indicating success"
+          - name: "stop"
+            description: "Stop Neo4j and Qdrant containers"
+            parameters: ["timeout"]
+            returns: "Boolean indicating success"
+          - name: "is_running"
+            description: "Check if containers are running"
+            parameters: []
+            returns: "Boolean indicating if both containers are running"
+          - name: "get_status"
+            description: "Get health status of containers"
+            parameters: []
+            returns: "Dictionary with container names and health status"
+          - name: "wait_for_health"
+            description: "Wait for containers to be healthy"
+            parameters: ["timeout", "check_interval"]
+            returns: "Boolean indicating if containers are healthy"
+        tests:
+          - "tests/test_graphrag_docker_manager.py"
+      - name: "GraphRAGIndexManager"
+        file: "src/auto_coder/graphrag_index_manager.py"
+        description: "Manages indexing of codebase into Neo4j and Qdrant"
+        methods:
+          - name: "is_index_up_to_date"
+            description: "Check if index is up to date with codebase"
+            parameters: []
+            returns: "Boolean indicating if index is up to date"
+          - name: "update_index"
+            description: "Update index if needed"
+            parameters: ["force"]
+            returns: "Boolean indicating success"
+          - name: "ensure_index_up_to_date"
+            description: "Ensure index is up to date, updating if necessary"
+            parameters: []
+            returns: "Boolean indicating success"
+        tests:
+          - "tests/test_graphrag_index_manager.py"
+      - name: "GraphRAGMCPIntegration"
+        file: "src/auto_coder/graphrag_mcp_integration.py"
+        description: "Integrates graphrag_mcp server with LLM clients"
+        methods:
+          - name: "ensure_ready"
+            description: "Ensure GraphRAG environment is ready (Docker containers, index, MCP server)"
+            parameters: []
+            returns: "Boolean indicating if environment is ready"
+          - name: "start_mcp_server"
+            description: "Start graphrag_mcp server"
+            parameters: []
+            returns: "Boolean indicating success"
+          - name: "stop_mcp_server"
+            description: "Stop graphrag_mcp server"
+            parameters: []
+            returns: "Boolean indicating success"
+          - name: "is_mcp_server_running"
+            description: "Check if MCP server is running"
+            parameters: []
+            returns: "Boolean indicating if server is running"
+          - name: "get_mcp_config_for_llm"
+            description: "Get MCP configuration to pass to LLM client"
+            parameters: []
+            returns: "Dictionary with MCP configuration or None"
+        tests:
+          - "tests/test_graphrag_mcp_integration.py"
+    cli_commands:
+      - command: "auto-coder graphrag start"
+        description: "Start Neo4j and Qdrant Docker containers"
+        options:
+          - "--wait/--no-wait: Wait for containers to be healthy (default: True)"
+          - "--timeout: Health check timeout in seconds (default: 120)"
+      - command: "auto-coder graphrag stop"
+        description: "Stop Neo4j and Qdrant Docker containers"
+        options:
+          - "--timeout: Command timeout in seconds (default: 60)"
+      - command: "auto-coder graphrag status"
+        description: "Check status of Neo4j and Qdrant Docker containers"
+      - command: "auto-coder graphrag update-index"
+        description: "Update codebase index in Neo4j and Qdrant"
+        options:
+          - "--force: Force update even if index is up to date"
+          - "--repo-path: Path to repository to index (default: current directory)"
+    integration:
+      - name: "CodexMCPClient GraphRAG Support"
+        description: "CodexMCPClient always uses GraphRAG integration (always enabled)"
+        file: "src/auto_coder/codex_mcp_client.py"
+        parameters:
+          - "enable_graphrag: Enable GraphRAG integration (always True)"
+        behavior:
+          - "GraphRAG is always enabled and initialized at startup"
+          - "Automatically starts Docker containers if not running"
+          - "Updates index if outdated (failure is fatal)"
+          - "Starts MCP server if configured (failure is fatal)"
+          - "All GraphRAG initialization failures will terminate the process"
+        tests:
+          - "tests/test_codex_mcp_client_graphrag.py"
+    external_dependencies:
+      - name: "graphrag_mcp"
+        url: "https://github.com/rileylemm/graphrag_mcp"
+        description: "MCP server for querying hybrid graph and vector database"
+        tools:
+          - "search_documentation: Semantic search using Qdrant"
+          - "hybrid_search: Combined semantic and graph-based search"
+        resources:
+          - "https://graphrag.db/schema/neo4j: Neo4j schema information"
+          - "https://graphrag.db/collection/qdrant: Qdrant collection information"
+      - name: "Neo4j"
+        description: "Graph database for storing code relationships"
+        default_port: 7687
+      - name: "Qdrant"
+        description: "Vector database for storing code embeddings"
+        default_port: 6333
+
   usage:
     examples:
+      # Note: GraphRAG is always enabled for all commands. Containers are automatically started if not running.
       - command: "auto-coder process-issues --repo owner/repo"
-        description: "Process issues and PRs with codex backend (default); jules mode is ON by default"
+        description: "Process issues and PRs with codex backend (default); jules mode and GraphRAG are ON by default"
       - command: "auto-coder process-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro"
-        description: "Process issues and PRs using Gemini backend (you can override the model via --model-gemini)"
+        description: "Process issues and PRs using Gemini backend with GraphRAG (you can override the model via --model-gemini)"
       - command: "auto-coder process-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus"
-        description: "Process issues and PRs using Qwen Code backend (you can override the model via --model-qwen)"
+        description: "Process issues and PRs using Qwen Code backend with GraphRAG (you can override the model via --model-qwen)"
       - command: "auto-coder process-issues --repo owner/repo --backend auggie"
-        description: "Process issues and PRs using Auggie backend (defaults to GPT-5; override with --model-auggie)"
+        description: "Process issues and PRs using Auggie backend with GraphRAG (defaults to GPT-5; override with --model-auggie)"
       - command: "auto-coder process-issues --repo owner/repo --backend codex --backend gemini"
-        description: "Process issues with codex as the default backend and fall back to Gemini if limits are hit"
+        description: "Process issues with codex as the default backend and fall back to Gemini if limits are hit (GraphRAG enabled)"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
-        description: "Create feature enhancement issues using Qwen Code backend"
+        description: "Create feature enhancement issues using Qwen Code backend with GraphRAG"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend auggie"
-        description: "Create feature enhancement issues using Auggie backend (defaults to GPT-5)"
+        description: "Create feature enhancement issues using Auggie backend with GraphRAG (defaults to GPT-5)"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend codex --backend gemini"
-        description: "Create feature issues with codex default and Gemini fallback order"
+        description: "Create feature issues with codex default and Gemini fallback order (GraphRAG enabled)"
       - command: "auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus"
-        description: "Run local tests and request fixes using Qwen Code backend"
+        description: "Run local tests and request fixes using Qwen Code backend with GraphRAG"
       - command: "auto-coder fix-to-pass-tests --backend auggie"
-        description: "Run local tests and request fixes using Auggie backend (defaults to GPT-5)"
+        description: "Run local tests and request fixes using Auggie backend with GraphRAG (defaults to GPT-5)"
       - command: "auto-coder fix-to-pass-tests --backend codex --backend gemini"
-        description: "Run fix-to-pass-tests with codex by default and Gemini as a secondary option"
+        description: "Run fix-to-pass-tests with codex by default and Gemini as a secondary option (GraphRAG enabled)"
 
       - command: "auto-coder process-issues --repo owner/repo --no-jules-mode"
         description: "Disable jules mode and process issues with AI analysis"
@@ -1074,3 +1199,18 @@ deployment:
         description: "Process only PR #456 by URL"
       - command: "auto-coder create-feature-issues --repo owner/repo"
         description: "Create feature enhancement issues"
+
+      # GraphRAG Integration Examples
+      # Note: GraphRAG is always enabled. Containers are automatically started if not running.
+      - command: "auto-coder graphrag start"
+        description: "Manually start Neo4j and Qdrant Docker containers for GraphRAG"
+      - command: "auto-coder graphrag stop"
+        description: "Stop GraphRAG Docker containers"
+      - command: "auto-coder graphrag status"
+        description: "Check status of GraphRAG Docker containers"
+      - command: "auto-coder graphrag update-index"
+        description: "Update codebase index in Neo4j and Qdrant"
+      - command: "auto-coder graphrag update-index --force"
+        description: "Force update index even if it's up to date"
+      - command: "auto-coder process-issues --repo owner/repo"
+        description: "Process issues with GraphRAG integration (always enabled, containers auto-started if needed)"
