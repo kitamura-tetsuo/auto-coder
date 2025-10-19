@@ -64,6 +64,7 @@ def test_ensure_ready_containers_not_running(integration, mock_docker_manager):
     """Test ensure_ready when containers are not running."""
     mock_docker_manager.is_running.return_value = False
     mock_docker_manager.start.return_value = True
+    integration.index_manager.check_indexed_path.return_value = (True, "/some/path")
     integration.index_manager.ensure_index_up_to_date.return_value = True
 
     result = integration.ensure_ready()
@@ -77,6 +78,7 @@ def test_ensure_ready_containers_not_running(integration, mock_docker_manager):
 def test_ensure_ready_containers_already_running(integration, mock_docker_manager):
     """Test ensure_ready when containers are already running."""
     mock_docker_manager.is_running.return_value = True
+    integration.index_manager.check_indexed_path.return_value = (True, "/some/path")
     integration.index_manager.ensure_index_up_to_date.return_value = True
 
     result = integration.ensure_ready()
@@ -104,6 +106,7 @@ def test_ensure_ready_container_start_failure(integration, mock_docker_manager):
 def test_ensure_ready_index_update_failure(integration, mock_docker_manager):
     """Test ensure_ready when index update fails."""
     mock_docker_manager.is_running.return_value = True
+    integration.index_manager.check_indexed_path.return_value = (True, "/some/path")
     integration.index_manager.ensure_index_up_to_date.return_value = False
 
     result = integration.ensure_ready()
@@ -113,10 +116,43 @@ def test_ensure_ready_index_update_failure(integration, mock_docker_manager):
     integration.index_manager.ensure_index_up_to_date.assert_called_once()
 
 
+def test_ensure_ready_path_mismatch(integration, mock_docker_manager):
+    """Test ensure_ready when indexed path differs from current path."""
+    from pathlib import Path
+
+    mock_docker_manager.is_running.return_value = True
+    # Simulate path mismatch
+    integration.index_manager.check_indexed_path.return_value = (False, "/old/path")
+    integration.index_manager.repo_path = mock.MagicMock()
+    integration.index_manager.repo_path.resolve.return_value = Path("/current/path")
+    integration.index_manager.update_index.return_value = True
+
+    result = integration.ensure_ready()
+
+    assert result is True
+    integration.index_manager.check_indexed_path.assert_called_once()
+    integration.index_manager.update_index.assert_called_once_with(force=True)
+
+
+def test_ensure_ready_path_match(integration, mock_docker_manager):
+    """Test ensure_ready when indexed path matches current path."""
+    mock_docker_manager.is_running.return_value = True
+    # Simulate path match
+    integration.index_manager.check_indexed_path.return_value = (True, "/current/path")
+    integration.index_manager.ensure_index_up_to_date.return_value = True
+
+    result = integration.ensure_ready()
+
+    assert result is True
+    integration.index_manager.check_indexed_path.assert_called_once()
+    integration.index_manager.ensure_index_up_to_date.assert_called_once()
+
+
 def test_ensure_ready_with_mcp_server(integration, mock_docker_manager):
     """Test ensure_ready with MCP server configured."""
     integration.mcp_server_path = "/path/to/server"
     mock_docker_manager.is_running.return_value = True
+    integration.index_manager.check_indexed_path.return_value = (True, "/some/path")
     integration.index_manager.ensure_index_up_to_date.return_value = True
 
     with mock.patch.object(integration, "is_mcp_server_running", return_value=False):
@@ -130,6 +166,7 @@ def test_ensure_ready_mcp_server_failure(integration, mock_docker_manager):
     """Test ensure_ready when MCP server start fails."""
     integration.mcp_server_path = "/path/to/server"
     mock_docker_manager.is_running.return_value = True
+    integration.index_manager.check_indexed_path.return_value = (True, "/some/path")
     integration.index_manager.ensure_index_up_to_date.return_value = True
 
     with mock.patch.object(integration, "is_mcp_server_running", return_value=False):

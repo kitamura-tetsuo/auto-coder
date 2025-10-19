@@ -592,6 +592,22 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
         click.echo("   2. Check file permissions in the repository")
         raise click.ClickException(f"Error initializing index manager: {e}")
 
+    # Check if indexed path matches current path
+    try:
+        path_matches, indexed_path = index_manager.check_indexed_path()
+        if indexed_path is not None and not path_matches:
+            click.echo()
+            click.echo("⚠️  インデックス対象ディレクトリが異なります:")
+            click.echo(f"   インデックス済み: {indexed_path}")
+            click.echo(f"   現在のディレクトリ: {index_manager.repo_path.resolve()}")
+            click.echo()
+            if not force and not click.confirm("現在のディレクトリでインデックスを更新しますか?"):
+                click.echo("インデックス更新をキャンセルしました")
+                return
+            force = True  # Force update when path changes
+    except Exception as e:
+        click.echo(f"⚠️  Warning: Could not check indexed path: {e}")
+
     click.echo("Updating GraphRAG index...")
     if not force:
         try:

@@ -118,20 +118,55 @@ class GraphRAGIndexManager:
         except Exception as e:
             logger.error(f"Failed to save index state: {e}")
 
+    def check_indexed_path(self) -> tuple[bool, Optional[str]]:
+        """Check if indexed path matches current repo path.
+
+        Returns:
+            Tuple of (matches, indexed_path) where:
+            - matches: True if indexed path matches current repo path
+            - indexed_path: The path that was indexed, or None if no index exists
+        """
+        state = self._load_index_state()
+        indexed_at = state.get("indexed_at")
+
+        if indexed_at is None:
+            return False, None
+
+        # Resolve both paths to absolute paths for comparison
+        indexed_path = Path(indexed_at).resolve()
+        current_path = self.repo_path.resolve()
+
+        matches = indexed_path == current_path
+        return matches, str(indexed_path)
+
     def is_index_up_to_date(self) -> bool:
         """Check if index is up to date with codebase.
 
         Returns:
             True if index is up to date, False otherwise
         """
-        current_hash = self._get_codebase_hash()
         state = self._load_index_state()
 
+        # Check if index exists
         stored_hash = state.get("codebase_hash")
         if stored_hash is None:
             logger.info("No index state found, index needs to be created")
             return False
 
+        # Check if indexed path matches current repo path
+        path_matches, indexed_path = self.check_indexed_path()
+        if not path_matches:
+            if indexed_path is None:
+                logger.info("No indexed path found, index needs to be created")
+            else:
+                logger.info(
+                    f"Indexed path mismatch: indexed={indexed_path}, "
+                    f"current={self.repo_path.resolve()}, index needs to be updated"
+                )
+            return False
+
+        # Check if codebase hash matches
+        current_hash = self._get_codebase_hash()
         if current_hash != stored_hash:
             logger.info("Codebase has changed, index needs to be updated")
             return False
@@ -165,7 +200,7 @@ class GraphRAGIndexManager:
         current_hash = self._get_codebase_hash()
         state = {
             "codebase_hash": current_hash,
-            "indexed_at": str(Path.cwd()),
+            "indexed_at": str(self.repo_path.resolve()),
         }
         self._save_index_state(state)
 

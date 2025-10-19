@@ -102,16 +102,29 @@ class GraphRAGMCPIntegration:
         else:
             logger.info("Docker containers are already running")
 
-        # 2. Ensure index is up to date (strict error handling)
+        # 2. Check if indexed path matches current path
         try:
-            if not self.index_manager.ensure_index_up_to_date():
-                logger.error("Failed to ensure index is up to date.")
-                return False
+            path_matches, indexed_path = self.index_manager.check_indexed_path()
+            if indexed_path is not None and not path_matches:
+                logger.warning(
+                    f"Indexed path mismatch: indexed={indexed_path}, "
+                    f"current={self.index_manager.repo_path.resolve()}"
+                )
+                logger.info("Updating index for current directory...")
+                # Force update when path changes
+                if not self.index_manager.update_index(force=True):
+                    logger.error("Failed to update index for current directory.")
+                    return False
+            else:
+                # 3. Ensure index is up to date (strict error handling)
+                if not self.index_manager.ensure_index_up_to_date():
+                    logger.error("Failed to ensure index is up to date.")
+                    return False
         except Exception as e:
             logger.error(f"Error updating index: {e}")
             return False
 
-        # 3. Start MCP server if configured (strict error handling)
+        # 4. Start MCP server if configured (strict error handling)
         if self.mcp_server_path and not self.is_mcp_server_running():
             logger.info("Starting GraphRAG MCP server...")
             try:
