@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""
+CLI for graph-builder (Python version)
+"""
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
+
+from scanner.python_scanner import scan_python_project, GraphData
+from emitter.python_emitter import emit_csv, emit_json, emit_diff_json
+
+
+def scan_command(args):
+    """Scan project and extract graph data"""
+    project_path = Path(args.project).resolve()
+    output_dir = Path(args.out).resolve()
+    
+    print(f"Scanning project: {project_path}")
+    print(f"Output directory: {output_dir}")
+    print(f"Mode: {args.mode}")
+    
+    # Scan Python files
+    print("Scanning Python files...")
+    graph_data = scan_python_project(str(project_path), args.limit)
+    print(f"Found {len(graph_data.nodes)} nodes")
+    print(f"Found {len(graph_data.edges)} edges")
+    
+    # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save intermediate data
+    data_path = output_dir / 'graph-data.json'
+    with open(data_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            'nodes': [
+                {
+                    'id': n.id,
+                    'kind': n.kind,
+                    'fqname': n.fqname,
+                    'sig': n.sig,
+                    'short': n.short,
+                    'complexity': n.complexity,
+                    'tokens_est': n.tokens_est,
+                    'tags': n.tags,
+                    'file': n.file,
+                    'start_line': n.start_line,
+                    'end_line': n.end_line,
+                }
+                for n in graph_data.nodes
+            ],
+            'edges': [
+                {
+                    'from': e.from_id,
+                    'to': e.to_id,
+                    'type': e.type,
+                    'count': e.count,
+                    'locations': e.locations,
+                }
+                for e in graph_data.edges
+            ],
+        }, f, indent=2)
+    
+    print(f"Saved graph data to {data_path}")
+    print(f"Total nodes: {len(graph_data.nodes)}")
+    print(f"Total edges: {len(graph_data.edges)}")
+
+
+def emit_csv_command(args):
+    """Emit CSV files for Neo4j import"""
+    output_dir = Path(args.out).resolve()
+    data_path = output_dir / 'graph-data.json'
+    
+    if not data_path.exists():
+        print(f"Graph data not found at {data_path}. Run 'scan' first.")
+        sys.exit(1)
+    
+    with open(data_path, 'r', encoding='utf-8') as f:
+        data_dict = json.load(f)
+    
+    # Convert dict back to GraphData
+    from scanner.python_scanner import CodeNode, CodeEdge
+    graph_data = GraphData(
+        nodes=[CodeNode(**n) for n in data_dict['nodes']],
+        edges=[CodeEdge(
+            from_id=e['from'],
+            to_id=e['to'],
+            type=e['type'],
+            count=e['count'],
+            locations=e.get('locations', [])
+        ) for e in data_dict['edges']],
+    )
+    
+    emit_csv(graph_data, str(output_dir))
+    print("CSV files generated successfully")
+
+
+def emit_json_command(args):
+    """Emit JSON batch file"""
+    output_dir = Path(args.out).resolve()
+    data_path = output_dir / 'graph-data.json'
+    
+    if not data_path.exists():
+        print(f"Graph data not found at {data_path}. Run 'scan' first.")
+        sys.exit(1)
+    
+    with open(data_path, 'r', encoding='utf-8') as f:
+        data_dict = json.load(f)
+    
+    # Convert dict back to GraphData
+    from scanner.python_scanner import CodeNode, CodeEdge
+    graph_data = GraphData(
+        nodes=[CodeNode(**n) for n in data_dict['nodes']],
+        edges=[CodeEdge(
+            from_id=e['from'],
+            to_id=e['to'],
+            type=e['type'],
+            count=e['count'],
+            locations=e.get('locations', [])
+        ) for e in data_dict['edges']],
+    )
+    
+    emit_json(graph_data, str(output_dir))
+    print("JSON batch file generated successfully")
+
+
+def diff_command(args):
+    """Generate diff from git changes"""
+    output_dir = Path(args.out).resolve()
+    since = args.since
+    
+    print(f"Generating diff since {since}...")
+    
+    try:
+        # Get changed files
+        result = subprocess.run(
+            ['git', 'diff', '--name-only', since],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        changed_files = [
+            f for f in result.stdout.strip().split('\n')
+            if f.endswith('.py')
+        ]
+        
+        print(f"Found {len(changed_files)} changed Python files")
+        
+        # Get current commit
+        commit_result = subprocess.run(
+            ['git', 'rev-parse', 'HEAD'],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        commit_hash = commit_result.stdout.strip()
+        
+        diff_data = {
+            'meta': {
+                'commit': commit_hash,
+                'files': changed_files,
+                'timestamp': __import__('datetime').datetime.now().isoformat(),
+            },
+            'added': {'nodes': [], 'edges': []},
+            'updated': {'nodes': [], 'edges': []},
+            'removed': {'nodes': [], 'edges': []},
+        }
+        
+        emit_diff_json(diff_data, str(output_dir), commit_hash[:8])
+        print("Diff JSON generated successfully")
+        
+    except subprocess.CalledProcessError as e:
+        print(f"Error running git command: {e}")
+        sys.exit(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Python code analyzer for Neo4j graph database'
+    )
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    
+    # Scan command
+    scan_parser = subparsers.add_parser('scan', help='Scan project and extract graph data')
+    scan_parser.add_argument('--project', default='.', help='Project path')
+    scan_parser.add_argument('--out', default='./out', help='Output directory')
+    scan_parser.add_argument('--mode', default='full', choices=['full', 'diff'], help='Scan mode')
+    scan_parser.add_argument('--since', help='Git reference for diff mode')
+    scan_parser.add_argument('--limit', type=int, help='Limit number of files to process')
+    
+    # Emit CSV command
+    csv_parser = subparsers.add_parser('emit-csv', help='Emit CSV files for Neo4j import')
+    csv_parser.add_argument('--out', default='./out', help='Output directory')
+    
+    # Emit JSON command
+    json_parser = subparsers.add_parser('emit-json', help='Emit JSON batch file')
+    json_parser.add_argument('--out', default='./out', help='Output directory')
+    
+    # Diff command
+    diff_parser = subparsers.add_parser('diff', help='Generate diff from git changes')
+    diff_parser.add_argument('--since', default='HEAD~1', help='Git reference to compare against')
+    diff_parser.add_argument('--out', default='./out', help='Output directory')
+    
+    args = parser.parse_args()
+    
+    if args.command == 'scan':
+        scan_command(args)
+    elif args.command == 'emit-csv':
+        emit_csv_command(args)
+    elif args.command == 'emit-json':
+        emit_json_command(args)
+    elif args.command == 'diff':
+        diff_command(args)
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()
+

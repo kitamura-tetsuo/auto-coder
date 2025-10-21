@@ -8,6 +8,119 @@ application:
   description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
 features:
+  graph_builder:
+    name: "Graph Builder for Neo4j"
+    description: "TypeScript and Python code analyzer that generates Neo4j graph database data"
+    location: "graph-builder/"
+    components:
+      - name: "TypeScript Scanner"
+        file: "graph-builder/src/scanner/typescript.ts"
+        description: "Scans TypeScript projects using ts-morph to extract functions, classes, types, imports, and call relationships"
+        methods:
+          - name: "scanTypeScriptProject"
+            description: "Scan TypeScript project and extract graph data"
+            parameters: ["tsConfigPath", "limit"]
+            returns: "GraphData with nodes and edges"
+      - name: "Python Scanner"
+        file: "graph-builder/src/scanner/python_scanner.py"
+        description: "Scans Python projects using ast module to extract functions, classes, types, imports, and call relationships"
+        methods:
+          - name: "scan_python_project"
+            description: "Scan entire Python project"
+            parameters: ["project_path", "limit"]
+            returns: "GraphData with nodes and edges"
+          - name: "scan_python_file"
+            description: "Scan a single Python file"
+            parameters: ["file_path", "module_name"]
+            returns: "GraphData with nodes and edges"
+      - name: "Normalizer"
+        file: "graph-builder/src/normalizer.ts"
+        description: "Generates fqname, sig, id, short, complexity, tokens_est for code nodes"
+        methods:
+          - name: "synthesizeShortSummary"
+            description: "Generate short summary from JSDoc or function name"
+            parameters: ["jsdoc", "name", "params"]
+            returns: "Short summary string"
+          - name: "normalizeNode"
+            description: "Normalize a code node with all required fields"
+            parameters: ["partial"]
+            returns: "Complete normalized CodeNode"
+          - name: "detectTags"
+            description: "Detect side-effect tags from code patterns"
+            parameters: ["code", "sig"]
+            returns: "Array of tags (IO, DB, NETWORK, ASYNC, PURE)"
+      - name: "CSV Emitter"
+        file: "graph-builder/src/emitter/csv.ts"
+        description: "Emits nodes and edges as CSV files for Neo4j bulk import"
+        methods:
+          - name: "emitCSV"
+            description: "Emit CSV files (nodes.csv, rels.csv)"
+            parameters: ["data", "outputDir"]
+            returns: "void"
+      - name: "JSON Emitter"
+        file: "graph-builder/src/emitter/json.ts"
+        description: "Emits graph data as JSON batch files"
+        methods:
+          - name: "emitJSON"
+            description: "Emit batch JSON file"
+            parameters: ["data", "outputDir", "timestamp"]
+            returns: "void"
+          - name: "emitDiffJSON"
+            description: "Emit diff JSON file"
+            parameters: ["diff", "outputDir", "commit"]
+            returns: "void"
+      - name: "CLI"
+        file: "graph-builder/src/cli.ts"
+        description: "Command-line interface for graph-builder"
+        commands:
+          - name: "scan"
+            description: "Scan project and extract graph data"
+            options: ["--project", "--out", "--mode", "--since", "--limit", "--batch-size", "--languages"]
+          - name: "emit-csv"
+            description: "Emit CSV files for Neo4j import"
+            options: ["--out"]
+          - name: "emit-json"
+            description: "Emit JSON batch file"
+            options: ["--out"]
+          - name: "diff"
+            description: "Generate diff from git changes"
+            options: ["--since", "--out"]
+    output_schema:
+      nodes:
+        - id: "Unique identifier (SHA1 hash, 16 chars)"
+        - kind: "Node type (File, Module, Function, Method, Class, Interface, Type)"
+        - fqname: "Fully qualified name (e.g., src/user/service.ts:UserService.getUserById)"
+        - sig: "Type signature (e.g., (string)->Promise<User>)"
+        - short: "Summary (30-80 tokens, from JSDoc or auto-generated)"
+        - complexity: "Cyclomatic complexity"
+        - tokens_est: "Estimated token count"
+        - tags: "Side-effect tags (IO, DB, NETWORK, ASYNC, PURE)"
+        - file: "Source file path"
+        - start_line: "Start line number"
+        - end_line: "End line number"
+      edges:
+        - from: "Source node ID"
+        - to: "Target node ID"
+        - type: "Edge type (IMPORTS, CALLS, CONTAINS, EXTENDS, IMPLEMENTS)"
+        - count: "Number of occurrences"
+        - locations: "Array of {file, line} objects"
+    usage:
+      typescript:
+        - "node dist/cli.js scan --project ./my-project --out ./out --languages typescript,python"
+        - "node dist/cli.js emit-csv --out ./out"
+        - "node dist/cli.js emit-json --out ./out"
+        - "node dist/cli.js diff --since HEAD~1 --out ./out"
+      python:
+        - "python3 src/cli_python.py scan --project ./my-project --out ./out"
+        - "python3 src/cli_python.py emit-csv --out ./out"
+        - "python3 src/cli_python.py emit-json --out ./out"
+        - "python3 src/cli_python.py diff --since HEAD~1 --out ./out"
+    tests:
+      - file: "graph-builder/src/tests/scanner.test.ts"
+        description: "TypeScript scanner tests"
+      - file: "graph-builder/src/tests/test_python_scanner.py"
+        description: "Python scanner tests"
+
   github_integration:
     name: "GitHub API Integration"
     description: "Integration with GitHub API to fetch and manage issues and pull requests"
