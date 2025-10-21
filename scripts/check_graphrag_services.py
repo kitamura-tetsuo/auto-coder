@@ -5,11 +5,17 @@ Neo4j/Qdrant 動作確認スクリプト
 このスクリプトは以下を確認します:
 1. Neo4j への直接アクセス（Bolt プロトコル）
 2. Qdrant への直接アクセス（HTTP API）
-3. GraphRAG MCP 経由でのアクセス（オプション）
+3. GraphRAG MCP 経由でのアクセス
 
 使用方法:
+    # 全部テスト（デフォルト）
     python scripts/check_graphrag_services.py
-    python scripts/check_graphrag_services.py --with-mcp
+
+    # 直接アクセスのみテスト
+    python scripts/check_graphrag_services.py --direct-only
+
+    # MCP のみテスト
+    python scripts/check_graphrag_services.py --mcp-only
 """
 
 import argparse
@@ -627,12 +633,28 @@ class SampleClass:
 
         # 5. MCP 設定取得
         logger.info("\n--- MCP 設定 ---")
-        mcp_config = integration.get_mcp_config_for_llm()
-        if mcp_config:
-            logger.info("MCP 設定:")
-            logger.info(json.dumps(mcp_config, indent=2, ensure_ascii=False))
+
+        # MCPサーバーの起動状態を確認
+        is_mcp_running = integration.is_mcp_server_running()
+        if is_mcp_running:
+            logger.info("✅ MCP サーバー: 起動中")
+            mcp_config = integration.get_mcp_config_for_llm()
+            if mcp_config:
+                logger.info("MCP 設定:")
+                logger.info(json.dumps(mcp_config, indent=2, ensure_ascii=False))
         else:
-            logger.warning("MCP 設定を取得できませんでした")
+            logger.info("ℹ️  MCP サーバー: 未起動")
+            logger.info("   (--mcp-only モードではMCPサーバーは起動しません)")
+            logger.info("   MCP設定の例:")
+            example_config = {
+                "mcp_server": "graphrag",
+                "mcp_tools": ["search_documentation", "hybrid_search"],
+                "mcp_resources": [
+                    "https://graphrag.db/schema/neo4j",
+                    "https://graphrag.db/collection/qdrant",
+                ],
+            }
+            logger.info(json.dumps(example_config, indent=2, ensure_ascii=False))
 
         logger.info("\n✅ GraphRAG MCP テスト完了")
         return True
@@ -650,11 +672,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用例:
-  # 直接アクセスのみテスト
+  # 全部テスト（デフォルト）
   python scripts/check_graphrag_services.py
 
-  # GraphRAG MCP も含めてテスト
-  python scripts/check_graphrag_services.py --with-mcp
+  # 直接アクセスのみテスト
+  python scripts/check_graphrag_services.py --direct-only
 
   # MCP のみテスト
   python scripts/check_graphrag_services.py --mcp-only
@@ -664,9 +686,9 @@ def main():
         """
     )
     parser.add_argument(
-        "--with-mcp",
+        "--direct-only",
         action="store_true",
-        help="GraphRAG MCP 経由のテストも実行"
+        help="直接アクセス（Neo4j + Qdrant）のテストのみ実行"
     )
     parser.add_argument(
         "--mcp-only",
@@ -683,11 +705,17 @@ def main():
 
     results = {}
 
-    if not args.mcp_only:
+    # デフォルト: 全部テスト
+    # --direct-only: 直接アクセスのみ
+    # --mcp-only: MCPのみ
+    run_direct = not args.mcp_only
+    run_mcp = not args.direct_only
+
+    if run_direct:
         results["neo4j"] = check_neo4j_direct()
         results["qdrant"] = check_qdrant_direct(test_mode=args.test)
 
-    if args.with_mcp or args.mcp_only:
+    if run_mcp:
         results["graphrag_mcp"] = check_graphrag_mcp()
 
     # サマリー

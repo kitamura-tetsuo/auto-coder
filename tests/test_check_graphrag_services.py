@@ -26,26 +26,28 @@ def test_check_graphrag_services_script_exists():
 
 
 def test_check_graphrag_services_runs_successfully():
-    """スクリプトが正常に実行されることを確認"""
+    """スクリプトが正常に実行されることを確認（デフォルト: 全部テスト）"""
     script_path = Path(__file__).parent.parent / "scripts" / "check_graphrag_services.py"
     python_exe = get_python_executable()
 
-    # スクリプトを実行
+    # スクリプトを実行（デフォルトで全部テスト）
     result = subprocess.run(
         [python_exe, str(script_path)],
         capture_output=True,
         text=True,
         timeout=120
     )
-    
+
     # 終了コードが0であることを確認
     assert result.returncode == 0, f"スクリプトが失敗しました:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-    
-    # 出力に成功メッセージが含まれることを確認
+
+    # 出力に成功メッセージが含まれることを確認（全部テスト）
     assert "✅ Neo4j 直接アクセステスト完了" in result.stdout, "Neo4jテストの成功メッセージが見つかりません"
     assert "✅ Qdrant 直接アクセステスト完了" in result.stdout, "Qdrantテストの成功メッセージが見つかりません"
+    assert "✅ GraphRAG MCP テスト完了" in result.stdout, "GraphRAG MCPテストの成功メッセージが見つかりません"
     assert "neo4j: ✅ 成功" in result.stdout, "Neo4jの最終結果が成功ではありません"
     assert "qdrant: ✅ 成功" in result.stdout, "Qdrantの最終結果が成功ではありません"
+    assert "graphrag_mcp: ✅ 成功" in result.stdout, "GraphRAG MCPの最終結果が成功ではありません"
 
 
 def test_check_graphrag_services_detects_container():
@@ -123,7 +125,7 @@ def test_check_graphrag_services_network_connection():
         text=True,
         timeout=120
     )
-    
+
     # コンテナ内で実行されている場合、ネットワーク接続メッセージが出力されることを確認
     if Path("/.dockerenv").exists() or Path("/run/.containerenv").exists():
         # ネットワーク接続または既に接続されているメッセージのいずれかが出力されることを確認
@@ -133,11 +135,65 @@ def test_check_graphrag_services_network_connection():
             "✅ auto-coder-neo4j は既に" in result.stdout and "に接続されています" in result.stdout
         )
         assert network_connected, "Neo4jコンテナのネットワーク接続メッセージが見つかりません"
-        
+
         network_connected = (
             "✅ auto-coder-qdrant を" in result.stdout and "に接続しました" in result.stdout
         ) or (
             "✅ auto-coder-qdrant は既に" in result.stdout and "に接続されています" in result.stdout
         )
         assert network_connected, "Qdrantコンテナのネットワーク接続メッセージが見つかりません"
+
+
+def test_check_graphrag_services_direct_only():
+    """--direct-only オプションで直接アクセスのみテストすることを確認"""
+    script_path = Path(__file__).parent.parent / "scripts" / "check_graphrag_services.py"
+    python_exe = get_python_executable()
+
+    # --direct-only オプション付きで実行
+    result = subprocess.run(
+        [python_exe, str(script_path), "--direct-only"],
+        capture_output=True,
+        text=True,
+        timeout=120
+    )
+
+    # 終了コードが0であることを確認
+    assert result.returncode == 0, f"スクリプトが失敗しました:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+
+    # 直接アクセステストのみが実行されることを確認
+    assert "✅ Neo4j 直接アクセステスト完了" in result.stdout, "Neo4jテストの成功メッセージが見つかりません"
+    assert "✅ Qdrant 直接アクセステスト完了" in result.stdout, "Qdrantテストの成功メッセージが見つかりません"
+    assert "neo4j: ✅ 成功" in result.stdout, "Neo4jの最終結果が成功ではありません"
+    assert "qdrant: ✅ 成功" in result.stdout, "Qdrantの最終結果が成功ではありません"
+
+    # GraphRAG MCPテストは実行されないことを確認
+    assert "GraphRAG MCP 経由アクセステスト" not in result.stdout, "GraphRAG MCPテストが実行されています"
+    assert "graphrag_mcp:" not in result.stdout, "GraphRAG MCPの結果が含まれています"
+
+
+def test_check_graphrag_services_mcp_only():
+    """--mcp-only オプションでMCPのみテストすることを確認"""
+    script_path = Path(__file__).parent.parent / "scripts" / "check_graphrag_services.py"
+    python_exe = get_python_executable()
+
+    # --mcp-only オプション付きで実行
+    result = subprocess.run(
+        [python_exe, str(script_path), "--mcp-only"],
+        capture_output=True,
+        text=True,
+        timeout=120
+    )
+
+    # 終了コードが0であることを確認
+    assert result.returncode == 0, f"スクリプトが失敗しました:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+
+    # GraphRAG MCPテストのみが実行されることを確認
+    assert "✅ GraphRAG MCP テスト完了" in result.stdout, "GraphRAG MCPテストの成功メッセージが見つかりません"
+    assert "graphrag_mcp: ✅ 成功" in result.stdout, "GraphRAG MCPの最終結果が成功ではありません"
+
+    # 直接アクセステストは実行されないことを確認
+    assert "Neo4j 直接アクセステスト" not in result.stdout, "Neo4jテストが実行されています"
+    assert "Qdrant 直接アクセステスト" not in result.stdout, "Qdrantテストが実行されています"
+    assert "neo4j:" not in result.stdout, "Neo4jの結果が含まれています"
+    assert "qdrant:" not in result.stdout, "Qdrantの結果が含まれています"
 

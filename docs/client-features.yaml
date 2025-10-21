@@ -694,8 +694,8 @@ features:
           Tests both direct database access and GraphRAG MCP integration.
           Provides detailed diagnostics and troubleshooting information.
         usage:
-          - "python scripts/check_graphrag_services.py                # Direct access only"
-          - "python scripts/check_graphrag_services.py --with-mcp     # Include MCP tests"
+          - "python scripts/check_graphrag_services.py                # All tests (default)"
+          - "python scripts/check_graphrag_services.py --direct-only  # Direct access only"
           - "python scripts/check_graphrag_services.py --mcp-only     # MCP tests only"
         methods:
           - name: "check_neo4j_direct"

@@ -274,11 +274,11 @@ uv run main.py
 Neo4j と Qdrant が正しく動作しているか確認するためのスクリプトを用意しています:
 
 ```bash
-# 直接アクセスのみテスト
+# 全部テスト（デフォルト）
 python scripts/check_graphrag_services.py
 
-# GraphRAG MCP も含めてテスト
-python scripts/check_graphrag_services.py --with-mcp
+# 直接アクセスのみテスト
+python scripts/check_graphrag_services.py --direct-only
 
 # MCP のみテスト
 python scripts/check_graphrag_services.py --mcp-only
@@ -295,7 +295,7 @@ python scripts/check_graphrag_services.py --mcp-only
   - ベクトル挿入
   - 類似検索
   - フィルタ付き検索
-- GraphRAG MCP 経由でのアクセス（オプション）
+- GraphRAG MCP 経由でのアクセス
   - Docker コンテナ状態確認
   - MCP サーバー状態確認
   - インデックス状態確認
@@ -304,8 +304,8 @@ python scripts/check_graphrag_services.py --mcp-only
 
 `.vscode/launch.json` に以下のデバッグ設定が含まれています:
 
-- **Check GraphRAG Services (Direct)**: 直接アクセスのみテスト
-- **Check GraphRAG Services (with MCP)**: GraphRAG MCP も含めてテスト
+- **Check GraphRAG Services (All)**: 全部テスト（デフォルト）
+- **Check GraphRAG Services (Direct only)**: 直接アクセスのみテスト
 - **Check GraphRAG Services (MCP only)**: MCP のみテスト
 
 ### GraphRAG の接続情報

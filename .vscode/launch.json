@@ -140,7 +140,7 @@
             }
         },
         {
-            "name": "Check GraphRAG Services (Direct)",
+            "name": "Check GraphRAG Services (All)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/scripts/check_graphrag_services.py",
@@ -152,14 +152,14 @@
             }
         },
         {
-            "name": "Check GraphRAG Services (with MCP)",
+            "name": "Check GraphRAG Services (Direct only)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/scripts/check_graphrag_services.py",
             "console": "integratedTerminal",
             "cwd": "/workspace",
             "args": [
-                "--with-mcp"
+                "--direct-only"
             ],
             "python": "${command:python.interpreterPath}",
             "env": {
