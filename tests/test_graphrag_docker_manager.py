@@ -359,3 +359,107 @@ def test_run_docker_compose_no_retry_when_disabled(docker_manager, mock_executor
     assert mock_executor.run_command.call_count == 1
     assert result.success is False
 
+
+def test_get_current_container_id_in_container(docker_manager):
+    """Test getting container ID when running in container."""
+    with mock.patch("os.path.exists", return_value=True):
+        with mock.patch("builtins.open", mock.mock_open(read_data="abc123def456\n")):
+            container_id = docker_manager._get_current_container_id()
+
+    assert container_id == "abc123def456"
+
+
+def test_get_current_container_id_not_in_container(docker_manager):
+    """Test getting container ID when not running in container."""
+    with mock.patch("os.path.exists", return_value=False):
+        container_id = docker_manager._get_current_container_id()
+
+    assert container_id is None
+
+
+def test_get_graphrag_network_name_success(docker_manager):
+    """Test getting GraphRAG network name."""
+    with mock.patch("subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(
+            returncode=0,
+            stdout=b"auto-coder_graphrag-network\nother-network\n"
+        )
+        network_name = docker_manager._get_graphrag_network_name()
+
+    assert network_name == "auto-coder_graphrag-network"
+
+
+def test_get_graphrag_network_name_not_found(docker_manager):
+    """Test getting GraphRAG network name when not found."""
+    with mock.patch("subprocess.run") as mock_run:
+        mock_run.return_value = mock.MagicMock(
+            returncode=0,
+            stdout=b"other-network\nanother-network\n"
+        )
+        network_name = docker_manager._get_graphrag_network_name()
+
+    assert network_name is None
+
+
+def test_connect_to_graphrag_network_success(docker_manager):
+    """Test connecting to GraphRAG network."""
+    with mock.patch.object(docker_manager, "_get_current_container_id", return_value="abc123"):
+        with mock.patch.object(docker_manager, "_get_graphrag_network_name", return_value="auto-coder_graphrag-network"):
+            with mock.patch("subprocess.run") as mock_run:
+                # First call: get container name
+                # Second call: check if already connected (not connected)
+                # Third call: connect to network (success)
+                mock_run.side_effect = [
+                    mock.MagicMock(returncode=0, stdout=b"/test-container\n"),
+                    mock.MagicMock(returncode=0, stdout=b"other-container "),
+                    mock.MagicMock(returncode=0, stdout=b"")
+                ]
+
+                docker_manager._connect_to_graphrag_network()
+
+                # Should have called docker inspect, docker network inspect, and docker network connect
+                assert mock_run.call_count == 3
+
+
+def test_connect_to_graphrag_network_already_connected(docker_manager):
+    """Test connecting to GraphRAG network when already connected."""
+    with mock.patch.object(docker_manager, "_get_current_container_id", return_value="abc123"):
+        with mock.patch.object(docker_manager, "_get_graphrag_network_name", return_value="auto-coder_graphrag-network"):
+            with mock.patch("subprocess.run") as mock_run:
+                # First call: get container name
+                # Second call: check connection (already connected by name)
+                mock_run.side_effect = [
+                    mock.MagicMock(returncode=0, stdout=b"/test-container\n"),
+                    mock.MagicMock(returncode=0, stdout=b"test-container other-container ")
+                ]
+
+                docker_manager._connect_to_graphrag_network()
+
+                # Should only check container name and connection, not connect
+                assert mock_run.call_count == 2
+
+
+def test_connect_to_graphrag_network_not_in_container(docker_manager):
+    """Test connecting to GraphRAG network when not in container."""
+    with mock.patch.object(docker_manager, "_get_current_container_id", return_value=None):
+        with mock.patch("subprocess.run") as mock_run:
+            docker_manager._connect_to_graphrag_network()
+
+            # Should not call docker commands
+            mock_run.assert_not_called()
+
+
+def test_start_connects_to_network(docker_manager, mock_executor):
+    """Test that start() connects to GraphRAG network."""
+    # Mock successful docker-compose up
+    mock_result = mock.MagicMock()
+    mock_result.success = True
+    mock_executor.run_command.return_value = mock_result
+
+    with mock.patch.object(docker_manager, "wait_for_health", return_value=True):
+        with mock.patch.object(docker_manager, "_connect_to_graphrag_network") as mock_connect:
+            docker_manager.start(wait_for_health=True)
+
+            # Should have called _connect_to_graphrag_network
+            mock_connect.assert_called_once()
+

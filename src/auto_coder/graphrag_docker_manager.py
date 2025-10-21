@@ -205,6 +205,9 @@ class GraphRAGDockerManager:
 
         logger.info("Containers started successfully")
 
+        # Connect current container to GraphRAG network if running in container
+        self._connect_to_graphrag_network()
+
         if wait_for_health:
             logger.info("Waiting for containers to be healthy...")
             if not self.wait_for_health(timeout=timeout):
@@ -357,6 +360,118 @@ class GraphRAGDockerManager:
         except Exception as e:
             logger.debug(f"Qdrant health check failed: {e}")
             return False
+
+    def _get_current_container_id(self) -> Optional[str]:
+        """Get current container ID if running in a container.
+
+        Returns:
+            Container ID if running in container, None otherwise
+        """
+        # Check if running in container
+        if not (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")):
+            return None
+
+        try:
+            # Try to get container ID from hostname
+            with open("/etc/hostname", "r") as f:
+                container_id = f.read().strip()
+                if container_id:
+                    return container_id
+        except Exception as e:
+            logger.debug(f"Failed to get container ID from hostname: {e}")
+
+        return None
+
+    def _get_graphrag_network_name(self) -> Optional[str]:
+        """Get GraphRAG network name from docker-compose file.
+
+        Returns:
+            Network name if found, None otherwise
+        """
+        try:
+            # The network name is typically prefixed with the project name
+            # For docker-compose, it's usually <directory>_<network_name>
+            # We'll use docker network ls to find it
+            cmd = ["docker", "network", "ls", "--format", "{{.Name}}", "--filter", "name=graphrag"]
+            result = subprocess.run(cmd, capture_output=True, timeout=5)
+
+            if result.returncode != 0:
+                # Try with sudo
+                cmd = ["sudo"] + cmd
+                result = subprocess.run(cmd, capture_output=True, timeout=5)
+
+            if result.returncode == 0:
+                networks = result.stdout.decode().strip().split("\n")
+                # Find network containing 'graphrag'
+                for network in networks:
+                    if "graphrag" in network.lower():
+                        return network
+        except Exception as e:
+            logger.debug(f"Failed to get GraphRAG network name: {e}")
+
+        return None
+
+    def _connect_to_graphrag_network(self) -> None:
+        """Connect current container to GraphRAG network if running in container."""
+        container_id = self._get_current_container_id()
+        if not container_id:
+            logger.debug("Not running in container, skipping network connection")
+            return
+
+        network_name = self._get_graphrag_network_name()
+        if not network_name:
+            logger.warning("Could not find GraphRAG network")
+            return
+
+        try:
+            # Get container name
+            cmd = ["docker", "inspect", container_id, "--format", "{{.Name}}"]
+            result = subprocess.run(cmd, capture_output=True, timeout=5)
+
+            if result.returncode != 0:
+                # Try with sudo
+                cmd = ["sudo"] + cmd
+                result = subprocess.run(cmd, capture_output=True, timeout=5)
+
+            container_name = result.stdout.decode().strip().lstrip("/") if result.returncode == 0 else None
+
+            # Check if already connected
+            cmd = ["docker", "network", "inspect", network_name, "--format", "{{range .Containers}}{{.Name}} {{end}}"]
+            result = subprocess.run(cmd, capture_output=True, timeout=5)
+
+            if result.returncode != 0:
+                # Try with sudo
+                cmd = ["sudo"] + cmd
+                result = subprocess.run(cmd, capture_output=True, timeout=5)
+
+            if result.returncode == 0:
+                connected_containers = result.stdout.decode().strip()
+                # Check both container ID and name
+                if container_id in connected_containers or (container_name and container_name in connected_containers):
+                    logger.debug(f"Container {container_id} ({container_name}) already connected to {network_name}")
+                    return
+
+            # Connect to network
+            cmd = ["docker", "network", "connect", network_name, container_id]
+            result = subprocess.run(cmd, capture_output=True, timeout=10)
+
+            if result.returncode != 0:
+                # Try with sudo
+                cmd = ["sudo"] + cmd
+                result = subprocess.run(cmd, capture_output=True, timeout=10)
+
+            if result.returncode == 0:
+                logger.info(f"Connected container {container_id} ({container_name}) to GraphRAG network {network_name}")
+            else:
+                stderr = result.stderr.decode()
+                # Ignore "already exists in network" error
+                if "already exists in network" in stderr:
+                    logger.debug(f"Container {container_id} ({container_name}) already connected to {network_name}")
+                else:
+                    logger.warning(f"Failed to connect to GraphRAG network: {stderr}")
+
+        except Exception as e:
+            logger.warning(f"Failed to connect to GraphRAG network: {e}")
 
     def get_status(self) -> dict[str, bool]:
         """Get status of containers.

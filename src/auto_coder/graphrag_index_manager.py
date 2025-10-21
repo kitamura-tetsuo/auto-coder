@@ -385,6 +385,7 @@ class GraphRAGIndexManager:
             return
 
         # Connect to Neo4j
+        # Use container name if in container and connected to same network, otherwise localhost
         neo4j_uri = "bolt://auto-coder-neo4j:7687" if in_container else "bolt://localhost:7687"
         neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
         neo4j_password = os.environ.get("NEO4J_PASSWORD", "password")
@@ -455,6 +456,7 @@ class GraphRAGIndexManager:
             return
 
         # Connect to Qdrant
+        # Use container name if in container and connected to same network, otherwise localhost
         qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
