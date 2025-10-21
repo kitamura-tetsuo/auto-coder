@@ -101,6 +101,11 @@ class GraphRAGMCPIntegration:
                 return False
         else:
             logger.info("Docker containers are already running")
+            # Ensure current container is connected to GraphRAG network
+            try:
+                self.docker_manager._connect_to_graphrag_network()
+            except Exception as e:
+                logger.warning(f"Failed to connect to GraphRAG network: {e}")
 
         # 2. Check if indexed path matches current path
         try:

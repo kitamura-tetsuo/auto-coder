@@ -86,6 +86,8 @@ def test_ensure_ready_containers_already_running(integration, mock_docker_manage
     assert result is True
     mock_docker_manager.is_running.assert_called_once()
     mock_docker_manager.start.assert_not_called()
+    # Should attempt to connect to network when containers are already running
+    mock_docker_manager._connect_to_graphrag_network.assert_called_once()
     integration.index_manager.ensure_index_up_to_date.assert_called_once()
 
 
@@ -319,4 +321,21 @@ def test_pump_stderr_exception(integration):
 
     # Should not raise exception
     integration._pump_stderr(mock_stderr)
+
+
+def test_ensure_ready_network_connection_failure(integration, mock_docker_manager):
+    """Test ensure_ready when network connection fails (should not fail the whole process)."""
+    mock_docker_manager.is_running.return_value = True
+    mock_docker_manager._connect_to_graphrag_network.side_effect = Exception(
+        "Network connection failed"
+    )
+    integration.index_manager.check_indexed_path.return_value = (True, "/some/path")
+    integration.index_manager.ensure_index_up_to_date.return_value = True
+
+    result = integration.ensure_ready()
+
+    # Should still succeed even if network connection fails
+    assert result is True
+    mock_docker_manager._connect_to_graphrag_network.assert_called_once()
+    integration.index_manager.ensure_index_up_to_date.assert_called_once()
 
