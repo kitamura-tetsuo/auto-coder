@@ -216,3 +216,6 @@ playwright/.cache/
 reports/
 .auto-coder/
 .gemini/settings.json
+
+graph-builder/node_modules/
+graph-builder/test-output-ts/

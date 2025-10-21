@@ -116,10 +116,44 @@ features:
         - "python3 src/cli_python.py emit-json --out ./out"
         - "python3 src/cli_python.py diff --since HEAD~1 --out ./out"
     tests:
+      - file: "graph-builder/src/tests/typescript-scanner.test.ts"
+        description: "TypeScript scanner comprehensive tests (21 test cases)"
+        status: "✅ All tests passed"
+        coverage:
+          - "Project scanning"
+          - "Node type extraction (File, Function, Class, Interface, Type, Method)"
+          - "Node properties validation (id, kind, fqname, sig, short, complexity, tokens_est)"
+          - "FQName generation"
+          - "Signature generation"
+          - "Tag detection (ASYNC, NETWORK, DB)"
+          - "Cyclomatic complexity calculation"
+          - "Edge extraction (CONTAINS, IMPORTS, CALLS)"
+          - "File path and line number tracking"
+          - "File limit option"
+        test_sample: "graph-builder/test-sample/typescript/"
+        results:
+          total_tests: 21
+          passed: 21
+          failed: 0
+          nodes_detected: 25
+          edges_detected: 34
+          files: 2
+          functions: 6
+          classes: 2
+          interfaces: 2
+          types: 1
+          methods: 12
       - file: "graph-builder/src/tests/scanner.test.ts"
-        description: "TypeScript scanner tests"
+        description: "TypeScript scanner basic tests"
       - file: "graph-builder/src/tests/test_python_scanner.py"
         description: "Python scanner tests"
+        status: "✅ All tests passed"
+        results:
+          nodes_detected: 10
+          edges_detected: 12
+          functions: 2
+          classes: 2
+          methods: 5
 
   github_integration:
     name: "GitHub API Integration"

@@ -23,12 +23,13 @@
   "author": "Auto-Coder Team",
   "license": "MIT",
   "dependencies": {
-    "ts-morph": "^21.0.1",
     "commander": "^11.1.0",
     "csv-writer": "^1.6.0",
-    "glob": "^10.3.10"
+    "glob": "^10.3.10",
+    "ts-morph": "^21.0.1"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.10.6",
     "@typescript-eslint/eslint-plugin": "^6.17.0",
     "@typescript-eslint/parser": "^6.17.0",
@@ -40,4 +41,3 @@
     "typescript": "^5.3.3"
   }
 }
-
