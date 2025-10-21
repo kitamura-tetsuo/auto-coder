@@ -208,20 +208,22 @@ class GraphRAGIndexManager:
         return True
 
     def _index_codebase(self) -> None:
-        """Index codebase into Qdrant and Neo4j.
+        """Index codebase into Qdrant and Neo4j using graph-builder.
 
-        This is a simplified implementation that:
-        1. Finds Python files in the repository
-        2. Creates embeddings using sentence-transformers
-        3. Stores embeddings in Qdrant
+        This implementation:
+        1. Uses graph-builder to analyze Python and TypeScript code
+        2. Extracts structured graph data (nodes and edges)
+        3. Stores graph data in Neo4j
+        4. Creates embeddings and stores in Qdrant
         """
         try:
             from qdrant_client import QdrantClient
             from qdrant_client.models import Distance, VectorParams, PointStruct
             from sentence_transformers import SentenceTransformer
+            from neo4j import GraphDatabase
         except ImportError as e:
             logger.error(f"Required packages not installed: {e}")
-            logger.info("Install with: pip install qdrant-client sentence-transformers")
+            logger.info("Install with: pip install qdrant-client sentence-transformers neo4j")
             raise
 
         # Determine if running in container
@@ -229,8 +231,230 @@ class GraphRAGIndexManager:
             """Check if running inside a Docker container."""
             return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
 
-        # Connect to Qdrant
         in_container = is_running_in_container()
+
+        # Step 1: Run graph-builder to analyze codebase
+        logger.info("Running graph-builder to analyze codebase...")
+        graph_data = self._run_graph_builder()
+
+        if not graph_data or (not graph_data.get("nodes") and not graph_data.get("edges")):
+            logger.warning("No graph data extracted from codebase")
+            return
+
+        logger.info(f"Extracted {len(graph_data.get('nodes', []))} nodes and {len(graph_data.get('edges', []))} edges")
+
+        # Step 2: Store graph data in Neo4j
+        logger.info("Storing graph data in Neo4j...")
+        self._store_graph_in_neo4j(graph_data, in_container)
+
+        # Step 3: Create embeddings and store in Qdrant
+        logger.info("Creating embeddings and storing in Qdrant...")
+        self._store_embeddings_in_qdrant(graph_data, in_container)
+
+        logger.info("Successfully indexed codebase into Neo4j and Qdrant")
+
+    def _run_graph_builder(self) -> dict:
+        """Run graph-builder to analyze codebase.
+
+        Returns:
+            Dictionary with 'nodes' and 'edges' keys
+        """
+        # Find graph-builder installation
+        graph_builder_path = self._find_graph_builder()
+        if not graph_builder_path:
+            logger.warning("graph-builder not found, falling back to simple Python indexing")
+            return self._fallback_python_indexing()
+
+        # Create temporary output directory
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "graph-data.json"
+
+            # Run graph-builder scan
+            try:
+                # Check if TypeScript version is available
+                ts_cli = graph_builder_path / "dist" / "cli.js"
+                if ts_cli.exists():
+                    cmd = [
+                        "node",
+                        str(ts_cli),
+                        "scan",
+                        "--project", str(self.repo_path),
+                        "--out", str(temp_dir),
+                        "--languages", "typescript,python"
+                    ]
+                else:
+                    # Use Python version
+                    py_cli = graph_builder_path / "src" / "cli_python.py"
+                    if not py_cli.exists():
+                        logger.warning("graph-builder CLI not found")
+                        return self._fallback_python_indexing()
+
+                    cmd = [
+                        "python3",
+                        str(py_cli),
+                        "scan",
+                        "--project", str(self.repo_path),
+                        "--out", str(temp_dir)
+                    ]
+
+                logger.info(f"Running: {' '.join(cmd)}")
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minutes timeout
+                )
+
+                if result.returncode != 0:
+                    logger.warning(f"graph-builder failed: {result.stderr}")
+                    return self._fallback_python_indexing()
+
+                # Read output
+                if output_path.exists():
+                    with open(output_path, "r") as f:
+                        return json.load(f)
+                else:
+                    logger.warning("graph-builder did not produce output")
+                    return self._fallback_python_indexing()
+
+            except Exception as e:
+                logger.warning(f"Failed to run graph-builder: {e}")
+                return self._fallback_python_indexing()
+
+    def _find_graph_builder(self) -> Optional[Path]:
+        """Find graph-builder installation.
+
+        Returns:
+            Path to graph-builder directory, or None if not found
+        """
+        # Check common locations
+        candidates = [
+            self.repo_path / "graph-builder",
+            Path.cwd() / "graph-builder",
+            Path.home() / "graph-builder",
+        ]
+
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_dir():
+                # Check if it has the expected structure
+                if (candidate / "src").exists():
+                    return candidate
+
+        return None
+
+    def _fallback_python_indexing(self) -> dict:
+        """Fallback to simple Python file indexing when graph-builder is not available.
+
+        Returns:
+            Dictionary with 'nodes' and 'edges' keys
+        """
+        logger.info("Using fallback Python indexing...")
+        python_files = list(self.repo_path.rglob("*.py"))
+
+        nodes = []
+        for idx, file_path in enumerate(python_files):
+            try:
+                content = file_path.read_text(encoding="utf-8")
+                if not content.strip():
+                    continue
+
+                nodes.append({
+                    "id": f"file_{idx}",
+                    "kind": "File",
+                    "fqname": str(file_path.relative_to(self.repo_path)),
+                    "file": str(file_path.relative_to(self.repo_path)),
+                    "content": content,
+                })
+            except Exception as e:
+                logger.warning(f"Failed to read {file_path}: {e}")
+
+        return {"nodes": nodes, "edges": []}
+
+    def _store_graph_in_neo4j(self, graph_data: dict, in_container: bool) -> None:
+        """Store graph data in Neo4j.
+
+        Args:
+            graph_data: Dictionary with 'nodes' and 'edges' keys
+            in_container: Whether running in a container
+        """
+        try:
+            from neo4j import GraphDatabase
+        except ImportError:
+            logger.warning("neo4j package not installed, skipping Neo4j indexing")
+            return
+
+        # Connect to Neo4j
+        neo4j_uri = "bolt://auto-coder-neo4j:7687" if in_container else "bolt://localhost:7687"
+        neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+        neo4j_password = os.environ.get("NEO4J_PASSWORD", "password")
+
+        logger.info(f"Connecting to Neo4j at {neo4j_uri}")
+
+        try:
+            driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+
+            with driver.session() as session:
+                # Clear existing data for this repository
+                session.run("MATCH (n) WHERE n.repo_path = $repo_path DETACH DELETE n",
+                           repo_path=str(self.repo_path.resolve()))
+
+                # Insert nodes
+                nodes = graph_data.get("nodes", [])
+                for node in nodes:
+                    node_data = dict(node)
+                    node_data["repo_path"] = str(self.repo_path.resolve())
+
+                    session.run(
+                        """
+                        CREATE (n:CodeNode)
+                        SET n = $props
+                        """,
+                        props=node_data
+                    )
+
+                logger.info(f"Inserted {len(nodes)} nodes into Neo4j")
+
+                # Insert edges
+                edges = graph_data.get("edges", [])
+                for edge in edges:
+                    session.run(
+                        """
+                        MATCH (from:CodeNode {id: $from_id, repo_path: $repo_path})
+                        MATCH (to:CodeNode {id: $to_id, repo_path: $repo_path})
+                        CREATE (from)-[r:RELATES {type: $type, count: $count}]->(to)
+                        """,
+                        from_id=edge.get("from"),
+                        to_id=edge.get("to"),
+                        type=edge.get("type", "UNKNOWN"),
+                        count=edge.get("count", 1),
+                        repo_path=str(self.repo_path.resolve())
+                    )
+
+                logger.info(f"Inserted {len(edges)} edges into Neo4j")
+
+            driver.close()
+
+        except Exception as e:
+            logger.error(f"Failed to store graph in Neo4j: {e}")
+            raise
+
+    def _store_embeddings_in_qdrant(self, graph_data: dict, in_container: bool) -> None:
+        """Store embeddings in Qdrant.
+
+        Args:
+            graph_data: Dictionary with 'nodes' and 'edges' keys
+            in_container: Whether running in a container
+        """
+        try:
+            from qdrant_client import QdrantClient
+            from qdrant_client.models import Distance, VectorParams, PointStruct
+            from sentence_transformers import SentenceTransformer
+        except ImportError:
+            logger.warning("Required packages not installed, skipping Qdrant indexing")
+            return
+
+        # Connect to Qdrant
         qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
@@ -241,14 +465,6 @@ class GraphRAGIndexManager:
         # Load embedding model
         logger.info("Loading embedding model...")
         model = SentenceTransformer("all-MiniLM-L6-v2")
-
-        # Get Python files
-        python_files = list(self.repo_path.rglob("*.py"))
-        if not python_files:
-            logger.warning("No Python files found in repository")
-            return
-
-        logger.info(f"Found {len(python_files)} Python files")
 
         # Create or recreate collection
         try:
@@ -263,46 +479,66 @@ class GraphRAGIndexManager:
         )
         logger.info(f"Created collection: {collection_name}")
 
-        # Index files
+        # Index nodes
+        nodes = graph_data.get("nodes", [])
         points = []
-        for idx, file_path in enumerate(python_files):
-            try:
-                # Read file content
-                content = file_path.read_text(encoding="utf-8")
 
-                # Skip empty files
-                if not content.strip():
+        for idx, node in enumerate(nodes):
+            try:
+                # Create text representation for embedding
+                text_parts = []
+
+                if node.get("fqname"):
+                    text_parts.append(f"Name: {node['fqname']}")
+
+                if node.get("sig"):
+                    text_parts.append(f"Signature: {node['sig']}")
+
+                if node.get("short"):
+                    text_parts.append(f"Summary: {node['short']}")
+
+                # Use content if available (from fallback indexing)
+                if node.get("content"):
+                    text_parts.append(node["content"][:1000])
+
+                if not text_parts:
                     continue
 
+                text = "\n".join(text_parts)
+
                 # Create embedding
-                embedding = model.encode(content).tolist()
+                embedding_result = model.encode(text)
+                # Handle both numpy arrays and lists
+                embedding = embedding_result.tolist() if hasattr(embedding_result, 'tolist') else embedding_result
 
                 # Create point
                 point = PointStruct(
                     id=idx,
                     vector=embedding,
                     payload={
-                        "file_path": str(file_path.relative_to(self.repo_path)),
-                        "content": content[:1000],  # Store first 1000 chars
-                        "type": "python_file",
+                        "node_id": node.get("id", f"node_{idx}"),
+                        "kind": node.get("kind", "Unknown"),
+                        "fqname": node.get("fqname", ""),
+                        "file": node.get("file", ""),
+                        "repo_path": str(self.repo_path.resolve()),
                     }
                 )
                 points.append(point)
 
-                # Batch insert every 100 files
+                # Batch insert every 100 nodes
                 if len(points) >= 100:
                     client.upsert(collection_name=collection_name, points=points)
-                    logger.info(f"Indexed {idx + 1}/{len(python_files)} files")
+                    logger.info(f"Indexed {idx + 1}/{len(nodes)} nodes")
                     points = []
 
             except Exception as e:
-                logger.warning(f"Failed to index {file_path}: {e}")
+                logger.warning(f"Failed to index node {idx}: {e}")
 
         # Insert remaining points
         if points:
             client.upsert(collection_name=collection_name, points=points)
 
-        logger.info(f"Successfully indexed {len(python_files)} Python files into Qdrant")
+        logger.info(f"Successfully indexed {len(nodes)} nodes into Qdrant")
 
     def ensure_index_up_to_date(self) -> bool:
         """Ensure index is up to date, updating if necessary.

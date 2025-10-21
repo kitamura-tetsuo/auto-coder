@@ -569,6 +569,120 @@ features:
       - "Run 'auto-coder graphrag setup-mcp' to install and configure graphrag_mcp server"
       - "Tests verify JSON-RPC protocol compliance and basic MCP operations"
 
+  graphrag_code_analysis_integration:
+    name: "GraphRAG Code Analysis Integration"
+    description: "Integration of graph-builder code analysis into GraphRAG indexing process"
+    components:
+      - name: "GraphRAGIndexManager._index_codebase"
+        file: "src/auto_coder/graphrag_index_manager.py"
+        description: "Enhanced indexing that uses graph-builder to analyze Python and TypeScript code"
+        methods:
+          - name: "_index_codebase"
+            description: "Index codebase using graph-builder for structured code analysis"
+            behavior:
+              - "Runs graph-builder to extract structured graph data (nodes and edges)"
+              - "Stores graph data in Neo4j with proper node and relationship types"
+              - "Creates embeddings from node metadata and stores in Qdrant"
+              - "Falls back to simple Python indexing if graph-builder is not available"
+            workflow:
+              - "Step 1: Run graph-builder scan to analyze codebase"
+              - "Step 2: Store extracted nodes and edges in Neo4j"
+              - "Step 3: Create embeddings from node data and store in Qdrant"
+          - name: "_run_graph_builder"
+            description: "Execute graph-builder to analyze codebase"
+            returns: "Dictionary with 'nodes' and 'edges' keys"
+            behavior:
+              - "Searches for graph-builder installation in common locations"
+              - "Prefers TypeScript version (node dist/cli.js) if available"
+              - "Falls back to Python version (python3 src/cli_python.py)"
+              - "Runs scan command with --languages typescript,python"
+              - "Returns parsed JSON output with graph data"
+          - name: "_find_graph_builder"
+            description: "Locate graph-builder installation"
+            returns: "Path to graph-builder directory or None"
+            search_locations:
+              - "{repo_path}/graph-builder"
+              - "{cwd}/graph-builder"
+              - "~/graph-builder"
+          - name: "_fallback_python_indexing"
+            description: "Simple Python file indexing when graph-builder is unavailable"
+            returns: "Dictionary with basic file nodes"
+            behavior:
+              - "Scans for *.py files in repository"
+              - "Creates basic File nodes with content"
+              - "No edge extraction or advanced analysis"
+          - name: "_store_graph_in_neo4j"
+            description: "Store graph data in Neo4j database"
+            parameters: ["graph_data", "in_container"]
+            behavior:
+              - "Connects to Neo4j (bolt://localhost:7687 or container URL)"
+              - "Clears existing data for current repository"
+              - "Creates CodeNode nodes with all extracted properties"
+              - "Creates RELATES relationships with type and count metadata"
+              - "Tags all data with repo_path for multi-repository support"
+          - name: "_store_embeddings_in_qdrant"
+            description: "Create and store embeddings in Qdrant"
+            parameters: ["graph_data", "in_container"]
+            behavior:
+              - "Connects to Qdrant (http://localhost:6333 or container URL)"
+              - "Recreates code_embeddings collection"
+              - "Creates text representation from node metadata (fqname, sig, short)"
+              - "Generates embeddings using sentence-transformers (all-MiniLM-L6-v2)"
+              - "Stores embeddings with node metadata as payload"
+              - "Batch inserts every 100 nodes for efficiency"
+    integration_points:
+      - name: "Auto-Coder Commands"
+        description: "All auto-coder commands that initialize GraphRAG"
+        commands:
+          - "process-issues: Calls initialize_graphrag() which triggers indexing"
+          - "create-feature-issues: Calls initialize_graphrag() which triggers indexing"
+          - "fix-to-pass-tests: Calls initialize_graphrag() which triggers indexing"
+      - name: "GraphRAGMCPIntegration.ensure_ready"
+        file: "src/auto_coder/graphrag_mcp_integration.py"
+        description: "Ensures index is up to date before starting MCP server"
+        behavior:
+          - "Calls index_manager.ensure_index_up_to_date()"
+          - "Triggers _index_codebase() if codebase has changed"
+    data_flow:
+      - "1. User runs auto-coder command (process-issues, etc.)"
+      - "2. initialize_graphrag() is called"
+      - "3. GraphRAGMCPIntegration.ensure_ready() checks index status"
+      - "4. If outdated, GraphRAGIndexManager.update_index() is called"
+      - "5. _index_codebase() runs graph-builder scan"
+      - "6. Graph data is stored in Neo4j (nodes and edges)"
+      - "7. Embeddings are created and stored in Qdrant"
+      - "8. Index state is saved with codebase hash"
+      - "9. LLM can now query Neo4j and Qdrant via GraphRAG MCP"
+    supported_languages:
+      - "Python: Full AST analysis via graph-builder Python scanner"
+      - "TypeScript: Full AST analysis via graph-builder TypeScript scanner"
+    extracted_data:
+      nodes:
+        - "File: Source file nodes"
+        - "Module: Python module nodes"
+        - "Function: Function/method nodes with signatures"
+        - "Class: Class nodes with inheritance info"
+        - "Interface: TypeScript interface nodes"
+        - "Type: Type definition nodes"
+      edges:
+        - "IMPORTS: Import relationships"
+        - "CALLS: Function call relationships"
+        - "CONTAINS: Containment relationships (file contains class, etc.)"
+        - "EXTENDS: Inheritance relationships"
+        - "IMPLEMENTS: Interface implementation relationships"
+      metadata:
+        - "id: Unique identifier (SHA1 hash)"
+        - "kind: Node type"
+        - "fqname: Fully qualified name"
+        - "sig: Type signature"
+        - "short: Summary (from JSDoc or auto-generated)"
+        - "complexity: Cyclomatic complexity"
+        - "tokens_est: Estimated token count"
+        - "tags: Side-effect tags (IO, DB, NETWORK, ASYNC, PURE)"
+        - "file: Source file path"
+        - "start_line: Start line number"
+        - "end_line: End line number"
+
   graphrag_services_checker:
     name: "GraphRAG Services Verification Script"
     description: "Standalone script to verify Neo4j and Qdrant services are running correctly, with both direct access and GraphRAG MCP integration testing"
