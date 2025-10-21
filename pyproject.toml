@@ -63,7 +63,7 @@ where = ["src"]
 
 
 [tool.setuptools.package-data]
-"auto_coder" = ["prompts.yaml"]
+"auto_coder" = ["prompts.yaml", "docker-compose.graphrag.yml"]
 
 [tool.black]
 line-length = 88

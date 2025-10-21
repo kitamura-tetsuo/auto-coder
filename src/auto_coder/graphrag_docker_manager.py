@@ -6,7 +6,9 @@ Manages Neo4j and Qdrant Docker containers for graphrag_mcp integration.
 
 import os
 import subprocess
+import tempfile
 import time
+from importlib import resources
 from pathlib import Path
 from typing import Optional
 
@@ -29,13 +31,60 @@ class GraphRAGDockerManager:
             RuntimeError: If docker compose command is not available
         """
         if compose_file is None:
-            # Default to docker-compose.graphrag.yml in repository root
-            repo_root = Path(__file__).parent.parent.parent
-            compose_file = str(repo_root / "docker-compose.graphrag.yml")
+            # Extract docker-compose.graphrag.yml from package resources
+            compose_file = self._get_compose_file_from_package()
 
         self.compose_file = compose_file
         self.executor = CommandExecutor()
         self._docker_compose_cmd = self._detect_docker_compose_command()
+
+    def _get_compose_file_from_package(self) -> str:
+        """Get docker-compose.graphrag.yml from package resources.
+
+        Returns:
+            Path to docker-compose.graphrag.yml file
+
+        Raises:
+            FileNotFoundError: If docker-compose.graphrag.yml is not found in package
+        """
+        try:
+            # Try Python 3.9+ importlib.resources API
+            if hasattr(resources, "files"):
+                package_files = resources.files("auto_coder")
+                compose_resource = package_files / "docker-compose.graphrag.yml"
+
+                # Read the content and write to a temporary file
+                compose_content = compose_resource.read_text()
+
+                # Create a temporary file that persists
+                temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
+                temp_dir.mkdir(exist_ok=True)
+                compose_file = temp_dir / "docker-compose.graphrag.yml"
+                compose_file.write_text(compose_content)
+
+                logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
+                return str(compose_file)
+            else:
+                # Fallback for older Python versions
+                import pkg_resources
+                compose_content = pkg_resources.resource_string(
+                    "auto_coder", "docker-compose.graphrag.yml"
+                ).decode("utf-8")
+
+                # Create a temporary file that persists
+                temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
+                temp_dir.mkdir(exist_ok=True)
+                compose_file = temp_dir / "docker-compose.graphrag.yml"
+                compose_file.write_text(compose_content)
+
+                logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
+                return str(compose_file)
+        except Exception as e:
+            logger.error(f"Failed to extract docker-compose.graphrag.yml from package: {e}")
+            raise FileNotFoundError(
+                "docker-compose.graphrag.yml not found in package. "
+                "Please ensure the package is installed correctly."
+            ) from e
 
     def _detect_docker_compose_command(self) -> list[str]:
         """Detect which docker compose command is available.
