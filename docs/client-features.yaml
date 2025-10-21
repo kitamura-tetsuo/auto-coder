@@ -422,6 +422,89 @@ features:
       - "Run 'auto-coder graphrag setup-mcp' to install and configure graphrag_mcp server"
       - "Tests verify JSON-RPC protocol compliance and basic MCP operations"
 
+  graphrag_services_checker:
+    name: "GraphRAG Services Verification Script"
+    description: "Standalone script to verify Neo4j and Qdrant services are running correctly, with both direct access and GraphRAG MCP integration testing"
+    components:
+      - name: "GraphRAG Services Checker Script"
+        file: "scripts/check_graphrag_services.py"
+        description: |
+          Comprehensive verification script for Neo4j and Qdrant services.
+          Tests both direct database access and GraphRAG MCP integration.
+          Provides detailed diagnostics and troubleshooting information.
+        usage:
+          - "python scripts/check_graphrag_services.py                # Direct access only"
+          - "python scripts/check_graphrag_services.py --with-mcp     # Include MCP tests"
+          - "python scripts/check_graphrag_services.py --mcp-only     # MCP tests only"
+        methods:
+          - name: "check_neo4j_direct"
+            description: "Test direct access to Neo4j database via Bolt protocol"
+            returns: "Boolean indicating success"
+            tests:
+              - "Database version verification"
+              - "Node count query"
+              - "Sample node creation (Person with name and role)"
+              - "Node search by property"
+              - "Relationship creation (WORKS_ON between Person and Project)"
+              - "Path traversal query"
+              - "Cleanup of test data"
+            connection:
+              - "URI: bolt://localhost:7687"
+              - "User: neo4j"
+              - "Password: password"
+          - name: "check_qdrant_direct"
+            description: "Test direct access to Qdrant vector database via HTTP API"
+            returns: "Boolean indicating success"
+            tests:
+              - "Health check"
+              - "Collection listing"
+              - "Test collection creation (4-dimensional vectors, COSINE distance)"
+              - "Vector insertion (3 sample documents with metadata)"
+              - "Collection info retrieval"
+              - "Similarity search (top 3 results)"
+              - "Filtered search (by metadata field)"
+              - "Cleanup of test collection"
+            connection:
+              - "URL: http://localhost:6333"
+              - "No authentication required"
+          - name: "check_graphrag_mcp"
+            description: "Test GraphRAG MCP integration and Docker container management"
+            returns: "Boolean indicating success"
+            tests:
+              - "Docker container status check (Neo4j and Qdrant)"
+              - "Automatic container startup if not running"
+              - "MCP server status verification"
+              - "Index state verification"
+              - "MCP configuration retrieval"
+            behavior:
+              - "Automatically starts Docker containers if not running"
+              - "Provides setup instructions for MCP server"
+              - "Shows indexed repository path information"
+        vscode_integration:
+          - name: "Check GraphRAG Services (Direct)"
+            description: "VS Code debug configuration for direct access tests only"
+          - name: "Check GraphRAG Services (with MCP)"
+            description: "VS Code debug configuration including MCP tests"
+          - name: "Check GraphRAG Services (MCP only)"
+            description: "VS Code debug configuration for MCP tests only"
+        dependencies:
+          - "neo4j>=5.14.0 (Python driver)"
+          - "qdrant-client>=1.7.0 (Python client)"
+          - "Install with: pip install -e '.[graphrag]'"
+        troubleshooting:
+          neo4j:
+            - "Check container: docker ps | grep neo4j"
+            - "View logs: docker logs auto-coder-neo4j"
+            - "Test port: nc -zv localhost 7687"
+          qdrant:
+            - "Check container: docker ps | grep qdrant"
+            - "View logs: docker logs auto-coder-qdrant"
+            - "Test port: nc -zv localhost 6333"
+    documentation:
+      - "README.md: GraphRAG 統合（実験的機能）section"
+      - "pyproject.toml: [project.optional-dependencies.graphrag]"
+      - ".vscode/launch.json: Debug configurations for script execution"
+
   automation_engine:
     name: "Automation Engine"
     description: "Main orchestration engine that coordinates GitHub and LLM integration"

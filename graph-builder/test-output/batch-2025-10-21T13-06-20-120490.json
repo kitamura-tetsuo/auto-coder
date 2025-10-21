@@ -1,0 +1,275 @@
+{
+  "nodes": [
+    {
+      "id": "2b308a0e2e90e340",
+      "kind": "File",
+      "fqname": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "sig": "",
+      "short": "File: /home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "complexity": 0,
+      "tokens_est": 17,
+      "tags": [],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": null,
+      "end_line": null
+    },
+    {
+      "id": "d16f7ee7ede84cce",
+      "kind": "Class",
+      "fqname": "sample:User",
+      "sig": "class User",
+      "short": "User class",
+      "complexity": 0,
+      "tokens_est": 6,
+      "tags": [],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 9,
+      "end_line": 16
+    },
+    {
+      "id": "a226650b3886bb59",
+      "kind": "Method",
+      "fqname": "sample:User.__init__",
+      "sig": "(Any,str,str,str)->Any",
+      "short": "Initialize user",
+      "complexity": 1,
+      "tokens_est": 10,
+      "tags": [
+        "PURE"
+      ],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 12,
+      "end_line": 16
+    },
+    {
+      "id": "75cab5a882ddfe93",
+      "kind": "Class",
+      "fqname": "sample:UserService",
+      "sig": "class UserService",
+      "short": "User service class",
+      "complexity": 0,
+      "tokens_est": 10,
+      "tags": [],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 19,
+      "end_line": 37
+    },
+    {
+      "id": "c74dd0a995585065",
+      "kind": "Method",
+      "fqname": "sample:UserService.__init__",
+      "sig": "(Any)->Any",
+      "short": "Initialize user service",
+      "complexity": 1,
+      "tokens_est": 9,
+      "tags": [
+        "PURE"
+      ],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 22,
+      "end_line": 24
+    },
+    {
+      "id": "0121c1f4a6f7ab1d",
+      "kind": "Method",
+      "fqname": "sample:UserService.get_user_by_id",
+      "sig": "(Any,str)->Optional[User]",
+      "short": "Get user by ID",
+      "complexity": 1,
+      "tokens_est": 11,
+      "tags": [
+        "PURE"
+      ],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 26,
+      "end_line": 28
+    },
+    {
+      "id": "ec39480fd3533baa",
+      "kind": "Method",
+      "fqname": "sample:UserService.create_user",
+      "sig": "(Any,User)->None",
+      "short": "Create a new user",
+      "complexity": 1,
+      "tokens_est": 9,
+      "tags": [
+        "PURE"
+      ],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 30,
+      "end_line": 32
+    },
+    {
+      "id": "f1593a33090d1fc4",
+      "kind": "Method",
+      "fqname": "sample:UserService.validate_email",
+      "sig": "(Any,str)->bool",
+      "short": "Validate user email",
+      "complexity": 1,
+      "tokens_est": 9,
+      "tags": [
+        "PURE"
+      ],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 34,
+      "end_line": 37
+    },
+    {
+      "id": "250ea2e3684d615f",
+      "kind": "Function",
+      "fqname": "sample:fetch_user_from_api",
+      "sig": "(str)->User",
+      "short": "Fetch user from API",
+      "complexity": 1,
+      "tokens_est": 8,
+      "tags": [
+        "NETWORK",
+        "ASYNC"
+      ],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 40,
+      "end_line": 47
+    },
+    {
+      "id": "d4a9096146a4c3a8",
+      "kind": "Function",
+      "fqname": "sample:calculate_age",
+      "sig": "(int)->int",
+      "short": "Calculate user age",
+      "complexity": 1,
+      "tokens_est": 8,
+      "tags": [
+        "PURE"
+      ],
+      "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+      "start_line": 50,
+      "end_line": 54
+    }
+  ],
+  "edges": [
+    {
+      "from": "sample:UserService.get_user_by_id",
+      "to": "sample:get",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 28
+        }
+      ]
+    },
+    {
+      "from": "sample:UserService.validate_email",
+      "to": "sample:bool",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 37
+        }
+      ]
+    },
+    {
+      "from": "sample:UserService.validate_email",
+      "to": "sample:match",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 37
+        }
+      ]
+    },
+    {
+      "from": "sample:fetch_user_from_api",
+      "to": "sample:ClientSession",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 44
+        }
+      ]
+    },
+    {
+      "from": "sample:fetch_user_from_api",
+      "to": "sample:get",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 45
+        }
+      ]
+    },
+    {
+      "from": "sample:fetch_user_from_api",
+      "to": "sample:json",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 46
+        }
+      ]
+    },
+    {
+      "from": "sample:fetch_user_from_api",
+      "to": "sample:User",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 47
+        }
+      ]
+    },
+    {
+      "from": "sample:calculate_age",
+      "to": "sample:now",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py",
+          "line": 53
+        }
+      ]
+    },
+    {
+      "from": "2b308a0e2e90e340",
+      "to": "d16f7ee7ede84cce",
+      "type": "CONTAINS",
+      "count": 1,
+      "locations": []
+    },
+    {
+      "from": "2b308a0e2e90e340",
+      "to": "75cab5a882ddfe93",
+      "type": "CONTAINS",
+      "count": 1,
+      "locations": []
+    },
+    {
+      "from": "2b308a0e2e90e340",
+      "to": "250ea2e3684d615f",
+      "type": "CONTAINS",
+      "count": 1,
+      "locations": []
+    },
+    {
+      "from": "2b308a0e2e90e340",
+      "to": "d4a9096146a4c3a8",
+      "type": "CONTAINS",
+      "count": 1,
+      "locations": []
+    }
+  ]
+}

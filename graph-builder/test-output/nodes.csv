@@ -1,0 +1,11 @@
+id:ID,kind,fqname,sig,short,complexity:int,tokens_est:int,tags,file,start_line:int,end_line:int
+2b308a0e2e90e340,File,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,,File: /home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,0,17,,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,,
+d16f7ee7ede84cce,Class,sample:User,class User,User class,0,6,,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,9,16
+a226650b3886bb59,Method,sample:User.__init__,"(Any,str,str,str)->Any",Initialize user,1,10,PURE,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,12,16
+75cab5a882ddfe93,Class,sample:UserService,class UserService,User service class,0,10,,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,19,37
+c74dd0a995585065,Method,sample:UserService.__init__,(Any)->Any,Initialize user service,1,9,PURE,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,22,24
+0121c1f4a6f7ab1d,Method,sample:UserService.get_user_by_id,"(Any,str)->Optional[User]",Get user by ID,1,11,PURE,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,26,28
+ec39480fd3533baa,Method,sample:UserService.create_user,"(Any,User)->None",Create a new user,1,9,PURE,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,30,32
+f1593a33090d1fc4,Method,sample:UserService.validate_email,"(Any,str)->bool",Validate user email,1,9,PURE,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,34,37
+250ea2e3684d615f,Function,sample:fetch_user_from_api,(str)->User,Fetch user from API,1,8,NETWORK;ASYNC,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,40,47
+d4a9096146a4c3a8,Function,sample:calculate_age,(int)->int,Calculate user age,1,8,PURE,/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py,50,54

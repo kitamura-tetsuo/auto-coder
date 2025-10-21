@@ -196,11 +196,27 @@ class GraphRAGMCPIntegration:
         Returns:
             True if server is running, False otherwise
         """
-        if self.mcp_process is None:
-            return False
+        # First check if we have a process we started
+        if self.mcp_process is not None:
+            if self.mcp_process.poll() is None:
+                return True
 
-        # Check if process is still alive
-        return self.mcp_process.poll() is None
+        # Check if any MCP server process is running (started by another terminal)
+        try:
+            result = subprocess.run(
+                ["ps", "aux"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            # Look for graphrag_mcp main.py process
+            for line in result.stdout.splitlines():
+                if "graphrag_mcp" in line and "main.py" in line and "grep" not in line:
+                    return True
+        except Exception as e:
+            logger.debug(f"Error checking for MCP server process: {e}")
+
+        return False
 
     def stop_mcp_server(self) -> None:
         """Stop graphrag_mcp server."""

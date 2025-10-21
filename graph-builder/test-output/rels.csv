@@ -1,0 +1,13 @@
+:START_ID,:END_ID,type,count:int,locations
+sample:UserService.get_user_by_id,sample:get,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 28}]"
+sample:UserService.validate_email,sample:bool,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 37}]"
+sample:UserService.validate_email,sample:match,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 37}]"
+sample:fetch_user_from_api,sample:ClientSession,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 44}]"
+sample:fetch_user_from_api,sample:get,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 45}]"
+sample:fetch_user_from_api,sample:json,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 46}]"
+sample:fetch_user_from_api,sample:User,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 47}]"
+sample:calculate_age,sample:now,CALLS,1,"[{""file"": ""/home/node/src/auto-coder/graph-builder/sample-repo/python/sample.py"", ""line"": 53}]"
+2b308a0e2e90e340,d16f7ee7ede84cce,CONTAINS,1,
+2b308a0e2e90e340,75cab5a882ddfe93,CONTAINS,1,
+2b308a0e2e90e340,250ea2e3684d615f,CONTAINS,1,
+2b308a0e2e90e340,d4a9096146a4c3a8,CONTAINS,1,

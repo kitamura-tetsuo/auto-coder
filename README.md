@@ -235,6 +235,118 @@ auto-coder fix-to-pass-tests --dry-run
 
 `MAX_ISSUES_PER_RUN` と `MAX_PRS_PER_RUN` はデフォルトで制限なし (`-1`) に設定されています。処理件数を制限したい場合は、正の整数を指定してください。
 
+## GraphRAG 統合（実験的機能）
+
+Auto-Coder は Neo4j と Qdrant を使用した GraphRAG（Graph Retrieval-Augmented Generation）統合をサポートしています。
+
+### GraphRAG のセットアップ
+
+1. GraphRAG 用の依存関係をインストール:
+```bash
+pip install -e ".[graphrag]"
+```
+
+2. Docker で Neo4j と Qdrant を起動:
+```bash
+# Docker Compose で起動
+docker compose -f docker-compose.graphrag.yml up -d
+
+# 状態確認
+docker compose -f docker-compose.graphrag.yml ps
+
+# ログ確認
+docker compose -f docker-compose.graphrag.yml logs
+```
+
+3. GraphRAG MCP サーバーのセットアップ（オプション）:
+```bash
+# 自動セットアップ（推奨）
+auto-coder graphrag setup-mcp
+
+# 手動セットアップ
+cd ~/graphrag_mcp
+uv sync
+uv run main.py
+```
+
+### GraphRAG サービスの動作確認
+
+Neo4j と Qdrant が正しく動作しているか確認するためのスクリプトを用意しています:
+
+```bash
+# 直接アクセスのみテスト
+python scripts/check_graphrag_services.py
+
+# GraphRAG MCP も含めてテスト
+python scripts/check_graphrag_services.py --with-mcp
+
+# MCP のみテスト
+python scripts/check_graphrag_services.py --mcp-only
+```
+
+このスクリプトは以下を確認します:
+- Neo4j への直接アクセス（Bolt プロトコル）
+  - データベースバージョン確認
+  - ノード作成・検索
+  - リレーションシップ作成
+  - パス検索
+- Qdrant への直接アクセス（HTTP API）
+  - コレクション作成
+  - ベクトル挿入
+  - 類似検索
+  - フィルタ付き検索
+- GraphRAG MCP 経由でのアクセス（オプション）
+  - Docker コンテナ状態確認
+  - MCP サーバー状態確認
+  - インデックス状態確認
+
+### VS Code でのデバッグ実行
+
+`.vscode/launch.json` に以下のデバッグ設定が含まれています:
+
+- **Check GraphRAG Services (Direct)**: 直接アクセスのみテスト
+- **Check GraphRAG Services (with MCP)**: GraphRAG MCP も含めてテスト
+- **Check GraphRAG Services (MCP only)**: MCP のみテスト
+
+### GraphRAG の接続情報
+
+デフォルトの接続情報:
+
+| サービス | URL | 認証情報 |
+|---------|-----|---------|
+| Neo4j (Bolt) | `bolt://localhost:7687` | `neo4j` / `password` |
+| Neo4j (HTTP) | `http://localhost:7474` | `neo4j` / `password` |
+| Qdrant (HTTP) | `http://localhost:6333` | 認証なし |
+| Qdrant (gRPC) | `http://localhost:6334` | 認証なし |
+
+### トラブルシューティング
+
+#### Neo4j に接続できない
+
+```bash
+# コンテナが起動しているか確認
+docker ps | grep neo4j
+
+# ログを確認
+docker logs auto-coder-neo4j
+
+# ポートが開いているか確認
+nc -zv localhost 7687
+```
+
+#### Qdrant に接続できない
+
+```bash
+# コンテナが起動しているか確認
+docker ps | grep qdrant
+
+# ログを確認
+docker logs auto-coder-qdrant
+
+# ポートが開いているか確認
+nc -zv localhost 6333
+```
+
 ## 開発
 
 ### 開発環境のセットアップ

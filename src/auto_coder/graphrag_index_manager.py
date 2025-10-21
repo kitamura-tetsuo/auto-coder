@@ -189,14 +189,14 @@ class GraphRAGIndexManager:
 
         logger.info("Updating GraphRAG index...")
 
-        # TODO: Implement actual indexing logic
-        # This would involve:
-        # 1. Parsing codebase files
-        # 2. Creating embeddings
-        # 3. Storing in Neo4j (graph structure)
-        # 4. Storing in Qdrant (vector embeddings)
-        #
-        # For now, we'll just update the hash to mark as indexed
+        # Perform actual indexing
+        try:
+            self._index_codebase()
+        except Exception as e:
+            logger.error(f"Failed to index codebase: {e}")
+            return False
+
+        # Update the hash to mark as indexed
         current_hash = self._get_codebase_hash()
         state = {
             "codebase_hash": current_hash,
@@ -206,6 +206,103 @@ class GraphRAGIndexManager:
 
         logger.info("Index updated successfully")
         return True
+
+    def _index_codebase(self) -> None:
+        """Index codebase into Qdrant and Neo4j.
+
+        This is a simplified implementation that:
+        1. Finds Python files in the repository
+        2. Creates embeddings using sentence-transformers
+        3. Stores embeddings in Qdrant
+        """
+        try:
+            from qdrant_client import QdrantClient
+            from qdrant_client.models import Distance, VectorParams, PointStruct
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            logger.error(f"Required packages not installed: {e}")
+            logger.info("Install with: pip install qdrant-client sentence-transformers")
+            raise
+
+        # Determine if running in container
+        def is_running_in_container() -> bool:
+            """Check if running inside a Docker container."""
+            return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+
+        # Connect to Qdrant
+        in_container = is_running_in_container()
+        qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
+        logger.info(f"Connecting to Qdrant at {qdrant_url}")
+        client = QdrantClient(url=qdrant_url, timeout=10)
+
+        # Collection name
+        collection_name = "code_embeddings"
+
+        # Load embedding model
+        logger.info("Loading embedding model...")
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        # Get Python files
+        python_files = list(self.repo_path.rglob("*.py"))
+        if not python_files:
+            logger.warning("No Python files found in repository")
+            return
+
+        logger.info(f"Found {len(python_files)} Python files")
+
+        # Create or recreate collection
+        try:
+            client.delete_collection(collection_name)
+            logger.info(f"Deleted existing collection: {collection_name}")
+        except Exception:
+            pass
+
+        client.create_collection(
+            collection_name=collection_name,
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+        )
+        logger.info(f"Created collection: {collection_name}")
+
+        # Index files
+        points = []
+        for idx, file_path in enumerate(python_files):
+            try:
+                # Read file content
+                content = file_path.read_text(encoding="utf-8")
+
+                # Skip empty files
+                if not content.strip():
+                    continue
+
+                # Create embedding
+                embedding = model.encode(content).tolist()
+
+                # Create point
+                point = PointStruct(
+                    id=idx,
+                    vector=embedding,
+                    payload={
+                        "file_path": str(file_path.relative_to(self.repo_path)),
+                        "content": content[:1000],  # Store first 1000 chars
+                        "type": "python_file",
+                    }
+                )
+                points.append(point)
+
+                # Batch insert every 100 files
+                if len(points) >= 100:
+                    client.upsert(collection_name=collection_name, points=points)
+                    logger.info(f"Indexed {idx + 1}/{len(python_files)} files")
+                    points = []
+
+            except Exception as e:
+                logger.warning(f"Failed to index {file_path}: {e}")
+
+        # Insert remaining points
+        if points:
+            client.upsert(collection_name=collection_name, points=points)
+
+        logger.info(f"Successfully indexed {len(python_files)} Python files into Qdrant")
 
     def ensure_index_up_to_date(self) -> bool:
         """Ensure index is up to date, updating if necessary.

@@ -138,6 +138,48 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}/src"
             }
+        },
+        {
+            "name": "Check GraphRAG Services (Direct)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/check_graphrag_services.py",
+            "console": "integratedTerminal",
+            "cwd": "/workspace",
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
+        {
+            "name": "Check GraphRAG Services (with MCP)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/check_graphrag_services.py",
+            "console": "integratedTerminal",
+            "cwd": "/workspace",
+            "args": [
+                "--with-mcp"
+            ],
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
+        {
+            "name": "Check GraphRAG Services (MCP only)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/check_graphrag_services.py",
+            "console": "integratedTerminal",
+            "cwd": "/workspace",
+            "args": [
+                "--mcp-only"
+            ],
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
         }
     ]
 }
