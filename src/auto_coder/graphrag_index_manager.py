@@ -222,7 +222,10 @@ class GraphRAGIndexManager:
             from sentence_transformers import SentenceTransformer
             from neo4j import GraphDatabase
         except ImportError as e:
+            import sys
             logger.error(f"Required packages not installed: {e}")
+            logger.error(f"Python executable: {sys.executable}")
+            logger.error(f"Python path: {sys.path}")
             logger.info("Install with: pip install qdrant-client sentence-transformers neo4j")
             raise
 
@@ -262,8 +265,9 @@ class GraphRAGIndexManager:
         # Find graph-builder installation
         graph_builder_path = self._find_graph_builder()
         if not graph_builder_path:
+            auto_coder_pkg_dir = Path(__file__).parent
             logger.warning("graph-builder not found in common locations")
-            logger.info(f"Searched locations: {self.repo_path}/graph-builder, {Path.cwd()}/graph-builder, {Path.home()}/graph-builder")
+            logger.info(f"Searched locations: {auto_coder_pkg_dir}/graph_builder, {self.repo_path}/graph-builder, {Path.cwd()}/graph-builder, {Path.home()}/graph-builder")
             logger.info("Falling back to simple Python indexing")
             return self._fallback_python_indexing()
 
@@ -347,13 +351,18 @@ class GraphRAGIndexManager:
         """Find graph-builder installation.
 
         Returns:
-            Path to graph-builder directory, or None if not found
+            Path to graph-builder directory or executable, or None if not found
         """
-        # Check common locations
+        # Get auto-coder installation directory (where this file is located)
+        auto_coder_pkg_dir = Path(__file__).parent
+
+        # Check common local directory locations
+        # Priority: パッケージ内 > 対象リポジトリ内 > カレントディレクトリ > ホームディレクトリ
         candidates = [
-            self.repo_path / "graph-builder",
-            Path.cwd() / "graph-builder",
-            Path.home() / "graph-builder",
+            auto_coder_pkg_dir / "graph_builder",      # パッケージ内（開発時・pipxインストール時共通）
+            self.repo_path / "graph-builder",          # 対象リポジトリ内
+            Path.cwd() / "graph-builder",              # カレントディレクトリ
+            Path.home() / "graph-builder",             # ホームディレクトリ
         ]
 
         logger.debug(f"Searching for graph-builder in: {[str(c) for c in candidates]}")
@@ -419,8 +428,11 @@ class GraphRAGIndexManager:
         """
         try:
             from neo4j import GraphDatabase
-        except ImportError:
-            logger.warning("neo4j package not installed, skipping Neo4j indexing")
+        except ImportError as e:
+            import sys
+            logger.warning(f"neo4j package not installed, skipping Neo4j indexing: {e}")
+            logger.debug(f"Python executable: {sys.executable}")
+            logger.debug(f"Python path: {sys.path}")
             return
 
         # Connect to Neo4j
@@ -490,8 +502,11 @@ class GraphRAGIndexManager:
             from qdrant_client import QdrantClient
             from qdrant_client.models import Distance, VectorParams, PointStruct
             from sentence_transformers import SentenceTransformer
-        except ImportError:
-            logger.warning("Required packages not installed, skipping Qdrant indexing")
+        except ImportError as e:
+            import sys
+            logger.warning(f"Required packages not installed, skipping Qdrant indexing: {e}")
+            logger.debug(f"Python executable: {sys.executable}")
+            logger.debug(f"Python path: {sys.path}")
             return
 
         # Connect to Qdrant

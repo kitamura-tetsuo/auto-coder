@@ -57,12 +57,39 @@ test = [
 [project.scripts]
 auto-coder = "auto_coder.cli:main"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["src"]
-
+exclude = ["*.tests", "*.tests.*", "tests.*", "tests"]
 
 [tool.setuptools.package-data]
-"auto_coder" = ["prompts.yaml", "docker-compose.graphrag.yml"]
+auto_coder = [
+    "prompts.yaml",
+    "docker-compose.graphrag.yml",
+    "graph_builder/dist/**/*.js",
+    "graph_builder/dist/**/*.d.ts",
+    "graph_builder/dist/**/*.map",
+    "graph_builder/src/**/*.py",
+    "graph_builder/src/**/*.ts",
+    "graph_builder/package.json",
+    "graph_builder/tsconfig.json",
+]
+
+[tool.setuptools.exclude-package-data]
+"*" = [
+    "node_modules",
+    "node_modules/**",
+    "test-output",
+    "test-output/**",
+    "test-output-ts",
+    "test-output-ts/**",
+    "sample-repo",
+    "sample-repo/**",
+    "__pycache__",
+    "*.pyc",
+]
 
 [tool.black]
 line-length = 88

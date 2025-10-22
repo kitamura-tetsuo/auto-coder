@@ -1,0 +1,18 @@
+# Include documentation
+include README.md
+include LICENSE
+include AGENTS.md
+
+# Exclude unnecessary files
+global-exclude __pycache__
+global-exclude *.py[co]
+global-exclude .DS_Store
+global-exclude *.swp
+global-exclude *~
+global-exclude node_modules
+prune */node_modules
+prune */test-output
+prune */test-output-ts
+prune */sample-repo
+prune */__pycache__
+

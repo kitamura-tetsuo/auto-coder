@@ -217,5 +217,9 @@ reports/
 .auto-coder/
 .gemini/settings.json
 
-graph-builder/node_modules/
-graph-builder/test-output-ts/
+# graph-builder is now in src/auto_coder/graph_builder/
+# Ignore old graph-builder directory if it exists
+/graph-builder/
+
+pyproject.toml
+src/auto_coder/graph_builder/node_modules/

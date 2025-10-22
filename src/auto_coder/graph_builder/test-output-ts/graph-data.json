@@ -1,0 +1,732 @@
+{
+  "nodes": [
+    {
+      "id": "d06cc1c528f54d9c",
+      "kind": "File",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "sig": "",
+      "short": "File: /home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "complexity": 1,
+      "tokens_est": 20,
+      "tags": [],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts"
+    },
+    {
+      "id": "fb038d388d95cd28",
+      "kind": "Interface",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseConnection",
+      "sig": "interface DatabaseConnection",
+      "short": "Database connection interface",
+      "complexity": 1,
+      "tokens_est": 15,
+      "tags": [],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 10,
+      "end_line": 14
+    },
+    {
+      "id": "d39a2d19aa25c728",
+      "kind": "Class",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseClient",
+      "sig": "class DatabaseClient",
+      "short": "Database client class",
+      "complexity": 1,
+      "tokens_est": 11,
+      "tags": [],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 19,
+      "end_line": 81
+    },
+    {
+      "id": "6be90739bf97868a",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseClient.connect",
+      "sig": "()->Promise<void>",
+      "short": "Connect to database",
+      "complexity": 1,
+      "tokens_est": 10,
+      "tags": [
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 29,
+      "end_line": 33
+    },
+    {
+      "id": "8bec104379e7090b",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseClient.disconnect",
+      "sig": "()->Promise<void>",
+      "short": "Disconnect from database",
+      "complexity": 1,
+      "tokens_est": 11,
+      "tags": [
+        "DB",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 38,
+      "end_line": 41
+    },
+    {
+      "id": "3f4677c66ac490d3",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseClient.query",
+      "sig": "(string)->Promise<T[]>",
+      "short": "Query database",
+      "complexity": 1,
+      "tokens_est": 10,
+      "tags": [
+        "DB",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 48,
+      "end_line": 52
+    },
+    {
+      "id": "38a6bc47ab1939d0",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseClient.insert",
+      "sig": "(string,Record<string, any>)->Promise<void>",
+      "short": "Insert record",
+      "complexity": 1,
+      "tokens_est": 15,
+      "tags": [
+        "DB",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 59,
+      "end_line": 61
+    },
+    {
+      "id": "5fbe4356d9294bdd",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseClient.update",
+      "sig": "(string,string,Record<string, any>)->Promise<void>",
+      "short": "Update record",
+      "complexity": 1,
+      "tokens_est": 17,
+      "tags": [
+        "DB",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 69,
+      "end_line": 71
+    },
+    {
+      "id": "6b496e242080159f",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:DatabaseClient.delete",
+      "sig": "(string,string)->Promise<void>",
+      "short": "Delete record",
+      "complexity": 1,
+      "tokens_est": 12,
+      "tags": [
+        "DB",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 78,
+      "end_line": 80
+    },
+    {
+      "id": "516022e1061bb47d",
+      "kind": "Function",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:saveUserToDatabase",
+      "sig": "(import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/database\").DatabaseClient,import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User)->Promise<void>",
+      "short": "Save user to database",
+      "complexity": 1,
+      "tokens_est": 57,
+      "tags": [
+        "DB",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 88,
+      "end_line": 90
+    },
+    {
+      "id": "52c092c9f5117d52",
+      "kind": "Function",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:loadUserFromDatabase",
+      "sig": "(import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/database\").DatabaseClient,string)->Promise<import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User | null>",
+      "short": "Load user from database",
+      "complexity": 2,
+      "tokens_est": 60,
+      "tags": [
+        "DB",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+      "start_line": 97,
+      "end_line": 100
+    },
+    {
+      "id": "c5b4d7e01a348a6d",
+      "kind": "File",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "sig": "",
+      "short": "File: /home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "complexity": 1,
+      "tokens_est": 21,
+      "tags": [],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts"
+    },
+    {
+      "id": "3ea0ec09204dffa7",
+      "kind": "Interface",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:User",
+      "sig": "interface User",
+      "short": "User service module",
+      "complexity": 1,
+      "tokens_est": 9,
+      "tags": [],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 8,
+      "end_line": 13
+    },
+    {
+      "id": "4d581de3ef91087a",
+      "kind": "Type",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserRepository",
+      "sig": "type UserRepository",
+      "short": "User repository type",
+      "complexity": 1,
+      "tokens_est": 10,
+      "tags": [],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 18,
+      "end_line": 18
+    },
+    {
+      "id": "dd704a9d66580e55",
+      "kind": "Class",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserService",
+      "sig": "class UserService",
+      "short": "User service class for managing users",
+      "complexity": 1,
+      "tokens_est": 15,
+      "tags": [],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 23,
+      "end_line": 86
+    },
+    {
+      "id": "63b6c25bbceec88c",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserService.getUserById",
+      "sig": "(string)->import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User | undefined",
+      "short": "Get user by ID",
+      "complexity": 1,
+      "tokens_est": 32,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 31,
+      "end_line": 33
+    },
+    {
+      "id": "c4af55d1d52d5076",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserService.createUser",
+      "sig": "(import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User)->void",
+      "short": "Create a new user",
+      "complexity": 2,
+      "tokens_est": 30,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 39,
+      "end_line": 43
+    },
+    {
+      "id": "60568d54d8dddb90",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserService.updateUser",
+      "sig": "(string,Partial<import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User>)->boolean",
+      "short": "Update existing user",
+      "complexity": 2,
+      "tokens_est": 35,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 50,
+      "end_line": 59
+    },
+    {
+      "id": "32c8c58ea06f6177",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserService.deleteUser",
+      "sig": "(string)->boolean",
+      "short": "Delete user by ID",
+      "complexity": 1,
+      "tokens_est": 10,
+      "tags": [
+        "DB"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 65,
+      "end_line": 67
+    },
+    {
+      "id": "0ac7af21ce11a991",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserService.validateEmail",
+      "sig": "(string)->boolean",
+      "short": "Validate user email",
+      "complexity": 1,
+      "tokens_est": 10,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 74,
+      "end_line": 77
+    },
+    {
+      "id": "a597dbbcef656a9c",
+      "kind": "Method",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:UserService.getAllUsers",
+      "sig": "()->import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User[]",
+      "short": "Get all users",
+      "complexity": 1,
+      "tokens_est": 28,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 83,
+      "end_line": 85
+    },
+    {
+      "id": "b4a0526c58a7b96a",
+      "kind": "Function",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:fetchUserFromAPI",
+      "sig": "(string)->Promise<import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User>",
+      "short": "Fetch user from API",
+      "complexity": 1,
+      "tokens_est": 33,
+      "tags": [
+        "NETWORK",
+        "ASYNC"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 93,
+      "end_line": 97
+    },
+    {
+      "id": "9aee122430ea2914",
+      "kind": "Function",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:calculateAge",
+      "sig": "(number)->number",
+      "short": "Calculate user age from birth year",
+      "complexity": 1,
+      "tokens_est": 13,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 104,
+      "end_line": 107
+    },
+    {
+      "id": "461de3c875647295",
+      "kind": "Function",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:formatUserName",
+      "sig": "(import(\"/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service\").User)->string",
+      "short": "Format user display name",
+      "complexity": 1,
+      "tokens_est": 31,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 114,
+      "end_line": 116
+    },
+    {
+      "id": "22f14193cef2bcda",
+      "kind": "Function",
+      "fqname": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:isAdult",
+      "sig": "(number)->boolean",
+      "short": "Check if user is adult",
+      "complexity": 2,
+      "tokens_est": 11,
+      "tags": [
+        "PURE"
+      ],
+      "unresolved": false,
+      "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+      "start_line": 123,
+      "end_line": 129
+    }
+  ],
+  "edges": [
+    {
+      "from": "d06cc1c528f54d9c",
+      "to": "fb038d388d95cd28",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "d06cc1c528f54d9c",
+      "to": "d39a2d19aa25c728",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "d06cc1c528f54d9c",
+      "to": "516022e1061bb47d",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "d06cc1c528f54d9c",
+      "to": "52c092c9f5117d52",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "c5b4d7e01a348a6d",
+      "to": "3ea0ec09204dffa7",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "c5b4d7e01a348a6d",
+      "to": "4d581de3ef91087a",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "c5b4d7e01a348a6d",
+      "to": "dd704a9d66580e55",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "c5b4d7e01a348a6d",
+      "to": "b4a0526c58a7b96a",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "c5b4d7e01a348a6d",
+      "to": "9aee122430ea2914",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "c5b4d7e01a348a6d",
+      "to": "461de3c875647295",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "c5b4d7e01a348a6d",
+      "to": "22f14193cef2bcda",
+      "type": "CONTAINS",
+      "count": 1
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:connect",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:log",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 30
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:connect",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:setTimeout",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 32
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:disconnect",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:log",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 39
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:disconnect",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:setTimeout",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 40
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:query",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:log",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 49
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:insert",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:log",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 60
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:update",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:log",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 70
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:delete",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:log",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 79
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:saveUserToDatabase",
+      "to": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:insert",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 89
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:loadUserFromDatabase",
+      "to": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts:query",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/database.ts",
+          "line": 98
+        }
+      ]
+    },
+    {
+      "from": "d06cc1c528f54d9c",
+      "to": "c5b4d7e01a348a6d",
+      "type": "IMPORTS",
+      "count": 1
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:getUserById",
+      "to": "/node_modules/typescript/lib/lib.es2015.collection.d.ts:get",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 32
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:createUser",
+      "to": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:validateEmail",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 40
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:createUser",
+      "to": "/node_modules/typescript/lib/lib.es2015.collection.d.ts:set",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 41
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:updateUser",
+      "to": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:getUserById",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 51
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:updateUser",
+      "to": "/node_modules/typescript/lib/lib.es2015.collection.d.ts:set",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 57
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:deleteUser",
+      "to": "/node_modules/typescript/lib/lib.es2015.collection.d.ts:delete",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 66
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:validateEmail",
+      "to": "/node_modules/typescript/lib/lib.es5.d.ts:test",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 76
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:getAllUsers",
+      "to": "/node_modules/typescript/lib/lib.es2015.core.d.ts:from",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 84
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:getAllUsers",
+      "to": "/node_modules/typescript/lib/lib.es2015.iterable.d.ts:values",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 84
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:fetchUserFromAPI",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:fetch",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 94
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:fetchUserFromAPI",
+      "to": "/node_modules/typescript/lib/lib.dom.d.ts:json",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 95
+        }
+      ]
+    },
+    {
+      "from": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts:calculateAge",
+      "to": "/node_modules/typescript/lib/lib.es5.d.ts:getFullYear",
+      "type": "CALLS",
+      "count": 1,
+      "locations": [
+        {
+          "file": "/home/node/src/auto-coder/graph-builder/test-sample/typescript/user-service.ts",
+          "line": 105
+        }
+      ]
+    }
+  ]
+}
