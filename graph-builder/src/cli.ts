@@ -3,20 +3,59 @@
  * CLI for graph-builder
  */
 
+import { execSync } from 'child_process';
 import { Command } from 'commander';
 import * as fs from 'fs';
+import { glob } from 'glob';
 import * as path from 'path';
-import { scanTypeScriptProject } from './scanner/typescript';
 import { emitCSV } from './emitter/csv';
-import { emitJSON, emitDiffJSON } from './emitter/json';
-import { GraphData, DiffData } from './types';
-import { execSync } from 'child_process';
+import { emitDiffJSON, emitJSON } from './emitter/json';
+import { scanJavaScriptProject } from './scanner/javascript';
+import { scanTypeScriptProject } from './scanner/typescript';
+import { DiffData, GraphData } from './types';
 
 const program = new Command();
 
+/**
+ * Find all tsconfig.json files in a project directory
+ * Excludes node_modules and other common build directories
+ */
+function findTsConfigFiles(projectPath: string): string[] {
+  const tsConfigFiles: string[] = [];
+
+  // First check if there's a tsconfig.json at the root
+  const rootTsConfig = path.join(projectPath, 'tsconfig.json');
+  if (fs.existsSync(rootTsConfig)) {
+    tsConfigFiles.push(rootTsConfig);
+    return tsConfigFiles; // If root tsconfig exists, use only that
+  }
+
+  // Otherwise, search for tsconfig.json files in subdirectories (monorepo support)
+  try {
+    const pattern = path.join(projectPath, '**/tsconfig.json');
+    const files = glob.sync(pattern, {
+      ignore: [
+        '**/node_modules/**',
+        '**/dist/**',
+        '**/build/**',
+        '**/.next/**',
+        '**/out/**',
+        '**/.svelte-kit/**',
+      ],
+      absolute: true,
+    });
+
+    tsConfigFiles.push(...files);
+  } catch (error) {
+    console.error('Error searching for tsconfig.json files:', error);
+  }
+
+  return tsConfigFiles;
+}
+
 program
   .name('graph-builder')
-  .description('TypeScript and Python code analyzer for Neo4j graph database')
+  .description('TypeScript, JavaScript, and Python code analyzer for Neo4j graph database')
   .version('1.0.0');
 
 program
@@ -28,7 +67,7 @@ program
   .option('--since <ref>', 'Git reference for diff mode')
   .option('--limit <number>', 'Limit number of files to process')
   .option('--batch-size <number>', 'Batch size for output', '500')
-  .option('--languages <langs>', 'Languages to scan (comma-separated): typescript,python', 'typescript,python')
+  .option('--languages <langs>', 'Languages to scan (comma-separated): typescript,javascript,python', 'typescript,javascript,python')
   .action(async (options) => {
     try {
       const projectPath = path.resolve(options.project);
@@ -45,15 +84,36 @@ program
 
       // Scan TypeScript
       if (languages.includes('typescript')) {
-        const tsConfigPath = path.join(projectPath, 'tsconfig.json');
-        if (fs.existsSync(tsConfigPath)) {
-          console.log('Scanning TypeScript files...');
-          const tsData = scanTypeScriptProject(tsConfigPath, limit);
-          graphData.nodes.push(...tsData.nodes);
-          graphData.edges.push(...tsData.edges);
-          console.log(`Found ${tsData.nodes.length} TypeScript nodes`);
+        const tsConfigFiles = findTsConfigFiles(projectPath);
+        if (tsConfigFiles.length > 0) {
+          console.log(`Found ${tsConfigFiles.length} tsconfig.json file(s)`);
+          for (const tsConfigPath of tsConfigFiles) {
+            console.log(`Scanning TypeScript project: ${tsConfigPath}`);
+            try {
+              const tsData = scanTypeScriptProject(tsConfigPath, limit);
+              graphData.nodes.push(...tsData.nodes);
+              graphData.edges.push(...tsData.edges);
+              console.log(`  Found ${tsData.nodes.length} TypeScript nodes`);
+            } catch (error) {
+              console.error(`  Error scanning ${tsConfigPath}:`, error);
+            }
+          }
+          console.log(`Total TypeScript nodes: ${graphData.nodes.length}`);
         } else {
           console.log('No tsconfig.json found, skipping TypeScript scan');
+        }
+      }
+
+      // Scan JavaScript
+      if (languages.includes('javascript')) {
+        console.log('Scanning JavaScript files...');
+        try {
+          const jsData = scanJavaScriptProject(projectPath, limit);
+          graphData.nodes.push(...jsData.nodes);
+          graphData.edges.push(...jsData.edges);
+          console.log(`Found ${jsData.nodes.length} JavaScript nodes`);
+        } catch (error) {
+          console.error('Error scanning JavaScript files:', error);
         }
       }
 
@@ -63,9 +123,10 @@ program
         const pythonScanner = path.join(__dirname, 'scanner', 'python_scanner.py');
         if (fs.existsSync(pythonScanner)) {
           try {
+            const srcDir = path.join(__dirname, '..');
             const result = execSync(
-              `python3 -c "from scanner.python_scanner import scan_python_project; import json; data = scan_python_project('${projectPath}', ${limit || 'None'}); print(json.dumps({'nodes': [n.__dict__ for n in data.nodes], 'edges': [{'from': e.from_id, 'to': e.to_id, 'type': e.type, 'count': e.count, 'locations': e.locations} for e in data.edges]}))"`,
-              { cwd: path.join(__dirname, '..'), encoding: 'utf-8' }
+              `PYTHONPATH=${srcDir} python3 -c "import sys; from scanner.python_scanner import scan_python_project; import json; data = scan_python_project('${projectPath}', ${limit || 'None'}); print(json.dumps({'nodes': [n.__dict__ for n in data.nodes], 'edges': [{'from': e.from_id, 'to': e.to_id, 'type': e.type, 'count': e.count, 'locations': e.locations} for e in data.edges]}), file=sys.stdout)"`,
+              { cwd: srcDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'inherit'] }
             );
             const pyData = JSON.parse(result);
             graphData.nodes.push(...pyData.nodes);

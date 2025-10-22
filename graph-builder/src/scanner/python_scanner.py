@@ -343,24 +343,98 @@ def scan_python_file(file_path: str, module_name: str) -> GraphData:
     )
 
 
-def scan_python_project(project_path: str, limit: Optional[int] = None) -> GraphData:
-    """Scan entire Python project"""
+def find_python_project_roots(project_path: str) -> List[str]:
+    """
+    Find Python project roots in a directory (monorepo support).
+
+    A directory is considered a Python project root if it contains:
+    - setup.py
+    - pyproject.toml
+    - requirements.txt
+    - setup.cfg
+
+    Returns list of project root paths.
+    """
     project_root = Path(project_path)
+    project_roots = []
+
+    # Markers that indicate a Python project root
+    python_markers = ['setup.py', 'pyproject.toml', 'requirements.txt', 'setup.cfg']
+
+    # Check if the root itself is a Python project
+    if any((project_root / marker).exists() for marker in python_markers):
+        project_roots.append(str(project_root))
+        return project_roots  # If root is a Python project, use only that
+
+    # Otherwise, search for Python projects in subdirectories (monorepo support)
+    # Exclude common directories
+    exclude_dirs = {
+        'node_modules', 'dist', 'build', '.git', '.svelte-kit',
+        '__pycache__', '.pytest_cache', '.mypy_cache', 'venv',
+        'env', '.venv', '.env', 'site-packages'
+    }
+
+    for root, dirs, files in os.walk(project_root):
+        # Remove excluded directories from search
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+
+        # Check if this directory contains any Python project markers
+        if any(marker in files for marker in python_markers):
+            project_roots.append(root)
+            # Don't search subdirectories of a found project
+            dirs.clear()
+
+    return project_roots
+
+
+def scan_python_project(project_path: str, limit: Optional[int] = None) -> GraphData:
+    """Scan entire Python project (with monorepo support)"""
     all_nodes = []
     all_edges = []
-    
-    python_files = list(project_root.rglob('*.py'))
-    if limit:
-        python_files = python_files[:limit]
-    
-    for py_file in python_files:
-        # Generate module name from file path
-        rel_path = py_file.relative_to(project_root)
-        module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
-        
-        graph_data = scan_python_file(str(py_file), module_name)
-        all_nodes.extend(graph_data.nodes)
-        all_edges.extend(graph_data.edges)
-    
+
+    # Find all Python project roots
+    project_roots = find_python_project_roots(project_path)
+
+    if not project_roots:
+        # No specific project markers found, scan entire directory
+        project_roots = [project_path]
+
+    print(f"Found {len(project_roots)} Python project(s)")
+
+    for project_root_path in project_roots:
+        project_root = Path(project_root_path)
+        print(f"Scanning Python project: {project_root}")
+
+        # Exclude common directories
+        exclude_patterns = {
+            'node_modules', 'dist', 'build', '.git', '.svelte-kit',
+            '__pycache__', '.pytest_cache', '.mypy_cache', 'venv',
+            'env', '.venv', '.env', 'site-packages'
+        }
+
+        python_files = []
+        for py_file in project_root.rglob('*.py'):
+            # Check if file is in an excluded directory
+            if any(excluded in py_file.parts for excluded in exclude_patterns):
+                continue
+            python_files.append(py_file)
+
+        if limit:
+            python_files = python_files[:limit]
+
+        for py_file in python_files:
+            # Generate module name from file path
+            try:
+                rel_path = py_file.relative_to(project_root)
+                module_name = str(rel_path.with_suffix('')).replace(os.sep, '.')
+
+                graph_data = scan_python_file(str(py_file), module_name)
+                all_nodes.extend(graph_data.nodes)
+                all_edges.extend(graph_data.edges)
+            except Exception as e:
+                print(f"Error scanning {py_file}: {e}")
+
+        print(f"  Found {len([n for n in all_nodes if n.file and str(project_root) in n.file])} nodes from this project")
+
     return GraphData(nodes=all_nodes, edges=all_edges)
 

@@ -262,8 +262,12 @@ class GraphRAGIndexManager:
         # Find graph-builder installation
         graph_builder_path = self._find_graph_builder()
         if not graph_builder_path:
-            logger.warning("graph-builder not found, falling back to simple Python indexing")
+            logger.warning("graph-builder not found in common locations")
+            logger.info(f"Searched locations: {self.repo_path}/graph-builder, {Path.cwd()}/graph-builder, {Path.home()}/graph-builder")
+            logger.info("Falling back to simple Python indexing")
             return self._fallback_python_indexing()
+
+        logger.info(f"Found graph-builder at: {graph_builder_path}")
 
         # Create temporary output directory
         import tempfile
@@ -275,6 +279,7 @@ class GraphRAGIndexManager:
                 # Check if TypeScript version is available
                 ts_cli = graph_builder_path / "dist" / "cli.js"
                 if ts_cli.exists():
+                    logger.info("Using TypeScript version of graph-builder")
                     cmd = [
                         "node",
                         str(ts_cli),
@@ -287,9 +292,10 @@ class GraphRAGIndexManager:
                     # Use Python version
                     py_cli = graph_builder_path / "src" / "cli_python.py"
                     if not py_cli.exists():
-                        logger.warning("graph-builder CLI not found")
+                        logger.warning(f"graph-builder CLI not found at {ts_cli} or {py_cli}")
                         return self._fallback_python_indexing()
 
+                    logger.info("Using Python version of graph-builder")
                     cmd = [
                         "python3",
                         str(py_cli),
@@ -306,20 +312,35 @@ class GraphRAGIndexManager:
                     timeout=300,  # 5 minutes timeout
                 )
 
+                # Log stdout for debugging
+                if result.stdout:
+                    logger.debug(f"graph-builder stdout:\n{result.stdout}")
+
                 if result.returncode != 0:
-                    logger.warning(f"graph-builder failed: {result.stderr}")
+                    logger.warning(f"graph-builder failed with return code {result.returncode}")
+                    logger.warning(f"stderr: {result.stderr}")
+                    if result.stdout:
+                        logger.warning(f"stdout: {result.stdout}")
                     return self._fallback_python_indexing()
 
                 # Read output
                 if output_path.exists():
                     with open(output_path, "r") as f:
-                        return json.load(f)
+                        data = json.load(f)
+                        logger.info(f"Successfully loaded graph data: {len(data.get('nodes', []))} nodes, {len(data.get('edges', []))} edges")
+                        return data
                 else:
-                    logger.warning("graph-builder did not produce output")
+                    logger.warning(f"graph-builder did not produce output at {output_path}")
+                    logger.warning(f"Output directory contents: {list(Path(temp_dir).iterdir())}")
                     return self._fallback_python_indexing()
 
+            except subprocess.TimeoutExpired:
+                logger.warning("graph-builder timed out after 5 minutes")
+                return self._fallback_python_indexing()
             except Exception as e:
                 logger.warning(f"Failed to run graph-builder: {e}")
+                import traceback
+                logger.debug(f"Traceback: {traceback.format_exc()}")
                 return self._fallback_python_indexing()
 
     def _find_graph_builder(self) -> Optional[Path]:
@@ -335,11 +356,29 @@ class GraphRAGIndexManager:
             Path.home() / "graph-builder",
         ]
 
+        logger.debug(f"Searching for graph-builder in: {[str(c) for c in candidates]}")
+
         for candidate in candidates:
+            logger.debug(f"Checking: {candidate}")
             if candidate.exists() and candidate.is_dir():
+                logger.debug(f"  Directory exists: {candidate}")
                 # Check if it has the expected structure
                 if (candidate / "src").exists():
-                    return candidate
+                    logger.debug(f"  Found src directory: {candidate / 'src'}")
+                    # Also check for dist/cli.js or src/cli_python.py
+                    has_ts_cli = (candidate / "dist" / "cli.js").exists()
+                    has_py_cli = (candidate / "src" / "cli_python.py").exists()
+                    logger.debug(f"  TypeScript CLI exists: {has_ts_cli}")
+                    logger.debug(f"  Python CLI exists: {has_py_cli}")
+                    if has_ts_cli or has_py_cli:
+                        logger.info(f"Found graph-builder at: {candidate}")
+                        return candidate
+                    else:
+                        logger.debug(f"  No CLI found in {candidate}")
+                else:
+                    logger.debug(f"  No src directory in {candidate}")
+            else:
+                logger.debug(f"  Does not exist or not a directory: {candidate}")
 
         return None
 
