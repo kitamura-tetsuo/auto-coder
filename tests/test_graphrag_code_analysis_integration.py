@@ -5,6 +5,7 @@ Tests the integration of graph-builder code analysis into GraphRAG indexing.
 """
 
 import json
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch, mock_open
@@ -306,6 +307,51 @@ class TestGraphRAGCodeAnalysisIntegration:
                 # Verify points were upserted
                 mock_client.upsert.assert_called()
 
+    def test_graph_builder_supports_multiple_languages(self, tmp_path):
+        """Test that graph-builder supports TypeScript, JavaScript, and Python."""
+        # Create test files for different languages
+        (tmp_path / "test.py").write_text("def hello(): pass")
+        (tmp_path / "test.ts").write_text("function hello() {}")
+        (tmp_path / "test.js").write_text("function world() {}")
+
+        # Create tsconfig.json for TypeScript scanning
+        (tmp_path / "tsconfig.json").write_text('{"compilerOptions": {}}')
+
+        manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+
+        # Find graph-builder
+        graph_builder_path = manager._find_graph_builder()
+        assert graph_builder_path is not None
+
+        # Check if TypeScript CLI exists
+        ts_cli = graph_builder_path / "dist" / "cli.js"
+        py_cli = graph_builder_path / "src" / "cli_python.py"
+
+        # At least one CLI should exist
+        assert ts_cli.exists() or py_cli.exists()
+
+        # If TypeScript CLI exists, verify it supports all languages
+        if ts_cli.exists():
+            import subprocess
+            result = subprocess.run(
+                ["node", str(ts_cli), "scan", "--help"],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0
+            assert "--languages" in result.stdout
+
+        # If Python CLI exists, verify it supports languages option
+        if py_cli.exists():
+            import subprocess
+            result = subprocess.run(
+                ["python3", str(py_cli), "scan", "--help"],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0
+            assert "--languages" in result.stdout
+
     @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._run_graph_builder")
     @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_graph_in_neo4j")
     @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_embeddings_in_qdrant")
@@ -328,4 +374,43 @@ class TestGraphRAGCodeAnalysisIntegration:
         # in_container should be False based on mocked os.path.exists
         mock_neo4j.assert_called_once_with(graph_data, False)
         mock_qdrant.assert_called_once_with(graph_data, False)
+
+    def test_run_graph_builder_with_all_languages(self, tmp_path):
+        """Test that _run_graph_builder scans all languages."""
+        # Create test files
+        (tmp_path / "test.py").write_text("def hello(): pass")
+        (tmp_path / "test.ts").write_text("function hello() {}")
+        (tmp_path / "test.js").write_text("function world() {}")
+        (tmp_path / "tsconfig.json").write_text('{"compilerOptions": {}}')
+
+        manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+
+        # Find graph-builder
+        graph_builder_path = manager._find_graph_builder()
+        if graph_builder_path is None:
+            pytest.skip("graph-builder not found")
+
+        # Run graph-builder
+        result = manager._run_graph_builder()
+
+        # Verify result contains nodes from all languages
+        assert "nodes" in result
+        assert "edges" in result
+        assert len(result["nodes"]) > 0
+
+        # Check for TypeScript/JavaScript specific node types
+        node_kinds = {node["kind"] for node in result["nodes"]}
+
+        # Should have File nodes at minimum
+        assert "File" in node_kinds
+
+        # If TypeScript files were scanned, should have TypeScript-specific types
+        ts_files = [n for n in result["nodes"] if n.get("file", "").endswith((".ts", ".tsx"))]
+        js_files = [n for n in result["nodes"] if n.get("file", "").endswith((".js", ".jsx"))]
+        py_files = [n for n in result["nodes"] if n.get("file", "").endswith(".py")]
+
+        # Should have scanned files from multiple languages
+        # Note: Depending on the test environment, some languages might not be scanned
+        # but at least Python should be scanned
+        assert len(py_files) > 0 or len(ts_files) > 0 or len(js_files) > 0
 

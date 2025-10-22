@@ -21,16 +21,81 @@ def scan_command(args):
     """Scan project and extract graph data"""
     project_path = Path(args.project).resolve()
     output_dir = Path(args.out).resolve()
-    
+
     print(f"Scanning project: {project_path}")
     print(f"Output directory: {output_dir}")
     print(f"Mode: {args.mode}")
-    
-    # Scan Python files
-    print("Scanning Python files...")
-    graph_data = scan_python_project(str(project_path), args.limit)
-    print(f"Found {len(graph_data.nodes)} nodes")
-    print(f"Found {len(graph_data.edges)} edges")
+
+    # Parse languages option
+    languages = []
+    if hasattr(args, 'languages') and args.languages:
+        languages = [lang.strip() for lang in args.languages.split(',')]
+    else:
+        languages = ['python']  # Default to Python only
+
+    print(f"Languages: {', '.join(languages)}")
+
+    graph_data = GraphData(nodes=[], edges=[])
+
+    # Scan Python files if requested
+    if 'python' in languages:
+        print("Scanning Python files...")
+        python_data = scan_python_project(str(project_path), args.limit)
+        graph_data.nodes.extend(python_data.nodes)
+        graph_data.edges.extend(python_data.edges)
+        print(f"Found {len(python_data.nodes)} Python nodes")
+
+    # Scan TypeScript/JavaScript files if requested
+    if 'typescript' in languages or 'javascript' in languages:
+        # Check if TypeScript CLI is available
+        ts_cli = Path(__file__).parent.parent / "dist" / "cli.js"
+        if ts_cli.exists():
+            print("Scanning TypeScript/JavaScript files using TypeScript CLI...")
+            ts_languages = ','.join([lang for lang in languages if lang in ['typescript', 'javascript']])
+            try:
+                result = subprocess.run(
+                    [
+                        'node',
+                        str(ts_cli),
+                        'scan',
+                        '--project', str(project_path),
+                        '--out', str(output_dir),
+                        '--languages', ts_languages,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+
+                if result.returncode == 0:
+                    # Read the generated graph-data.json
+                    ts_data_path = output_dir / 'graph-data.json'
+                    if ts_data_path.exists():
+                        with open(ts_data_path, 'r', encoding='utf-8') as f:
+                            ts_data = json.load(f)
+                            # Merge TypeScript/JavaScript data
+                            for node in ts_data.get('nodes', []):
+                                from scanner.python_scanner import CodeNode
+                                graph_data.nodes.append(CodeNode(**node))
+                            for edge in ts_data.get('edges', []):
+                                from scanner.python_scanner import CodeEdge
+                                graph_data.edges.append(CodeEdge(
+                                    from_id=edge['from'],
+                                    to_id=edge['to'],
+                                    type=edge['type'],
+                                    count=edge.get('count', 1),
+                                    locations=edge.get('locations', [])
+                                ))
+                            print(f"Found {len(ts_data.get('nodes', []))} TypeScript/JavaScript nodes")
+                else:
+                    print(f"Warning: TypeScript CLI failed with return code {result.returncode}")
+                    print(f"stderr: {result.stderr}")
+            except Exception as e:
+                print(f"Warning: Failed to run TypeScript CLI: {e}")
+        else:
+            print(f"Warning: TypeScript CLI not found at {ts_cli}, skipping TypeScript/JavaScript scan")
+
+    print(f"Total: {len(graph_data.nodes)} nodes, {len(graph_data.edges)} edges")
     
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -193,6 +258,7 @@ def main():
     scan_parser.add_argument('--mode', default='full', choices=['full', 'diff'], help='Scan mode')
     scan_parser.add_argument('--since', help='Git reference for diff mode')
     scan_parser.add_argument('--limit', type=int, help='Limit number of files to process')
+    scan_parser.add_argument('--languages', default='python', help='Languages to scan (comma-separated): typescript,javascript,python')
     
     # Emit CSV command
     csv_parser = subparsers.add_parser('emit-csv', help='Emit CSV files for Neo4j import')

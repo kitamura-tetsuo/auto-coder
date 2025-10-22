@@ -290,7 +290,7 @@ class GraphRAGIndexManager:
                         "scan",
                         "--project", str(self.repo_path),
                         "--out", str(temp_dir),
-                        "--languages", "typescript,python"
+                        "--languages", "typescript,javascript,python"
                     ]
                 else:
                     # Use Python version
@@ -305,7 +305,8 @@ class GraphRAGIndexManager:
                         str(py_cli),
                         "scan",
                         "--project", str(self.repo_path),
-                        "--out", str(temp_dir)
+                        "--out", str(temp_dir),
+                        "--languages", "typescript,javascript,python"
                     ]
 
                 logger.info(f"Running: {' '.join(cmd)}")
