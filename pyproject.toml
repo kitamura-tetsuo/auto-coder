@@ -89,6 +89,12 @@ auto_coder = [
     "sample-repo/**",
     "__pycache__",
     "*.pyc",
+    "*/tests",
+    "*/tests/**",
+    "graph_builder/dist/tests",
+    "graph_builder/dist/tests/**",
+    "graph_builder/src/tests",
+    "graph_builder/src/tests/**",
 ]
 
 [tool.black]
