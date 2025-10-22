@@ -1,0 +1,1 @@
+{"version":3,"file":"cyclomatic.d.ts","sourceRoot":"","sources":["../../src/utils/cyclomatic.ts"],"names":[],"mappings":"AAAA;;GAEG;AAEH,OAAO,EAAc,IAAI,EAAE,MAAM,UAAU,CAAC;AAE5C;;;;;GAKG;AACH,wBAAgB,mBAAmB,CAAC,IAAI,EAAE,IAAI,GAAG,MAAM,CA2BtD;AAED;;;;GAIG;AACH,wBAAgB,yBAAyB,CAAC,IAAI,EAAE,MAAM,GAAG,MAAM,CAwB9D"}

@@ -11,6 +11,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+!src/auto_coder/graph_builder/dist/
 downloads/
 eggs/
 .eggs/
