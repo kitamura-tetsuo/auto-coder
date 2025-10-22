@@ -45,16 +45,17 @@ class GraphRAGMCPIntegration:
         self.mcp_server_path = mcp_server_path
         self.mcp_process: Optional[subprocess.Popen] = None
 
-    def ensure_ready(self, max_retries: int = 2) -> bool:
+    def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
         """Ensure GraphRAG environment is ready for use.
 
         This includes:
         1. Starting Docker containers if not running
-        2. Updating index if needed
+        2. Updating index if needed (or forcing update if force_reindex=True)
         3. Starting MCP server if configured
 
         Args:
             max_retries: Maximum number of retries for Docker container startup
+            force_reindex: Force reindexing even if index is up to date
 
         Returns:
             True if environment is ready, False otherwise
@@ -107,10 +108,15 @@ class GraphRAGMCPIntegration:
             except Exception as e:
                 logger.warning(f"Failed to connect to GraphRAG network: {e}")
 
-        # 2. Check if indexed path matches current path
+        # 2. Check if indexed path matches current path or force reindex
         try:
             path_matches, indexed_path = self.index_manager.check_indexed_path()
-            if indexed_path is not None and not path_matches:
+            if force_reindex:
+                logger.info("Force reindex requested, updating index...")
+                if not self.index_manager.update_index(force=True):
+                    logger.error("Failed to force update index.")
+                    return False
+            elif indexed_path is not None and not path_matches:
                 logger.warning(
                     f"Indexed path mismatch: indexed={indexed_path}, "
                     f"current={self.index_manager.repo_path.resolve()}"

@@ -28,13 +28,16 @@ def ensure_test_script_or_fail() -> None:
         )
 
 
-def initialize_graphrag() -> None:
+def initialize_graphrag(force_reindex: bool = False) -> None:
     """Initialize GraphRAG integration (always enabled).
 
     This function ensures GraphRAG environment is ready:
     - Starts Docker containers if not running
-    - Updates index if outdated
+    - Updates index if outdated (or forces update if force_reindex=True)
     - Starts MCP server if configured
+
+    Args:
+        force_reindex: Force reindexing even if index is up to date
 
     Raises:
         click.ClickException: If GraphRAG initialization fails
@@ -44,10 +47,13 @@ def initialize_graphrag() -> None:
 
     logger = get_logger(__name__)
     logger.info("Initializing GraphRAG integration...")
-    click.echo("GraphRAG integration: enabled (always)")
+    if force_reindex:
+        click.echo("GraphRAG integration: enabled (always) - forcing reindex")
+    else:
+        click.echo("GraphRAG integration: enabled (always)")
     try:
         graphrag_integration = GraphRAGMCPIntegration()
-        if not graphrag_integration.ensure_ready():
+        if not graphrag_integration.ensure_ready(force_reindex=force_reindex):
             click.echo()
             click.echo("❌ Failed to initialize GraphRAG environment")
             click.echo()

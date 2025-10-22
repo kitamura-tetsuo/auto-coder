@@ -1641,7 +1641,7 @@ deployment:
 
   graphrag_integration:
     name: "GraphRAG Integration"
-    description: "Integration with GraphRAG MCP server for enhanced code context using Neo4j (graph database) and Qdrant (vector database). GraphRAG is always enabled and automatically initialized at startup for all commands (process-issues, create-feature-issues, fix-to-pass-tests)."
+    description: "Integration with GraphRAG MCP server for enhanced code context using Neo4j (graph database) and Qdrant (vector database). GraphRAG is always enabled and automatically initialized at startup for all commands (process-issues, create-feature-issues, fix-to-pass-tests). All commands support --force-reindex flag to force reindexing even if index is up to date."
     components:
       - name: "GraphRAGDockerManager"
         file: "src/auto_coder/graphrag_docker_manager.py"
@@ -1730,8 +1730,9 @@ deployment:
         methods:
           - name: "ensure_ready"
             description: "Ensure GraphRAG environment is ready (Docker containers, index, MCP server)"
-            parameters: []
+            parameters: ["max_retries (default: 2)", "force_reindex (default: False)"]
             returns: "Boolean indicating if environment is ready"
+            notes: "force_reindex parameter forces reindexing even if index is up to date"
           - name: "start_mcp_server"
             description: "Start graphrag_mcp server"
             parameters: []
@@ -1750,6 +1751,22 @@ deployment:
             returns: "Dictionary with MCP configuration or None"
         tests:
           - "tests/test_graphrag_mcp_integration.py"
+      - name: "CLI Force Reindex Option"
+        description: "All CLI commands (process-issues, create-feature-issues, fix-to-pass-tests) support --force-reindex flag to force GraphRAG reindexing even if index is up to date"
+        file: "src/auto_coder/cli_commands_main.py"
+        option: "--force-reindex"
+        default: "false"
+        behavior:
+          - "When --force-reindex is specified, initialize_graphrag is called with force_reindex=True"
+          - "GraphRAGMCPIntegration.ensure_ready receives force_reindex parameter and calls index_manager.update_index(force=True)"
+          - "Index is updated regardless of whether it is up to date"
+        tests:
+          - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_force_reindex_flag"
+          - "tests/test_cli_process_issues.py::TestCLIProcessIssues::test_process_issues_default_no_force_reindex"
+          - "tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_force_reindex_flag"
+          - "tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_default_no_force_reindex"
+          - "tests/test_fix_to_pass_tests.py::test_cli_fix_to_pass_tests_force_reindex_flag"
+          - "tests/test_fix_to_pass_tests.py::test_cli_fix_to_pass_tests_default_no_force_reindex"
     cli_commands:
       - command: "auto-coder graphrag setup-mcp"
         description: "Automatically setup GraphRAG MCP server (clone, install dependencies, configure all backends)"
@@ -1836,6 +1853,8 @@ deployment:
       # Note: GraphRAG is always enabled for all commands. Containers are automatically started if not running.
       - command: "auto-coder process-issues --repo owner/repo"
         description: "Process issues and PRs with codex backend (default); jules mode and GraphRAG are ON by default"
+      - command: "auto-coder process-issues --repo owner/repo --force-reindex"
+        description: "Process issues and PRs with forced GraphRAG reindexing even if index is up to date"
       - command: "auto-coder process-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro"
         description: "Process issues and PRs using Gemini backend with GraphRAG (you can override the model via --model-gemini)"
       - command: "auto-coder process-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus"
@@ -1846,12 +1865,16 @@ deployment:
         description: "Process issues with codex as the default backend and fall back to Gemini if limits are hit (GraphRAG enabled)"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend qwen --model qwen3-coder-plus"
         description: "Create feature enhancement issues using Qwen Code backend with GraphRAG"
+      - command: "auto-coder create-feature-issues --repo owner/repo --force-reindex"
+        description: "Create feature enhancement issues with forced GraphRAG reindexing"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend auggie"
         description: "Create feature enhancement issues using Auggie backend with GraphRAG (defaults to GPT-5)"
       - command: "auto-coder create-feature-issues --repo owner/repo --backend codex --backend gemini"
         description: "Create feature issues with codex default and Gemini fallback order (GraphRAG enabled)"
       - command: "auto-coder fix-to-pass-tests --backend qwen --model qwen3-coder-plus"
         description: "Run local tests and request fixes using Qwen Code backend with GraphRAG"
+      - command: "auto-coder fix-to-pass-tests --force-reindex"
+        description: "Run local tests and request fixes with forced GraphRAG reindexing"
       - command: "auto-coder fix-to-pass-tests --backend auggie"
         description: "Run local tests and request fixes using Auggie backend with GraphRAG (defaults to GPT-5)"
       - command: "auto-coder fix-to-pass-tests --backend codex --backend gemini"

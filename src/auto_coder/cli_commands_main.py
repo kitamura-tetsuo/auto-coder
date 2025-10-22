@@ -83,6 +83,12 @@ logger = get_logger(__name__)
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
 )
 @click.option(
+    "--force-reindex",
+    is_flag=True,
+    default=False,
+    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
+)
+@click.option(
     "--log-level",
     default="INFO",
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -107,6 +113,7 @@ def process_issues(
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
     only_target: Optional[str],
+    force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
@@ -163,10 +170,11 @@ def process_issues(
     click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
+    click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
     # Initialize GraphRAG (always enabled)
-    initialize_graphrag()
+    initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -274,6 +282,12 @@ def process_issues(
     "--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)"
 )
 @click.option(
+    "--force-reindex",
+    is_flag=True,
+    default=False,
+    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
+)
+@click.option(
     "--log-level",
     default="INFO",
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -293,6 +307,7 @@ def create_feature_issues(
     model_gemini: Optional[str],
     model_qwen: Optional[str],
     model_auggie: Optional[str],
+    force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
@@ -333,10 +348,11 @@ def create_feature_issues(
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ("gemini", "qwen", "auggie"):
         click.echo(f"Using model: {primary_model}")
+    click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
     # Initialize GraphRAG (always enabled)
-    initialize_graphrag()
+    initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -404,6 +420,12 @@ def create_feature_issues(
     "--dry-run", is_flag=True, help="Run without making changes (LLM edits simulated)"
 )
 @click.option(
+    "--force-reindex",
+    is_flag=True,
+    default=False,
+    help="Force GraphRAG code analysis reindexing even if index is up to date (default: false)",
+)
+@click.option(
     "--log-level",
     default="INFO",
     type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]),
@@ -423,6 +445,7 @@ def fix_to_pass_tests_command(
     model_auggie: Optional[str],
     max_attempts: Optional[int],
     dry_run: bool,
+    force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
@@ -456,10 +479,11 @@ def fix_to_pass_tests_command(
     if primary_backend in ("gemini", "qwen", "auggie"):
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Dry run mode: {dry_run}")
+    click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
     # Initialize GraphRAG (always enabled)
-    initialize_graphrag()
+    initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize minimal clients (GitHub not used here, but engine expects a client)
     try:

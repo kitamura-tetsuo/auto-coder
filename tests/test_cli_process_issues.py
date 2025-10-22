@@ -487,3 +487,82 @@ class TestCLIProcessIssues:
         _, kwargs = mock_automation_engine_class.call_args
         assert getattr(kwargs["config"], "IGNORE_DEPENDABOT_PRS") is True
 
+    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    def test_process_issues_force_reindex_flag(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+        mock_initialize_graphrag,
+    ):
+        """--force-reindex should call initialize_graphrag with force_reindex=True."""
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_automation_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+                "--force-reindex",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify output
+        assert "Force reindex: True" in result.output
+        # Verify initialize_graphrag was called with force_reindex=True
+        mock_initialize_graphrag.assert_called_once_with(force_reindex=True)
+
+    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    def test_process_issues_default_no_force_reindex(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+        mock_initialize_graphrag,
+    ):
+        """Default should call initialize_graphrag with force_reindex=False."""
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_automation_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify output
+        assert "Force reindex: False" in result.output
+        # Verify initialize_graphrag was called with force_reindex=False
+        mock_initialize_graphrag.assert_called_once_with(force_reindex=False)
+

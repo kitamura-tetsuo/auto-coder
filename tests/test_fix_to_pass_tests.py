@@ -105,6 +105,66 @@ def test_cli_fix_to_pass_tests_invokes_engine(monkeypatch):
     dummy_engine.fix_to_pass_tests.assert_called_once()
 
 
+def test_cli_fix_to_pass_tests_force_reindex_flag(monkeypatch):
+    from click.testing import CliRunner
+
+    # Patch clients and engine inside CLI commands module
+    from src.auto_coder import cli_commands_main as cli_mod
+    from src.auto_coder.cli import fix_to_pass_tests_command
+
+    dummy_engine = Mock()
+    dummy_engine.fix_to_pass_tests.return_value = {
+        "success": True,
+        "attempts": 1,
+        "messages": [],
+    }
+    mock_initialize_graphrag = Mock()
+    monkeypatch.setattr(cli_mod, "AutomationEngine", Mock(return_value=dummy_engine))
+    monkeypatch.setattr(cli_mod, "GitHubClient", Mock())
+    monkeypatch.setattr("src.auto_coder.cli_helpers.CodexClient", Mock())
+    monkeypatch.setattr("src.auto_coder.cli_helpers.check_codex_cli_or_fail", Mock(return_value=None))
+    monkeypatch.setattr(cli_mod, "initialize_graphrag", mock_initialize_graphrag)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        fix_to_pass_tests_command, ["--backend", "codex", "--force-reindex"]
+    )
+
+    assert res.exit_code == 0
+    assert "Force reindex: True" in res.output
+    # Verify initialize_graphrag was called with force_reindex=True
+    mock_initialize_graphrag.assert_called_once_with(force_reindex=True)
+
+
+def test_cli_fix_to_pass_tests_default_no_force_reindex(monkeypatch):
+    from click.testing import CliRunner
+
+    # Patch clients and engine inside CLI commands module
+    from src.auto_coder import cli_commands_main as cli_mod
+    from src.auto_coder.cli import fix_to_pass_tests_command
+
+    dummy_engine = Mock()
+    dummy_engine.fix_to_pass_tests.return_value = {
+        "success": True,
+        "attempts": 1,
+        "messages": [],
+    }
+    mock_initialize_graphrag = Mock()
+    monkeypatch.setattr(cli_mod, "AutomationEngine", Mock(return_value=dummy_engine))
+    monkeypatch.setattr(cli_mod, "GitHubClient", Mock())
+    monkeypatch.setattr("src.auto_coder.cli_helpers.CodexClient", Mock())
+    monkeypatch.setattr("src.auto_coder.cli_helpers.check_codex_cli_or_fail", Mock(return_value=None))
+    monkeypatch.setattr(cli_mod, "initialize_graphrag", mock_initialize_graphrag)
+
+    runner = CliRunner()
+    res = runner.invoke(fix_to_pass_tests_command, ["--backend", "codex"])
+
+    assert res.exit_code == 0
+    assert "Force reindex: False" in res.output
+    # Verify initialize_graphrag was called with force_reindex=False
+    mock_initialize_graphrag.assert_called_once_with(force_reindex=False)
+
+
 def test_fix_to_pass_tests_creates_llm_logs(monkeypatch, tmp_path):
     from src.auto_coder.automation_config import AutomationConfig
 
