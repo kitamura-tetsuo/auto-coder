@@ -7,7 +7,7 @@
     "graph-builder": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && esbuild dist/cli.js --bundle --platform=node --outfile=dist/cli.bundle.js --external:fsevents",
     "test": "jest",
     "dev": "ts-node src/cli.ts",
     "lint": "eslint src --ext .ts",

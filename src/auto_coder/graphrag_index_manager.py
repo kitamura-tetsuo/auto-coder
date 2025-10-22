@@ -280,9 +280,21 @@ class GraphRAGIndexManager:
 
             # Run graph-builder scan
             try:
-                # Check if TypeScript version is available
+                # Check if TypeScript version is available (prefer bundled version)
+                ts_cli_bundle = graph_builder_path / "dist" / "cli.bundle.js"
                 ts_cli = graph_builder_path / "dist" / "cli.js"
-                if ts_cli.exists():
+
+                if ts_cli_bundle.exists():
+                    logger.info("Using bundled TypeScript version of graph-builder")
+                    cmd = [
+                        "node",
+                        str(ts_cli_bundle),
+                        "scan",
+                        "--project", str(self.repo_path),
+                        "--out", str(temp_dir),
+                        "--languages", "typescript,javascript,python"
+                    ]
+                elif ts_cli.exists():
                     logger.info("Using TypeScript version of graph-builder")
                     cmd = [
                         "node",
@@ -296,7 +308,7 @@ class GraphRAGIndexManager:
                     # Use Python version
                     py_cli = graph_builder_path / "src" / "cli_python.py"
                     if not py_cli.exists():
-                        logger.warning(f"graph-builder CLI not found at {ts_cli} or {py_cli}")
+                        logger.warning(f"graph-builder CLI not found at {ts_cli_bundle}, {ts_cli} or {py_cli}")
                         return self._fallback_python_indexing()
 
                     logger.info("Using Python version of graph-builder")
@@ -375,12 +387,14 @@ class GraphRAGIndexManager:
                 # Check if it has the expected structure
                 if (candidate / "src").exists():
                     logger.debug(f"  Found src directory: {candidate / 'src'}")
-                    # Also check for dist/cli.js or src/cli_python.py
+                    # Also check for dist/cli.bundle.js, dist/cli.js or src/cli_python.py
+                    has_ts_cli_bundle = (candidate / "dist" / "cli.bundle.js").exists()
                     has_ts_cli = (candidate / "dist" / "cli.js").exists()
                     has_py_cli = (candidate / "src" / "cli_python.py").exists()
+                    logger.debug(f"  TypeScript bundled CLI exists: {has_ts_cli_bundle}")
                     logger.debug(f"  TypeScript CLI exists: {has_ts_cli}")
                     logger.debug(f"  Python CLI exists: {has_py_cli}")
-                    if has_ts_cli or has_py_cli:
+                    if has_ts_cli_bundle or has_ts_cli or has_py_cli:
                         logger.info(f"Found graph-builder at: {candidate}")
                         return candidate
                     else:

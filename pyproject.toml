@@ -68,6 +68,7 @@ exclude = ["*.tests", "*.tests.*", "tests.*", "tests"]
 auto_coder = [
     "prompts.yaml",
     "docker-compose.graphrag.yml",
+    "graph_builder/dist/cli.bundle.js",
     "graph_builder/dist/**/*.js",
     "graph_builder/dist/**/*.d.ts",
     "graph_builder/dist/**/*.map",
