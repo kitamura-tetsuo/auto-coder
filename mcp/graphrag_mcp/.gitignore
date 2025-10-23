@@ -1,0 +1,36 @@
+# Python-generated files
+__pycache__/
+*.py[cod]
+build/
+dist/
+wheels/
+*.egg-info
+*.so
+*.egg
+
+# Virtual environments
+.venv
+venv/
+ENV/
+
+# Environment & local settings
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+*.log.*
+logs/
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/

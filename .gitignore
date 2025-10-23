@@ -222,5 +222,4 @@ reports/
 # Ignore old graph-builder directory if it exists
 /graph-builder/
 
-pyproject.toml
 src/auto_coder/graph_builder/node_modules/
