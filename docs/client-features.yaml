@@ -433,14 +433,19 @@ features:
               - "Preserves existing configuration when adding graphrag MCP"
               - "Returns True on success, False on failure"
           - name: "ensure_graphrag_mcp_configured"
-            description: "Ensure graphrag MCP is configured for a backend, adding configuration if needed"
-            parameters: ["backend"]
+            description: "Ensure graphrag MCP is configured for a backend, automatically setting up MCP server if needed"
+            parameters:
+              - "backend: Backend name (gemini, qwen, auggie, codex, codex-mcp)"
+              - "auto_setup: If True (default), automatically run setup-mcp if MCP server directory doesn't exist"
             returns: "Boolean indicating if graphrag MCP is configured (or was successfully added)"
             behavior:
-              - "Checks if graphrag MCP is already configured"
+              - "Checks if ~/graphrag_mcp directory exists"
+              - "If directory missing and auto_setup=True, automatically runs setup-mcp"
+              - "Checks if graphrag MCP is already configured for the backend"
               - "If not configured, automatically adds the configuration"
               - "Verifies configuration after adding"
               - "Logs success or failure messages"
+            new_in_version: "v2025.10.23 - Added auto_setup parameter and automatic MCP server setup"
           - name: "suggest_graphrag_mcp_setup"
             description: "Provide setup instructions for configuring graphrag MCP for a specific backend. Guides users to run 'auto-coder graphrag setup-mcp' for automatic setup and configuration."
             parameters: ["backend"]
@@ -1791,15 +1796,22 @@ deployment:
           - "Windsurf/Claude: Updates ~/.windsurf/settings.json or ~/Library/Application Support/Claude/claude_desktop_config.json with run_server.sh"
           - "After setup, restart CLI (qwen/gemini/auggie) to connect to graphrag MCP server"
         automatic_setup:
-          description: "GraphRAG MCP is automatically set up when not configured"
-          trigger: "When check_graphrag_mcp_for_backends detects missing configuration"
+          description: "GraphRAG MCP is automatically set up when not configured or when MCP server directory is missing"
+          trigger:
+            - "When check_graphrag_mcp_for_backends detects missing configuration"
+            - "When ensure_graphrag_mcp_configured detects missing ~/graphrag_mcp directory"
           implementation:
             - "cli_helpers.py::check_graphrag_mcp_for_backends calls run_graphrag_setup_mcp_programmatically"
-            - "Automatically runs setup with default parameters (silent=False for user visibility)"
+            - "mcp_checker.py::ensure_graphrag_mcp_configured checks for ~/graphrag_mcp directory"
+            - "If directory missing and auto_setup=True, automatically runs setup-mcp"
+            - "Automatically runs setup with default parameters (silent=True for mcp_checker, silent=False for cli_helpers)"
             - "Configures all backends by default, or specific backend if called from backend-specific check"
             - "No user confirmation required for automatic setup (uses existing directory if present)"
           files:
             - "src/auto_coder/cli_helpers.py: check_graphrag_mcp_for_backends function"
+            - "src/auto_coder/mcp_checker.py: ensure_graphrag_mcp_configured function"
+          tests:
+            - "tests/test_mcp_auto_setup.py: Comprehensive tests for automatic MCP setup"
             - "src/auto_coder/cli_commands_graphrag.py: run_graphrag_setup_mcp_programmatically function"
       - command: "auto-coder graphrag start"
         description: "Start Neo4j and Qdrant Docker containers"
@@ -1832,11 +1844,13 @@ deployment:
         tests:
           - "tests/test_codex_mcp_client_graphrag.py"
     external_dependencies:
-      - name: "graphrag_mcp (CUSTOMIZED FORK)"
+      - name: "graphrag_mcp (CUSTOMIZED FORK - BUNDLED)"
         original_url: "https://github.com/rileylemm/graphrag_mcp"
-        fork_location: "mcp/graphrag_mcp/"
+        bundled_location: "src/auto_coder/mcp_servers/graphrag_mcp/"
+        development_location: "mcp/graphrag_mcp/"
         description: "Customized MCP server for TypeScript/JavaScript code analysis using ts-morph indexed graph structure"
-        note: "Tool definitions are provided dynamically by the MCP server via MCP protocol"
+        note: "Tool definitions are provided dynamically by the MCP server via MCP protocol. This fork is bundled with auto-coder package."
+        installation: "Run 'auto-coder graphrag setup-mcp' to copy bundled MCP server to ~/graphrag_mcp"
         customizations:
           - "Specialized for code analysis (not generic documentation)"
           - "Adapted to ts-morph graph schema (File, Symbol nodes with code relationships)"

@@ -76,6 +76,10 @@ auto_coder = [
     "graph_builder/src/**/*.ts",
     "graph_builder/package.json",
     "graph_builder/tsconfig.json",
+    "mcp_servers/graphrag_mcp/**/*.py",
+    "mcp_servers/graphrag_mcp/**/*.md",
+    "mcp_servers/graphrag_mcp/**/*.toml",
+    "mcp_servers/graphrag_mcp/**/*.sh",
 ]
 
 [tool.setuptools.exclude-package-data]

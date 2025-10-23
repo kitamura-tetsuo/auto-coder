@@ -29,7 +29,7 @@ def run_graphrag_setup_mcp_programmatically(
         neo4j_user: Neo4j ユーザー名
         neo4j_password: Neo4j パスワード
         qdrant_url: Qdrant 接続URL
-        skip_clone: 既存のディレクトリを使用（クローンをスキップ）
+        skip_clone: 既存のディレクトリを使用（コピーをスキップ）
         backends: 設定するバックエンドのリスト（デフォルト: 全て）
         silent: True の場合、ユーザー確認をスキップして自動実行
 
@@ -69,7 +69,7 @@ def run_graphrag_setup_mcp_programmatically(
             logger.error("uv コマンドがタイムアウトしました")
             return False
 
-        # Clone repository if needed
+        # Copy bundled MCP server if needed
         if not skip_clone:
             if install_path.exists():
                 if not silent:
@@ -78,35 +78,34 @@ def run_graphrag_setup_mcp_programmatically(
                 skip_clone = True
             else:
                 if not silent:
-                    logger.info("リポジトリをクローンしています...")
+                    logger.info("バンドルされたMCPサーバーをコピーしています...")
                 try:
-                    result = subprocess.run(
-                        [
-                            "git",
-                            "clone",
-                            "https://github.com/rileylemm/graphrag_mcp.git",
-                            str(install_path),
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                    )
-                    if result.returncode != 0:
-                        logger.error(f"リポジトリのクローンに失敗しました:\n{result.stderr}")
+                    # Find the bundled MCP server in the package
+                    import auto_coder
+                    package_dir = Path(auto_coder.__file__).parent
+                    bundled_mcp = package_dir / "mcp_servers" / "graphrag_mcp"
+
+                    if not bundled_mcp.exists():
+                        logger.error(f"バンドルされたMCPサーバーが見つかりません: {bundled_mcp}")
+                        logger.error("パッケージが正しくインストールされていない可能性があります。")
                         return False
+
+                    # Copy the bundled MCP server to install directory
+                    import shutil
+                    shutil.copytree(bundled_mcp, install_path, symlinks=False, ignore_dangling_symlinks=True)
+
                     if not silent:
-                        logger.info("✅ リポジトリをクローンしました")
-                except subprocess.TimeoutExpired:
-                    logger.error("git clone がタイムアウトしました")
-                    return False
-                except FileNotFoundError:
-                    logger.error("git コマンドが見つかりません。Git をインストールしてください。")
+                        logger.info("✅ MCPサーバーをコピーしました")
+                        logger.info(f"   ソース: {bundled_mcp}")
+                        logger.info(f"   コピー先: {install_path}")
+                except Exception as e:
+                    logger.error(f"MCPサーバーのコピーに失敗しました: {e}")
                     return False
         else:
             if not install_path.exists():
                 logger.error(
                     f"ディレクトリ {install_path} が存在しません。--skip-clone を使用する場合は、"
-                    "事前にリポジトリをクローンしてください。"
+                    "事前にMCPサーバーをセットアップしてください。"
                 )
                 return False
             if not silent:
@@ -699,10 +698,13 @@ def graphrag_setup_mcp(
     """GraphRAG MCP サーバーを自動セットアップします。
 
     このコマンドは以下を実行します：
-    1. https://github.com/rileylemm/graphrag_mcp をクローン
+    1. バンドルされたカスタムMCPサーバー（コード分析専用フォーク）をコピー
     2. uv を使用して依存関係をインストール
     3. .env ファイルを作成して接続情報を設定
     4. 各バックエンド（Codex, Gemini, Qwen, Windsurf/Claude）の設定ファイルを自動更新
+
+    注: このMCPサーバーは rileylemm/graphrag_mcp のカスタムフォークで、
+    TypeScript/JavaScriptコード分析に特化しています。
     """
     setup_logger()
 

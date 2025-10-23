@@ -261,6 +261,7 @@ docker compose -f docker-compose.graphrag.yml logs
 3. GraphRAG MCP サーバーのセットアップ（オプション）:
 ```bash
 # 自動セットアップ（推奨）
+# バンドルされたカスタムMCPサーバー（コード分析専用フォーク）を使用
 auto-coder graphrag setup-mcp
 
 # 手動セットアップ
@@ -268,6 +269,8 @@ cd ~/graphrag_mcp
 uv sync
 uv run main.py
 ```
+
+**注**: このMCPサーバーは `rileylemm/graphrag_mcp` のカスタムフォークで、TypeScript/JavaScriptコード分析に特化しています。詳細は `docs/client-features.yaml` の `external_dependencies.graphrag_mcp` セクションを参照してください。
 
 ### GraphRAG サービスの動作確認
 

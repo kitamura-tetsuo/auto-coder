@@ -169,11 +169,14 @@ def suggest_graphrag_mcp_setup(backend: str) -> str:
     base_setup = """
 To enable GraphRAG MCP:
 
+Note: GraphRAG MCP is usually set up automatically when you use auto-coder.
+If automatic setup failed, you can run the setup command manually:
+
 1. Run the automatic setup command:
    auto-coder graphrag setup-mcp
 
    This will:
-   - Clone https://github.com/rileylemm/graphrag_mcp
+   - Copy bundled custom MCP server (code analysis fork)
    - Install dependencies with uv
    - Create .env file with Neo4j and Qdrant configuration
    - Automatically update all backend configuration files
@@ -227,19 +230,22 @@ def _add_gemini_mcp_config() -> bool:
     """Add graphrag MCP configuration to Gemini CLI config.
 
     Note: This function requires setup of GraphRAG MCP server.
-    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    The setup is usually done automatically by ensure_graphrag_mcp_configured().
     """
-    logger.warning(
-        "GraphRAG MCP requires setup. "
-        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
-    )
-    logger.info(
-        "The setup command will:\n"
-        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
-        "2. Install dependencies with uv\n"
-        "3. Create .env file with Neo4j and Qdrant configuration\n"
-        "4. Automatically update ~/.gemini/config.json with GraphRAG MCP configuration"
-    )
+    from pathlib import Path
+
+    # Check if MCP server directory exists
+    default_mcp_dir = Path.home() / "graphrag_mcp"
+
+    if not default_mcp_dir.exists():
+        logger.warning(
+            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
+            "It should be automatically set up by ensure_graphrag_mcp_configured()."
+        )
+        return False
+
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Gemini config")
+    logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
 
@@ -247,19 +253,22 @@ def _add_qwen_mcp_config() -> bool:
     """Add graphrag MCP configuration to Qwen Code CLI config.
 
     Note: This function requires setup of GraphRAG MCP server.
-    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    The setup is usually done automatically by ensure_graphrag_mcp_configured().
     """
-    logger.warning(
-        "GraphRAG MCP requires setup. "
-        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
-    )
-    logger.info(
-        "The setup command will:\n"
-        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
-        "2. Install dependencies with uv\n"
-        "3. Create .env file with Neo4j and Qdrant configuration\n"
-        "4. Automatically update ~/.qwen/config.toml with GraphRAG MCP configuration"
-    )
+    from pathlib import Path
+
+    # Check if MCP server directory exists
+    default_mcp_dir = Path.home() / "graphrag_mcp"
+
+    if not default_mcp_dir.exists():
+        logger.warning(
+            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
+            "It should be automatically set up by ensure_graphrag_mcp_configured()."
+        )
+        return False
+
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Qwen config")
+    logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
 
@@ -267,19 +276,22 @@ def _add_auggie_mcp_config() -> bool:
     """Add graphrag MCP configuration to Auggie CLI config (Windsurf).
 
     Note: This function requires setup of GraphRAG MCP server.
-    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    The setup is usually done automatically by ensure_graphrag_mcp_configured().
     """
-    logger.warning(
-        "GraphRAG MCP requires setup. "
-        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
-    )
-    logger.info(
-        "The setup command will:\n"
-        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
-        "2. Install dependencies with uv\n"
-        "3. Create .env file with Neo4j and Qdrant configuration\n"
-        "4. Automatically update Windsurf settings.json with GraphRAG MCP configuration"
-    )
+    from pathlib import Path
+
+    # Check if MCP server directory exists
+    default_mcp_dir = Path.home() / "graphrag_mcp"
+
+    if not default_mcp_dir.exists():
+        logger.warning(
+            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
+            "It should be automatically set up by ensure_graphrag_mcp_configured()."
+        )
+        return False
+
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Windsurf config")
+    logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
 
@@ -287,34 +299,68 @@ def _add_codex_mcp_config() -> bool:
     """Add graphrag MCP configuration to Codex CLI config.
 
     Note: This function requires setup of GraphRAG MCP server.
-    Run 'auto-coder graphrag setup-mcp' to set up automatically.
+    The setup is usually done automatically by ensure_graphrag_mcp_configured().
     """
-    logger.warning(
-        "GraphRAG MCP requires setup. "
-        "Run 'auto-coder graphrag setup-mcp' to set up and configure automatically."
-    )
-    logger.info(
-        "The setup command will:\n"
-        "1. Clone https://github.com/rileylemm/graphrag_mcp\n"
-        "2. Install dependencies with uv\n"
-        "3. Create .env file with Neo4j and Qdrant configuration\n"
-        "4. Automatically update ~/.codex/config.json with GraphRAG MCP configuration"
-    )
+    from pathlib import Path
+
+    # Check if MCP server directory exists
+    default_mcp_dir = Path.home() / "graphrag_mcp"
+
+    if not default_mcp_dir.exists():
+        logger.warning(
+            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
+            "It should be automatically set up by ensure_graphrag_mcp_configured()."
+        )
+        return False
+
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Codex config")
+    logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
 
-def ensure_graphrag_mcp_configured(backend: str) -> bool:
+def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> bool:
     """Ensure graphrag MCP is configured for the given backend.
 
     This function checks if graphrag MCP is configured, and if not,
-    automatically adds the configuration.
+    automatically sets up the MCP server and adds the configuration.
 
     Args:
         backend: Backend name (gemini, qwen, auggie, codex, codex-mcp)
+        auto_setup: If True, automatically run setup-mcp if MCP server directory doesn't exist
 
     Returns:
         True if graphrag MCP is configured (or was successfully added), False otherwise
     """
+    from pathlib import Path
+
+    # Check if MCP server directory exists
+    default_mcp_dir = Path.home() / "graphrag_mcp"
+
+    if not default_mcp_dir.exists() and auto_setup:
+        logger.info(f"GraphRAG MCP server directory not found at {default_mcp_dir}")
+        logger.info("Automatically setting up GraphRAG MCP server...")
+
+        # Import here to avoid circular dependency
+        from .cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+
+        success = run_graphrag_setup_mcp_programmatically(
+            install_dir=None,  # Use default ~/graphrag_mcp
+            neo4j_uri="bolt://localhost:7687",
+            neo4j_user="neo4j",
+            neo4j_password="password",
+            qdrant_url="http://localhost:6333",
+            skip_clone=False,
+            backends=[backend],
+            silent=True,  # Suppress verbose output
+        )
+
+        if not success:
+            logger.error("Failed to automatically set up GraphRAG MCP server")
+            logger.info(suggest_graphrag_mcp_setup(backend))
+            return False
+
+        logger.info("✅ GraphRAG MCP server setup completed successfully")
+
     # Check if already configured
     if check_graphrag_mcp_for_backend(backend):
         logger.info(f"GraphRAG MCP server is already configured for {backend}")

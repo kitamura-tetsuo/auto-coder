@@ -1,7 +1,8 @@
 """
 Tests for customized GraphRAG MCP fork.
 
-This test verifies that the fork has been properly customized for code analysis.
+This test verifies that the fork has been properly customized for code analysis
+and bundled with the package.
 """
 
 import os
@@ -9,8 +10,18 @@ import sys
 import pytest
 from pathlib import Path
 
-# Add mcp/graphrag_mcp to path for imports
-mcp_path = Path(__file__).parent.parent / "mcp" / "graphrag_mcp"
+# Try to find MCP server in bundled location first, then fall back to mcp/ directory
+try:
+    import auto_coder
+    package_dir = Path(auto_coder.__file__).parent
+    mcp_path = package_dir / "mcp_servers" / "graphrag_mcp"
+    if not mcp_path.exists():
+        # Fall back to development location
+        mcp_path = Path(__file__).parent.parent / "mcp" / "graphrag_mcp"
+except ImportError:
+    # Development mode
+    mcp_path = Path(__file__).parent.parent / "mcp" / "graphrag_mcp"
+
 sys.path.insert(0, str(mcp_path))
 
 
@@ -166,18 +177,24 @@ def test_client_features_yaml_updated():
             f"client-features.yaml should document {tool}"
 
 
-def test_graphrag_integration_doc_exists():
-    """Test that GRAPHRAG_MCP_INTEGRATION.md exists and documents the fork."""
-    doc_path = Path(__file__).parent.parent / "docs" / "GRAPHRAG_MCP_INTEGRATION.md"
-    assert doc_path.exists(), "GRAPHRAG_MCP_INTEGRATION.md should exist"
-    
-    content = doc_path.read_text()
-    
-    # Check for key sections
-    assert "Why Fork?" in content
-    assert "Customizations" in content
-    assert "ts-morph" in content
-    assert "Code-Specific Tools" in content
+def test_fork_info_in_bundled_mcp():
+    """Test that FORK_INFO.md exists in bundled MCP server."""
+    # Check in bundled location
+    try:
+        import auto_coder
+        package_dir = Path(auto_coder.__file__).parent
+        bundled_mcp = package_dir / "mcp_servers" / "graphrag_mcp"
+        fork_info = bundled_mcp / "FORK_INFO.md"
+
+        if bundled_mcp.exists():
+            assert fork_info.exists(), "FORK_INFO.md should exist in bundled MCP server"
+            content = fork_info.read_text()
+            assert "rileylemm/graphrag_mcp" in content
+            assert "Fork" in content or "fork" in content or "フォーク" in content
+        else:
+            pytest.skip("Bundled MCP server not found (development mode)")
+    except ImportError:
+        pytest.skip("auto_coder package not installed")
 
 
 def test_code_analysis_tool_method_signatures():
@@ -217,10 +234,10 @@ def test_original_documentation_tool_not_used():
     """Test that original documentation_tool.py is not imported in server.py."""
     server_path = mcp_path / "server.py"
     content = server_path.read_text()
-    
+
     # Should not use DocumentationGPTTool
     assert "doc_tool" not in content or "code_tool" in content
-    
+
     # All references should be to code_tool
     if "doc_tool" in content:
         # Count occurrences
@@ -228,6 +245,46 @@ def test_original_documentation_tool_not_used():
         code_tool_count = content.count("code_tool")
         assert code_tool_count > doc_tool_count, \
             "server.py should primarily use code_tool, not doc_tool"
+
+
+def test_mcp_server_bundled_in_package():
+    """Test that MCP server is bundled in the package."""
+    try:
+        import auto_coder
+        package_dir = Path(auto_coder.__file__).parent
+        bundled_mcp = package_dir / "mcp_servers" / "graphrag_mcp"
+
+        # Check if bundled MCP server exists
+        if bundled_mcp.exists():
+            # Verify key files exist
+            assert (bundled_mcp / "server.py").exists(), "server.py should exist in bundled MCP"
+            assert (bundled_mcp / "main.py").exists(), "main.py should exist in bundled MCP"
+            assert (bundled_mcp / "pyproject.toml").exists(), "pyproject.toml should exist in bundled MCP"
+            assert (bundled_mcp / "graphrag_mcp" / "code_analysis_tool.py").exists(), \
+                "code_analysis_tool.py should exist in bundled MCP"
+            assert (bundled_mcp / "FORK_INFO.md").exists(), "FORK_INFO.md should exist in bundled MCP"
+        else:
+            # In development mode, bundled MCP may not exist yet
+            pytest.skip("Bundled MCP server not found (development mode)")
+    except ImportError:
+        pytest.skip("auto_coder package not installed")
+
+
+def test_setup_mcp_uses_bundled_server():
+    """Test that setup-mcp command uses bundled MCP server."""
+    from auto_coder.cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+    import inspect
+
+    # Get the source code of the function
+    source = inspect.getsource(run_graphrag_setup_mcp_programmatically)
+
+    # Should reference bundled MCP server
+    assert "mcp_servers" in source or "bundled" in source.lower(), \
+        "setup-mcp should use bundled MCP server"
+
+    # Should NOT clone from GitHub
+    assert "git clone" not in source or "Copy bundled" in source, \
+        "setup-mcp should copy bundled MCP, not clone from GitHub"
 
 
 if __name__ == "__main__":

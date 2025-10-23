@@ -3,6 +3,12 @@ include README.md
 include LICENSE
 include AGENTS.md
 
+# Include MCP servers (bundled custom fork)
+recursive-include src/auto_coder/mcp_servers *.py
+recursive-include src/auto_coder/mcp_servers *.md
+recursive-include src/auto_coder/mcp_servers *.toml
+recursive-include src/auto_coder/mcp_servers *.sh
+
 # Exclude unnecessary files
 global-exclude __pycache__
 global-exclude *.py[co]
