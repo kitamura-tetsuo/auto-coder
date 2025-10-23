@@ -648,11 +648,11 @@ class SampleClass:
             logger.info("   MCP設定の例:")
             example_config = {
                 "mcp_server": "graphrag",
-                "mcp_tools": ["search_documentation", "hybrid_search"],
                 "mcp_resources": [
                     "https://graphrag.db/schema/neo4j",
                     "https://graphrag.db/collection/qdrant",
                 ],
+                "note": "Tools are provided dynamically by MCP server: search_documentation, hybrid_search",
             }
             logger.info(json.dumps(example_config, indent=2, ensure_ascii=False))
 

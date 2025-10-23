@@ -1834,13 +1834,25 @@ deployment:
     external_dependencies:
       - name: "graphrag_mcp"
         url: "https://github.com/rileylemm/graphrag_mcp"
-        description: "MCP server for querying hybrid graph and vector database"
+        description: "MCP server for querying hybrid graph (Neo4j) and vector (Qdrant) database"
+        note: "Tool definitions are provided dynamically by the MCP server via MCP protocol"
         tools:
-          - "search_documentation: Semantic search using Qdrant"
-          - "hybrid_search: Combined semantic and graph-based search"
+          - name: "search_documentation"
+            description: "Semantic search over documentation using Qdrant embeddings"
+            parameters:
+              - "query: str - Natural language search query"
+              - "limit: int - Maximum results to return (default: 5)"
+              - "category: str | None - Optional category filter (e.g., 'setup', 'api', 'usage')"
+          - name: "hybrid_search"
+            description: "Hybrid search combining vector similarity (Qdrant) with graph context (Neo4j)"
+            parameters:
+              - "query: str - Natural language search query"
+              - "limit: int - Maximum results to return (default: 5)"
+              - "category: str | None - Optional category filter"
+              - "expand_context: bool - Whether to expand results with graph context (default: True)"
         resources:
-          - "https://graphrag.db/schema/neo4j: Neo4j schema information"
-          - "https://graphrag.db/collection/qdrant: Qdrant collection information"
+          - "https://graphrag.db/schema/neo4j: Neo4j graph schema (node labels, relationships, properties)"
+          - "https://graphrag.db/collection/qdrant: Qdrant collection info (vector count, size, distance function)"
       - name: "Neo4j"
         description: "Graph database for storing code relationships"
         default_port: 7687

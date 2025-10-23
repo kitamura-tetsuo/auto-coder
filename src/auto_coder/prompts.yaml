@@ -300,3 +300,32 @@ feature:
             ]
         }
     ]
+
+mcp:
+  # GraphRAG MCP server usage guidelines
+  # The MCP server (rileylemm/graphrag_mcp) provides tools dynamically via MCP protocol
+  # Do NOT include tool schemas in prompts - they are provided by the MCP server itself
+
+  usage_guidelines: |-
+    When using GraphRAG MCP tools:
+
+    1. search_documentation(query, limit, category):
+       - Use for straightforward semantic search over documentation
+       - Returns document chunks with relevance scores
+       - Example: search_documentation(query="How to configure retries?", limit=5)
+
+    2. hybrid_search(query, limit, category, expand_context):
+       - Use when you need both semantic similarity AND graph context
+       - Combines vector search with Neo4j graph expansion
+       - Set expand_context=True to follow relationships
+       - Example: hybrid_search(query="What depends on UserService?", limit=10, expand_context=True)
+
+    3. MCP Resources (read-only):
+       - https://graphrag.db/schema/neo4j: Neo4j graph schema info
+       - https://graphrag.db/collection/qdrant: Qdrant collection info
+
+    Best Practices:
+    - Start with search_documentation for simple queries
+    - Use hybrid_search when you need to understand relationships/dependencies
+    - If results are empty, try broader queries or remove category filters
+    - Combine multiple searches to build comprehensive understanding

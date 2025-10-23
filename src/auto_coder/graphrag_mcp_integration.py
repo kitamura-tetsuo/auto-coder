@@ -257,9 +257,10 @@ class GraphRAGMCPIntegration:
         if not self.is_mcp_server_running():
             return None
 
+        # MCP server provides tool definitions dynamically
+        # LLM client will discover tools via MCP protocol
         return {
             "mcp_server": "graphrag",
-            "mcp_tools": ["search_documentation", "hybrid_search"],
             "mcp_resources": [
                 "https://graphrag.db/schema/neo4j",
                 "https://graphrag.db/collection/qdrant",
