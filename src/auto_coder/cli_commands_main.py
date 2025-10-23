@@ -40,6 +40,14 @@ logger = get_logger(__name__)
     help="AI backend(s) to use in priority order (default: codex)",
 )
 @click.option(
+    "--commit-backend",
+    "commit_backends",
+    multiple=True,
+    default=None,
+    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie"]),
+    help="AI backend(s) for commit message generation in priority order (default: same as --backend)",
+)
+@click.option(
     "--gemini-api-key",
     envvar="GEMINI_API_KEY",
     help="Gemini API key (optional, used when backend=gemini)",
@@ -102,6 +110,7 @@ def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
     backends: tuple[str, ...],
+    commit_backends: Optional[tuple[str, ...]],
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
@@ -190,6 +199,24 @@ def process_issues(
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
+
+    # Initialize commit message backend manager (use same backends if not specified)
+    commit_backend_list = normalize_backends(commit_backends) if commit_backends else selected_backends
+    commit_primary_backend = commit_backend_list[0]
+    commit_manager = build_backend_manager(
+        commit_backend_list,
+        commit_primary_backend,
+        models,
+        gemini_api_key,
+        openai_api_key,
+        openai_base_url,
+        enable_graphrag=False,  # GraphRAG not needed for commit messages
+    )
+
+    if commit_backends:
+        commit_backend_str = ", ".join(commit_backend_list)
+        logger.info(f"Using commit message backends: {commit_backend_str} (default: {commit_primary_backend})")
+        click.echo(f"Using commit message backends: {commit_backend_str} (default: {commit_primary_backend})")
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
@@ -391,6 +418,14 @@ def create_feature_issues(
     help="AI backend(s) to use in priority order (default: codex)",
 )
 @click.option(
+    "--commit-backend",
+    "commit_backends",
+    multiple=True,
+    default=None,
+    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie"]),
+    help="AI backend(s) for commit message generation in priority order (default: same as --backend)",
+)
+@click.option(
     "--gemini-api-key",
     envvar="GEMINI_API_KEY",
     help="Gemini API key (optional, used when backend=gemini)",
@@ -437,6 +472,7 @@ def create_feature_issues(
 )
 def fix_to_pass_tests_command(
     backends: tuple[str, ...],
+    commit_backends: Optional[tuple[str, ...]],
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
@@ -510,10 +546,28 @@ def fix_to_pass_tests_command(
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
+    # Initialize commit message backend manager (use same backends if not specified)
+    commit_backend_list = normalize_backends(commit_backends) if commit_backends else selected_backends
+    commit_primary_backend = commit_backend_list[0]
+    commit_manager = build_backend_manager(
+        commit_backend_list,
+        commit_primary_backend,
+        models,
+        gemini_api_key,
+        openai_api_key,
+        openai_base_url,
+        enable_graphrag=False,  # GraphRAG not needed for commit messages
+    )
+
+    if commit_backends:
+        commit_backend_str = ", ".join(commit_backend_list)
+        logger.info(f"Using commit message backends: {commit_backend_str} (default: {commit_primary_backend})")
+        click.echo(f"Using commit message backends: {commit_backend_str} (default: {commit_primary_backend})")
+
     engine = AutomationEngine(github_client, manager, dry_run=dry_run)
 
     try:
-        result = engine.fix_to_pass_tests(max_attempts=max_attempts)
+        result = engine.fix_to_pass_tests(max_attempts=max_attempts, commit_backend_manager=commit_manager)
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")
         else:
@@ -526,6 +580,7 @@ def fix_to_pass_tests_command(
         # Close underlying sessions if present
         try:
             manager.close()
+            commit_manager.close()
         except Exception:
             pass
 

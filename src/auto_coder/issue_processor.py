@@ -3,10 +3,10 @@ Issue processing functionality for Auto-Coder automation engine.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry
+from .git_utils import git_commit_with_retry, save_commit_failure_history
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
@@ -256,12 +256,16 @@ def _take_issue_actions(
     return actions
 
 
-def _commit_changes(result_data: Dict[str, Any]) -> str:
+def _commit_changes(
+    result_data: Dict[str, Any], repo_name: Optional[str] = None, issue_number: Optional[int] = None
+) -> str:
     """
     Commit changes using centralized git helper.
 
     Args:
         result_data: Dictionary containing 'summary' key with commit message
+        repo_name: Repository name (e.g., 'owner/repo') for history saving
+        issue_number: Issue number for context in history
 
     Returns:
         Action message describing the commit result
@@ -286,6 +290,14 @@ def _commit_changes(result_data: Dict[str, Any]) -> str:
     if commit_result.success:
         return f"Successfully committed changes: {summary}"
     else:
+        # Save history and exit immediately
+        context = {
+            "type": "issue",
+            "issue_number": issue_number,
+            "commit_message": summary,
+        }
+        save_commit_failure_history(commit_result.stderr, context, repo_name)
+        # This line will never be reached due to sys.exit in save_commit_failure_history
         return f"Failed to commit changes: {commit_result.stderr}"
 
 
@@ -377,7 +389,9 @@ def _apply_issue_actions_directly(
 
             # Commit any changes made
             commit_action = _commit_changes(
-                {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"}
+                {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
+                repo_name=repo_name,
+                issue_number=issue_data['number']
             )
             actions.append(commit_action)
         else:

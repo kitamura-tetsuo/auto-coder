@@ -1,5 +1,6 @@
 """Tests for git_utils module."""
 
+import json
 import os
 import shutil
 import tempfile
@@ -14,6 +15,7 @@ from src.auto_coder.git_utils import (
     git_push,
     is_git_repository,
     parse_github_repo_from_url,
+    save_commit_failure_history,
 )
 from src.auto_coder.utils import CommandResult
 
@@ -273,3 +275,73 @@ class TestParseGithubRepoFromUrl:
         """Test parsing None URL returns None."""
         result = parse_github_repo_from_url(None)
         assert result is None
+
+
+class TestSaveCommitFailureHistory:
+    """Tests for save_commit_failure_history function."""
+
+    def test_save_commit_failure_history_with_repo_name(self, tmp_path):
+        """Test saving commit failure history with repo name."""
+        # Mock Path.home() to use tmp_path
+        with patch("src.auto_coder.git_utils.Path.home") as mock_home:
+            mock_home.return_value = tmp_path
+
+            error_message = "Test error message"
+            context = {"type": "test", "issue_number": 123}
+            repo_name = "owner/repo"
+
+            # This should exit with code 1
+            with pytest.raises(SystemExit) as exc_info:
+                save_commit_failure_history(error_message, context, repo_name)
+
+            assert exc_info.value.code == 1
+
+            # Check that the history file was created
+            history_dir = tmp_path / ".auto-coder" / "owner_repo"
+            assert history_dir.exists()
+
+            # Find the history file
+            history_files = list(history_dir.glob("commit_failure_*.json"))
+            assert len(history_files) == 1
+
+            # Check the content
+            with open(history_files[0], "r") as f:
+                data = json.load(f)
+
+            assert data["error_message"] == error_message
+            assert data["context"] == context
+            assert "timestamp" in data
+
+    def test_save_commit_failure_history_without_repo_name(self, tmp_path):
+        """Test saving commit failure history without repo name."""
+        # Change to tmp_path directory
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+
+            error_message = "Test error message"
+            context = {"type": "test", "pr_number": 456}
+
+            # This should exit with code 1
+            with pytest.raises(SystemExit) as exc_info:
+                save_commit_failure_history(error_message, context, None)
+
+            assert exc_info.value.code == 1
+
+            # Check that the history file was created
+            history_dir = tmp_path / ".auto-coder"
+            assert history_dir.exists()
+
+            # Find the history file
+            history_files = list(history_dir.glob("commit_failure_*.json"))
+            assert len(history_files) == 1
+
+            # Check the content
+            with open(history_files[0], "r") as f:
+                data = json.load(f)
+
+            assert data["error_message"] == error_message
+            assert data["context"] == context
+            assert "timestamp" in data
+        finally:
+            os.chdir(original_cwd)

@@ -107,7 +107,9 @@ class AutomationEngine:
             self.github, self.config, self.dry_run, repo_name, self.llm
         )
 
-    def fix_to_pass_tests(self, max_attempts: Optional[int] = None) -> Dict[str, Any]:
+    def fix_to_pass_tests(
+        self, max_attempts: Optional[int] = None, commit_backend_manager=None
+    ) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
         run_override = getattr(self, "_run_local_tests", None)
         apply_override = getattr(self, "_apply_workspace_test_fix", None)
@@ -123,7 +125,11 @@ class AutomationEngine:
                         apply_override
                     )
                 return fix_to_pass_tests(
-                    self.config, self.dry_run, max_attempts, self.llm
+                    self.config,
+                    self.dry_run,
+                    max_attempts,
+                    self.llm,
+                    commit_backend_manager,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
@@ -131,7 +137,9 @@ class AutomationEngine:
                     original_apply
                 )
 
-        return fix_to_pass_tests(self.config, self.dry_run, max_attempts, self.llm)
+        return fix_to_pass_tests(
+            self.config, self.dry_run, max_attempts, self.llm, commit_backend_manager
+        )
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
         """Get LLM backend and model information.

@@ -2,9 +2,13 @@
 Git utilities for Auto-Coder.
 """
 
+import json
 import os
 import re
-from typing import List, Optional
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 try:
@@ -243,3 +247,60 @@ def git_push(
         logger.warning(f"Failed to push changes: {result.stderr}")
 
     return result
+
+
+def save_commit_failure_history(
+    error_message: str,
+    context: Dict[str, Any],
+    repo_name: Optional[str] = None,
+) -> None:
+    """
+    Save commit failure history to a JSON file and exit the application.
+
+    This function is called when git_commit_with_retry fails. It saves the
+    failure details to a history file and immediately exits the application
+    to prevent uncommitted changes from being lost.
+
+    Args:
+        error_message: The error message from the failed commit
+        context: Additional context information (e.g., issue number, PR number, etc.)
+        repo_name: Repository name (e.g., 'owner/repo'). If provided, saves to
+                  ~/.auto-coder/{repository}/ directory.
+    """
+    try:
+        # Determine the history directory
+        if repo_name:
+            # リポジトリ名から安全なディレクトリ名を生成
+            safe_repo_name = repo_name.replace("/", "_")
+            history_dir = Path.home() / ".auto-coder" / safe_repo_name
+        else:
+            history_dir = Path(".auto-coder")
+
+        # Create directory if it doesn't exist
+        history_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create history file path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        history_file = history_dir / f"commit_failure_{timestamp}.json"
+
+        # Prepare history data
+        history_data = {
+            "timestamp": datetime.now().isoformat(),
+            "error_message": error_message,
+            "context": context,
+        }
+
+        # Save history to file
+        with open(history_file, "w", encoding="utf-8") as f:
+            json.dump(history_data, f, indent=2, ensure_ascii=False)
+
+        logger.error(f"Commit failed. History saved to {history_file}")
+        logger.error(f"Error: {error_message}")
+        logger.error("Application will now exit to prevent data loss.")
+
+    except Exception as e:
+        logger.error(f"Failed to save commit failure history: {e}")
+        logger.error(f"Original commit error: {error_message}")
+
+    # Exit the application immediately
+    sys.exit(1)

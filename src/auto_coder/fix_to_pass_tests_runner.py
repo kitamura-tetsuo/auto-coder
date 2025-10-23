@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry
+from .git_utils import git_commit_with_retry, save_commit_failure_history
 from .logger_config import get_logger, log_calls
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
@@ -407,6 +407,7 @@ def fix_to_pass_tests(
     dry_run: bool = False,
     max_attempts: Optional[int] = None,
     llm_backend_manager: Optional["BackendManager"] = None,
+    commit_backend_manager: Optional["BackendManager"] = None,
 ) -> Dict[str, Any]:
     """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
 
@@ -618,6 +619,7 @@ def fix_to_pass_tests(
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
             llm_backend_manager=llm_backend_manager,
+            commit_backend_manager=commit_backend_manager,
         )
         if not commit_msg:
             commit_msg = format_commit_message(config, action_msg, attempt)
@@ -626,6 +628,15 @@ def fix_to_pass_tests(
         if not dry_run and commit_msg:
             commit_res = git_commit_with_retry(commit_msg)
             if not commit_res.success:
+                # Save history and exit immediately
+                context = {
+                    "type": "fix_to_pass_tests",
+                    "attempt": attempt,
+                    "test_file": current_test_file,
+                    "commit_message": commit_msg,
+                }
+                save_commit_failure_history(commit_res.stderr, context, repo_name=None)
+                # This line will never be reached due to sys.exit in save_commit_failure_history
                 logger.warning(f"Failed to commit changes: {commit_res.stderr}")
             else:
                 logger.info(f"Committed changes: {commit_msg}")
@@ -669,19 +680,27 @@ def fix_to_pass_tests(
 
 def generate_commit_message_via_llm(
     llm_backend_manager: Optional["BackendManager"],
+    commit_backend_manager: Optional["BackendManager"] = None,
 ) -> str:
     """Use LLM to generate a concise commit message based on the fix context.
 
     Keeps the call minimal and instructs the model to output a single-line subject only.
     Never asks the LLM to run git commands.
+
+    Args:
+        llm_backend_manager: Main LLM backend manager (used as fallback)
+        commit_backend_manager: Dedicated commit message backend manager (preferred)
     """
     try:
-        if llm_backend_manager is None:
+        # Use commit_backend_manager if available, otherwise fall back to llm_backend_manager
+        manager = commit_backend_manager if commit_backend_manager is not None else llm_backend_manager
+
+        if manager is None:
             return ""
 
         prompt = render_prompt("tests.commit_message")
 
-        response = llm_backend_manager._run_llm_cli(prompt)
+        response = manager._run_llm_cli(prompt)
         if not response:
             return ""
 

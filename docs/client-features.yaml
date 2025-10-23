@@ -1222,6 +1222,49 @@ special_features:
       - "tests/test_git_utils.py::TestGitPush::test_push_with_branch"
       - "tests/test_git_utils.py::TestGitPush::test_push_failure"
 
+  commit_failure_history_and_exit:
+    name: "Commit Failure History and Immediate Exit"
+    description: "When git commit fails, the application saves failure details to a history file and immediately exits to prevent uncommitted changes from being lost."
+    behavior:
+      - "Detects commit failures from git_commit_with_retry"
+      - "Saves failure details (error message, context, timestamp) to JSON file"
+      - "History file location: ~/.auto-coder/{repository}/commit_failure_{timestamp}.json (with repo_name) or .auto-coder/commit_failure_{timestamp}.json (without repo_name)"
+      - "Immediately exits with code 1 after saving history"
+      - "Prevents further processing that could lose uncommitted changes"
+    implementation:
+      - "git_utils.save_commit_failure_history: Saves failure history and exits"
+      - "issue_processor._commit_changes: Calls save_commit_failure_history on commit failure"
+      - "fix_to_pass_tests_runner.fix_to_pass_tests: Calls save_commit_failure_history on commit failure"
+    tests:
+      - "tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_with_repo_name"
+      - "tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_without_repo_name"
+
+  commit_message_backend:
+    name: "Dedicated Commit Message Backend"
+    description: "Allows specifying separate AI backend(s) for commit message generation, independent from the main backend used for code analysis and fixes."
+    behavior:
+      - "CLI option --commit-backend accepts multiple backends in priority order"
+      - "If not specified, uses the same backends as --backend"
+      - "Supports all backend types: codex, codex-mcp, gemini, qwen, auggie"
+      - "Automatically switches to next backend on usage limit errors"
+      - "Uses dedicated BackendManager instance for commit message generation"
+    implementation:
+      - "cli_commands_main.py: Added --commit-backend option to process-issues and fix-to-pass-tests commands"
+      - "fix_to_pass_tests_runner.generate_commit_message_via_llm: Updated to accept commit_backend_manager parameter"
+      - "fix_to_pass_tests_runner.fix_to_pass_tests: Added commit_backend_manager parameter"
+      - "automation_engine.AutomationEngine.fix_to_pass_tests: Added commit_backend_manager parameter"
+    cli_options:
+      - name: "--commit-backend"
+        scope: "process-issues and fix-to-pass-tests commands"
+        description: "AI backend(s) for commit message generation in priority order (default: same as --backend)"
+        multiple: true
+        choices: ["codex", "codex-mcp", "gemini", "qwen", "auggie"]
+    examples:
+      - command: "auto-coder fix-to-pass-tests --backend codex --commit-backend gemini"
+        description: "Use codex for code fixes and gemini for commit messages"
+      - command: "auto-coder process-issues --repo owner/repo --backend codex --commit-backend gemini --commit-backend qwen"
+        description: "Use codex for main processing, gemini for commit messages (with qwen as fallback)"
+
   llm_invocation_warn_logging:
     name: "Warn log for LLM invocations"
     description: "Emit warning logs whenever an LLM backend (Gemini or Codex CLI) is invoked, to keep LLM calls minimized."
