@@ -30,12 +30,14 @@ class AutomationEngine:
         llm_client=None,
         dry_run: bool = False,
         config: Optional[AutomationConfig] = None,
+        message_backend_manager=None,
     ):
         """Initialize automation engine."""
         self.github = github_client
         self.llm = llm_client
         self.dry_run = dry_run
         self.config = config or AutomationConfig()
+        self.message_backend_manager = message_backend_manager
 
         # Note: レポートディレクトリはリポジトリごとに作成されるため、
         # ここでは作成しない（_save_reportで作成）
@@ -62,7 +64,7 @@ class AutomationEngine:
         try:
             # Process issues (with jules_mode parameter)
             issues_result = process_issues(
-                self.github, self.config, self.dry_run, repo_name, jules_mode, self.llm
+                self.github, self.config, self.dry_run, repo_name, jules_mode, self.llm, self.message_backend_manager
             )
             results["issues_processed"] = issues_result
 
@@ -99,6 +101,7 @@ class AutomationEngine:
             number,
             jules_mode,
             self.llm,
+            self.message_backend_manager,
         )
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
@@ -108,7 +111,7 @@ class AutomationEngine:
         )
 
     def fix_to_pass_tests(
-        self, max_attempts: Optional[int] = None, commit_backend_manager=None
+        self, max_attempts: Optional[int] = None, message_backend_manager=None
     ) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
         run_override = getattr(self, "_run_local_tests", None)
@@ -129,7 +132,7 @@ class AutomationEngine:
                     self.dry_run,
                     max_attempts,
                     self.llm,
-                    commit_backend_manager,
+                    message_backend_manager,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
@@ -138,7 +141,7 @@ class AutomationEngine:
                 )
 
         return fix_to_pass_tests(
-            self.config, self.dry_run, max_attempts, self.llm, commit_backend_manager
+            self.config, self.dry_run, max_attempts, self.llm, message_backend_manager
         )
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:

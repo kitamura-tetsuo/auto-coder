@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import run_local_tests
-from .git_utils import git_push
+from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
@@ -424,29 +424,33 @@ def _apply_pr_actions_directly(
                     actions.append(f"Failed to stage changes: {add_res.stderr}")
                     return actions
 
-                # Safety: abort commit if conflict markers remain
-                # flagged = _scan_conflict_markers()
-                # if flagged:
-                #     actions.append(
-                #         f"Conflict markers detected in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}. Aborting commit."
-                #     )
-                #     return actions
+                # Commit using centralized helper with dprint retry logic
+                commit_msg = f"Auto-Coder: Apply fix for PR #{pr_data['number']}"
+                commit_res = git_commit_with_retry(commit_msg)
 
-                # commit_res = _commit_with_message(
-                #     f"Auto-Coder: Apply fix for PR #{pr_data['number']}"
-                # )
-                # if commit_res.success:
-                #     actions.append(f"Committed changes for PR #{pr_data['number']}")
-                #     push_res = _push_current_branch()
-                #     if push_res.success:
-                #         actions.append(f"Pushed changes for PR #{pr_data['number']}")
-                #     else:
-                #         actions.append(f"Failed to push changes: {push_res.stderr}")
-                # else:
-                #     if 'nothing to commit' in (commit_res.stdout or ''):
-                #         actions.append("No changes to commit")
-                #     else:
-                #         actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
+                if commit_res.success:
+                    actions.append(f"Committed changes for PR #{pr_data['number']}")
+
+                    # Push changes to remote
+                    push_res = git_push()
+                    if push_res.success:
+                        actions.append(f"Pushed changes for PR #{pr_data['number']}")
+                    else:
+                        actions.append(f"Failed to push changes: {push_res.stderr}")
+                else:
+                    # Check if it's a "nothing to commit" case
+                    if 'nothing to commit' in (commit_res.stdout or ''):
+                        actions.append("No changes to commit")
+                    else:
+                        # Save history and exit immediately
+                        context = {
+                            "type": "pr",
+                            "pr_number": pr_data['number'],
+                            "commit_message": commit_msg,
+                        }
+                        save_commit_failure_history(commit_res.stderr, context, repo_name=None)
+                        # This line will never be reached due to sys.exit in save_commit_failure_history
+                        actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
         else:
             actions.append("LLM CLI did not provide a clear response for PR actions")
 

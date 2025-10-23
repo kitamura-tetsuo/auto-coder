@@ -1239,31 +1239,31 @@ special_features:
       - "tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_with_repo_name"
       - "tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_without_repo_name"
 
-  commit_message_backend:
-    name: "Dedicated Commit Message Backend"
-    description: "Allows specifying separate AI backend(s) for commit message generation, independent from the main backend used for code analysis and fixes."
+  message_backend:
+    name: "Dedicated Message Backend"
+    description: "Allows specifying separate AI backend(s) for message generation (commit messages, PR messages), independent from the main backend used for code analysis and fixes."
     behavior:
-      - "CLI option --commit-backend accepts multiple backends in priority order"
+      - "CLI option --message-backend accepts multiple backends in priority order"
       - "If not specified, uses the same backends as --backend"
       - "Supports all backend types: codex, codex-mcp, gemini, qwen, auggie"
       - "Automatically switches to next backend on usage limit errors"
-      - "Uses dedicated BackendManager instance for commit message generation"
+      - "Uses dedicated BackendManager instance for message generation"
     implementation:
-      - "cli_commands_main.py: Added --commit-backend option to process-issues and fix-to-pass-tests commands"
-      - "fix_to_pass_tests_runner.generate_commit_message_via_llm: Updated to accept commit_backend_manager parameter"
-      - "fix_to_pass_tests_runner.fix_to_pass_tests: Added commit_backend_manager parameter"
-      - "automation_engine.AutomationEngine.fix_to_pass_tests: Added commit_backend_manager parameter"
+      - "cli_commands_main.py: Added --message-backend option to process-issues and fix-to-pass-tests commands"
+      - "fix_to_pass_tests_runner.generate_commit_message_via_llm: Updated to accept message_backend_manager parameter"
+      - "fix_to_pass_tests_runner.fix_to_pass_tests: Added message_backend_manager parameter"
+      - "automation_engine.AutomationEngine.fix_to_pass_tests: Added message_backend_manager parameter"
     cli_options:
-      - name: "--commit-backend"
+      - name: "--message-backend"
         scope: "process-issues and fix-to-pass-tests commands"
-        description: "AI backend(s) for commit message generation in priority order (default: same as --backend)"
+        description: "AI backend(s) for message generation in priority order (default: same as --backend)"
         multiple: true
         choices: ["codex", "codex-mcp", "gemini", "qwen", "auggie"]
     examples:
-      - command: "auto-coder fix-to-pass-tests --backend codex --commit-backend gemini"
-        description: "Use codex for code fixes and gemini for commit messages"
-      - command: "auto-coder process-issues --repo owner/repo --backend codex --commit-backend gemini --commit-backend qwen"
-        description: "Use codex for main processing, gemini for commit messages (with qwen as fallback)"
+      - command: "auto-coder fix-to-pass-tests --backend codex --message-backend gemini"
+        description: "Use codex for code fixes and gemini for messages"
+      - command: "auto-coder process-issues --repo owner/repo --backend codex --message-backend gemini --message-backend qwen"
+        description: "Use codex for main processing, gemini for messages (with qwen as fallback)"
 
   llm_invocation_warn_logging:
     name: "Warn log for LLM invocations"

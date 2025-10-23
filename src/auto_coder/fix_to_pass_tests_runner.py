@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry, save_commit_failure_history
+from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger, log_calls
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
@@ -407,7 +407,7 @@ def fix_to_pass_tests(
     dry_run: bool = False,
     max_attempts: Optional[int] = None,
     llm_backend_manager: Optional["BackendManager"] = None,
-    commit_backend_manager: Optional["BackendManager"] = None,
+    message_backend_manager: Optional["BackendManager"] = None,
 ) -> Dict[str, Any]:
     """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
 
@@ -619,7 +619,7 @@ def fix_to_pass_tests(
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
             llm_backend_manager=llm_backend_manager,
-            commit_backend_manager=commit_backend_manager,
+            message_backend_manager=message_backend_manager,
         )
         if not commit_msg:
             commit_msg = format_commit_message(config, action_msg, attempt)
@@ -641,7 +641,7 @@ def fix_to_pass_tests(
             else:
                 logger.info(f"Committed changes: {commit_msg}")
 
-        # If tests passed, mark success and return
+        # If tests passed, mark success and push changes
         if post_result["success"]:
             if current_test_file is not None:
                 logger.info(
@@ -650,6 +650,18 @@ def fix_to_pass_tests(
                 current_test_file = None
                 continue
             summary["success"] = True
+
+            # Push changes to remote
+            if not dry_run:
+                logger.info("Tests passed, pushing changes to remote...")
+                push_result = git_push()
+                if push_result.success:
+                    logger.info("Successfully pushed changes to remote")
+                    summary["messages"].append("Pushed changes to remote")
+                else:
+                    logger.warning(f"Failed to push changes: {push_result.stderr}")
+                    summary["messages"].append(f"Failed to push: {push_result.stderr}")
+
             return summary
 
         # Cache the failing post-fix result for the next loop to avoid re-running before LLM edits
@@ -680,7 +692,7 @@ def fix_to_pass_tests(
 
 def generate_commit_message_via_llm(
     llm_backend_manager: Optional["BackendManager"],
-    commit_backend_manager: Optional["BackendManager"] = None,
+    message_backend_manager: Optional["BackendManager"] = None,
 ) -> str:
     """Use LLM to generate a concise commit message based on the fix context.
 
@@ -689,11 +701,11 @@ def generate_commit_message_via_llm(
 
     Args:
         llm_backend_manager: Main LLM backend manager (used as fallback)
-        commit_backend_manager: Dedicated commit message backend manager (preferred)
+        message_backend_manager: Dedicated message backend manager (preferred)
     """
     try:
-        # Use commit_backend_manager if available, otherwise fall back to llm_backend_manager
-        manager = commit_backend_manager if commit_backend_manager is not None else llm_backend_manager
+        # Use message_backend_manager if available, otherwise fall back to llm_backend_manager
+        manager = message_backend_manager if message_backend_manager is not None else llm_backend_manager
 
         if manager is None:
             return ""

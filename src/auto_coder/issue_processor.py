@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry, save_commit_failure_history
+from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
@@ -22,13 +22,14 @@ def process_issues(
     repo_name: str,
     jules_mode: bool = False,
     llm_client=None,
+    message_backend_manager=None,
 ) -> List[Dict[str, Any]]:
     """Process open issues in the repository."""
     if jules_mode:
         return _process_issues_jules_mode(github_client, config, dry_run, repo_name)
     else:
         return _process_issues_normal(
-            github_client, config, dry_run, repo_name, llm_client
+            github_client, config, dry_run, repo_name, llm_client, message_backend_manager
         )
 
 
@@ -38,6 +39,7 @@ def _process_issues_normal(
     dry_run: bool,
     repo_name: str,
     llm_client=None,
+    message_backend_manager=None,
 ) -> List[Dict[str, Any]]:
     """Process open issues in the repository."""
     try:
@@ -95,7 +97,7 @@ def _process_issues_normal(
                 try:
                     # 単回実行での直接アクション（CLI）
                     actions = _take_issue_actions(
-                        repo_name, issue_data, config, dry_run, llm_client
+                        repo_name, issue_data, config, dry_run, llm_client, message_backend_manager
                     )
                     processed_issue["actions_taken"] = actions
                 finally:
@@ -232,6 +234,7 @@ def _take_issue_actions(
     config: AutomationConfig,
     dry_run: bool,
     llm_client=None,
+    message_backend_manager=None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
     actions = []
@@ -245,7 +248,7 @@ def _take_issue_actions(
         else:
             # Ask LLM CLI to analyze the issue and take appropriate actions
             action_results = _apply_issue_actions_directly(
-                repo_name, issue_data, config, dry_run, llm_client
+                repo_name, issue_data, config, dry_run, llm_client, message_backend_manager
             )
             actions.extend(action_results)
 
@@ -254,6 +257,93 @@ def _take_issue_actions(
         actions.append(f"Error processing issue #{issue_number}: {e}")
 
     return actions
+
+
+def _create_pr_for_issue(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    work_branch: str,
+    base_branch: str,
+    llm_response: str,
+    message_backend_manager=None,
+    dry_run: bool = False,
+) -> str:
+    """
+    Create a pull request for the issue.
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        issue_data: Issue data dictionary
+        work_branch: Work branch name
+        base_branch: Base branch name (e.g., 'main')
+        llm_response: LLM response containing changes summary
+        message_backend_manager: Backend manager for PR message generation
+        dry_run: Whether this is a dry run
+
+    Returns:
+        Action message describing the PR creation result
+    """
+    issue_number = issue_data.get("number", "unknown")
+    issue_title = issue_data.get("title", "Unknown")
+    issue_body = issue_data.get("body", "")
+
+    try:
+        # Generate PR message using message backend if available
+        pr_title = None
+        pr_body = None
+
+        if message_backend_manager:
+            try:
+                pr_message_prompt = render_prompt(
+                    "pr.pr_message",
+                    issue_number=issue_number,
+                    issue_title=issue_title,
+                    issue_body=issue_body[:500],
+                    changes_summary=llm_response[:500],
+                )
+                pr_message_response = message_backend_manager._run_llm_cli(pr_message_prompt)
+
+                if pr_message_response and len(pr_message_response.strip()) > 0:
+                    # Parse the response (first line is title, rest is body)
+                    lines = pr_message_response.strip().split("\n")
+                    pr_title = lines[0].strip()
+                    if len(lines) > 2:
+                        pr_body = "\n".join(lines[2:]).strip()
+                    logger.info(f"Generated PR message using message backend: {pr_title}")
+            except Exception as e:
+                logger.warning(f"Failed to generate PR message using message backend: {e}")
+
+        # Fallback to default PR message if generation failed
+        if not pr_title:
+            pr_title = f"Fix issue #{issue_number}: {issue_title}"
+        if not pr_body:
+            pr_body = f"This PR addresses issue #{issue_number}.\n\n{issue_body[:200]}"
+
+        if dry_run:
+            return f"[DRY RUN] Would create PR: {pr_title}"
+
+        # Create PR using gh CLI
+        create_pr_result = cmd.run_command(
+            [
+                "gh", "pr", "create",
+                "--base", base_branch,
+                "--head", work_branch,
+                "--title", pr_title,
+                "--body", pr_body,
+            ],
+            check_success=False
+        )
+
+        if create_pr_result.success:
+            logger.info(f"Successfully created PR for issue #{issue_number}")
+            return f"Successfully created PR for issue #{issue_number}: {pr_title}"
+        else:
+            logger.error(f"Failed to create PR for issue #{issue_number}: {create_pr_result.stderr}")
+            return f"Failed to create PR for issue #{issue_number}: {create_pr_result.stderr}"
+
+    except Exception as e:
+        logger.error(f"Error creating PR for issue #{issue_number}: {e}")
+        return f"Error creating PR for issue #{issue_number}: {e}"
 
 
 def _commit_changes(
@@ -288,7 +378,13 @@ def _commit_changes(
     commit_result = git_commit_with_retry(summary)
 
     if commit_result.success:
-        return f"Successfully committed changes: {summary}"
+        # Push changes to remote
+        push_result = git_push()
+        if push_result.success:
+            return f"Successfully committed and pushed changes: {summary}"
+        else:
+            logger.warning(f"Failed to push changes: {push_result.stderr}")
+            return f"Successfully committed changes: {summary} (push failed: {push_result.stderr})"
     else:
         # Save history and exit immediately
         context = {
@@ -307,23 +403,19 @@ def _apply_issue_actions_directly(
     config: AutomationConfig,
     dry_run: bool,
     llm_client=None,
+    message_backend_manager=None,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     actions = []
 
     try:
-        # ブランチ切り替え: PRで指定されているブランチがあればそこへ、なければデフォルトブランチへ
+        # ブランチ切り替え: PRで指定されているブランチがあればそこへ、なければ作業用ブランチを作成
         target_branch = None
         if "head_branch" in issue_data:
             # PRの場合はhead_branchに切り替え
             target_branch = issue_data.get("head_branch")
             logger.info(f"Switching to PR branch: {target_branch}")
-        else:
-            # 通常のissueの場合はデフォルトブランチに切り替え
-            target_branch = config.MAIN_BRANCH
-            logger.info(f"Switching to default branch: {target_branch}")
 
-        if target_branch:
             # ブランチを切り替え
             checkout_result = cmd.run_command(
                 ["git", "checkout", target_branch], check_success=False
@@ -337,6 +429,49 @@ def _apply_issue_actions_directly(
                 actions.append(error_msg)
                 logger.error(error_msg)
                 return actions
+        else:
+            # 通常のissueの場合は作業用ブランチを作成
+            issue_number = issue_data.get("number", "unknown")
+            work_branch = f"issue-{issue_number}"
+            logger.info(f"Creating work branch for issue: {work_branch}")
+
+            # まずデフォルトブランチに切り替え
+            checkout_main_result = cmd.run_command(
+                ["git", "checkout", config.MAIN_BRANCH], check_success=False
+            )
+            if not checkout_main_result.success:
+                error_msg = f"Failed to switch to main branch {config.MAIN_BRANCH}: {checkout_main_result.stderr}"
+                actions.append(error_msg)
+                logger.error(error_msg)
+                return actions
+
+            # 最新の状態を取得
+            pull_result = cmd.run_command(["git", "pull"], check_success=False)
+            if not pull_result.success:
+                logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
+
+            # 作業用ブランチを作成して切り替え
+            checkout_new_result = cmd.run_command(
+                ["git", "checkout", "-b", work_branch], check_success=False
+            )
+            if checkout_new_result.success:
+                actions.append(f"Created and switched to work branch: {work_branch}")
+                logger.info(f"Successfully created work branch: {work_branch}")
+                target_branch = work_branch
+            else:
+                # ブランチが既に存在する場合は切り替えのみ
+                checkout_existing_result = cmd.run_command(
+                    ["git", "checkout", work_branch], check_success=False
+                )
+                if checkout_existing_result.success:
+                    actions.append(f"Switched to existing work branch: {work_branch}")
+                    logger.info(f"Switched to existing work branch: {work_branch}")
+                    target_branch = work_branch
+                else:
+                    error_msg = f"Failed to create or switch to work branch {work_branch}: {checkout_new_result.stderr}"
+                    actions.append(error_msg)
+                    logger.error(error_msg)
+                    return actions
 
         # Create a comprehensive prompt for LLM CLI
         action_prompt = render_prompt(
@@ -394,6 +529,19 @@ def _apply_issue_actions_directly(
                 issue_number=issue_data['number']
             )
             actions.append(commit_action)
+
+            # Create PR if this is a regular issue (not a PR)
+            if "head_branch" not in issue_data and target_branch:
+                pr_creation_result = _create_pr_for_issue(
+                    repo_name=repo_name,
+                    issue_data=issue_data,
+                    work_branch=target_branch,
+                    base_branch=config.MAIN_BRANCH,
+                    llm_response=response,
+                    message_backend_manager=message_backend_manager,
+                    dry_run=dry_run,
+                )
+                actions.append(pr_creation_result)
         else:
             actions.append(
                 "LLM CLI did not provide a clear response for issue analysis"
@@ -519,6 +667,7 @@ def process_single(
     number: int,
     jules_mode: bool = False,
     llm_client=None,
+    message_backend_manager=None,
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
@@ -611,7 +760,7 @@ def process_single(
                             )
                     else:
                         actions = _take_issue_actions(
-                            repo_name, issue_data, config, dry_run, llm_client
+                            repo_name, issue_data, config, dry_run, llm_client, message_backend_manager
                         )
                         processed_issue["actions_taken"] = actions
                 finally:

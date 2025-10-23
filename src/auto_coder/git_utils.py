@@ -167,13 +167,20 @@ def git_commit_with_retry(
             ["git", "commit", "-m", commit_message], cwd=cwd, check_success=False
         )
 
+        # If commit succeeded, return immediately
+        if result.success:
+            logger.info("Successfully committed changes")
+            return result
+
         # Check if the failure is due to dprint formatting issues
-        if (
+        is_dprint_error = (
             "dprint fmt" in result.stderr
             or "Formatting issues detected" in result.stderr
             or "dprint fmt" in result.stdout
             or "Formatting issues detected" in result.stdout
-        ):
+        )
+
+        if is_dprint_error:
             if attempt < max_retries:
                 logger.info(
                     "Detected dprint formatting issues, running 'npx dprint fmt' and retrying..."
@@ -205,12 +212,13 @@ def git_commit_with_retry(
                 logger.warning(
                     f"Max retries ({max_retries}) reached for commit with dprint formatting"
                 )
+        else:
+            # Non-dprint error, exit immediately
+            logger.warning(f"Failed to commit changes: {result.stderr}")
+            return result
 
-        # If we get here, either it's not a dprint error or we've exhausted retries
-        logger.warning(f"Failed to commit changes: {result.stderr}")
-        return result
-
-    # Should not reach here, but return the last result just in case
+    # If we get here, all attempts failed (dprint error case)
+    logger.warning(f"Failed to commit changes: {result.stderr}")
     return result
 
 

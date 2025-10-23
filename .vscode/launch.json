@@ -93,6 +93,7 @@
                 "process-issues",
                 "--ignore-dependabot-prs",
                 "--no-jules-mode",
+                "--force-reindex",
                 // "--backend",
                 // "qwen",
                 // "--backend",
@@ -104,7 +105,9 @@
                 "--backend",
                 "auggie",
                 "--model-auggie",
-                "sonnet4.5"
+                "sonnet4.5",
+                "--message-backend",
+                "qwen"
             ],
             "python": "${command:python.interpreterPath}",
             "env": {

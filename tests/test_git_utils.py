@@ -84,8 +84,9 @@ class TestGitCommitWithRetry:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
 
-            # First call: commit fails with dprint error
+            # First call: commit fails with dprint error (attempt 0)
             # Second call: dprint fmt fails
+            # Third call: commit fails again (attempt 1, max_retries reached)
             mock_cmd.run_command.side_effect = [
                 CommandResult(
                     success=False,
@@ -97,6 +98,12 @@ class TestGitCommitWithRetry:
                     success=False,
                     stdout="",
                     stderr="dprint command not found",
+                    returncode=1,
+                ),
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="Formatting issues detected. Run 'npx dprint fmt' to fix.",
                     returncode=1,
                 ),
             ]

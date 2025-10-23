@@ -92,6 +92,29 @@ pr:
 
     After analyzing, apply the necessary fixes to the codebase.
 
+  pr_message: |-
+    Generate a concise pull request message for the following issue:
+
+    Issue #$issue_number: $issue_title
+    Issue Description:
+    $issue_body
+
+    Changes Summary:
+    $changes_summary
+
+    Requirements:
+    - Title: A clear, concise title (max 72 characters) that describes the changes
+    - Body: A brief description of what was changed and why (2-3 sentences)
+    - Format: Return ONLY the title on the first line, followed by a blank line, then the body
+    - Do NOT include any markdown formatting, headers, or extra text
+
+    Example format:
+    Fix authentication bug in login flow
+
+    Updated the authentication logic to properly handle edge cases when users
+    have special characters in their passwords. This resolves the login failures
+    reported in the issue.
+
 issue:
   action: |-
     Analyze the following GitHub issue and take appropriate actions:
