@@ -1,5 +1,6 @@
 """GraphRAG-related CLI commands."""
 
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -47,7 +48,8 @@ def run_graphrag_setup_mcp_programmatically(
             logger.info("GraphRAG MCP サーバーのセットアップを開始します...")
             logger.info(f"インストール先: {install_path}")
 
-        # Check if uv is available
+        # Check if uv is available, install if not found
+        uv_available = False
         try:
             result = subprocess.run(
                 ["uv", "--version"],
@@ -55,19 +57,76 @@ def run_graphrag_setup_mcp_programmatically(
                 text=True,
                 timeout=10,
             )
-            if result.returncode != 0:
-                logger.error("uv が正しく動作していません。")
-                logger.error("インストール: https://docs.astral.sh/uv/")
-                return False
-            if not silent:
-                logger.info(f"✅ uv が利用可能です: {result.stdout.strip()}")
+            if result.returncode == 0:
+                uv_available = True
+                if not silent:
+                    logger.info(f"✅ uv が利用可能です: {result.stdout.strip()}")
         except FileNotFoundError:
-            logger.error("uv が見つかりません。")
-            logger.error("インストール: https://docs.astral.sh/uv/")
-            return False
+            pass
         except subprocess.TimeoutExpired:
             logger.error("uv コマンドがタイムアウトしました")
             return False
+
+        # Auto-install uv if not available
+        if not uv_available:
+            if not silent:
+                logger.warning("uv が見つかりません。自動インストールを試みます...")
+
+            try:
+                # Install uv using the official installer
+                install_cmd = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+                result = subprocess.run(
+                    install_cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=300,  # 5 minutes timeout for installation
+                )
+
+                if result.returncode != 0:
+                    logger.error("uv の自動インストールに失敗しました。")
+                    logger.error(f"エラー: {result.stderr}")
+                    logger.error("手動でインストールしてください: https://docs.astral.sh/uv/")
+                    return False
+
+                # Verify installation
+                # Add common uv installation paths to PATH for this session
+                import os
+                uv_bin_paths = [
+                    str(Path.home() / ".local" / "bin"),
+                    str(Path.home() / ".cargo" / "bin"),
+                ]
+                current_path = os.environ.get("PATH", "")
+                os.environ["PATH"] = ":".join(uv_bin_paths + [current_path])
+
+                # Check if uv is now available
+                try:
+                    result = subprocess.run(
+                        ["uv", "--version"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if result.returncode == 0:
+                        if not silent:
+                            logger.info(f"✅ uv を自動インストールしました: {result.stdout.strip()}")
+                    else:
+                        logger.error("uv のインストールは完了しましたが、実行できません。")
+                        logger.error("シェルを再起動してから再度お試しください。")
+                        return False
+                except FileNotFoundError:
+                    logger.error("uv のインストールは完了しましたが、PATH に見つかりません。")
+                    logger.error("シェルを再起動してから再度お試しください。")
+                    logger.error(f"または、以下のパスを PATH に追加してください: {':'.join(uv_bin_paths)}")
+                    return False
+
+            except subprocess.TimeoutExpired:
+                logger.error("uv のインストールがタイムアウトしました")
+                return False
+            except Exception as e:
+                logger.error(f"uv のインストール中にエラーが発生しました: {e}")
+                logger.error("手動でインストールしてください: https://docs.astral.sh/uv/")
+                return False
 
         # Copy bundled MCP server if needed
         if not skip_clone:
@@ -159,12 +218,32 @@ QDRANT_URL={qdrant_url}
 
         # Create run_server.sh script
         run_script_path = install_path / "run_server.sh"
-        run_script_content = """#!/bin/bash
+
+        # Find uv executable path for the script
+        uv_path = shutil.which("uv")
+        if not uv_path:
+            # Try common locations
+            common_paths = [
+                Path.home() / ".local" / "bin" / "uv",
+                Path.home() / ".cargo" / "bin" / "uv",
+                Path("/usr/local/bin/uv"),
+            ]
+            for path in common_paths:
+                if path.exists():
+                    uv_path = str(path)
+                    break
+
+        if not uv_path:
+            logger.error("uv executable not found in PATH or common locations")
+            return False
+
+        # Create a robust run_server.sh that can find uv even in pipx environments
+        run_script_content = f"""#!/bin/bash
 # GraphRAG MCP Server startup script
 # This script ensures the .env file is loaded from the correct directory
 
 # Get the directory where this script is located
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
 
 # Change to the script directory to ensure .env is loaded correctly
 cd "$SCRIPT_DIR"
@@ -172,8 +251,32 @@ cd "$SCRIPT_DIR"
 # Clear VIRTUAL_ENV to avoid conflicts with other projects
 unset VIRTUAL_ENV
 
+# Add common uv installation paths to PATH
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
+
+# Try to find uv executable
+UV_CMD=""
+
+# First, try the path we found during setup
+if [ -x "{uv_path}" ]; then
+    UV_CMD="{uv_path}"
+# Then try common locations
+elif command -v uv >/dev/null 2>&1; then
+    UV_CMD="uv"
+elif [ -x "$HOME/.local/bin/uv" ]; then
+    UV_CMD="$HOME/.local/bin/uv"
+elif [ -x "$HOME/.cargo/bin/uv" ]; then
+    UV_CMD="$HOME/.cargo/bin/uv"
+elif [ -x "/usr/local/bin/uv" ]; then
+    UV_CMD="/usr/local/bin/uv"
+else
+    echo "Error: uv executable not found" >&2
+    echo "Please install uv: https://docs.astral.sh/uv/" >&2
+    exit 1
+fi
+
 # Run the MCP server with uv
-exec uv run main.py
+exec "$UV_CMD" run main.py
 """
 
         try:
