@@ -1222,6 +1222,32 @@ special_features:
       - "tests/test_git_utils.py::TestGitPush::test_push_with_branch"
       - "tests/test_git_utils.py::TestGitPush::test_push_failure"
 
+  unpushed_commits_detection_and_push:
+    name: "Unpushed Commits Detection and Auto-Push"
+    description: "Detects and pushes unpushed commits to prevent LLM work from being lost. Ensures all commits are pushed before starting new work and retries push on failure."
+    behavior:
+      - "Checks for unpushed commits at the start of issue/PR processing"
+      - "Automatically pushes unpushed commits if found"
+      - "Retries push once after 2-second delay if first attempt fails"
+      - "Logs critical error if push fails after retry, but continues processing (commit is safe locally)"
+      - "Empty push (no unpushed commits) is silently skipped"
+    implementation:
+      - "git_utils.check_unpushed_commits: Checks if there are unpushed commits in current branch"
+      - "git_utils.ensure_pushed: Ensures all commits are pushed, with automatic detection and push"
+      - "issue_processor._apply_issue_actions_directly: Calls ensure_pushed at start"
+      - "pr_processor._handle_pr_merge: Calls ensure_pushed at start"
+      - "issue_processor._commit_changes: Retries push once on failure"
+      - "pr_processor (multiple locations): Retries push once on failure"
+    tests:
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_check_unpushed_commits_with_unpushed"
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_check_unpushed_commits_without_unpushed"
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_check_unpushed_commits_branch_not_exist"
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_git_push_success"
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_git_push_failure"
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_ensure_pushed_with_unpushed_commits"
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_ensure_pushed_without_unpushed_commits"
+      - "tests/test_git_utils_push.py::TestGitPushUtils::test_ensure_pushed_push_failure"
+
   commit_failure_history_and_exit:
     name: "Commit Failure History and Immediate Exit"
     description: "When git commit fails, the application saves failure details to a history file and immediately exits to prevent uncommitted changes from being lost."

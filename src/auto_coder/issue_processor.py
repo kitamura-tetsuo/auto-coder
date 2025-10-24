@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import ensure_pushed, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
@@ -360,6 +360,9 @@ def _commit_changes(
     Returns:
         Action message describing the commit result
     """
+    # Push changes for llm commited.
+    push_result = git_push()
+
     summary = result_data.get("summary", "Auto-Coder: Automated changes")
 
     # Check if there are any changes to commit
@@ -378,13 +381,23 @@ def _commit_changes(
     commit_result = git_commit_with_retry(summary)
 
     if commit_result.success:
-        # Push changes to remote
+        # Push changes to remote with retry
         push_result = git_push()
         if push_result.success:
             return f"Successfully committed and pushed changes: {summary}"
         else:
-            logger.warning(f"Failed to push changes: {push_result.stderr}")
-            return f"Successfully committed changes: {summary} (push failed: {push_result.stderr})"
+            # Push failed - try one more time after a brief pause
+            logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
+            import time
+            time.sleep(2)
+            retry_push_result = git_push()
+            if retry_push_result.success:
+                return f"Successfully committed and pushed changes (after retry): {summary}"
+            else:
+                logger.error(f"Failed to push changes after retry: {retry_push_result.stderr}")
+                # This is a critical error - we have committed changes but can't push them
+                # Log the error but don't exit, as the commit is safe locally
+                return f"CRITICAL: Successfully committed changes but failed to push: {summary}. Error: {retry_push_result.stderr}"
     else:
         # Save history and exit immediately
         context = {
@@ -409,6 +422,16 @@ def _apply_issue_actions_directly(
     actions = []
 
     try:
+        # Ensure any unpushed commits are pushed before starting
+        logger.info("Checking for unpushed commits before processing issue...")
+        push_result = ensure_pushed()
+        if push_result.success and "No unpushed commits" not in push_result.stdout:
+            actions.append(f"Pushed unpushed commits: {push_result.stdout}")
+            logger.info("Successfully pushed unpushed commits")
+        elif not push_result.success:
+            logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
+            actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
+
         # ブランチ切り替え: PRで指定されているブランチがあればそこへ、なければ作業用ブランチを作成
         target_branch = None
         if "head_branch" in issue_data:

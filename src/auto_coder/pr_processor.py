@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import run_local_tests
-from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import ensure_pushed, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
@@ -431,12 +431,21 @@ def _apply_pr_actions_directly(
                 if commit_res.success:
                     actions.append(f"Committed changes for PR #{pr_data['number']}")
 
-                    # Push changes to remote
+                    # Push changes to remote with retry
                     push_res = git_push()
                     if push_res.success:
                         actions.append(f"Pushed changes for PR #{pr_data['number']}")
                     else:
-                        actions.append(f"Failed to push changes: {push_res.stderr}")
+                        # Push failed - try one more time after a brief pause
+                        logger.warning(f"First push attempt failed: {push_res.stderr}, retrying...")
+                        import time
+                        time.sleep(2)
+                        retry_push_res = git_push()
+                        if retry_push_res.success:
+                            actions.append(f"Pushed changes for PR #{pr_data['number']} (after retry)")
+                        else:
+                            logger.error(f"Failed to push changes after retry: {retry_push_res.stderr}")
+                            actions.append(f"CRITICAL: Committed but failed to push changes: {retry_push_res.stderr}")
                 else:
                     # Check if it's a "nothing to commit" case
                     if 'nothing to commit' in (commit_res.stdout or ''):
@@ -662,6 +671,16 @@ def _handle_pr_merge(
     pr_number = pr_data["number"]
 
     try:
+        # Ensure any unpushed commits are pushed before starting
+        logger.info(f"Checking for unpushed commits before processing PR #{pr_number}...")
+        push_result = ensure_pushed()
+        if push_result.success and "No unpushed commits" not in push_result.stdout:
+            actions.append(f"Pushed unpushed commits: {push_result.stdout}")
+            logger.info("Successfully pushed unpushed commits")
+        elif not push_result.success:
+            logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
+            actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
+
         # Step 1: Check GitHub Actions status
         github_checks = _check_github_actions_status(repo_name, pr_data, config)
 
@@ -908,14 +927,24 @@ def _update_with_base_branch(
                 f"Successfully merged {target_branch} branch into PR #{pr_number}"
             )
 
-            # Push the updated branch using centralized helper
+            # Push the updated branch using centralized helper with retry
             push_result = git_push()
             if push_result.success:
                 actions.append(f"Pushed updated branch for PR #{pr_number}")
                 # Signal to skip further LLM analysis for this PR in this run
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
-                actions.append(f"Failed to push updated branch: {push_result.stderr}")
+                # Push failed - try one more time after a brief pause
+                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
+                import time
+                time.sleep(2)
+                retry_push_result = git_push()
+                if retry_push_result.success:
+                    actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
+                    actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                else:
+                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
+                    actions.append(f"CRITICAL: Failed to push updated branch: {retry_push_result.stderr}")
         else:
             # Merge conflict occurred, ask Gemini to resolve it
             actions.append(
@@ -1257,7 +1286,7 @@ def _resolve_pr_merge_conflicts(
         merge_result = cmd.run_command(["git", "merge", f"origin/{config.MAIN_BRANCH}"])
 
         if merge_result.success:
-            # No conflicts, push the updated branch using centralized helper
+            # No conflicts, push the updated branch using centralized helper with retry
             logger.info(
                 f"Successfully merged main into PR #{pr_number}, pushing changes"
             )
@@ -1267,8 +1296,17 @@ def _resolve_pr_merge_conflicts(
                 logger.info(f"Successfully pushed updated branch for PR #{pr_number}")
                 return True
             else:
-                logger.error(f"Failed to push updated branch: {push_result.stderr}")
-                return False
+                # Push failed - try one more time after a brief pause
+                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
+                import time
+                time.sleep(2)
+                retry_push_result = git_push()
+                if retry_push_result.success:
+                    logger.info(f"Successfully pushed updated branch for PR #{pr_number} (after retry)")
+                    return True
+                else:
+                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
+                    return False
         else:
             # Merge conflicts detected, use LLM to resolve them
             logger.info(

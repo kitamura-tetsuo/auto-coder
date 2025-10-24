@@ -222,6 +222,51 @@ def git_commit_with_retry(
     return result
 
 
+def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") -> bool:
+    """
+    Check if there are unpushed commits in the current branch.
+
+    Args:
+        cwd: Optional working directory for git command
+        remote: Remote name (default: 'origin')
+
+    Returns:
+        True if there are unpushed commits, False otherwise
+    """
+    cmd = CommandExecutor()
+
+    # Get current branch
+    branch_result = cmd.run_command(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=cwd,
+        check_success=False
+    )
+    if not branch_result.success:
+        logger.warning(f"Failed to get current branch: {branch_result.stderr}")
+        return False
+
+    current_branch = branch_result.stdout.strip()
+
+    # Check if there are unpushed commits
+    result = cmd.run_command(
+        ["git", "rev-list", f"{remote}/{current_branch}..HEAD", "--count"],
+        cwd=cwd,
+        check_success=False
+    )
+
+    if not result.success:
+        # Remote branch might not exist yet
+        logger.debug(f"Could not check unpushed commits: {result.stderr}")
+        return False
+
+    unpushed_count = int(result.stdout.strip() or "0")
+    if unpushed_count > 0:
+        logger.info(f"Found {unpushed_count} unpushed commit(s) in {current_branch}")
+        return True
+
+    return False
+
+
 def git_push(
     cwd: Optional[str] = None, remote: str = "origin", branch: Optional[str] = None
 ) -> CommandResult:
@@ -255,6 +300,32 @@ def git_push(
         logger.warning(f"Failed to push changes: {result.stderr}")
 
     return result
+
+
+def ensure_pushed(cwd: Optional[str] = None, remote: str = "origin") -> CommandResult:
+    """
+    Ensure all commits are pushed to remote. If there are unpushed commits, push them.
+
+    Args:
+        cwd: Optional working directory for git command
+        remote: Remote name (default: 'origin')
+
+    Returns:
+        CommandResult object with success status and output
+    """
+    # Check if there are unpushed commits
+    if not check_unpushed_commits(cwd=cwd, remote=remote):
+        logger.debug("No unpushed commits found")
+        return CommandResult(
+            success=True,
+            stdout="No unpushed commits",
+            stderr="",
+            returncode=0
+        )
+
+    # Push unpushed commits
+    logger.info("Pushing unpushed commits...")
+    return git_push(cwd=cwd, remote=remote)
 
 
 def save_commit_failure_history(
