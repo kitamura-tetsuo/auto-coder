@@ -291,6 +291,81 @@ class GitHubClient:
             logger.error(f"Failed to check linked PRs for issue #{issue_number}: {e}")
             return False
 
+    def get_open_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
+        """Get list of open sub-issues for a given issue using GitHub GraphQL API.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue number to check for sub-issues
+
+        Returns:
+            List of issue numbers that are linked to the issue and are still open.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+
+            # GraphQL query to fetch tracked issues
+            query = """
+            {
+              repository(owner: "%s", name: "%s") {
+                issue(number: %d) {
+                  number
+                  title
+                  trackedIssues(first: 50) {
+                    nodes {
+                      number
+                      title
+                      state
+                      url
+                    }
+                  }
+                }
+              }
+            }
+            """ % (owner, repo, issue_number)
+
+            # Execute GraphQL query using gh CLI
+            result = subprocess.run(
+                ["gh", "api", "graphql", "-f", f"query={query}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            data = json.loads(result.stdout)
+
+            # Extract open tracked issues
+            open_sub_issues = []
+            tracked_issues = (
+                data.get("data", {})
+                .get("repository", {})
+                .get("issue", {})
+                .get("trackedIssues", {})
+                .get("nodes", [])
+            )
+
+            for tracked_issue in tracked_issues:
+                if tracked_issue.get("state") == "OPEN":
+                    open_sub_issues.append(tracked_issue.get("number"))
+
+            if open_sub_issues:
+                logger.info(
+                    f"Issue #{issue_number} has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
+                )
+
+            return open_sub_issues
+
+        except subprocess.CalledProcessError as e:
+            logger.error(
+                f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}"
+            )
+            return []
+        except Exception as e:
+            logger.error(
+                f"Failed to get open sub-issues for issue #{issue_number}: {e}"
+            )
+            return []
+
     def create_issue(
         self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None
     ) -> Issue.Issue:

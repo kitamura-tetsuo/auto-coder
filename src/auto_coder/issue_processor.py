@@ -71,6 +71,27 @@ def _process_issues_normal(
                         )
                         continue
 
+                # Skip if issue has open sub-issues
+                open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
+                if open_sub_issues:
+                    logger.info(
+                        f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
+                    )
+                    if not dry_run:
+                        # Remove @auto-coder label since we're not processing it
+                        github_client.remove_labels_from_issue(
+                            repo_name, issue_number, ["@auto-coder"]
+                        )
+                    processed_issues.append(
+                        {
+                            "issue_data": issue_data,
+                            "actions_taken": [
+                                f"Skipped - has open sub-issues: {open_sub_issues}"
+                            ],
+                        }
+                    )
+                    continue
+
                 # Skip if issue already has a linked PR
                 if github_client.has_linked_pr(repo_name, issue_number):
                     logger.info(
@@ -165,6 +186,27 @@ def _process_issues_jules_mode(
                             }
                         )
                         continue
+
+                # Skip if issue has open sub-issues
+                open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
+                if open_sub_issues:
+                    logger.info(
+                        f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
+                    )
+                    if not dry_run:
+                        # Remove @auto-coder label since we're not processing it
+                        github_client.remove_labels_from_issue(
+                            repo_name, issue_number, ["@auto-coder"]
+                        )
+                    processed_issues.append(
+                        {
+                            "issue_data": issue_data,
+                            "actions_taken": [
+                                f"Skipped - has open sub-issues: {open_sub_issues}"
+                            ],
+                        }
+                    )
+                    continue
 
                 processed_issue = {"issue_data": issue_data, "actions_taken": []}
 
@@ -360,7 +402,7 @@ def _commit_changes(
     Returns:
         Action message describing the commit result
     """
-    # Push changes for llm commited.
+    # Push llm commited changes.
     push_result = git_push()
 
     summary = result_data.get("summary", "Auto-Coder: Automated changes")
@@ -502,7 +544,7 @@ def _apply_issue_actions_directly(
             repo_name=repo_name,
             issue_number=issue_data.get("number", "unknown"),
             issue_title=issue_data.get("title", "Unknown"),
-            issue_body=(issue_data.get("body") or "")[:1000],
+            issue_body=(issue_data.get("body") or "")[:10000],
             issue_labels=", ".join(issue_data.get("labels", [])),
             issue_state=issue_data.get("state", "open"),
             issue_author=issue_data.get("author", "unknown"),

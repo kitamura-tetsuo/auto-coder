@@ -452,12 +452,22 @@ def _add_qwen_config(install_path: Path) -> bool:
 
         client = QwenClient()
 
-        # Use uv with --directory option to ensure correct working directory
-        result = client.add_mcp_server_config(
-            "graphrag",
-            "uv",
-            ["--directory", str(install_path), "run", "main.py"]
-        )
+        # Use run_server.sh if it exists (for compatibility and to avoid VIRTUAL_ENV issues)
+        # Qwen supports shell scripts directly
+        run_script = install_path / "run_server.sh"
+        if run_script.exists():
+            result = client.add_mcp_server_config(
+                "graphrag",
+                str(run_script),
+                []
+            )
+        else:
+            # Fallback to uv with --directory option
+            result = client.add_mcp_server_config(
+                "graphrag",
+                "uv",
+                ["--directory", str(install_path), "run", "main.py"]
+            )
 
         if result:
             logger.info("✅ Qwen設定を更新しました")

@@ -155,21 +155,27 @@ class TestGitPush:
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
 
             result = git_push()
 
             assert result.success is True
-            call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ["git", "push"]
+            assert mock_cmd.run_command.call_count == 2
+            # Check the second call was the push command
+            second_call_args = mock_cmd.run_command.call_args_list[1][0][0]
+            assert second_call_args == ["git", "push"]
 
     def test_push_with_branch(self):
         """Test push with specific branch."""
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
+            # When branch is specified, no need to get current branch
             mock_cmd.run_command.return_value = CommandResult(
                 success=True, stdout="", stderr="", returncode=0
             )
@@ -177,14 +183,17 @@ class TestGitPush:
             result = git_push(branch="feature-branch")
 
             assert result.success is True
-            call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ["git", "push", "origin", "feature-branch"]
+            assert mock_cmd.run_command.call_count == 1
+            # Check the call was the push command with branch
+            call_args = mock_cmd.run_command.call_args[0][0]
+            assert call_args == ["git", "push", "origin", "feature-branch"]
 
     def test_push_with_custom_remote(self):
         """Test push with custom remote."""
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
+            # When branch is specified, no need to get current branch
             mock_cmd.run_command.return_value = CommandResult(
                 success=True, stdout="", stderr="", returncode=0
             )
@@ -192,20 +201,27 @@ class TestGitPush:
             result = git_push(remote="upstream", branch="main")
 
             assert result.success is True
-            call_args = mock_cmd.run_command.call_args
-            assert call_args[0][0] == ["git", "push", "upstream", "main"]
+            assert mock_cmd.run_command.call_count == 1
+            # Check the call was the push command with custom remote
+            call_args = mock_cmd.run_command.call_args[0][0]
+            assert call_args == ["git", "push", "upstream", "main"]
 
     def test_push_failure(self):
         """Test push failure."""
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=False,
-                stdout="",
-                stderr="error: failed to push some refs",
-                returncode=1,
-            )
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push fails
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="error: failed to push some refs",
+                    returncode=1,
+                ),
+            ]
 
             result = git_push()
 
@@ -217,15 +233,95 @@ class TestGitPush:
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
 
             result = git_push(cwd="/custom/path")
 
             assert result.success is True
-            call_args = mock_cmd.run_command.call_args
-            assert call_args[1]["cwd"] == "/custom/path"
+            assert mock_cmd.run_command.call_count == 2
+            # Check that cwd was passed to both calls
+            assert mock_cmd.run_command.call_args_list[0][1]["cwd"] == "/custom/path"
+            assert mock_cmd.run_command.call_args_list[1][1]["cwd"] == "/custom/path"
+
+    def test_push_no_upstream_auto_retry(self):
+        """Test push automatically retries with --set-upstream when upstream is not set."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="issue-733\n", stderr="", returncode=0),
+                # Second call: push fails with no upstream error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="fatal: The current branch issue-733 has no upstream branch.\nTo push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin issue-733\n",
+                    returncode=1,
+                ),
+                # Third call: push with --set-upstream succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
+
+            result = git_push()
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 3
+            # Check the third call used --set-upstream
+            third_call_args = mock_cmd.run_command.call_args_list[2][0][0]
+            assert third_call_args == ["git", "push", "--set-upstream", "origin", "issue-733"]
+
+    def test_push_no_upstream_with_branch_specified(self):
+        """Test push with branch specified automatically retries with --set-upstream."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: push fails with no upstream error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="fatal: The current branch feature-branch has no upstream branch.\nTo push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin feature-branch\n",
+                    returncode=1,
+                ),
+                # Second call: push with --set-upstream succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
+
+            result = git_push(branch="feature-branch")
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 2
+            # Check the second call used --set-upstream with the specified branch
+            second_call_args = mock_cmd.run_command.call_args_list[1][0][0]
+            assert second_call_args == ["git", "push", "--set-upstream", "origin", "feature-branch"]
+
+    def test_push_other_error_no_retry(self):
+        """Test push does not retry for errors other than missing upstream."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push fails with different error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="error: failed to push some refs to 'origin'",
+                    returncode=1,
+                ),
+            ]
+
+            result = git_push()
+
+            assert result.success is False
+            assert mock_cmd.run_command.call_count == 2  # No retry
+            assert "failed to push some refs" in result.stderr
 
 
 class TestParseGithubRepoFromUrl:

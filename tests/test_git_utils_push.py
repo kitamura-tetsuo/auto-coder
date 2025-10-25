@@ -69,14 +69,17 @@ class TestGitPushUtils:
         mock_executor = MagicMock()
         mock_executor_class.return_value = mock_executor
 
-        mock_executor.run_command.return_value = CommandResult(
-            success=True, stdout="Everything up-to-date\n", stderr="", returncode=0
-        )
+        mock_executor.run_command.side_effect = [
+            # First call: get current branch
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+            # Second call: push
+            CommandResult(success=True, stdout="Everything up-to-date\n", stderr="", returncode=0),
+        ]
 
         result = git_push()
 
         assert result.success is True
-        mock_executor.run_command.assert_called_once()
+        assert mock_executor.run_command.call_count == 2
 
     @patch("src.auto_coder.git_utils.CommandExecutor")
     def test_git_push_failure(self, mock_executor_class):
@@ -84,15 +87,18 @@ class TestGitPushUtils:
         mock_executor = MagicMock()
         mock_executor_class.return_value = mock_executor
 
-        mock_executor.run_command.return_value = CommandResult(
-            success=False, stdout="", stderr="error: failed to push", returncode=1
-        )
+        mock_executor.run_command.side_effect = [
+            # First call: get current branch
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+            # Second call: push fails
+            CommandResult(success=False, stdout="", stderr="error: failed to push", returncode=1),
+        ]
 
         result = git_push()
 
         assert result.success is False
         assert "failed to push" in result.stderr
-        mock_executor.run_command.assert_called_once()
+        assert mock_executor.run_command.call_count == 2
 
     @patch("src.auto_coder.git_utils.check_unpushed_commits")
     @patch("src.auto_coder.git_utils.git_push")

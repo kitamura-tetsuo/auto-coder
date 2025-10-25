@@ -62,22 +62,20 @@ class AutomationEngine:
         }
 
         try:
-            # Process issues (with jules_mode parameter)
-            issues_result = process_issues(
-                self.github, self.config, self.dry_run, repo_name, jules_mode, self.llm, self.message_backend_manager
-            )
-            results["issues_processed"] = issues_result
-
             # Process pull requests (always use normal processing)
             prs_result = process_pull_requests(
                 self.github, self.config, self.dry_run, repo_name, self.llm
             )
             results["prs_processed"] = prs_result
 
+            # Process issues (with jules_mode parameter)
+            issues_result = process_issues(
+                self.github, self.config, self.dry_run, repo_name, jules_mode, self.llm, self.message_backend_manager
+            )
+            results["issues_processed"] = issues_result
+
             # Save results report
-            # ファイル名からリポジトリ名を除く（ディレクトリで区別するため）
-            report_name = f"{'jules_' if jules_mode else ''}automation_report"
-            self._save_report(results, report_name, repo_name)
+            self._save_report(results, "automation_report", repo_name)
 
             logger.info(f"Automation completed for {repo_name}")
             return results

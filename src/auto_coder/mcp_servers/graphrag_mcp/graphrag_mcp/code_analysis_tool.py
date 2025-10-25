@@ -16,33 +16,44 @@ logger = logging.getLogger('graphrag')
 
 class CodeAnalysisTool:
     """MCP Tool for querying TypeScript/JavaScript code structure using GraphRAG."""
-    
+
     def __init__(self):
         # Neo4j connection
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
         self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
         self.neo4j_driver = None
-        
+
         # Qdrant connection
         self.qdrant_host = os.getenv("QDRANT_HOST", "localhost")
         self.qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
         self.qdrant_collection = os.getenv("QDRANT_COLLECTION", "code_chunks")
         self.qdrant_client = None
-        
+
         # Embedding model
         self.model_name = "all-MiniLM-L6-v2"
         self.model = None
-        
-        # Initialize connections
+
+        # Connection state
+        self._connected = False
+
+        # Don't connect immediately - wait until first use
+        # This allows the MCP server to start even if Neo4j/Qdrant are not running
+
+    def _ensure_connected(self):
+        """Ensure connections are established (lazy initialization)."""
+        if self._connected:
+            return
+
         self._connect()
-    
+        self._connected = True
+
     def _connect(self):
         """Establish connections to Neo4j and Qdrant."""
         # Connect to Neo4j
         try:
             self.neo4j_driver = GraphDatabase.driver(
-                self.neo4j_uri, 
+                self.neo4j_uri,
                 auth=(self.neo4j_user, self.neo4j_password)
             )
             # Test connection
@@ -52,37 +63,40 @@ class CodeAnalysisTool:
                 logger.info(f"Connected to Neo4j with {record['count']} files")
         except Exception as e:
             logger.error(f"Neo4j connection error: {e}")
-        
+            raise RuntimeError(f"Failed to connect to Neo4j at {self.neo4j_uri}. Please ensure Neo4j is running. Error: {e}")
+
         # Connect to Qdrant
         try:
             self.qdrant_client = QdrantClient(host=self.qdrant_host, port=self.qdrant_port)
             collection_info = self.qdrant_client.get_collection(self.qdrant_collection)
-            
+
             # Check for vectors count based on client version
             vectors_count = 0
             if hasattr(collection_info, 'vectors_count'):
                 vectors_count = collection_info.vectors_count
             elif hasattr(collection_info, 'points_count'):
                 vectors_count = collection_info.points_count
-            
+
             logger.info(f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors")
         except Exception as e:
             logger.error(f"Qdrant connection error: {e}")
-        
+            raise RuntimeError(f"Failed to connect to Qdrant at {self.qdrant_host}:{self.qdrant_port}. Please ensure Qdrant is running. Error: {e}")
+
         # Load the embedding model
         try:
             self.model = SentenceTransformer(self.model_name)
             logger.info(f"Loaded embedding model: {self.model_name}")
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
+            raise RuntimeError(f"Failed to load embedding model '{self.model_name}'. Error: {e}")
     
     def find_symbol(self, fqname: str) -> Dict[str, Any]:
         """
         Find a code symbol by fully qualified name.
-        
+
         Args:
             fqname: Fully qualified name (e.g., 'src/utils.ts::calculateHash')
-            
+
         Returns:
             Symbol details including id, kind, signature, complexity, location
         """
@@ -91,7 +105,13 @@ class CodeAnalysisTool:
             "symbol": None,
             "error": None
         }
-        
+
+        try:
+            self._ensure_connected()
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
             return result
@@ -136,12 +156,12 @@ class CodeAnalysisTool:
     def get_call_graph(self, symbol_id: str, direction: str = 'both', depth: int = 1) -> Dict[str, Any]:
         """
         Get call graph for a symbol.
-        
+
         Args:
             symbol_id: Symbol ID
             direction: 'callers' (who calls this), 'callees' (what this calls), or 'both'
             depth: Traversal depth (1-3)
-            
+
         Returns:
             Call graph with nodes and edges
         """
@@ -153,11 +173,17 @@ class CodeAnalysisTool:
             "edges": [],
             "error": None
         }
-        
+
+        try:
+            self._ensure_connected()
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
             return result
-        
+
         if depth < 1 or depth > 3:
             result["error"] = "Depth must be between 1 and 3"
             return result
@@ -223,10 +249,10 @@ class CodeAnalysisTool:
     def get_dependencies(self, file_path: str) -> Dict[str, Any]:
         """
         Get file dependencies (imports).
-        
+
         Args:
             file_path: File path (e.g., 'src/utils.ts')
-            
+
         Returns:
             List of imported files and symbols
         """
@@ -236,7 +262,13 @@ class CodeAnalysisTool:
             "imported_by": [],
             "error": None
         }
-        
+
+        try:
+            self._ensure_connected()
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
             return result
@@ -295,6 +327,12 @@ class CodeAnalysisTool:
             "impact_summary": {},
             "error": None
         }
+
+        try:
+            self._ensure_connected()
+        except Exception as e:
+            result["error"] = str(e)
+            return result
 
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
@@ -389,6 +427,12 @@ class CodeAnalysisTool:
             "symbols": [],
             "error": None
         }
+
+        try:
+            self._ensure_connected()
+        except Exception as e:
+            result["error"] = str(e)
+            return result
 
         if self.model is None:
             try:

@@ -131,9 +131,9 @@ issue:
 
     Please analyze this issue and determine the appropriate action:
 
-    1. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
-    2. If this is a valid bug report or feature request, provide analysis and implementation
-    3. If this needs clarification, add a comment requesting more information
+    1. If this needs clarification, add a comment requesting more information
+    2. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
+    3. If this is a valid bug report or feature request, provide analysis and implementation
 
     For valid issues that can be implemented:
     - Analyze the requirements
@@ -141,6 +141,7 @@ issue:
     - Create or modify files as needed
     - Ensure the implementation follows best practices
     - Prefer the smart, reasonable and logically beautiful change that resolves issues.
+    - Do not close the issue
 
     For duplicate/invalid issues:
     - Close the issue

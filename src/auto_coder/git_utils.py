@@ -274,6 +274,7 @@ def git_push(
     Push changes to remote repository.
 
     This function centralizes git push operations for consistent error handling.
+    Automatically handles upstream branch setup if needed.
 
     Args:
         cwd: Optional working directory for the git command
@@ -285,21 +286,67 @@ def git_push(
     """
     cmd = CommandExecutor()
 
+    # Determine which branch to push
+    # If branch is specified, use it directly
+    # If not, get the current branch
+    target_branch = branch
+    if not target_branch:
+        branch_result = cmd.run_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd,
+            check_success=False
+        )
+        if branch_result.returncode == 0:
+            target_branch = branch_result.stdout.strip()
+        else:
+            logger.warning(f"Failed to get current branch: {branch_result.stderr}")
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=f"Failed to get current branch: {branch_result.stderr}",
+                returncode=branch_result.returncode
+            )
+
+    # Build push command
     push_cmd: List[str] = ["git", "push"]
     if branch:
         push_cmd.extend([remote, branch])
 
     result = cmd.run_command(push_cmd, cwd=cwd, check_success=False)
 
-    if result.success:
+    # Check if push failed due to missing upstream
+    if result.returncode != 0:
+        is_upstream_error = (
+            "has no upstream branch" in result.stderr
+            or "--set-upstream" in result.stderr
+        )
+
+        if is_upstream_error:
+            logger.info(
+                f"Branch {target_branch} has no upstream, setting upstream to {remote}/{target_branch}"
+            )
+            # Retry with --set-upstream
+            push_cmd_with_upstream = ["git", "push", "--set-upstream", remote, target_branch]
+            result = cmd.run_command(push_cmd_with_upstream, cwd=cwd, check_success=False)
+
+    if result.returncode == 0:
         logger.info(
-            f"Successfully pushed changes to {remote}"
-            + (f"/{branch}" if branch else "")
+            f"Successfully pushed changes to {remote}/{target_branch}"
+        )
+        return CommandResult(
+            success=True,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            returncode=0
         )
     else:
         logger.warning(f"Failed to push changes: {result.stderr}")
-
-    return result
+        return CommandResult(
+            success=False,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            returncode=result.returncode
+        )
 
 
 def ensure_pushed(cwd: Optional[str] = None, remote: str = "origin") -> CommandResult:

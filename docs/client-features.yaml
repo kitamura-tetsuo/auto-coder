@@ -259,6 +259,27 @@ features:
               - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_no_linked_pr"
               - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_multiple_patterns"
               - "tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_handles_exception"
+          - name: "get_open_sub_issues"
+            description: "Get list of open sub-issues for a given issue using GitHub GraphQL API"
+            parameters: ["repo_name", "issue_number"]
+            returns: "List of issue numbers that are linked to the issue and are still open"
+            behavior:
+              - "Uses GitHub GraphQL API to fetch linkedIssues"
+              - "Executes 'gh api graphql' command to query linked issues"
+              - "Filters linked issues by state (OPEN)"
+              - "Returns only open linked issues"
+              - "Returns empty list on errors or when no linked issues exist"
+            implementation:
+              - "Constructs GraphQL query with repository owner, name, and issue number"
+              - "Query fetches linkedIssues with number, title, state, and url fields"
+              - "Parses JSON response and extracts open issues"
+              - "Handles subprocess errors gracefully"
+            tests:
+              - "tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_all_open"
+              - "tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_some_closed"
+              - "tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_all_closed"
+              - "tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_no_sub_issues"
+              - "tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_graphql_error"
 
   gemini_integration:
     name: "Gemini AI Integration"
@@ -822,13 +843,31 @@ features:
             parameters: ["repo_name"]
             returns: "List of created issues"
           - name: "_process_issues"
-            description: "Process open issues in the repository"
+            description: "Process open issues in the repository with sub-issue dependency checking"
             parameters: ["repo_name"]
             returns: "List of processed issues"
+            behavior:
+              - "Skips issues that have open sub-issues (processes sub-issues first)"
+              - "Skips issues that already have @auto-coder label (being processed by another instance)"
+              - "Skips issues that already have a linked PR"
+              - "Processes issues in order from oldest to newest"
+            tests:
+              - "tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_skips_issue_with_open_sub_issues"
+              - "tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_processes_issue_without_sub_issues"
+              - "tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_processes_issue_with_closed_sub_issues"
+              - "tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_dry_run_skips_label_removal"
           - name: "_process_issues_jules_mode"
-            description: "Process open issues in jules mode - only add 'jules' label"
+            description: "Process open issues in jules mode - only add 'jules' label, with sub-issue dependency checking"
             parameters: ["repo_name"]
             returns: "List of processed issues"
+            behavior:
+              - "Skips issues that have open sub-issues (processes sub-issues first)"
+              - "Skips issues that already have @auto-coder label (being processed by another instance)"
+              - "Adds 'jules' label to issues without sub-issues"
+              - "Processes issues in order from oldest to newest"
+            tests:
+              - "tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_jules_mode_skips_issue_with_open_sub_issues"
+              - "tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_jules_mode_processes_issue_without_sub_issues"
           - name: "_process_pull_requests"
             description: "Process open pull requests in the repository with two-loop priority order, checking for Auto-Coder updates at the start of each iteration and restarting with the recorded CLI arguments when an upgrade is applied"
             parameters: ["repo_name"]
