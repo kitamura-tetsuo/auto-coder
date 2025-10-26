@@ -7,6 +7,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import zipfile
@@ -715,8 +716,9 @@ def _handle_pr_merge(
             actions.append(f"Pushed unpushed commits: {push_result.stdout}")
             logger.info("Successfully pushed unpushed commits")
         elif not push_result.success:
-            logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
-            actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
+            logger.error(f"Failed to push unpushed commits: {push_result.stderr}")
+            logger.error("Exiting application due to git push failure")
+            sys.exit(1)
 
         # Step 1: Check GitHub Actions status
         github_checks = _check_github_actions_status(repo_name, pr_data, config)
@@ -981,7 +983,8 @@ def _update_with_base_branch(
                     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 else:
                     logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
-                    actions.append(f"CRITICAL: Failed to push updated branch: {retry_push_result.stderr}")
+                    logger.error("Exiting application due to git push failure")
+                    sys.exit(1)
         else:
             # Merge conflict occurred, ask Gemini to resolve it
             actions.append(
@@ -1343,7 +1346,8 @@ def _resolve_pr_merge_conflicts(
                     return True
                 else:
                     logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
-                    return False
+                    logger.error("Exiting application due to git push failure")
+                    sys.exit(1)
         else:
             # Merge conflicts detected, use LLM to resolve them
             logger.info(

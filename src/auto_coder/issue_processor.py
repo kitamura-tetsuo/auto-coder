@@ -2,6 +2,7 @@
 Issue processing functionality for Auto-Coder automation engine.
 """
 
+import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -472,9 +473,8 @@ def _commit_changes(
                 return f"Successfully committed and pushed changes (after retry): {summary}"
             else:
                 logger.error(f"Failed to push changes after retry: {retry_push_result.stderr}")
-                # This is a critical error - we have committed changes but can't push them
-                # Log the error but don't exit, as the commit is safe locally
-                return f"CRITICAL: Successfully committed changes but failed to push: {summary}. Error: {retry_push_result.stderr}"
+                logger.error("Exiting application due to git push failure")
+                sys.exit(1)
     else:
         # Save history and exit immediately
         context = {

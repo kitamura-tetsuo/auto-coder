@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -662,8 +663,9 @@ def fix_to_pass_tests(
                     logger.info("Successfully pushed changes to remote")
                     summary["messages"].append("Pushed changes to remote")
                 else:
-                    logger.warning(f"Failed to push changes: {push_result.stderr}")
-                    summary["messages"].append(f"Failed to push: {push_result.stderr}")
+                    logger.error(f"Failed to push changes: {push_result.stderr}")
+                    logger.error("Exiting application due to git push failure")
+                    sys.exit(1)
 
             return summary
 
