@@ -5,6 +5,7 @@ pr:
     Task: For the following GitHub Pull Request, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
 
     STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes. 
     - Do NOT post any comments to the PR, reviews, or issues.
     - Do NOT write narrative explanations as output; take actions in the workspace instead.
     - Prefer targeted edits that make CI pass while preserving intent.

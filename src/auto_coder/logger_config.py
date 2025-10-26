@@ -69,6 +69,7 @@ def setup_logger(
     log_file: Optional[str] = None,
     include_file_info: bool = True,
     stream=sys.stdout,
+    progress_header=None,
 ) -> None:
     """
     Setup loguru logger with file and line information.
@@ -78,6 +79,7 @@ def setup_logger(
         log_file: Optional log file path
         include_file_info: Whether to include file and line information in logs
         stream: Stream to write console logs to (default: sys.stdout). Use sys.stderr to avoid polluting stdout.
+        progress_header: Optional ProgressHeader instance to use for sink wrapping
 
     Raises:
         ValueError: If an invalid log level is provided
@@ -119,8 +121,11 @@ def setup_logger(
             "<level>{message}</level>"
         )
 
-    # Add console handler (to specified stream)
-    logger.add(stream, format=format_string, level=level, colorize=True, enqueue=True)
+    # Add console handler (to specified stream or progress header sink)
+    if progress_header is not None:
+        logger.add(progress_header.sink_wrapper, format=format_string, level=level, colorize=True, enqueue=True)
+    else:
+        logger.add(stream, format=format_string, level=level, colorize=True, enqueue=True)
 
     # Add file handler if specified
     if log_file:

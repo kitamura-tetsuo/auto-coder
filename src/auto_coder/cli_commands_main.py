@@ -20,6 +20,7 @@ from .cli_helpers import (
 )
 from .github_client import GitHubClient
 from .logger_config import get_logger, setup_logger
+from .progress_header import setup_progress_header_logging
 from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)
@@ -143,6 +144,9 @@ def process_issues(
         effective_log_level = log_level
 
     setup_logger(log_level=effective_log_level, log_file=log_file)
+
+    # Setup progress header logging (re-configures logger with header sink)
+    setup_progress_header_logging()
 
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)

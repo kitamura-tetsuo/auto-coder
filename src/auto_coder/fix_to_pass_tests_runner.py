@@ -10,6 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
+from auto_coder.progress_header import ProgressStage
+
 from .automation_config import AutomationConfig
 from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger, log_calls
@@ -160,18 +162,19 @@ def run_local_tests(
     try:
         # If a specific test file is specified, run only that test (always via TEST_SCRIPT_PATH)
         if test_file:
-            logger.info(f"Running only the specified test file via script: {test_file}")
-            cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
-            result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
-            return {
-                "success": result.success,
-                "output": result.stdout,
-                "errors": result.stderr,
-                "return_code": result.returncode,
-                "command": " ".join(cmd_list),
-                "test_file": test_file,
-                "stability_issue": False,
-            }
+            with ProgressStage(f"Running only the specified test file via script: {test_file}"):
+                logger.info(f"Running only the specified test file via script: {test_file}")
+                cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
+                result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
+                return {
+                    "success": result.success,
+                    "output": result.stdout,
+                    "errors": result.stderr,
+                    "return_code": result.returncode,
+                    "command": " ".join(cmd_list),
+                    "test_file": test_file,
+                    "stability_issue": False,
+                }
 
         # Always run via test script
         cmd_list = ["bash", config.TEST_SCRIPT_PATH]
