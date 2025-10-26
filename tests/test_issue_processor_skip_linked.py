@@ -41,8 +41,14 @@ class TestIssueProcessorSkipLinked:
             },
         ]
 
+        # Mock get_open_sub_issues to return empty list (no sub-issues)
+        mock_github_client.get_open_sub_issues.return_value = []
+
         # Issue 123 has a linked PR, issue 456 does not
         mock_github_client.has_linked_pr.side_effect = [True, False]
+
+        # Mock try_add_work_in_progress_label to succeed for issue 456
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         mock_take_actions.return_value = ["Action taken"]
 
@@ -57,7 +63,7 @@ class TestIssueProcessorSkipLinked:
         # Assert
         assert len(result) == 2
 
-        # First issue should be skipped
+        # First issue should be skipped (has linked PR)
         assert result[0]["issue_data"]["number"] == 123
         actions_taken = result[0]["actions_taken"]
         assert actions_taken == ["Skipped - already has a linked PR"]
@@ -70,6 +76,9 @@ class TestIssueProcessorSkipLinked:
         assert mock_github_client.has_linked_pr.call_count == 2
         mock_github_client.has_linked_pr.assert_any_call("test/repo", 123)
         mock_github_client.has_linked_pr.assert_any_call("test/repo", 456)
+
+        # Verify @auto-coder label was only added for issue 456 (not for issue 123 which was skipped)
+        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("test/repo", 456)
 
         # Verify _take_issue_actions was only called for issue 456
         assert mock_take_actions.call_count == 1
@@ -108,8 +117,14 @@ class TestIssueProcessorSkipLinked:
             },
         ]
 
+        # Mock get_open_sub_issues to return empty list (no sub-issues)
+        mock_github_client.get_open_sub_issues.return_value = []
+
         # Neither issue has a linked PR
         mock_github_client.has_linked_pr.return_value = False
+
+        # Mock try_add_work_in_progress_label to succeed
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         mock_take_actions.return_value = ["Action taken"]
 
@@ -165,6 +180,9 @@ class TestIssueProcessorSkipLinked:
             },
         ]
 
+        # Mock get_open_sub_issues to return empty list (no sub-issues)
+        mock_github_client.get_open_sub_issues.return_value = []
+
         # Both issues have linked PRs
         mock_github_client.has_linked_pr.return_value = True
 
@@ -184,6 +202,9 @@ class TestIssueProcessorSkipLinked:
         second_actions = result[1]["actions_taken"]
         assert first_actions == ["Skipped - already has a linked PR"]
         assert second_actions == ["Skipped - already has a linked PR"]
+
+        # Verify @auto-coder label was NOT added (both skipped before processing)
+        mock_github_client.try_add_work_in_progress_label.assert_not_called()
 
         # Verify _take_issue_actions was never called
         assert mock_take_actions.call_count == 0
@@ -208,8 +229,14 @@ class TestIssueProcessorSkipLinked:
             "author": "testuser",
         }
 
+        # Mock get_open_sub_issues to return empty list (no sub-issues)
+        mock_github_client.get_open_sub_issues.return_value = []
+
         # has_linked_pr returns False on exception (as per implementation)
         mock_github_client.has_linked_pr.return_value = False
+
+        # Mock try_add_work_in_progress_label to succeed
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         mock_take_actions.return_value = ["Action taken"]
 

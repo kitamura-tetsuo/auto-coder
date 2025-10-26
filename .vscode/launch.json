@@ -96,8 +96,8 @@
                 "--force-reindex",
                 // "--only",
                 // "741",
-                // "--backend",
-                // "qwen",
+                "--backend",
+                "qwen",
                 // "--backend",
                 // "gemini",
                 // "--backend",
@@ -108,6 +108,7 @@
                 "auggie",
                 "--model-auggie",
                 "sonnet4.5",
+                // "gpt5",
                 "--message-backend",
                 "qwen"
             ],

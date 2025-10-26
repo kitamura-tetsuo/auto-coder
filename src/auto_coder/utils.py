@@ -162,10 +162,14 @@ class CommandExecutor:
                     else:
                         if stream_name == "stdout":
                             stdout_lines.append(chunk)
-                            logger.info(chunk.rstrip("\n"))
                         else:
                             stderr_lines.append(chunk)
-                            logger.error(chunk.rstrip("\n"))
+
+                        # 空行は無視してログ出力しない
+                        stripped_chunk = chunk.rstrip("\n")
+                        if stripped_chunk:
+                            # stderr も INFO レベルで出力
+                            logger.info(stripped_chunk)
 
                         # Optional per-chunk callback for early aborts
                         if on_stream is not None:

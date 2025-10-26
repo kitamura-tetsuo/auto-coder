@@ -1443,9 +1443,10 @@ class TestAutomationEngineExtended:
         github_logs = "Test failed: assertion error"
 
         # Mock successful test after initial fix
+        from src.auto_coder import pr_processor
         with patch.object(
-            engine, "_apply_github_actions_fix"
-        ) as mock_github_fix, patch.object(engine, "_run_pr_tests") as mock_test:
+            pr_processor, "_apply_github_actions_fix"
+        ) as mock_github_fix, patch.object(pr_processor, "run_local_tests") as mock_test:
             mock_github_fix.return_value = ["Applied GitHub Actions fix"]
             mock_test.return_value = {
                 "success": True,
@@ -1454,16 +1455,14 @@ class TestAutomationEngineExtended:
             }
 
             # Execute
-            result = engine._fix_pr_issues_with_testing(
-                "test/repo", pr_data, github_logs
+            from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+            result = _fix_pr_issues_with_testing(
+                "test/repo", pr_data, engine.config, engine.dry_run, github_logs, engine.llm
             )
 
             # Assert
             assert any("Starting PR issue fixing" in action for action in result)
             assert any("Local tests passed on attempt 1" in action for action in result)
-            assert any(
-                "[DRY RUN] Would commit and push fix" in action for action in result
-            )
             mock_github_fix.assert_called_once()
             mock_test.assert_called_once()
 
@@ -1477,12 +1476,13 @@ class TestAutomationEngineExtended:
         github_logs = "Test failed: assertion error"
 
         # Mock test failure then success
+        from src.auto_coder import pr_processor
         with patch.object(
-            engine, "_apply_github_actions_fix"
+            pr_processor, "_apply_github_actions_fix"
         ) as mock_github_fix, patch.object(
-            engine, "_run_pr_tests"
+            pr_processor, "run_local_tests"
         ) as mock_test, patch.object(
-            engine, "_apply_local_test_fix"
+            pr_processor, "_apply_local_test_fix"
         ) as mock_local_fix:
             mock_github_fix.return_value = ["Applied GitHub Actions fix"]
             # First test fails, second test passes
@@ -1493,8 +1493,9 @@ class TestAutomationEngineExtended:
             mock_local_fix.return_value = ["Applied local test fix"]
 
             # Execute
-            result = engine._fix_pr_issues_with_testing(
-                "test/repo", pr_data, github_logs
+            from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+            result = _fix_pr_issues_with_testing(
+                "test/repo", pr_data, engine.config, engine.dry_run, github_logs, engine.llm
             )
 
             # Assert

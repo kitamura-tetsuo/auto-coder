@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from .automation_config import AutomationConfig
 from .git_utils import ensure_pushed, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
-from .progress_header import update_progress, newline_progress
+from .progress_footer import ProgressStage, newline_progress, set_progress_item, push_progress_stage
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
@@ -54,14 +54,14 @@ def _process_issues_normal(
                 issue_data = github_client.get_issue_details(issue)
                 issue_number = issue_data["number"]
 
-                # Update progress header
-                update_progress("Issue", issue_number, "Checking status")
+                # Set progress item
+                set_progress_item("Issue", issue_number)
+                push_progress_stage("Checking status")
 
-                # Skip if issue already has @auto-coder label (being processed by another instance)
+                # Check if issue already has @auto-coder label (being processed by another instance)
                 if not dry_run:
-                    if not github_client.try_add_work_in_progress_label(
-                        repo_name, issue_number
-                    ):
+                    current_labels = issue_data.get("labels", [])
+                    if "@auto-coder" in current_labels:
                         logger.info(
                             f"Skipping issue #{issue_number} - already has @auto-coder label"
                         )
@@ -77,17 +77,12 @@ def _process_issues_normal(
                         continue
 
                 # Skip if issue has open sub-issues
-                update_progress("Issue", issue_number, "Checking sub-issues")
+                push_progress_stage("Checking sub-issues")
                 open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
                 if open_sub_issues:
                     logger.info(
                         f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
                     )
-                    if not dry_run:
-                        # Remove @auto-coder label since we're not processing it
-                        github_client.remove_labels_from_issue(
-                            repo_name, issue_number, ["@auto-coder"]
-                        )
                     processed_issues.append(
                         {
                             "issue_data": issue_data,
@@ -100,16 +95,11 @@ def _process_issues_normal(
                     continue
 
                 # Skip if issue already has a linked PR
-                update_progress("Issue", issue_number, "Checking linked PR")
+                push_progress_stage("Checking linked PR")
                 if github_client.has_linked_pr(repo_name, issue_number):
                     logger.info(
                         f"Skipping issue #{issue_number} - already has a linked PR"
                     )
-                    if not dry_run:
-                        # Remove @auto-coder label since we're not processing it
-                        github_client.remove_labels_from_issue(
-                            repo_name, issue_number, ["@auto-coder"]
-                        )
                     processed_issues.append(
                         {
                             "issue_data": issue_data,
@@ -119,6 +109,25 @@ def _process_issues_normal(
                     newline_progress()
                     continue
 
+                # Add @auto-coder label now that we're actually going to process this issue
+                if not dry_run:
+                    if not github_client.try_add_work_in_progress_label(
+                        repo_name, issue_number
+                    ):
+                        logger.info(
+                            f"Skipping issue #{issue_number} - @auto-coder label was just added by another instance"
+                        )
+                        processed_issues.append(
+                            {
+                                "issue_data": issue_data,
+                                "actions_taken": [
+                                    "Skipped - another instance started processing (@auto-coder label added)"
+                                ],
+                            }
+                        )
+                        newline_progress()
+                        continue
+
                 processed_issue = {
                     "issue_data": issue_data,
                     "actions_taken": [],
@@ -126,7 +135,7 @@ def _process_issues_normal(
 
                 try:
                     # 単回実行での直接アクション（CLI）
-                    update_progress("Issue", issue_number, "Processing")
+                    push_progress_stage("Processing")
                     actions = _take_issue_actions(
                         repo_name, issue_data, config, dry_run, llm_client, message_backend_manager
                     )
@@ -183,11 +192,10 @@ def _process_issues_jules_mode(
                 issue_data = github_client.get_issue_details(issue)
                 issue_number = issue_data["number"]
 
-                # Skip if issue already has @auto-coder label (being processed by another instance)
+                # Check if issue already has @auto-coder label (being processed by another instance)
                 if not dry_run:
-                    if not github_client.try_add_work_in_progress_label(
-                        repo_name, issue_number
-                    ):
+                    current_labels = issue_data.get("labels", [])
+                    if "@auto-coder" in current_labels:
                         logger.info(
                             f"Skipping issue #{issue_number} - already has @auto-coder label"
                         )
@@ -207,11 +215,6 @@ def _process_issues_jules_mode(
                     logger.info(
                         f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
                     )
-                    if not dry_run:
-                        # Remove @auto-coder label since we're not processing it
-                        github_client.remove_labels_from_issue(
-                            repo_name, issue_number, ["@auto-coder"]
-                        )
                     processed_issues.append(
                         {
                             "issue_data": issue_data,
@@ -221,6 +224,24 @@ def _process_issues_jules_mode(
                         }
                     )
                     continue
+
+                # Add @auto-coder label now that we're actually going to process this issue
+                if not dry_run:
+                    if not github_client.try_add_work_in_progress_label(
+                        repo_name, issue_number
+                    ):
+                        logger.info(
+                            f"Skipping issue #{issue_number} - @auto-coder label was just added by another instance"
+                        )
+                        processed_issues.append(
+                            {
+                                "issue_data": issue_data,
+                                "actions_taken": [
+                                    "Skipped - another instance started processing (@auto-coder label added)"
+                                ],
+                            }
+                        )
+                        continue
 
                 processed_issue = {"issue_data": issue_data, "actions_taken": []}
 
@@ -479,8 +500,11 @@ def _apply_issue_actions_directly(
     issue_number = issue_data.get("number", "unknown")
 
     try:
+        # Set progress item at the start
+        set_progress_item("Issue", issue_number)
+
         # Ensure any unpushed commits are pushed before starting
-        update_progress("Issue", issue_number, "Checking unpushed commits")
+        push_progress_stage("Checking unpushed commits")
         logger.info("Checking for unpushed commits before processing issue...")
         push_result = ensure_pushed()
         if push_result.success and "No unpushed commits" not in push_result.stdout:
@@ -495,7 +519,7 @@ def _apply_issue_actions_directly(
         if "head_branch" in issue_data:
             # PRの場合はhead_branchに切り替え
             target_branch = issue_data.get("head_branch")
-            update_progress("Issue", issue_number, f"Switching to branch {target_branch}")
+            push_progress_stage(f"Switching to branch {target_branch}")
             logger.info(f"Switching to PR branch: {target_branch}")
 
             # ブランチを切り替え
@@ -514,7 +538,7 @@ def _apply_issue_actions_directly(
         else:
             # 通常のissueの場合は作業用ブランチを作成
             work_branch = f"issue-{issue_number}"
-            update_progress("Issue", issue_number, f"Creating branch {work_branch}")
+            push_progress_stage(f"Creating branch {work_branch}")
             logger.info(f"Creating work branch for issue: {work_branch}")
 
             # まずデフォルトブランチに切り替え
@@ -556,7 +580,7 @@ def _apply_issue_actions_directly(
                     return actions
 
         # Create a comprehensive prompt for LLM CLI
-        update_progress("Issue", issue_number, "Creating prompt")
+        push_progress_stage("Creating prompt")
         action_prompt = render_prompt(
             "issue.action",
             repo_name=repo_name,
@@ -579,7 +603,7 @@ def _apply_issue_actions_directly(
         )
 
         # Call LLM client
-        update_progress("Issue", issue_number, "Running LLM")
+        push_progress_stage("Running LLM")
         response = llm_client._run_llm_cli(action_prompt)
 
         # Parse the response
@@ -607,7 +631,7 @@ def _apply_issue_actions_directly(
                 )
 
             # Commit any changes made
-            update_progress("Issue", issue_number, "Committing changes")
+            push_progress_stage("Committing changes")
             commit_action = _commit_changes(
                 {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
                 repo_name=repo_name,
@@ -617,7 +641,7 @@ def _apply_issue_actions_directly(
 
             # Create PR if this is a regular issue (not a PR)
             if "head_branch" not in issue_data and target_branch:
-                update_progress("Issue", issue_number, "Creating PR")
+                push_progress_stage("Creating PR")
                 pr_creation_result = _create_pr_for_issue(
                     repo_name=repo_name,
                     issue_data=issue_data,
@@ -785,7 +809,8 @@ def process_single(
             try:
                 from .pr_processor import _take_pr_actions
 
-                update_progress("PR", number, "Processing single PR")
+                set_progress_item("PR", number)
+                push_progress_stage("Processing single PR")
                 pr_data = github_client.get_pr_details_by_number(repo_name, number)
                 actions = _take_pr_actions(
                     repo_name, pr_data, config, dry_run, llm_client
@@ -804,19 +829,32 @@ def process_single(
                 newline_progress()
         else:
             try:
-                update_progress("Issue", number, "Getting issue details")
+                set_progress_item("Issue", number)
+                push_progress_stage("Getting issue details")
                 issue_data = github_client.get_issue_details_by_number(
                     repo_name, number
                 )
 
-                # Skip if issue already has @auto-coder label (being processed by another instance)
-                update_progress("Issue", number, "Checking status")
+                # Check if issue already has @auto-coder label (being processed by another instance)
+                push_progress_stage("Checking status")
+                if not dry_run:
+                    current_labels = issue_data.get("labels", [])
+                    if "@auto-coder" in current_labels:
+                        msg = (
+                            f"Skipping issue #{number} - already has @auto-coder label"
+                        )
+                        logger.info(msg)
+                        result["errors"].append(msg)
+                        newline_progress()
+                        return result
+
+                # Add @auto-coder label now that we're actually going to process this issue
                 if not dry_run:
                     if not github_client.try_add_work_in_progress_label(
                         repo_name, number
                     ):
                         msg = (
-                            f"Skipping issue #{number} - already has @auto-coder label"
+                            f"Skipping issue #{number} - @auto-coder label was just added by another instance"
                         )
                         logger.info(msg)
                         result["errors"].append(msg)
@@ -833,7 +871,7 @@ def process_single(
                 try:
                     if jules_mode:
                         # Mimic jules mode behavior
-                        update_progress("Issue", number, "Adding jules label")
+                        push_progress_stage("Adding jules label")
                         current_labels = issue_data.get("labels", [])
                         if "jules" not in current_labels:
                             if not dry_run:
@@ -852,7 +890,7 @@ def process_single(
                                 f"Issue #{number} already has 'jules' label"
                             )
                     else:
-                        update_progress("Issue", number, "Processing")
+                        push_progress_stage("Processing")
                         actions = _take_issue_actions(
                             repo_name, issue_data, config, dry_run, llm_client, message_backend_manager
                         )

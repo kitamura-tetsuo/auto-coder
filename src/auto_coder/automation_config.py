@@ -35,8 +35,8 @@ class AutomationConfig:
     max_issues_per_run: int = -1
     max_prs_per_run: int = -1
     # Default max attempts for fix loops
-    # Note: tests expect strict default value of 3
-    MAX_FIX_ATTEMPTS: int = 3
+    # Note: tests expect strict default value of 30
+    MAX_FIX_ATTEMPTS: int = 30
 
     # Git settings
     MAIN_BRANCH: str = "main"

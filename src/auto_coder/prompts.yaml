@@ -76,20 +76,15 @@ pr:
     Repository: $repo_name
     PR Title: $pr_title
 
-    Test Output:
-    $test_output
-
-    Test Errors:
-    $test_errors
-
     Key Errors:
-    Error summary would go here
+    $error_summary
 
-     Local test command used:
-     $test_command
+    Local test command used:
+    $test_command
 
     Please analyze the test failures and provide specific code fixes.
     Focus on making the tests pass while maintaining code quality.
+    All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes. 
 
     After analyzing, apply the necessary fixes to the codebase.
 
@@ -143,6 +138,7 @@ issue:
     - Ensure the implementation follows best practices
     - Prefer the smart, reasonable and logically beautiful change that resolves issues.
     - Do not close the issue
+    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
 
     For duplicate/invalid issues:
     - Close the issue

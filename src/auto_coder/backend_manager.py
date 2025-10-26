@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from auto_coder.progress_footer import ProgressStage
+
 from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
@@ -112,31 +114,32 @@ class BackendManager(LLMBackendManagerBase):
         tried: set[int] = set()
         last_error: Optional[Exception] = None
         while attempts < len(self._all_backends):
-            name = self._current_backend_name()
-            if self._current_idx in tried:
-                self.switch_to_next_backend()
-                attempts += 1
-                continue
-            tried.add(self._current_idx)
-            try:
-                cli = self._get_or_create_client(name)
-                out = cli._run_llm_cli(prompt)
-                # 実行に成功した場合のみ、直近利用したバックエンド/モデルを更新する
-                self._last_backend = name
-                self._last_model = getattr(cli, "model_name", None)
-                return out
-            except AutoCoderUsageLimitError as e:
-                logger.warning(
-                    f"Backend '{name}' hit usage limit: {e}. Rotating to next backend."
-                )
-                last_error = e
-                self.switch_to_next_backend()
-                attempts += 1
-                continue
-            except Exception as e:
-                # 他の失敗は伝播（使用料制限以外は即エラー）
-                last_error = e
-                break
+            with ProgressStage("Running LLM"):
+                name = self._current_backend_name()
+                if self._current_idx in tried:
+                    self.switch_to_next_backend()
+                    attempts += 1
+                    continue
+                tried.add(self._current_idx)
+                try:
+                    cli = self._get_or_create_client(name)
+                    out = cli._run_llm_cli(prompt)
+                    # 実行に成功した場合のみ、直近利用したバックエンド/モデルを更新する
+                    self._last_backend = name
+                    self._last_model = getattr(cli, "model_name", None)
+                    return out
+                except AutoCoderUsageLimitError as e:
+                    logger.warning(
+                        f"Backend '{name}' hit usage limit: {e}. Rotating to next backend."
+                    )
+                    last_error = e
+                    self.switch_to_next_backend()
+                    attempts += 1
+                    continue
+                except Exception as e:
+                    # 他の失敗は伝播（使用料制限以外は即エラー）
+                    last_error = e
+                    break
         if last_error:
             raise last_error
         raise RuntimeError("No backend available to run prompt")

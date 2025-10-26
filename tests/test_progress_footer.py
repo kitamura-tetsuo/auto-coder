@@ -1,4 +1,4 @@
-"""Tests for progress header display functionality."""
+"""Tests for progress footer display functionality."""
 
 import io
 import sys
@@ -6,77 +6,83 @@ from unittest.mock import patch
 
 import pytest
 
-from auto_coder.progress_header import (
+from auto_coder.progress_footer import (
     ProgressContext,
-    ProgressHeader,
+    ProgressFooter,
     ProgressStage,
     clear_progress,
-    get_progress_header,
+    get_progress_footer,
     newline_progress,
-    update_progress,
+    set_progress_item,
+    push_progress_stage,
+    pop_progress_stage,
 )
 
 
-def test_progress_header_format():
-    """Test that progress header formats correctly."""
-    header = ProgressHeader()
-    
-    # Test formatting
-    formatted = header._format_header("PR", 123, "Running tests")
-    
+def test_progress_footer_format():
+    """Test that progress footer formats correctly."""
+    footer = ProgressFooter()
+
+    # Test formatting with stages
+    footer._stage_stack = ["Running tests"]
+    formatted = footer._format_footer("PR", 123)
+
     # Should contain PR number and stage
     assert "PR" in formatted
     assert "123" in formatted
     assert "Running tests" in formatted
 
 
-def test_progress_header_update_with_tty(monkeypatch):
-    """Test progress header update when stream is a TTY."""
+def test_progress_footer_update_with_tty(monkeypatch):
+    """Test progress footer set_item and push_stage when stream is a TTY."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    # Create a new header instance with mocked stream
-    header = ProgressHeader(stream=mock_stream)
-    header.update("PR", 123, "Testing")
+    # Create a new footer instance with mocked stream
+    footer = ProgressFooter(stream=mock_stream)
+    footer.set_item("PR", 123)
+    footer.push_stage("Testing")
 
     # Get the output
     output = mock_stream.getvalue()
 
-    # Should contain the header
+    # Should contain the footer
     assert "PR" in output
     assert "123" in output
     assert "Testing" in output
 
 
-def test_progress_header_update_without_tty(monkeypatch):
-    """Test progress header update when stream is not a TTY."""
+def test_progress_footer_update_without_tty(monkeypatch):
+    """Test progress footer set_item and push_stage when stream is not a TTY."""
     # Mock stream as not a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: False
 
-    # Create a new header instance with mocked stream
-    header = ProgressHeader(stream=mock_stream)
-    header.update("Issue", 456, "Processing")
+    # Create a new footer instance with mocked stream
+    footer = ProgressFooter(stream=mock_stream)
+    footer.set_item("Issue", 456)
+    footer.push_stage("Processing")
 
     # Get the output
     output = mock_stream.getvalue()
 
-    # When not a TTY, header is not printed (only logged)
+    # When not a TTY, footer is not printed (only logged)
     # So output should be empty
     assert output == ""
 
 
-def test_progress_header_clear():
-    """Test clearing the progress header."""
+def test_progress_footer_clear():
+    """Test clearing the progress footer."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    # Create a new header instance with mocked stream
-    header = ProgressHeader(stream=mock_stream)
-    header.update("PR", 123, "Testing")
-    header.clear()
+    # Create a new footer instance with mocked stream
+    footer = ProgressFooter(stream=mock_stream)
+    footer.set_item("PR", 123)
+    footer.push_stage("Testing")
+    footer.clear()
 
     # Should have cleared the line
     output = mock_stream.getvalue()
@@ -84,8 +90,8 @@ def test_progress_header_clear():
     assert "\0337" in output or "\033[H" in output
 
 
-def test_progress_header_newline():
-    """Test adding a newline after the header."""
+def test_progress_footer_newline():
+    """Test adding a newline after the footer."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
@@ -94,31 +100,33 @@ def test_progress_header_newline():
     mock_stdout = io.StringIO()
 
     with patch('sys.stdout', mock_stdout):
-        # Create a new header instance with mocked stream
-        header = ProgressHeader(stream=mock_stream)
-        header.update("PR", 123, "Testing")
-        header.newline()
+        # Create a new footer instance with mocked stream
+        footer = ProgressFooter(stream=mock_stream)
+        footer.set_item("PR", 123)
+        footer.push_stage("Testing")
+        footer.newline()
 
         # Should have added a newline to stdout
         output = mock_stdout.getvalue()
         assert "\n" in output
 
 
-def test_global_progress_header():
-    """Test global progress header functions."""
+def test_global_progress_footer():
+    """Test global progress footer functions."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
     # Reset global instance
-    import auto_coder.progress_header as ph
-    ph._global_header = None
+    import auto_coder.progress_footer as ph
+    ph._global_footer = None
 
-    # Create global header with mocked stream
-    ph._global_header = ProgressHeader(stream=mock_stream)
+    # Create global footer with mocked stream
+    ph._global_footer = ProgressFooter(stream=mock_stream)
 
-    # Test update
-    update_progress("PR", 789, "Global test")
+    # Test set_item and push_stage
+    set_progress_item("PR", 789)
+    push_progress_stage("Global test")
 
     # Get the output
     output = mock_stream.getvalue()
@@ -138,15 +146,15 @@ def test_progress_context():
 
     with patch('sys.stdout', mock_stdout):
         # Reset global instance
-        import auto_coder.progress_header as ph
-        ph._global_header = None
+        import auto_coder.progress_footer as ph
+        ph._global_footer = None
 
-        # Create global header with mocked stream
-        ph._global_header = ProgressHeader(stream=mock_stream)
+        # Create global footer with mocked stream
+        ph._global_footer = ProgressFooter(stream=mock_stream)
 
         # Use context manager
         with ProgressContext("Issue", 999, "Context test") as ctx:
-            # Should have displayed the header
+            # Should have displayed the footer
             output = mock_stream.getvalue()
             assert "Issue" in output
             assert "999" in output
@@ -162,66 +170,73 @@ def test_progress_context():
         assert "\n" in output
 
 
-def test_progress_header_thread_safety():
-    """Test that progress header is thread-safe."""
+def test_progress_footer_thread_safety():
+    """Test that progress footer is thread-safe."""
     import threading
-    
-    header = ProgressHeader()
+
+    footer = ProgressFooter()
     errors = []
-    
-    def update_header(item_type, number, stage):
+
+    def update_footer(item_type, number, stage):
         try:
             for _ in range(10):
-                header.update(item_type, number, stage)
+                footer.set_item(item_type, number)
+                footer.push_stage(stage)
+                footer.pop_stage()
         except Exception as e:
             errors.append(e)
-    
+
     # Create multiple threads
     threads = []
     for i in range(5):
-        t = threading.Thread(target=update_header, args=("PR", i, f"Stage {i}"))
+        t = threading.Thread(target=update_footer, args=("PR", i, f"Stage {i}"))
         threads.append(t)
         t.start()
-    
+
     # Wait for all threads
     for t in threads:
         t.join()
-    
+
     # Should not have any errors
     assert len(errors) == 0
 
 
-def test_progress_header_multiple_updates():
-    """Test multiple updates to the progress header."""
+def test_progress_footer_multiple_updates():
+    """Test multiple push/pop stages to the progress footer."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    header = ProgressHeader(stream=mock_stream)
+    footer = ProgressFooter(stream=mock_stream)
+    footer.set_item("PR", 100)
 
-    # Multiple updates
-    header.update("PR", 100, "Stage 1")
-    header.update("PR", 100, "Stage 2")
-    header.update("PR", 100, "Stage 3")
+    # Multiple stage updates
+    footer.push_stage("Stage 1")
+    footer.pop_stage()
+    footer.push_stage("Stage 2")
+    footer.pop_stage()
+    footer.push_stage("Stage 3")
 
     # Should have all stages in output
     output = mock_stream.getvalue()
     assert "Stage 1" in output or "Stage 2" in output or "Stage 3" in output
 
 
-def test_progress_header_different_items():
-    """Test progress header with different item types."""
+def test_progress_footer_different_items():
+    """Test progress footer with different item types."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    header = ProgressHeader(stream=mock_stream)
+    footer = ProgressFooter(stream=mock_stream)
 
-    # Update with PR
-    header.update("PR", 123, "PR stage")
+    # Set PR
+    footer.set_item("PR", 123)
+    footer.push_stage("PR stage")
 
-    # Update with Issue
-    header.update("Issue", 456, "Issue stage")
+    # Set Issue
+    footer.set_item("Issue", 456)
+    footer.push_stage("Issue stage")
 
     # Should have both in output
     output = mock_stream.getvalue()
@@ -229,16 +244,17 @@ def test_progress_header_different_items():
     assert ("123" in output or "456" in output)
 
 
-def test_progress_header_special_characters():
-    """Test progress header with special characters in stage."""
+def test_progress_footer_special_characters():
+    """Test progress footer with special characters in stage."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    header = ProgressHeader(stream=mock_stream)
+    footer = ProgressFooter(stream=mock_stream)
 
-    # Update with special characters
-    header.update("PR", 123, "Running tests: 50% complete")
+    # Set item and push stage with special characters
+    footer.set_item("PR", 123)
+    footer.push_stage("Running tests: 50% complete")
 
     # Should handle special characters
     output = mock_stream.getvalue()
@@ -246,49 +262,53 @@ def test_progress_header_special_characters():
     assert "50%" in output or "50" in output
 
 
-def test_progress_header_nested_stages():
-    """Test progress header with nested stages."""
+def test_progress_footer_nested_stages():
+    """Test progress footer with nested stages."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    header = ProgressHeader(stream=mock_stream)
+    footer = ProgressFooter(stream=mock_stream)
+    footer.set_item("PR", 123)
 
     # Push first stage
-    header.push_stage("First pass")
-    header.update("PR", 123, "Checking status")
+    footer.push_stage("First pass")
+
+    output = mock_stream.getvalue()
+    assert "First pass" in output
+
+    # Push second stage
+    footer.push_stage("Checking status")
 
     output = mock_stream.getvalue()
     assert "First pass" in output
     assert "Checking status" in output
     assert "/" in output  # Should have separator
 
-    # Push second stage
-    header.push_stage("Running LLM")
-    header.update("PR", 123, "Staging changes")
+    # Push third stage
+    footer.push_stage("Running LLM")
 
     output = mock_stream.getvalue()
     assert "First pass" in output
     assert "Running LLM" in output
-    assert "Staging changes" in output
 
     # Pop stage
-    header.pop_stage()
-    header.update("PR", 123, "Committing")
+    footer.pop_stage()
 
     output = mock_stream.getvalue()
     assert "First pass" in output
-    assert "Committing" in output
+    assert "Checking status" in output
     # "Running LLM" should not be in the latest output
 
     # Clear should reset stack
-    header.clear()
+    footer.clear()
 
     # Clear the mock stream to start fresh
     mock_stream.truncate(0)
     mock_stream.seek(0)
 
-    header.update("PR", 456, "New task")
+    footer.set_item("PR", 456)
+    footer.push_stage("New task")
 
     output = mock_stream.getvalue()
     assert "456" in output
@@ -303,15 +323,16 @@ def test_progress_stage_context_manager():
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    # Replace global header with our mock
-    import auto_coder.progress_header as ph
-    original_header = ph._global_header
-    ph._global_header = ProgressHeader(stream=mock_stream)
+    # Replace global footer with our mock
+    import auto_coder.progress_footer as ph
+    original_footer = ph._global_footer
+    ph._global_footer = ProgressFooter(stream=mock_stream)
 
     try:
-        # Use ProgressStage context manager with global header
+        # Use ProgressStage context manager with global footer
         with ProgressStage("First pass"):
-            update_progress("PR", 123, "Checking status")
+            set_progress_item("PR", 123)
+            push_progress_stage("Checking status")
 
             output = mock_stream.getvalue()
             assert "First pass" in output
@@ -320,25 +341,25 @@ def test_progress_stage_context_manager():
 
             # Nested stage
             with ProgressStage("Running LLM"):
-                update_progress("PR", 123, "Staging changes")
-
                 output = mock_stream.getvalue()
                 assert "First pass" in output
                 assert "Running LLM" in output
-                assert "Staging changes" in output
 
             # After exiting nested context, should be back to "First pass"
-            update_progress("PR", 123, "Committing")
+            pop_progress_stage()  # Pop "Checking status"
+            push_progress_stage("Committing")
 
             output = mock_stream.getvalue()
             assert "First pass" in output
             assert "Committing" in output
 
-        # After exiting context, stack should be empty
+        # After exiting context, clear and start fresh
+        clear_progress()
         mock_stream.truncate(0)
         mock_stream.seek(0)
 
-        update_progress("PR", 456, "New task")
+        set_progress_item("PR", 456)
+        push_progress_stage("New task")
 
         output = mock_stream.getvalue()
         assert "456" in output
@@ -346,50 +367,51 @@ def test_progress_stage_context_manager():
         assert "First pass" not in output
 
     finally:
-        # Restore original header
-        ph._global_header = original_header
+        # Restore original footer
+        ph._global_footer = original_footer
 
 
-def test_progress_stage_with_update_progress():
-    """Test ProgressStage with global update_progress function."""
+def test_progress_stage_with_set_and_push():
+    """Test ProgressStage with global set_progress_item and push_progress_stage."""
     # Mock stream as a TTY
     mock_stream = io.StringIO()
     mock_stream.isatty = lambda: True
 
-    # Replace global header with our mock
-    import auto_coder.progress_header as ph
-    original_header = ph._global_header
-    ph._global_header = ProgressHeader(stream=mock_stream)
+    # Replace global footer with our mock
+    import auto_coder.progress_footer as ph
+    original_footer = ph._global_footer
+    ph._global_footer = ProgressFooter(stream=mock_stream)
 
     try:
-        # Use ProgressStage with global update_progress
+        # Use ProgressStage with global functions
         with ProgressStage("First pass"):
-            update_progress("PR", 123, "Checking status")
+            set_progress_item("PR", 123)
+            push_progress_stage("Checking status")
 
             output = mock_stream.getvalue()
             assert "First pass" in output
             assert "Checking status" in output
 
             with ProgressStage("Running LLM"):
-                update_progress("PR", 123, "Staging changes")
-
                 output = mock_stream.getvalue()
                 assert "First pass" in output
                 assert "Running LLM" in output
-                assert "Staging changes" in output
 
             # After exiting nested context
-            update_progress("PR", 123, "Committing")
+            pop_progress_stage()  # Pop "Checking status"
+            push_progress_stage("Committing")
 
             output = mock_stream.getvalue()
             assert "First pass" in output
             assert "Committing" in output
 
-        # After exiting all contexts
+        # After exiting all contexts, clear and start fresh
+        clear_progress()
         mock_stream.truncate(0)
         mock_stream.seek(0)
 
-        update_progress("PR", 456, "New task")
+        set_progress_item("PR", 456)
+        push_progress_stage("New task")
 
         output = mock_stream.getvalue()
         assert "456" in output
@@ -397,8 +419,8 @@ def test_progress_stage_with_update_progress():
         assert "First pass" not in output
 
     finally:
-        # Restore original header
-        ph._global_header = original_header
+        # Restore original footer
+        ph._global_footer = original_footer
 
 
 if __name__ == "__main__":

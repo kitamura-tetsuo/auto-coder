@@ -14,11 +14,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .fix_to_pass_tests_runner import run_local_tests
+from .fix_to_pass_tests_runner import (
+    WorkspaceFixResult,
+    extract_important_errors,
+    run_local_tests,
+)
 from .git_utils import ensure_pushed, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
-from .progress_header import (
-    update_progress,
+from .progress_footer import (
     newline_progress,
     ProgressStage,
 )
@@ -73,9 +76,7 @@ def process_pull_requests(
                 pr_number = pr_data["number"]
 
                 # First pass: check if PR can be merged
-                with ProgressStage("First pass"):
-                    update_progress("PR", pr_number, "Checking status")
-
+                with ProgressStage("PR", pr_number, "First pass"):
                     # Skip if PR already has @auto-coder label (being processed by another instance)
                     if not dry_run:
                         if not github_client.try_add_work_in_progress_label(
@@ -96,10 +97,10 @@ def process_pull_requests(
                             continue
 
                     try:
-                        update_progress("PR", pr_number, "Checking GitHub Actions")
-                        github_checks = _check_github_actions_status(
-                            repo_name, pr_data, config
-                        )
+                        with ProgressStage("Checking GitHub Actions"):
+                            github_checks = _check_github_actions_status(
+                                repo_name, pr_data, config
+                            )
 
                         # Check both GitHub Actions success AND mergeable status (default True if unknown)
                         mergeable = pr_data.get("mergeable", True)
@@ -115,10 +116,10 @@ def process_pull_requests(
                                 logger.info(
                                     f"PR #{pr_number}: Actions PASSING and MERGEABLE - attempting merge"
                                 )
-                                update_progress("PR", pr_number, "Attempting merge")
-                                processed_pr = _process_pr_for_merge(
-                                    repo_name, pr_data, config, dry_run
-                                )
+                                with ProgressStage("Attempting merge"):
+                                    processed_pr = _process_pr_for_merge(
+                                        repo_name, pr_data, config, dry_run
+                                    )
                                 processed_prs.append(processed_pr)
                                 handled_pr_numbers.add(pr_number)
 
@@ -129,10 +130,10 @@ def process_pull_requests(
                                     merged_pr_numbers.add(pr_number)
                             else:
                                 # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
-                                update_progress("PR", pr_number, "Taking actions")
-                                actions = _take_pr_actions(
-                                    repo_name, pr_data, config, dry_run, llm_client
-                                )
+                                with ProgressStage("Taking actions"):
+                                    actions = _take_pr_actions(
+                                        repo_name, pr_data, config, dry_run, llm_client
+                                    )
                                 processed_prs.append(
                                     {
                                         "pr_data": pr_data,
@@ -202,9 +203,7 @@ def process_pull_requests(
                     continue
 
                 # Second pass: fix issues
-                with ProgressStage("Second pass"):
-                    update_progress("PR", pr_number, "Checking status")
-
+                with ProgressStage("PR", pr_number, "Second pass"):
                     # Skip if PR already has @auto-coder label (being processed by another instance)
                     if not dry_run:
                         if not github_client.try_add_work_in_progress_label(
@@ -226,7 +225,6 @@ def process_pull_requests(
 
                     try:
                         logger.info(f"PR #{pr_number}: Processing for issue resolution")
-                        update_progress("PR", pr_number, "Fixing issues")
                         processed_pr = _process_pr_for_fixes(
                             repo_name, pr_data, config, dry_run, llm_client
                         )
@@ -334,7 +332,8 @@ def _process_pr_for_fixes(
 
     try:
         # Use the existing PR actions logic for fixing issues
-        actions = _take_pr_actions(repo_name, pr_data, config, dry_run, llm_client)
+        with ProgressStage("Fixing issues"):
+            actions = _take_pr_actions(repo_name, pr_data, config, dry_run, llm_client)
         processed_pr["actions_taken"] = actions
 
     except Exception as e:
@@ -365,7 +364,7 @@ def _take_pr_actions(
 
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(repo_name, pr_data, config, dry_run, {})
+        merge_actions = _handle_pr_merge(repo_name, pr_data, config, dry_run, {}, llm_client)
         actions.extend(merge_actions)
 
         # If merge process completed successfully (PR was merged), skip analysis
@@ -406,24 +405,24 @@ def _apply_pr_actions_directly(
 
     try:
         # Get PR diff for analysis
-        update_progress("PR", pr_number, "Getting PR diff")
-        pr_diff = _get_pr_diff(repo_name, pr_number, config)
+        with ProgressStage("Getting PR diff"):
+            pr_diff = _get_pr_diff(repo_name, pr_number, config)
 
         # Create action-oriented prompt (no comments)
-        update_progress("PR", pr_number, "Creating prompt")
-        action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
-        logger.debug(
-            "Prepared PR action prompt for #%s (preview: %s)",
-            pr_data.get("number", "unknown"),
-            action_prompt[:160].replace("\n", " "),
-        )
+        with ProgressStage("Creating prompt"):
+            action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
+            logger.debug(
+                "Prepared PR action prompt for #%s (preview: %s)",
+                pr_data.get("number", "unknown"),
+                action_prompt[:160].replace("\n", " "),
+            )
 
         # Use LLM CLI to analyze and take actions
         log_action(f"Applying PR actions directly for PR #{pr_number}")
 
         # Call LLM client
-        update_progress("PR", pr_number, "Running LLM")
-        response = llm_client._run_llm_cli(action_prompt)
+        with ProgressStage("Running LLM"):
+            response = llm_client._run_llm_cli(action_prompt)
 
         # Process the response
         if response and len(response.strip()) > 0:
@@ -450,37 +449,39 @@ def _apply_pr_actions_directly(
                 )
             else:
                 # Stage, commit, and push via helpers (LLM must not commit directly)
-                update_progress("PR", pr_number, "Staging changes")
-                add_res = cmd.run_command(["git", "add", "."])
-                if not add_res.success:
-                    actions.append(f"Failed to stage changes: {add_res.stderr}")
-                    return actions
+                with ProgressStage("Staging changes"):
+                    add_res = cmd.run_command(["git", "add", "."])
+                    if not add_res.success:
+                        actions.append(f"Failed to stage changes: {add_res.stderr}")
+                        return actions
 
                 # Commit using centralized helper with dprint retry logic
-                update_progress("PR", pr_number, "Committing changes")
-                commit_msg = f"Auto-Coder: Apply fix for PR #{pr_number}"
-                commit_res = git_commit_with_retry(commit_msg)
+                with ProgressStage("Committing changes"):
+                    commit_msg = f"Auto-Coder: Apply fix for PR #{pr_number}"
+                    commit_res = git_commit_with_retry(commit_msg)
 
                 if commit_res.success:
                     actions.append(f"Committed changes for PR #{pr_number}")
 
                     # Push changes to remote with retry
-                    update_progress("PR", pr_number, "Pushing changes")
-                    push_res = git_push()
-                    if push_res.success:
-                        actions.append(f"Pushed changes for PR #{pr_number}")
-                    else:
-                        # Push failed - try one more time after a brief pause
-                        logger.warning(f"First push attempt failed: {push_res.stderr}, retrying...")
-                        update_progress("PR", pr_number, "Retrying push")
-                        import time
-                        time.sleep(2)
-                        retry_push_res = git_push()
-                        if retry_push_res.success:
-                            actions.append(f"Pushed changes for PR #{pr_number} (after retry)")
+                    with ProgressStage("Pushing changes"):
+                        push_res = git_push()
+                        if push_res.success:
+                            actions.append(f"Pushed changes for PR #{pr_number}")
                         else:
-                            logger.error(f"Failed to push changes after retry: {retry_push_res.stderr}")
-                            actions.append(f"CRITICAL: Committed but failed to push changes: {retry_push_res.stderr}")
+                            # Push failed - try one more time after a brief pause
+                            logger.warning(f"First push attempt failed: {push_res.stderr}, retrying...")
+
+                    if not push_res.success:
+                        with ProgressStage("Retrying push"):
+                            import time
+                            time.sleep(2)
+                            retry_push_res = git_push()
+                            if retry_push_res.success:
+                                actions.append(f"Pushed changes for PR #{pr_number} (after retry)")
+                            else:
+                                logger.error(f"Failed to push changes after retry: {retry_push_res.stderr}")
+                                actions.append(f"CRITICAL: Committed but failed to push changes: {retry_push_res.stderr}")
                 else:
                     # Check if it's a "nothing to commit" case
                     if 'nothing to commit' in (commit_res.stdout or ''):
@@ -700,6 +701,7 @@ def _handle_pr_merge(
     config: AutomationConfig,
     dry_run: bool,
     analysis: Dict[str, Any],
+    llm_client=None,
 ) -> List[str]:
     """Handle PR merge process following the intended flow."""
     actions = []
@@ -763,7 +765,7 @@ def _handle_pr_merge(
             if failed_checks:
                 github_logs = _get_github_actions_logs(repo_name, config, failed_checks)
                 fix_actions = _fix_pr_issues_with_testing(
-                    repo_name, pr_data, config, dry_run, github_logs
+                    repo_name, pr_data, config, dry_run, github_logs, llm_client
                 )
                 actions.extend(fix_actions)
             else:
@@ -802,7 +804,7 @@ def _handle_pr_merge(
                         repo_name, config, failed_checks
                     )
                     fix_actions = _fix_pr_issues_with_testing(
-                        repo_name, pr_data, config, dry_run, github_logs
+                        repo_name, pr_data, config, dry_run, github_logs, llm_client
                     )
                     actions.extend(fix_actions)
                 else:
@@ -1381,6 +1383,7 @@ def _fix_pr_issues_with_testing(
     config: AutomationConfig,
     dry_run: bool,
     github_logs: str,
+    llm_client=None,
 ) -> List[str]:
     """Fix PR issues using GitHub Actions logs first, then local testing loop."""
     actions = []
@@ -1393,7 +1396,7 @@ def _fix_pr_issues_with_testing(
         )
 
         initial_fix_actions = _apply_github_actions_fix(
-            repo_name, pr_data, config, dry_run, github_logs
+            repo_name, pr_data, config, dry_run, github_logs, llm_client
         )
         actions.extend(initial_fix_actions)
 
@@ -1442,7 +1445,7 @@ def _fix_pr_issues_with_testing(
                         break
                     else:
                         local_fix_actions = _apply_local_test_fix(
-                            repo_name, pr_data, config, dry_run, test_result
+                            repo_name, pr_data, config, dry_run, test_result, llm_client
                         )
                         actions.extend(local_fix_actions)
 
@@ -1458,6 +1461,7 @@ def _apply_github_actions_fix(
     config: AutomationConfig,
     dry_run: bool,
     github_logs: str,
+    llm_client=None,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
 
@@ -1483,10 +1487,20 @@ def _apply_github_actions_fix(
         )
 
         if not dry_run:
-            response = "Applied GitHub Actions fix"  # Placeholder
+            if llm_client is None:
+                actions.append("No LLM client available for GitHub Actions fix")
+                return actions
+
+            # Use LLM backend manager to run the prompt
+            logger.info(
+                f"Requesting LLM GitHub Actions fix for PR #{pr_number}"
+            )
+            response = llm_client._run_llm_cli(fix_prompt)
+
             if response:
+                response_preview = response.strip()[:config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
                 actions.append(
-                    f"Applied GitHub Actions fix: {response[:config.MAX_RESPONSE_SIZE]}..."
+                    f"Applied GitHub Actions fix: {response_preview}..."
                 )
             else:
                 actions.append("No response from LLM for GitHub Actions fix")
@@ -1536,19 +1550,27 @@ def _apply_local_test_fix(
     config: AutomationConfig,
     dry_run: bool,
     test_result: Dict[str, Any],
+    llm_client=None,
 ) -> List[str]:
-    """Apply fix using local test failure logs."""
+    """Apply fix using local test failure logs.
+
+    This function uses the LLM backend manager to apply fixes based on local test failures,
+    similar to apply_workspace_test_fix in fix_to_pass_tests_runner.py.
+    """
     with ProgressStage(f"Local test fix"):
         actions = []
         pr_number = pr_data["number"]
 
         try:
             # Extract important error information
-            # error_summary = _extract_important_errors(test_result)
+            error_summary = extract_important_errors(test_result)
 
-            # if not error_summary:
-            #     actions.append(f"No actionable errors found in local test output for PR #{pr_number}")
-            #     return actions
+            if not error_summary:
+                actions.append(f"No actionable errors found in local test output for PR #{pr_number}")
+                logger.info(
+                    "Skipping LLM local test fix because no actionable errors were extracted"
+                )
+                return actions
 
             # Create prompt for local test error fix
             fix_prompt = render_prompt(
@@ -1556,8 +1578,7 @@ def _apply_local_test_fix(
                 pr_number=pr_number,
                 repo_name=repo_name,
                 pr_title=pr_data.get("title", "Unknown"),
-                test_output=(test_result.get("output", "") or "")[: config.MAX_PROMPT_SIZE],
-                test_errors=(test_result.get("errors", "") or "")[: config.MAX_PROMPT_SIZE],
+                error_summary=error_summary[: config.MAX_PROMPT_SIZE],
                 test_command=test_result.get("command", "pytest -q --maxfail=1"),
             )
             logger.debug(
@@ -1566,19 +1587,41 @@ def _apply_local_test_fix(
                 fix_prompt[:160].replace("\n", " "),
             )
 
-            if not dry_run:
-                response = "Applied local test fix"  # Placeholder
-                if response:
-                    actions.append(
-                        f"Applied local test fix: {response[:config.MAX_RESPONSE_SIZE]}..."
-                    )
-                else:
-                    actions.append("No response from LLM for local test fix")
-            else:
+            if dry_run:
                 actions.append(f"[DRY RUN] Would apply local test fix for PR #{pr_number}")
+                return actions
+
+            if llm_client is None:
+                actions.append("No LLM client available for local test fix")
+                return actions
+
+            # Use LLM backend manager to run the prompt
+            # Check if llm_client has run_test_fix_prompt method (BackendManager)
+            # or fall back to _run_llm_cli
+            logger.info(
+                f"Requesting LLM local test fix for PR #{pr_number}"
+            )
+
+            if hasattr(llm_client, 'run_test_fix_prompt'):
+                # BackendManager with test file tracking
+                response = llm_client.run_test_fix_prompt(
+                    fix_prompt, current_test_file=None
+                )
+            else:
+                # Regular LLM client
+                response = llm_client._run_llm_cli(fix_prompt)
+
+            if response:
+                response_preview = response.strip()[:config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
+                actions.append(
+                    f"Applied local test fix: {response_preview}..."
+                )
+            else:
+                actions.append("No response from LLM for local test fix")
 
         except Exception as e:
             actions.append(f"Error applying local test fix for PR #{pr_number}: {e}")
+            logger.error(f"Error applying local test fix for PR #{pr_number}: {e}", exc_info=True)
 
         return actions
 

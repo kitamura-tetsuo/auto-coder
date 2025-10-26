@@ -37,9 +37,6 @@ class TestIssueProcessorSkipSubIssues:
             "labels": [],
         }
 
-        # Mock try_add_work_in_progress_label to succeed
-        mock_github_client.try_add_work_in_progress_label.return_value = True
-
         # Mock get_open_sub_issues to return open sub-issues
         mock_github_client.get_open_sub_issues.return_value = [100, 200]
 
@@ -53,10 +50,10 @@ class TestIssueProcessorSkipSubIssues:
         assert result[0]["issue_data"]["number"] == 1
         assert "Skipped - has open sub-issues: [100, 200]" in result[0]["actions_taken"]
 
-        # Verify @auto-coder label was removed
-        mock_github_client.remove_labels_from_issue.assert_called_once_with(
-            "owner/repo", 1, ["@auto-coder"]
-        )
+        # Verify @auto-coder label was NOT added (skipped before processing)
+        mock_github_client.try_add_work_in_progress_label.assert_not_called()
+        # Verify @auto-coder label was NOT removed (never added)
+        mock_github_client.remove_labels_from_issue.assert_not_called()
 
     @patch("src.auto_coder.issue_processor.logger")
     def test_process_issues_normal_processes_issue_without_sub_issues(
@@ -188,9 +185,6 @@ class TestIssueProcessorSkipSubIssues:
             "labels": [],
         }
 
-        # Mock try_add_work_in_progress_label to succeed
-        mock_github_client.try_add_work_in_progress_label.return_value = True
-
         # Mock get_open_sub_issues to return open sub-issues
         mock_github_client.get_open_sub_issues.return_value = [100]
 
@@ -204,10 +198,10 @@ class TestIssueProcessorSkipSubIssues:
         assert result[0]["issue_data"]["number"] == 1
         assert "Skipped - has open sub-issues: [100]" in result[0]["actions_taken"]
 
-        # Verify @auto-coder label was removed
-        mock_github_client.remove_labels_from_issue.assert_called_once_with(
-            "owner/repo", 1, ["@auto-coder"]
-        )
+        # Verify @auto-coder label was NOT added (skipped before processing)
+        mock_github_client.try_add_work_in_progress_label.assert_not_called()
+        # Verify @auto-coder label was NOT removed (never added)
+        mock_github_client.remove_labels_from_issue.assert_not_called()
 
     @patch("src.auto_coder.issue_processor.logger")
     def test_process_issues_jules_mode_processes_issue_without_sub_issues(

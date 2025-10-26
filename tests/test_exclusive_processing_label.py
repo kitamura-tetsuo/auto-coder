@@ -144,10 +144,8 @@ class TestIssueProcessorExclusiveProcessing:
         mock_github_client.get_issue_details.return_value = {
             "number": 123,
             "title": "Test Issue",
-            "labels": [],
+            "labels": ["@auto-coder"],  # Label already exists
         }
-        # Simulate label already exists
-        mock_github_client.try_add_work_in_progress_label.return_value = False
 
         config = AutomationConfig()
         result = _process_issues_normal(
@@ -158,6 +156,8 @@ class TestIssueProcessorExclusiveProcessing:
         actions_taken = result[0]["actions_taken"][0]
         assert "Skipped - already being processed" in actions_taken
         mock_take_actions.assert_not_called()
+        # Verify try_add_work_in_progress_label was NOT called (skipped before that check)
+        mock_github_client.try_add_work_in_progress_label.assert_not_called()
 
     @patch("src.auto_coder.issue_processor._take_issue_actions")
     def test_process_issues_normal_processes_when_label_added(self, mock_take_actions):
@@ -174,9 +174,12 @@ class TestIssueProcessorExclusiveProcessing:
             "title": "Test Issue",
             "labels": [],
         }
+        # Mock get_open_sub_issues to return empty list (no sub-issues)
+        mock_github_client.get_open_sub_issues.return_value = []
+        # Mock has_linked_pr to return False (no linked PR)
+        mock_github_client.has_linked_pr.return_value = False
         # Simulate label successfully added
         mock_github_client.try_add_work_in_progress_label.return_value = True
-        mock_github_client.has_linked_pr.return_value = False
         mock_take_actions.return_value = ["Action taken"]
 
         config = AutomationConfig()
@@ -234,10 +237,8 @@ class TestIssueProcessorExclusiveProcessing:
         mock_github_client.get_issue_details.return_value = {
             "number": 123,
             "title": "Test Issue",
-            "labels": [],
+            "labels": ["@auto-coder"],  # Label already exists
         }
-        # Simulate label already exists
-        mock_github_client.try_add_work_in_progress_label.return_value = False
 
         config = AutomationConfig()
         result = _process_issues_jules_mode(
@@ -247,6 +248,8 @@ class TestIssueProcessorExclusiveProcessing:
         assert len(result) == 1
         actions_taken = result[0]["actions_taken"][0]
         assert "Skipped - already being processed" in actions_taken
+        # Verify try_add_work_in_progress_label was NOT called (skipped before that check)
+        mock_github_client.try_add_work_in_progress_label.assert_not_called()
         # Verify jules label was not added
         mock_github_client.add_labels_to_issue.assert_not_called()
 
