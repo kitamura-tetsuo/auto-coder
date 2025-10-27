@@ -119,12 +119,12 @@ def test_vitest_fail_line_extracts_test_ts(monkeypatch):
     stderr = textwrap.dedent(
         """
         2025-09-26 17:55:46.482 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
-        2025-09-26 17:55:46.483 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - 
+        2025-09-26 17:55:46.483 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -
         2025-09-26 17:55:46.483 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -  FAIL  |unit| src/tests/attachmentService.test.ts > attachmentService > listAttachments requires auth
         2025-09-26 17:55:46.484 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - AssertionError: promise resolved "[]" instead of rejecting
-        2025-09-26 17:55:46.485 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - 
+        2025-09-26 17:55:46.485 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -
         2025-09-26 17:55:46.495 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -  ❯ src/tests/attachmentService.test.ts:10:58
-        2025-09-26 17:55:46.499 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - 
+        2025-09-26 17:55:46.499 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming -
         2025-09-26 17:55:46.501 | ERROR    | auto_coder/utils.py:161 in _run_with_streaming - ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
         """
     )
@@ -135,3 +135,96 @@ def test_vitest_fail_line_extracts_test_ts(monkeypatch):
 
     path = extract_first_failed_test(stdout, stderr)
     assert path == target
+
+
+def test_vitest_success_playwright_fail_should_detect_playwright(monkeypatch):
+    """vitestが成功してplaywrightが失敗した場合、playwrightの失敗を検出すること"""
+    stdout = textwrap.dedent(
+        """
+        ✓ src/tests/unit/foo.test.ts (5 tests) 125ms
+        ✓ src/tests/unit/bar.test.ts (3 tests) 89ms
+
+        Test Files  2 passed (2)
+             Tests  8 passed (8)
+          Start at  10:30:15
+          Duration  1.2s
+
+        Running Playwright tests...
+
+          ✘    1 [basic] › e2e/basic/login.spec.ts:20:5 › should login successfully
+
+          1) [basic] › e2e/basic/login.spec.ts:20:5 › should login successfully
+
+             Error: expect(received).toContain(expected)
+
+             Expected substring: "Welcome"
+             Received string: "Error: Invalid credentials"
+        """
+    )
+    stderr = ""
+
+    expected_path = "e2e/basic/login.spec.ts"
+    monkeypatch.setattr(os.path, "exists", lambda p: p == expected_path)
+
+    path = extract_first_failed_test(stdout, stderr)
+    assert path == expected_path
+
+
+def test_playwright_success_vitest_fail_should_detect_vitest(monkeypatch):
+    """playwrightが成功してvitestが失敗した場合、vitestの失敗を検出すること"""
+    stdout = textwrap.dedent(
+        """
+        Running Playwright tests...
+
+          ✓ [basic] › e2e/basic/login.spec.ts:20:5 › should login successfully
+          ✓ [basic] › e2e/basic/signup.spec.ts:15:5 › should signup successfully
+
+          2 passed (2.5s)
+
+        Running Vitest...
+
+         FAIL  src/tests/unit/auth.test.ts > auth > should validate token
+        AssertionError: expected false to be true
+
+         ❯ src/tests/unit/auth.test.ts:25:10
+
+        Test Files  1 failed (1)
+             Tests  1 failed (1)
+        """
+    )
+    stderr = ""
+
+    expected_path = "src/tests/unit/auth.test.ts"
+    monkeypatch.setattr(os.path, "exists", lambda p: p == expected_path)
+
+    path = extract_first_failed_test(stdout, stderr)
+    assert path == expected_path
+
+
+def test_pytest_success_playwright_fail_should_detect_playwright(monkeypatch):
+    """pytestが成功してplaywrightが失敗した場合、playwrightの失敗を検出すること"""
+    stdout = textwrap.dedent(
+        """
+        ============================= test session starts ==============================
+        collected 15 items
+
+        tests/test_api.py ............... [100%]
+
+        ============================== 15 passed in 2.34s ==============================
+
+        Running Playwright tests...
+
+          ✘    1 [core] › e2e/core/api-integration.spec.ts:30:5 › API integration test
+
+          1) [core] › e2e/core/api-integration.spec.ts:30:5 › API integration test
+
+             Error: Timeout 5000ms exceeded
+        """
+    )
+    stderr = ""
+
+    expected_path = "e2e/core/api-integration.spec.ts"
+    monkeypatch.setattr(os.path, "exists", lambda p: p == expected_path)
+
+    path = extract_first_failed_test(stdout, stderr)
+    assert path == expected_path

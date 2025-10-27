@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
 
@@ -39,9 +39,9 @@ class CommandExecutor:
         "git": 120,
         "gh": 60,
         "test": 3600,
-        "codex": 3600,
-        "gemini": 3600,
-        "qwen": 3600,
+        "codex": 7200,
+        "gemini": 7200,
+        "qwen": 7200,
         "default": 60,
     }
 
@@ -395,10 +395,15 @@ def slice_relevant_error_window(text: str) -> str:
 def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
     """テスト出力から「最初に失敗したテストファイルのパス」を抽出して返す。
 
+    二段階の検出方法:
+    1. まず、どのテストライブラリが失敗しているかを判定
+    2. 次に、そのテストライブラリ固有のパターンで失敗したテストファイルを抽出
+
     対応フォーマット:
     - pytest: 末尾サマリの "FAILED tests/test_x.py::test_y - ..." など
     - pytest: トレースバック中の "tests/test_x.py:123: in test_y" など
     - Playwright: 任意ログ中の "e2e/foo/bar.spec.ts:16:5" など
+    - Vitest: "FAIL src/foo.test.ts" など
 
     見つかったパスを返す。実在確認に失敗しても候補があれば返すことがある（呼び出し側で解釈するため）。
     """
@@ -409,7 +414,47 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
     def _strip_ansi(text: str) -> str:
         return ansi_escape.sub("", text or "")
 
-    def _collect_candidates(text: str) -> List[str]:
+    def _detect_failed_test_library(text: str) -> Optional[str]:
+        """失敗したテストライブラリを判定する。
+
+        Returns:
+            "pytest" | "playwright" | "vitest" | None
+        """
+        text = _strip_ansi(text)
+        if not text:
+            return None
+
+        # pytest の失敗パターン
+        if re.search(r"^FAILED\s+[^\s:]+\.py", text, re.MULTILINE):
+            return "pytest"
+        if re.search(r"=+ FAILURES =+", text, re.MULTILINE):
+            return "pytest"
+        if re.search(r"=+ \d+ failed", text, re.MULTILINE):
+            return "pytest"
+        # pytestのトレースバック行（tests/配下の.pyファイル）
+        if re.search(r"(?:^|\s)(?:tests?/)[^:\s]+\.py:\d+", text, re.MULTILINE):
+            return "pytest"
+
+        # Playwright の失敗パターン
+        if re.search(r"^\s*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›", text, re.MULTILINE):
+            return "playwright"
+        if re.search(r"^\s*\d+\)\s+\[[^\]]+\]\s+›\s+[^\s:]+\.spec\.ts", text, re.MULTILINE):
+            return "playwright"
+        if re.search(r"\d+ failed.*playwright", text, re.IGNORECASE):
+            return "playwright"
+
+        # Vitest の失敗パターン
+        # "FAIL  |unit| src/tests/..." のようなパターン
+        # ログ出力の中にも対応するため、行の途中でもマッチするようにする
+        if re.search(r"FAIL\s+(?:\|[^|]+\|\s+)?[^\s>]+\.(?:spec|test)\.ts", text):
+            return "vitest"
+        if re.search(r"Test Files\s+\d+ failed", text, re.MULTILINE):
+            return "vitest"
+
+        return None
+
+    def _collect_pytest_candidates(text: str) -> List[str]:
+        """pytest の失敗したテストファイルを抽出する。"""
         text = _strip_ansi(text)
         if not text:
             return []
@@ -436,8 +481,17 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
             if py_path not in found:
                 found.append(py_path)
 
-        # 3) Playwright の失敗行から .spec.ts を抽出
+        return found
+
+    def _collect_playwright_candidates(text: str) -> List[str]:
+        """Playwright の失敗したテストファイルを抽出する。"""
+        text = _strip_ansi(text)
+        if not text:
+            return []
+
+        found: List[str] = []
         lines = text.split("\n")
+
         fail_bullet_re = re.compile(
             r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+"
         )
@@ -463,42 +517,59 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
                 if norm not in found:
                     found.append(norm)
 
-        # 4) Vitest/Jest 形式の FAIL 行から .test.ts / .spec.ts を抽出
-        vitest_fail_re = re.compile(
-            r"^[^\S\r\n]*FAIL\s+(?:\|[^|]+\|\s+)?([^\s>]+\.(?:spec|test)\.ts)(?=\s|>|$)",
-        )
-        for ln in lines:
-            m = vitest_fail_re.search(ln)
-            if m:
-                path = m.group(1)
-                if path not in found:
-                    found.append(path)
-
+        # フォールバック: .spec.ts を含む行を探す
         if not found:
-            for spec_path in re.findall(r"([^\s:]+\.(?:spec|test)\.ts)", text):
+            for spec_path in re.findall(r"([^\s:]+\.spec\.ts)", text):
                 norm = _normalize_spec(spec_path)
                 if norm not in found:
                     found.append(norm)
 
         return found
 
+    def _collect_vitest_candidates(text: str) -> List[str]:
+        """Vitest の失敗したテストファイルを抽出する。"""
+        text = _strip_ansi(text)
+        if not text:
+            return []
+
+        found: List[str] = []
+
+        # Vitest/Jest 形式の FAIL 行から .test.ts / .spec.ts を抽出
+        # ログ出力の中にも対応するため、行の途中でもマッチするようにする
+        vitest_fail_re = re.compile(
+            r"FAIL\s+(?:\|[^|]+\|\s+)?([^\s>]+\.(?:spec|test)\.ts)(?=\s|>|$)",
+        )
+        for m in vitest_fail_re.finditer(text):
+            path = m.group(1)
+            if path not in found:
+                found.append(path)
+
+        return found
+
     # stderr を最優先で解析し、次に stdout、それでも見つからなければ従来通り結合出力を解析
     ordered_outputs = [stderr, stdout, f"{stdout}\n{stderr}"]
     candidates: List[str] = []
-    seen: Set[str] = set()
 
     for output in ordered_outputs:
-        for path in _collect_candidates(output):
-            if path not in seen:
-                candidates.append(path)
-                seen.add(path)
+        # ステップ1: 失敗したテストライブラリを判定
+        failed_library = _detect_failed_test_library(output)
+
+        if failed_library == "pytest":
+            candidates = _collect_pytest_candidates(output)
+        elif failed_library == "playwright":
+            candidates = _collect_playwright_candidates(output)
+        elif failed_library == "vitest":
+            candidates = _collect_vitest_candidates(output)
+
         if candidates:
             break
 
+    # 実在するファイルを優先して返す
     for path in candidates:
         if os.path.exists(path):
             return path
 
+    # 実在しなくても候補があれば最初の候補を返す
     if candidates:
         return candidates[0]
 
