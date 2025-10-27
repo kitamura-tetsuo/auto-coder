@@ -63,6 +63,16 @@ logger = get_logger(__name__)
     envvar="OPENAI_BASE_URL",
     help="OpenAI-style Base URL (optional, used when backend=qwen)",
 )
+@click.option(
+    "--qwen-use-env-vars/--qwen-use-cli-options",
+    default=False,
+    help="Pass Qwen credentials via environment variables or CLI options (default)",
+)
+@click.option(
+    "--qwen-preserve-env/--qwen-clear-env",
+    default=False,
+    help="Preserve existing OPENAI_* environment variables (default: clear before setting)",
+)
 @click.option("--model-gemini", help="Model to use when backend=gemini")
 @click.option("--model-qwen", help="Model to use when backend=qwen")
 @click.option(
@@ -125,6 +135,8 @@ def process_issues(
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
+    qwen_use_env_vars: bool,
+    qwen_preserve_env: bool,
     model_gemini: Optional[str],
     model_qwen: Optional[str],
     model_auggie: Optional[str],
@@ -220,6 +232,8 @@ def process_issues(
         gemini_api_key,
         openai_api_key,
         openai_base_url,
+        qwen_use_env_vars=qwen_use_env_vars,
+        qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=True,  # Always enable GraphRAG
     )
 
@@ -236,6 +250,8 @@ def process_issues(
         gemini_api_key,
         openai_api_key,
         openai_base_url,
+        qwen_use_env_vars=qwen_use_env_vars,
+        qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=False,  # GraphRAG not needed for messages
     )
 
@@ -331,6 +347,16 @@ def process_issues(
     envvar="OPENAI_BASE_URL",
     help="OpenAI-style Base URL (optional, used when backend=qwen)",
 )
+@click.option(
+    "--qwen-use-env-vars/--qwen-use-cli-options",
+    default=True,
+    help="Pass Qwen credentials via environment variables (default) or CLI options",
+)
+@click.option(
+    "--qwen-preserve-env/--qwen-clear-env",
+    default=False,
+    help="Preserve existing OPENAI_* environment variables (default: clear before setting)",
+)
 @click.option("--model-gemini", help="Model to use when backend=gemini")
 @click.option("--model-qwen", help="Model to use when backend=qwen")
 @click.option(
@@ -359,6 +385,8 @@ def create_feature_issues(
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
+    qwen_use_env_vars: bool,
+    qwen_preserve_env: bool,
     model_gemini: Optional[str],
     model_qwen: Optional[str],
     model_auggie: Optional[str],
@@ -418,6 +446,8 @@ def create_feature_issues(
         gemini_api_key,
         openai_api_key,
         openai_base_url,
+        qwen_use_env_vars=qwen_use_env_vars,
+        qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=True,  # Always enable GraphRAG
     )
 
@@ -468,6 +498,16 @@ def create_feature_issues(
     envvar="OPENAI_BASE_URL",
     help="OpenAI-style Base URL (optional, used when backend=qwen)",
 )
+@click.option(
+    "--qwen-use-env-vars/--qwen-use-cli-options",
+    default=True,
+    help="Pass Qwen credentials via environment variables (default) or CLI options",
+)
+@click.option(
+    "--qwen-preserve-env/--qwen-clear-env",
+    default=False,
+    help="Preserve existing OPENAI_* environment variables (default: clear before setting)",
+)
 @click.option("--model-gemini", help="Model to use when backend=gemini")
 @click.option("--model-qwen", help="Model to use when backend=qwen")
 @click.option(
@@ -504,6 +544,8 @@ def fix_to_pass_tests_command(
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
+    qwen_use_env_vars: bool,
+    qwen_preserve_env: bool,
     model_gemini: Optional[str],
     model_qwen: Optional[str],
     model_auggie: Optional[str],
@@ -568,6 +610,8 @@ def fix_to_pass_tests_command(
         gemini_api_key,
         openai_api_key,
         openai_base_url,
+        qwen_use_env_vars=qwen_use_env_vars,
+        qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=True,  # Always enable GraphRAG
     )
 
@@ -584,6 +628,8 @@ def fix_to_pass_tests_command(
         gemini_api_key,
         openai_api_key,
         openai_base_url,
+        qwen_use_env_vars=qwen_use_env_vars,
+        qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=False,  # GraphRAG not needed for messages
     )
 

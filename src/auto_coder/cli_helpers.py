@@ -389,11 +389,15 @@ def build_backend_manager(
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
+    qwen_use_env_vars: bool = True,
+    qwen_preserve_env: bool = False,
     enable_graphrag: bool = True,
 ) -> BackendManager:
     """Construct BackendManager with per-backend model selection.
 
     models: mapping backend -> model_name (codex backends ignored but accepted).
+    qwen_use_env_vars: Pass Qwen credentials via environment variables (default: True).
+    qwen_preserve_env: Preserve existing OPENAI_* environment variables (default: False).
     enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True).
     """
 
@@ -420,6 +424,8 @@ def build_backend_manager(
             model_name=_qm(),
             openai_api_key=openai_api_key,
             openai_base_url=openai_base_url,
+            use_env_vars=qwen_use_env_vars,
+            preserve_existing_env=qwen_preserve_env,
         ),
         "auggie": lambda: AuggieClient(model_name=_am()),
     }

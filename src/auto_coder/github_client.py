@@ -310,14 +310,14 @@ class GitHubClient:
         try:
             owner, repo = repo_name.split("/")
 
-            # GraphQL query to fetch tracked issues
+            # GraphQL query to fetch sub-issues (new sub-issues feature)
             query = """
             {
               repository(owner: "%s", name: "%s") {
                 issue(number: %d) {
                   number
                   title
-                  trackedIssues(first: 50) {
+                  subIssues(first: 100) {
                     nodes {
                       number
                       title
@@ -330,9 +330,17 @@ class GitHubClient:
             }
             """ % (owner, repo, issue_number)
 
-            # Execute GraphQL query using gh CLI
+            # Execute GraphQL query using gh CLI with sub_issues feature header
             result = subprocess.run(
-                ["gh", "api", "graphql", "-f", f"query={query}"],
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-H",
+                    "GraphQL-Features: sub_issues",
+                    "-f",
+                    f"query={query}",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -340,19 +348,19 @@ class GitHubClient:
 
             data = json.loads(result.stdout)
 
-            # Extract open tracked issues
+            # Extract open sub-issues
             open_sub_issues = []
-            tracked_issues = (
+            sub_issues = (
                 data.get("data", {})
                 .get("repository", {})
                 .get("issue", {})
-                .get("trackedIssues", {})
+                .get("subIssues", {})
                 .get("nodes", [])
             )
 
-            for tracked_issue in tracked_issues:
-                if tracked_issue.get("state") == "OPEN":
-                    open_sub_issues.append(tracked_issue.get("number"))
+            for sub_issue in sub_issues:
+                if sub_issue.get("state") == "OPEN":
+                    open_sub_issues.append(sub_issue.get("number"))
 
             if open_sub_issues:
                 logger.info(

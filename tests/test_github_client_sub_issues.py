@@ -25,7 +25,7 @@ class TestGitHubClientSubIssues:
                     "issue": {
                         "number": 1,
                         "title": "Parent issue",
-                        "trackedIssues": {
+                        "subIssues": {
                             "nodes": [
                                 {
                                     "number": 100,
@@ -59,6 +59,13 @@ class TestGitHubClientSubIssues:
         result = client.get_open_sub_issues("owner/repo", 1)
         assert result == [100, 200, 300]
 
+        # Verify the GraphQL-Features header was included
+        mock_subprocess_run.assert_called_once()
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "-H" in call_args
+        header_index = call_args.index("-H")
+        assert call_args[header_index + 1] == "GraphQL-Features: sub_issues"
+
     @patch("subprocess.run")
     def test_get_open_sub_issues_some_closed(self, mock_subprocess_run):
         """Test get_open_sub_issues when some sub-issues are closed."""
@@ -71,7 +78,7 @@ class TestGitHubClientSubIssues:
                     "issue": {
                         "number": 1,
                         "title": "Parent issue",
-                        "trackedIssues": {
+                        "subIssues": {
                             "nodes": [
                                 {
                                     "number": 100,
@@ -117,7 +124,7 @@ class TestGitHubClientSubIssues:
                     "issue": {
                         "number": 1,
                         "title": "Parent issue",
-                        "trackedIssues": {
+                        "subIssues": {
                             "nodes": [
                                 {
                                     "number": 100,
@@ -150,14 +157,14 @@ class TestGitHubClientSubIssues:
         """Test get_open_sub_issues when issue has no sub-issues."""
         client = GitHubClient("test_token")
 
-        # Mock GraphQL response with no tracked issues
+        # Mock GraphQL response with no sub-issues
         graphql_response = {
             "data": {
                 "repository": {
                     "issue": {
                         "number": 1,
                         "title": "Parent issue",
-                        "trackedIssues": {"nodes": []},
+                        "subIssues": {"nodes": []},
                     }
                 }
             }

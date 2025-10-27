@@ -129,7 +129,14 @@ issue:
 
     1. If this needs clarification, add a comment requesting more information
     2. If this is a duplicate or invalid issue (spam, unclear, already resolved, etc.), close it with an appropriate comment
-    3. If this is a valid bug report or feature request, provide analysis and implementation
+    3. If this is a valid issue but need to more than about 30 file changes, break this down into multiple smaller sub issues via gh cli.
+    4. If this is a valid bug report or feature request, provide analysis and implementation
+
+    For valid issue but need to more than about 30 file changes:
+    - Break down the issue into multiple smaller sub issues
+    - Create multiple smaller sub issues via gh.
+      example: gh sub-issue create --parent $issue_number --title $title --body $body
+    - Keep open the issue
 
     For valid issues that can be implemented:
     - Analyze the requirements
@@ -137,7 +144,7 @@ issue:
     - Create or modify files as needed
     - Ensure the implementation follows best practices
     - Prefer the smart, reasonable and logically beautiful change that resolves issues.
-    - Do not close the issue
+    - Keep open the issue
     - All tests were passed in the main branch. If tests are failing, it is because of the changes.
 
     For duplicate/invalid issues:

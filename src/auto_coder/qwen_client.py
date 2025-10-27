@@ -36,7 +36,20 @@ class QwenClient(LLMClientBase):
         model_name: str = "qwen3-coder-plus",
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
+        use_env_vars: bool = True,
+        preserve_existing_env: bool = False,
     ):
+        """Initialize QwenClient.
+
+        Args:
+            model_name: Model name to use (default: qwen3-coder-plus)
+            openai_api_key: OpenAI API key (optional)
+            openai_base_url: OpenAI base URL (optional)
+            use_env_vars: If True, pass credentials via environment variables.
+                         If False, use command-line options (default: True)
+            preserve_existing_env: If True, preserve existing OPENAI_* env vars.
+                                  If False, clear them before setting new values (default: False)
+        """
         self.model_name = model_name or "qwen3-coder-plus"
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
@@ -45,6 +58,8 @@ class QwenClient(LLMClientBase):
         # OpenAI-compatible env overrides (Qwen backend only)
         self.openai_api_key = openai_api_key
         self.openai_base_url = openai_base_url
+        self.use_env_vars = use_env_vars
+        self.preserve_existing_env = preserve_existing_env
 
         self._provider_chain: List[_QwenProviderOption] = self._build_provider_chain()
         self._active_provider_index: int = 0
@@ -130,21 +145,36 @@ class QwenClient(LLMClientBase):
 
         model_to_use = provider.model or self.default_model
 
-        # Reset OPENAI_* values before applying overrides.
-        env.pop("OPENAI_API_KEY", None)
-        env.pop("OPENAI_BASE_URL", None)
-        env.pop("OPENAI_MODEL", None)
-
-        if provider.api_key:
-            env["OPENAI_API_KEY"] = provider.api_key
-        if provider.base_url:
-            env["OPENAI_BASE_URL"] = provider.base_url
-        if model_to_use:
-            env["OPENAI_MODEL"] = model_to_use
+        # Handle environment variables based on configuration
+        if not self.preserve_existing_env:
+            # Reset OPENAI_* values before applying overrides.
+            env.pop("OPENAI_API_KEY", None)
+            env.pop("OPENAI_BASE_URL", None)
+            env.pop("OPENAI_MODEL", None)
 
         cmd = ["qwen", "-y"]
-        if model_to_use:
-            cmd.extend(["-m", model_to_use])
+
+        if self.use_env_vars:
+            # Pass credentials via environment variables
+            if provider.api_key:
+                env["OPENAI_API_KEY"] = provider.api_key
+            if provider.base_url:
+                env["OPENAI_BASE_URL"] = provider.base_url
+            if model_to_use:
+                env["OPENAI_MODEL"] = model_to_use
+
+            # Model flag for qwen CLI
+            if model_to_use:
+                cmd.extend(["-m", model_to_use])
+        else:
+            # Pass credentials via command-line options
+            if provider.api_key:
+                cmd.extend(["--openai-api-key", provider.api_key])
+            if provider.base_url:
+                cmd.extend(["--openai-base-url", provider.base_url])
+            if model_to_use:
+                cmd.extend(["-m", model_to_use])
+
         cmd.extend(["-p", escaped_prompt])
 
         logger.warning(
@@ -191,9 +221,16 @@ class QwenClient(LLMClientBase):
     @staticmethod
     def _is_usage_limit(message: str, returncode: int) -> bool:
         low = message.lower()
+        # rate limit with Qwen OAuth
         if "rate limit" in low or "quota" in low:
             return True
         if returncode != 0 and ("429" in low or "too many requests" in low):
+            return True
+        # rate limit with 'Alibaba Cloud ModelStudio compatible endpoint'
+        if "error: 400 model access denied." in low:
+            return True
+        # rate limit with 'OpenRouter free tier compatible endpoint'
+        if "openai api streaming error: 429 provider returned error" in low:
             return True
         return False
 
