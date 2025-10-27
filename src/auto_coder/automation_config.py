@@ -51,6 +51,10 @@ class AutomationConfig:
     # Ignore Dependabot-authored PRs entirely when processing PRs
     IGNORE_DEPENDABOT_PRS: bool = False
 
+    # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
+    # Default: False (do not force clean)
+    FORCE_CLEAN_BEFORE_CHECKOUT: bool = False
+
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True

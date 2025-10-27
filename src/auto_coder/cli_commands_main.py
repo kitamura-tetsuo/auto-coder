@@ -87,6 +87,11 @@ logger = get_logger(__name__)
     help="Ignore PRs opened by Dependabot when processing PRs (default: do not ignore)",
 )
 @click.option(
+    "--force-clean-before-checkout/--no-force-clean-before-checkout",
+    default=False,
+    help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
+)
+@click.option(
     "--only",
     "only_target",
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
@@ -122,6 +127,7 @@ def process_issues(
     jules_mode: bool,
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
+    force_clean_before_checkout: bool,
     only_target: Optional[str],
     force_reindex: bool,
     log_level: str,
@@ -168,6 +174,7 @@ def process_issues(
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
+    logger.info(f"Force clean before checkout: {force_clean_before_checkout}")
 
     # Explicitly show base branch update policy for PR checks failure
     policy_str = (
@@ -183,6 +190,7 @@ def process_issues(
     click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
+    click.echo(f"Force clean before checkout: {force_clean_before_checkout}")
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
@@ -226,6 +234,7 @@ def process_issues(
     engine_config = AutomationConfig()
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
+    engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
 
     automation_engine = AutomationEngine(
         github_client, manager, dry_run=dry_run, config=engine_config, message_backend_manager=message_manager

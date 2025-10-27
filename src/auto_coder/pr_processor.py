@@ -826,30 +826,35 @@ def _handle_pr_merge(
 def _checkout_pr_branch(
     repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig
 ) -> bool:
-    """Checkout the PR branch for local testing, forcefully discarding any local changes."""
+    """Checkout the PR branch for local testing.
+
+    If config.FORCE_CLEAN_BEFORE_CHECKOUT is True, forcefully discard any local changes
+    before checkout (git reset --hard + git clean -fd).
+    """
     pr_number = pr_data["number"]
 
     try:
-        # Step 1: Reset any local changes and clean untracked files
-        log_action(f"Forcefully cleaning workspace before checkout PR #{pr_number}")
+        # Step 1: Optionally reset any local changes and clean untracked files
+        if config.FORCE_CLEAN_BEFORE_CHECKOUT:
+            log_action(f"Forcefully cleaning workspace before checkout PR #{pr_number}")
 
-        # Reset any staged/unstaged changes
-        reset_result = cmd.run_command(["git", "reset", "--hard", "HEAD"])
-        if not reset_result.success:
-            log_action(
-                f"Warning: git reset failed for PR #{pr_number}",
-                False,
-                reset_result.stderr,
-            )
+            # Reset any staged/unstaged changes
+            reset_result = cmd.run_command(["git", "reset", "--hard", "HEAD"])
+            if not reset_result.success:
+                log_action(
+                    f"Warning: git reset failed for PR #{pr_number}",
+                    False,
+                    reset_result.stderr,
+                )
 
-        # Clean untracked files and directories
-        clean_result = cmd.run_command(["git", "clean", "-fd"])
-        if not clean_result.success:
-            log_action(
-                f"Warning: git clean failed for PR #{pr_number}",
-                False,
-                clean_result.stderr,
-            )
+            # Clean untracked files and directories
+            clean_result = cmd.run_command(["git", "clean", "-fd"])
+            if not clean_result.success:
+                log_action(
+                    f"Warning: git clean failed for PR #{pr_number}",
+                    False,
+                    clean_result.stderr,
+                )
 
         # Step 2: Attempt to checkout the PR
         result = cmd.run_command(["gh", "pr", "checkout", str(pr_number)])

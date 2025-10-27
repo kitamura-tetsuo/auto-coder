@@ -566,3 +566,86 @@ class TestCLIProcessIssues:
         # Verify initialize_graphrag was called with force_reindex=False
         mock_initialize_graphrag.assert_called_once_with(force_reindex=False)
 
+    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    def test_process_issues_force_clean_before_checkout_flag(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+        _mock_initialize_graphrag,
+    ):
+        """--force-clean-before-checkout should set config.FORCE_CLEAN_BEFORE_CHECKOUT=True."""
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_automation_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+                "--force-clean-before-checkout",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify output
+        assert "Force clean before checkout: True" in result.output
+        # Verify AutomationEngine was called with config.FORCE_CLEAN_BEFORE_CHECKOUT=True
+        _, kwargs = mock_automation_engine_class.call_args
+        config = kwargs["config"]
+        assert config.FORCE_CLEAN_BEFORE_CHECKOUT is True
+
+    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    def test_process_issues_default_no_force_clean_before_checkout(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_check_cli,
+        _mock_initialize_graphrag,
+    ):
+        """Default should set config.FORCE_CLEAN_BEFORE_CHECKOUT=False."""
+        mock_github_client = Mock()
+        mock_codex_client = Mock()
+        mock_automation_engine = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = mock_codex_client
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify output
+        assert "Force clean before checkout: False" in result.output
+        # Verify AutomationEngine was called with config.FORCE_CLEAN_BEFORE_CHECKOUT=False
+        _, kwargs = mock_automation_engine_class.call_args
+        config = kwargs["config"]
+        assert config.FORCE_CLEAN_BEFORE_CHECKOUT is False
+
