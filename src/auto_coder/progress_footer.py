@@ -53,14 +53,14 @@ class ProgressFooter:
             Formatted footer string
         """
         # Use ANSI color codes for better visibility
-        # Cyan for item info, Yellow for stages
+        # Bright Cyan for item info, Bright Yellow for stages
         # Build nested display: [PR #123] Stage1 / Stage2 / Stage3
         if self._stage_stack:
             all_stages = " / ".join(self._stage_stack)
-            return f"\033[36m[{item_type} #{item_number}]\033[0m \033[33m{all_stages}\033[0m"
+            return f"\033[96m[{item_type} #{item_number}]\033[0m \033[93m{all_stages}\033[0m"
         else:
             # No stages, just show item info
-            return f"\033[36m[{item_type} #{item_number}]\033[0m"
+            return f"\033[96m[{item_type} #{item_number}]\033[0m"
 
     def print_footer(self) -> None:
         """Print the current footer at the bottom of the terminal."""

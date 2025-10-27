@@ -63,6 +63,12 @@ def process_pull_requests(
         logger.info(
             "First pass: Processing PRs with passing GitHub Actions and mergeable status for merging..."
         )
+
+        # Track which PRs have the @auto-coder label added
+        labeled_pr_numbers = set()
+        # Track which PRs were skipped because they already had the label
+        skipped_pr_numbers = set()
+
         for pr in prs:
             try:
                 check_for_updates_and_restart()
@@ -94,8 +100,12 @@ def process_pull_requests(
                                     ],
                                 }
                             )
+                            # Track that we skipped this PR
+                            skipped_pr_numbers.add(pr_number)
                             newline_progress()
                             continue
+                        # Track that we added the label
+                        labeled_pr_numbers.add(pr_number)
 
                     try:
                         with ProgressStage("Checking GitHub Actions"):
@@ -156,14 +166,13 @@ def process_pull_requests(
                                 f"PR #{pr_number}: Actions FAILING and NOT MERGEABLE - deferring to second pass"
                             )
                     finally:
-                        # Remove @auto-coder label after processing
-                        # - Always remove if handled in first pass
-                        # - Also remove if deferred to second pass (not in handled_pr_numbers)
-                        if not dry_run:
+                        # Remove @auto-coder label only if handled in first pass
+                        if not dry_run and pr_number in handled_pr_numbers:
                             try:
                                 github_client.remove_labels_from_issue(
                                     repo_name, pr_number, ["@auto-coder"]
                                 )
+                                labeled_pr_numbers.discard(pr_number)
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to remove @auto-coder label from PR #{pr_number}: {e}"
@@ -173,12 +182,13 @@ def process_pull_requests(
 
             except Exception as e:
                 logger.error(f"Failed to process PR #{pr.number} in merge pass: {e}")
-                # Try to remove @auto-coder label on error
-                if not dry_run:
+                # Try to remove @auto-coder label on error (if we added it)
+                if not dry_run and pr.number in labeled_pr_numbers:
                     try:
                         github_client.remove_labels_from_issue(
                             repo_name, pr.number, ["@auto-coder"]
                         )
+                        labeled_pr_numbers.discard(pr.number)
                     except Exception:
                         pass
                 # Clear progress header on error
@@ -199,30 +209,14 @@ def process_pull_requests(
                 pr_data = github_client.get_pr_details(pr)
                 pr_number = pr_data["number"]
 
-                # Skip PRs that were already merged or otherwise handled in first pass
-                if pr_number in merged_pr_numbers or pr_number in handled_pr_numbers:
+                # Skip PRs that were already merged, handled, or skipped in first pass
+                if pr_number in merged_pr_numbers or pr_number in handled_pr_numbers or pr_number in skipped_pr_numbers:
                     continue
 
                 # Second pass: fix issues
                 with ProgressStage("PR", pr_number, "Second pass"):
-                    # Skip if PR already has @auto-coder label (being processed by another instance)
-                    if not dry_run:
-                        if not github_client.try_add_work_in_progress_label(
-                            repo_name, pr_number
-                        ):
-                            logger.info(
-                                f"Skipping PR #{pr_number} - already has @auto-coder label"
-                            )
-                            processed_prs.append(
-                                {
-                                    "pr_data": pr_data,
-                                    "actions_taken": [
-                                        "Skipped - already being processed (@auto-coder label present)"
-                                    ],
-                                }
-                            )
-                            newline_progress()
-                            continue
+                    # Label should already be present from first pass
+                    # No need to add it again
 
                     try:
                         logger.info(f"PR #{pr_number}: Processing for issue resolution")
@@ -233,12 +227,13 @@ def process_pull_requests(
                         processed_pr["priority"] = "fix"
                         processed_prs.append(processed_pr)
                     finally:
-                        # Remove @auto-coder label after processing
-                        if not dry_run:
+                        # Remove @auto-coder label after processing (added in first pass)
+                        if not dry_run and pr_number in labeled_pr_numbers:
                             try:
                                 github_client.remove_labels_from_issue(
                                     repo_name, pr_number, ["@auto-coder"]
                                 )
+                                labeled_pr_numbers.discard(pr_number)
                             except Exception as e:
                                 logger.warning(
                                     f"Failed to remove @auto-coder label from PR #{pr_number}: {e}"
@@ -248,12 +243,13 @@ def process_pull_requests(
 
             except Exception as e:
                 logger.error(f"Failed to process PR #{pr.number} in fix pass: {e}")
-                # Try to remove @auto-coder label on error
-                if not dry_run:
+                # Try to remove @auto-coder label on error (if we added it)
+                if not dry_run and pr.number in labeled_pr_numbers:
                     try:
                         github_client.remove_labels_from_issue(
                             repo_name, pr.number, ["@auto-coder"]
                         )
+                        labeled_pr_numbers.discard(pr.number)
                     except Exception:
                         pass
                 processed_prs.append({"pr_number": pr.number, "error": str(e)})
