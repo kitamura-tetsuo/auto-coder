@@ -388,6 +388,11 @@ def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> boo
     """
     from pathlib import Path
 
+    # First, check if already configured (fast path)
+    if check_graphrag_mcp_for_backend(backend):
+        logger.info(f"GraphRAG MCP server is already configured for {backend}")
+        return True
+
     # Check if MCP server directory exists
     default_mcp_dir = Path.home() / "graphrag_mcp"
 
@@ -416,12 +421,12 @@ def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> boo
 
         logger.info("✅ GraphRAG MCP server setup completed successfully")
 
-    # Check if already configured
-    if check_graphrag_mcp_for_backend(backend):
-        logger.info(f"GraphRAG MCP server is already configured for {backend}")
-        return True
+        # Check again after setup
+        if check_graphrag_mcp_for_backend(backend):
+            logger.info(f"GraphRAG MCP server is now configured for {backend}")
+            return True
 
-    # Try to add configuration
+    # Try to add configuration (if directory exists but not configured)
     logger.info(f"GraphRAG MCP server not found for {backend}. Adding configuration...")
     if add_graphrag_mcp_config(backend):
         # Verify configuration was added

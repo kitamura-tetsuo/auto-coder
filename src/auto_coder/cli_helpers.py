@@ -32,6 +32,7 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
     """Initialize GraphRAG integration (always enabled).
 
     This function ensures GraphRAG environment is ready:
+    - Ensures GraphRAG MCP server is installed and configured
     - Starts Docker containers if not running
     - Updates index if outdated (or forces update if force_reindex=True)
     - Starts MCP server if configured
@@ -42,6 +43,8 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
     Raises:
         click.ClickException: If GraphRAG initialization fails
     """
+    from pathlib import Path
+
     from .graphrag_mcp_integration import GraphRAGMCPIntegration
     from .logger_config import get_logger
 
@@ -51,6 +54,44 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
         click.echo("GraphRAG integration: enabled (always) - forcing reindex")
     else:
         click.echo("GraphRAG integration: enabled (always)")
+
+    # 1. Ensure GraphRAG MCP server is installed
+    default_mcp_dir = Path.home() / "graphrag_mcp"
+    if not default_mcp_dir.exists():
+        logger.info(f"GraphRAG MCP server directory not found at {default_mcp_dir}")
+        logger.info("Automatically setting up GraphRAG MCP server...")
+        click.echo()
+        click.echo("⚠️  GraphRAG MCP server not installed")
+        click.echo("   Automatically setting up GraphRAG MCP server...")
+        click.echo()
+
+        # Import here to avoid circular dependency
+        from .cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+
+        success = run_graphrag_setup_mcp_programmatically(
+            install_dir=None,  # Use default ~/graphrag_mcp
+            neo4j_uri="bolt://localhost:7687",
+            neo4j_user="neo4j",
+            neo4j_password="password",
+            qdrant_url="http://localhost:6333",
+            skip_clone=False,
+            backends=None,  # Configure all backends
+            silent=True,  # Suppress verbose output during auto-setup
+        )
+
+        if not success:
+            logger.error("Failed to automatically set up GraphRAG MCP server")
+            click.echo("❌ GraphRAG MCP server setup failed")
+            click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
+            raise click.ClickException(
+                "Failed to set up GraphRAG MCP server. "
+                "Run 'auto-coder graphrag setup-mcp' manually."
+            )
+
+        logger.info("✅ GraphRAG MCP server setup completed successfully")
+        click.echo("✅ GraphRAG MCP server setup completed successfully")
+
+    # 2. Initialize GraphRAG environment (Docker, indexing, MCP server)
     try:
         graphrag_integration = GraphRAGMCPIntegration()
         if not graphrag_integration.ensure_ready(force_reindex=force_reindex):
@@ -86,10 +127,15 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
     This function checks if graphrag MCP server is configured for each backend,
     and if not, automatically adds the configuration using the client's MCP methods.
 
+    Note: This function assumes that the MCP server is already installed by initialize_graphrag().
+    It only adds backend configurations, not the full setup.
+
     Args:
         backends: List of backend names to check
         client: Optional LLM client instance to use for MCP configuration
     """
+    from pathlib import Path
+
     from .logger_config import get_logger
 
     logger = get_logger(__name__)
@@ -97,40 +143,49 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
     # GraphRAG MCP server configuration
     server_name = "graphrag"
+    default_mcp_dir = Path.home() / "graphrag_mcp"
+
+    # Verify MCP server is installed (should be done by initialize_graphrag)
+    if not default_mcp_dir.exists():
+        logger.warning(
+            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
+            f"This should have been installed by initialize_graphrag()."
+        )
+        click.echo()
+        click.echo("⚠️  GraphRAG MCP server not found")
+        click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
+        click.echo()
+        return
 
     # If client is provided, check if already configured
     if client is not None:
         logger.info(f"Checking GraphRAG MCP configuration for client...")
         if not client.check_mcp_server_configured(server_name):
-            logger.warning(
-                f"GraphRAG MCP server not configured. "
-                f"Automatically setting up GraphRAG MCP server..."
+            logger.info(
+                f"GraphRAG MCP server not configured for client. "
+                f"Adding configuration..."
             )
             click.echo()
-            click.echo("⚠️  GraphRAG MCP server not configured")
-            click.echo("   Automatically setting up GraphRAG MCP server...")
+            click.echo("⚠️  GraphRAG MCP server not configured for client")
+            click.echo("   Adding configuration...")
             click.echo()
 
-            # Automatically run setup
-            from .cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+            # Add configuration only (server is already installed)
+            from .mcp_manager import get_mcp_manager
 
-            success = run_graphrag_setup_mcp_programmatically(
-                install_dir=None,  # Use default ~/graphrag_mcp
-                neo4j_uri="bolt://localhost:7687",
-                neo4j_user="neo4j",
-                neo4j_password="password",
-                qdrant_url="http://localhost:6333",
-                skip_clone=False,
-                backends=None,  # Configure all backends
-                silent=False,
-            )
+            manager = get_mcp_manager()
+            success = True
+            for backend in backends:
+                if not manager.add_backend_config(server_name, backend, default_mcp_dir):
+                    logger.warning(f"Failed to configure {backend} backend for {server_name}")
+                    success = False
 
             if success:
-                logger.info("✅ GraphRAG MCP server setup completed successfully")
-                click.echo("✅ GraphRAG MCP server setup completed successfully")
+                logger.info("✅ GraphRAG MCP server configuration added successfully")
+                click.echo("✅ GraphRAG MCP server configuration added successfully")
             else:
-                logger.error("❌ GraphRAG MCP server setup failed")
-                click.echo("❌ GraphRAG MCP server setup failed")
+                logger.error("❌ GraphRAG MCP server configuration failed")
+                click.echo("❌ GraphRAG MCP server configuration failed")
                 click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
         else:
             logger.info(f"✅ GraphRAG MCP server configured for client")
@@ -139,43 +194,31 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
         from .mcp_checker import ensure_graphrag_mcp_configured
 
         for backend in backends:
-            if not ensure_graphrag_mcp_configured(backend):
-                logger.warning(
+            if not ensure_graphrag_mcp_configured(backend, auto_setup=False):
+                logger.info(
                     f"GraphRAG MCP server not configured for {backend}. "
-                    f"Automatically setting up GraphRAG MCP server..."
+                    f"Adding configuration..."
                 )
                 click.echo()
                 click.echo(f"⚠️  GraphRAG MCP server not configured for {backend}")
-                click.echo("   Automatically setting up GraphRAG MCP server...")
+                click.echo("   Adding configuration...")
                 click.echo()
 
-                # Automatically run setup
-                from .cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+                # Add configuration only (server is already installed)
+                from .mcp_manager import get_mcp_manager
 
-                success = run_graphrag_setup_mcp_programmatically(
-                    install_dir=None,  # Use default ~/graphrag_mcp
-                    neo4j_uri="bolt://localhost:7687",
-                    neo4j_user="neo4j",
-                    neo4j_password="password",
-                    qdrant_url="http://localhost:6333",
-                    skip_clone=False,
-                    backends=[backend],  # Configure only this backend
-                    silent=False,
-                )
+                manager = get_mcp_manager()
+                success = manager.add_backend_config(server_name, backend, default_mcp_dir)
 
                 if success:
-                    logger.info(f"✅ GraphRAG MCP server setup completed successfully for {backend}")
-                    click.echo(f"✅ GraphRAG MCP server setup completed successfully for {backend}")
+                    logger.info(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
+                    click.echo(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
                 else:
-                    logger.error(f"❌ GraphRAG MCP server setup failed for {backend}")
-                    click.echo(f"❌ GraphRAG MCP server setup failed for {backend}")
+                    logger.error(f"❌ GraphRAG MCP server configuration failed for {backend}")
+                    click.echo(f"❌ GraphRAG MCP server configuration failed for {backend}")
                     click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
-
-                click.echo()
-                click.echo(f"⚠️  GraphRAG MCP server not configured for {backend}")
-                click.echo("   Run the following command to set up and configure automatically:")
-                click.echo("   auto-coder graphrag setup-mcp")
-                click.echo()
+            else:
+                logger.info(f"✅ GraphRAG MCP server already configured for {backend}")
 
 
 def check_gemini_cli_or_fail() -> None:

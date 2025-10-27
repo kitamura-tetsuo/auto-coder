@@ -77,6 +77,16 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
   - All git commit/push operations throughout the codebase use these helpers.
   - Direct invocations of `git commit` or `git push` via CommandExecutor are prohibited outside of these helpers.
 
+### GraphRAG MCP 自動セットアップ
+- 通常のコマンド実行時（process-issues, create-feature-issues, fix-to-pass-tests）に、graphrag_mcpのインストールと起動を自動的に実行
+- `initialize_graphrag()` 関数が起動時に呼ばれ、以下を実行:
+  - `~/graphrag_mcp` ディレクトリの存在確認
+  - 存在しない場合、`run_graphrag_setup_mcp_programmatically()` を自動実行（silent=True）
+  - Dockerコンテナの起動とインデックス更新
+  - MCPサーバーの起動
+- `check_graphrag_mcp_for_backends()` 関数が各バックエンドの設定を確認・追加（サーバーは既にインストール済みと仮定）
+- 実装ファイル: `src/auto_coder/cli_helpers.py`
+
 ### MCP-PDB セットアップ支援
 - CLI `auto-coder mcp-pdb` グループを追加
   - `print-config --target [windsurf|claude]` で設定スニペットを出力

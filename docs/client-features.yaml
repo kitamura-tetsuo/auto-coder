@@ -575,15 +575,28 @@ features:
       - name: "CLI Integration"
         file: "src/auto_coder/cli_helpers.py"
         methods:
-          - name: "check_graphrag_mcp_for_backends"
-            description: "Ensure GraphRAG MCP is configured for all selected backends"
-            parameters: ["backends"]
+          - name: "initialize_graphrag"
+            description: "Initialize GraphRAG integration (always enabled)"
+            parameters: ["force_reindex (default: False)"]
             returns: "None"
             behavior:
-              - "Called during CLI initialization for process-issues, create-feature-issues, and fix-to-pass-tests commands"
+              - "Called at startup of process-issues, create-feature-issues, and fix-to-pass-tests commands"
+              - "Checks if ~/graphrag_mcp directory exists"
+              - "If missing, automatically runs run_graphrag_setup_mcp_programmatically with silent=True"
+              - "Calls GraphRAGMCPIntegration.ensure_ready() to start Docker containers and update index"
+              - "Raises click.ClickException if setup or initialization fails"
+            new_in_version: "v2025.10.27 - Added automatic MCP server installation check"
+          - name: "check_graphrag_mcp_for_backends"
+            description: "Ensure GraphRAG MCP is configured for all selected backends (assumes server is already installed)"
+            parameters: ["backends", "client (optional)"]
+            returns: "None"
+            behavior:
+              - "Called after initialize_graphrag during CLI initialization"
+              - "Assumes ~/graphrag_mcp directory already exists (installed by initialize_graphrag)"
               - "Iterates through all selected backends and ensures graphrag MCP configuration"
-              - "Automatically adds configuration if not present"
-              - "Verifies configuration after adding"
+              - "Automatically adds backend configuration if not present (does not run full setup)"
+              - "Uses mcp_manager.add_backend_config to add configurations"
+            new_in_version: "v2025.10.27 - Changed to only add backend configurations, not full setup"
     tests:
       - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_not_configured"
       - "tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_configured"
@@ -753,9 +766,17 @@ features:
       - name: "Auto-Coder Commands"
         description: "All auto-coder commands that initialize GraphRAG"
         commands:
-          - "process-issues: Calls initialize_graphrag() which triggers indexing"
-          - "create-feature-issues: Calls initialize_graphrag() which triggers indexing"
-          - "fix-to-pass-tests: Calls initialize_graphrag() which triggers indexing"
+          - "process-issues: Calls initialize_graphrag() which ensures MCP server installation and triggers indexing"
+          - "create-feature-issues: Calls initialize_graphrag() which ensures MCP server installation and triggers indexing"
+          - "fix-to-pass-tests: Calls initialize_graphrag() which ensures MCP server installation and triggers indexing"
+      - name: "initialize_graphrag"
+        file: "src/auto_coder/cli_helpers.py"
+        description: "Ensures GraphRAG MCP server is installed and environment is ready"
+        behavior:
+          - "Checks if ~/graphrag_mcp directory exists"
+          - "If missing, automatically runs run_graphrag_setup_mcp_programmatically with silent=True"
+          - "Calls GraphRAGMCPIntegration.ensure_ready() to start Docker containers and update index"
+          - "Starts MCP server if configured"
       - name: "GraphRAGMCPIntegration.ensure_ready"
         file: "src/auto_coder/graphrag_mcp_integration.py"
         description: "Ensures index is up to date before starting MCP server"
@@ -765,9 +786,10 @@ features:
     data_flow:
       - "1. User runs auto-coder command (process-issues, etc.)"
       - "2. initialize_graphrag() is called"
-      - "3. GraphRAGMCPIntegration.ensure_ready() checks index status"
-      - "4. If outdated, GraphRAGIndexManager.update_index() is called"
-      - "5. _index_codebase() runs graph-builder scan"
+      - "3. Checks if ~/graphrag_mcp directory exists, installs if missing"
+      - "4. GraphRAGMCPIntegration.ensure_ready() checks index status"
+      - "5. If outdated, GraphRAGIndexManager.update_index() is called"
+      - "6. _index_codebase() runs graph-builder scan"
       - "6. Graph data is stored in Neo4j (nodes and edges)"
       - "7. Embeddings are created and stored in Qdrant"
       - "8. Index state is saved with codebase hash"
@@ -2059,18 +2081,22 @@ deployment:
         automatic_setup:
           description: "GraphRAG MCP is automatically set up when not configured or when MCP server directory is missing"
           trigger:
+            - "When initialize_graphrag detects missing ~/graphrag_mcp directory (during CLI startup)"
             - "When check_graphrag_mcp_for_backends detects missing configuration"
             - "When ensure_graphrag_mcp_configured detects missing ~/graphrag_mcp directory"
           implementation:
-            - "cli_helpers.py::check_graphrag_mcp_for_backends calls run_graphrag_setup_mcp_programmatically"
+            - "cli_helpers.py::initialize_graphrag checks for ~/graphrag_mcp directory at startup"
+            - "If directory missing, automatically runs run_graphrag_setup_mcp_programmatically with silent=True"
+            - "cli_helpers.py::check_graphrag_mcp_for_backends adds backend configurations (assumes server is already installed)"
             - "mcp_checker.py::ensure_graphrag_mcp_configured checks for ~/graphrag_mcp directory"
             - "If directory missing and auto_setup=True, automatically runs setup-mcp"
-            - "Automatically runs setup with default parameters (silent=True for mcp_checker, silent=False for cli_helpers)"
+            - "Automatically runs setup with default parameters (silent=True for auto-setup)"
             - "Configures all backends by default, or specific backend if called from backend-specific check"
             - "No user confirmation required for automatic setup (uses existing directory if present)"
           files:
-            - "src/auto_coder/cli_helpers.py: check_graphrag_mcp_for_backends function"
-            - "src/auto_coder/mcp_checker.py: ensure_graphrag_mcp_configured function"
+            - "src/auto_coder/cli_helpers.py: initialize_graphrag function (primary auto-setup trigger)"
+            - "src/auto_coder/cli_helpers.py: check_graphrag_mcp_for_backends function (backend configuration)"
+            - "src/auto_coder/mcp_checker.py: ensure_graphrag_mcp_configured function (fallback)"
           tests:
             - "tests/test_mcp_auto_setup.py: Comprehensive tests for automatic MCP setup"
             - "src/auto_coder/cli_commands_graphrag.py: run_graphrag_setup_mcp_programmatically function"
