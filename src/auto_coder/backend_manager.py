@@ -114,8 +114,8 @@ class BackendManager(LLMBackendManagerBase):
         tried: set[int] = set()
         last_error: Optional[Exception] = None
         while attempts < len(self._all_backends):
-            with ProgressStage("Running LLM"):
-                name = self._current_backend_name()
+            name = self._current_backend_name()
+            with ProgressStage(f"Running LLM: {name}, attempt {attempts + 1}"):
                 if self._current_idx in tried:
                     self.switch_to_next_backend()
                     attempts += 1
@@ -175,7 +175,8 @@ class BackendManager(LLMBackendManagerBase):
                 self._same_test_file_count = 1
 
         # 実行
-        out = self._run_llm_cli(prompt)
+        with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
+            out = self._run_llm_cli(prompt)
 
         # 状態更新
         self._last_prompt = prompt

@@ -64,10 +64,14 @@ class ProgressFooter:
 
     def print_footer(self) -> None:
         """Print the current footer at the bottom of the terminal."""
-        if not self._current_footer or not self._supports_overprint:
+        if not self._supports_overprint:
             return
 
         with self._lock:
+            # Re-check _current_footer inside the lock to avoid race conditions
+            if not self._current_footer:
+                return
+
             cols = shutil.get_terminal_size((80, 20)).columns
             rows = shutil.get_terminal_size((80, 20)).lines
             padded = self._current_footer[:cols].ljust(cols)
@@ -106,6 +110,8 @@ class ProgressFooter:
             self._current_footer = self._format_footer(
                 self._current_item_type, self._current_item_number
             )
+        else:
+            self._current_footer = None
 
     def sink_wrapper(self, message):
         """
@@ -117,15 +123,16 @@ class ProgressFooter:
         text = str(message)
 
         # Clear footer before writing log (to avoid old footers in scrollback)
-        if self._current_footer and self._supports_overprint:
+        if self._supports_overprint:
             with self._lock:
-                cols = shutil.get_terminal_size((80, 20)).columns
-                rows = shutil.get_terminal_size((80, 20)).lines
-                self._stream.write("\0337")                    # save cursor
-                self._stream.write(f"\033[{rows};1H")          # move to bottom-left
-                self._stream.write("\033[K")                   # clear line
-                self._stream.write("\0338")                    # restore cursor
-                self._stream.flush()
+                # Re-check _current_footer inside the lock to avoid race conditions
+                if self._current_footer:
+                    rows = shutil.get_terminal_size((80, 20)).lines
+                    self._stream.write("\0337")                    # save cursor
+                    self._stream.write(f"\033[{rows};1H")          # move to bottom-left
+                    self._stream.write("\033[K")                   # clear line
+                    self._stream.write("\0338")                    # restore cursor
+                    self._stream.flush()
 
         # Write log message
         with self._lock:
@@ -169,7 +176,6 @@ class ProgressFooter:
         with self._lock:
             if self._is_active and self._supports_overprint:
                 # Clear the bottom line
-                cols = shutil.get_terminal_size((80, 20)).columns
                 rows = shutil.get_terminal_size((80, 20)).lines
                 self._stream.write("\0337")                    # save cursor
                 self._stream.write(f"\033[{rows};1H")          # move to bottom-left

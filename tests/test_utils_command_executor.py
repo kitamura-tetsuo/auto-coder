@@ -73,3 +73,32 @@ def test_should_stream_for_debugger_markers(monkeypatch, marker):
 
     monkeypatch.setenv(marker, "1")
     assert utils.CommandExecutor._should_stream_output(None) is True
+
+
+def test_is_running_in_debugger_false(monkeypatch):
+    """Test is_running_in_debugger returns False when no debugger is detected."""
+    monkeypatch.setattr(sys, "gettrace", lambda: None)
+    for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:
+        monkeypatch.delenv(env_key, raising=False)
+
+    assert utils.CommandExecutor.is_running_in_debugger() is False
+
+
+def test_is_running_in_debugger_true_gettrace(monkeypatch):
+    """Test is_running_in_debugger returns True when sys.gettrace is set."""
+    monkeypatch.setattr(sys, "gettrace", lambda: object())
+    for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:
+        monkeypatch.delenv(env_key, raising=False)
+
+    assert utils.CommandExecutor.is_running_in_debugger() is True
+
+
+@pytest.mark.parametrize("marker", utils.CommandExecutor.DEBUGGER_ENV_MARKERS)
+def test_is_running_in_debugger_true_env_markers(monkeypatch, marker):
+    """Test is_running_in_debugger returns True when debugger env markers are set."""
+    monkeypatch.setattr(sys, "gettrace", lambda: None)
+    for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:
+        monkeypatch.delenv(env_key, raising=False)
+
+    monkeypatch.setenv(marker, "1")
+    assert utils.CommandExecutor.is_running_in_debugger() is True

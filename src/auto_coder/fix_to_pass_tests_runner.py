@@ -31,6 +31,9 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 cmd = CommandExecutor()
 
+# Test Watcher MCP integration flag
+USE_TEST_WATCHER_MCP = os.environ.get("USE_TEST_WATCHER_MCP", "true").lower() == "true"
+
 
 @dataclass
 class WorkspaceFixResult:
@@ -160,6 +163,59 @@ def run_local_tests(
     - stability_issue: True if test failed in full suite but passed in isolation
     - full_suite_result: Original full suite result (only present if stability_issue is True)
     """
+    # Try to use test_watcher MCP if enabled and available
+    if USE_TEST_WATCHER_MCP and not test_file:
+        try:
+            from .test_watcher_client import TestWatcherClient
+
+            mcp_server_path = os.environ.get("TEST_WATCHER_MCP_SERVER_PATH")
+            if mcp_server_path and Path(mcp_server_path).exists():
+                logger.info("Querying test results from test_watcher MCP")
+
+                with TestWatcherClient(mcp_server_path=mcp_server_path) as client:
+                    # Query all test results
+                    results = client.query_test_results(test_type="all")
+
+                    if results.get("status") == "running":
+                        logger.info("Tests are currently running in test_watcher, waiting...")
+                        # Fall back to normal test execution
+                    elif results.get("status") == "completed":
+                        # Convert MCP results to expected format
+                        summary = results.get("summary", {})
+                        failed_tests = results.get("failed_tests", {}).get("tests", [])
+
+                        success = summary.get("failed", 0) == 0
+
+                        # Build output from test results
+                        output_lines = [
+                            f"Test Results (from test_watcher MCP):",
+                            f"Total: {summary.get('total', 0)}",
+                            f"Passed: {summary.get('passed', 0)}",
+                            f"Failed: {summary.get('failed', 0)}",
+                            f"Flaky: {summary.get('flaky', 0)}",
+                            f"Skipped: {summary.get('skipped', 0)}",
+                        ]
+
+                        if failed_tests:
+                            output_lines.append("\nFailed Tests:")
+                            for test in failed_tests:
+                                output_lines.append(f"  - {test.get('file', 'unknown')}: {test.get('title', '')}")
+                                if test.get('error'):
+                                    output_lines.append(f"    Error: {test['error']}")
+
+                        return {
+                            "success": success,
+                            "output": "\n".join(output_lines),
+                            "errors": "" if success else "\n".join([t.get('error', '') for t in failed_tests if t.get('error')]),
+                            "return_code": 0 if success else 1,
+                            "command": "test_watcher_mcp_query",
+                            "test_file": None,
+                            "stability_issue": False,
+                            "mcp_results": results,
+                        }
+        except Exception as e:
+            logger.warning(f"Failed to query test_watcher MCP, falling back to normal test execution: {e}")
+
     try:
         # If a specific test file is specified, run only that test (always via TEST_SCRIPT_PATH)
         if test_file:

@@ -44,7 +44,8 @@ def test_get_github_actions_logs_from_url_fetches_job_zip_and_extracts_errors(
     with patch("subprocess.run", side_effect=fake_run):
         out = engine.get_github_actions_logs_from_url(url)
 
-    assert "=== Job test (48039894437) ===" in out
+    # ジョブ名の取得に失敗した場合は "job-{job_id}" という名前になる
+    assert "(48039894437)" in out
     assert "--- Step 5_Run tests ---" in out
     assert 'Expected substring: "<a href="https://example.com"' in out
     # サマリは本文に含まれない行のみ付与されるため、ZIP内の要約行が本文に含まれている場合は省略され得る

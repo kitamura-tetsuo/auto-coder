@@ -14,6 +14,7 @@ from .issue_processor import create_feature_issues, process_issues, process_sing
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
+from .pr_processor import _get_github_actions_logs as _pr_get_github_actions_logs
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import get_github_actions_logs_from_url, process_pull_requests
 from .utils import log_action
@@ -219,6 +220,12 @@ class AutomationEngine:
     def get_github_actions_logs_from_url(self, url: str) -> str:
         """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。"""
         return get_github_actions_logs_from_url(url)
+
+    def _get_github_actions_logs(
+        self, repo_name: str, pr_data: Dict[str, Any], failed_checks: List[Dict[str, Any]]
+    ) -> str:
+        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。"""
+        return _pr_get_github_actions_logs(repo_name, self.config, failed_checks)
 
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""

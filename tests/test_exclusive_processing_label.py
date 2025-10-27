@@ -127,6 +127,80 @@ class TestGitHubClientExclusiveLabels:
 
         assert result is False
 
+    def test_disable_labels_add_labels(self):
+        """Test that add_labels_to_issue is a no-op when disable_labels=True."""
+        mock_github = Mock()
+        mock_repo = Mock()
+        mock_issue = Mock()
+
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github.get_repo.return_value = mock_repo
+
+        client = GitHubClient("fake-token", disable_labels=True)
+        client.github = mock_github
+
+        client.add_labels_to_issue("owner/repo", 123, ["test-label"])
+
+        # Should not call get_issue or edit when labels are disabled
+        mock_repo.get_issue.assert_not_called()
+        mock_issue.edit.assert_not_called()
+
+    def test_disable_labels_remove_labels(self):
+        """Test that remove_labels_from_issue is a no-op when disable_labels=True."""
+        mock_github = Mock()
+        mock_repo = Mock()
+        mock_issue = Mock()
+
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github.get_repo.return_value = mock_repo
+
+        client = GitHubClient("fake-token", disable_labels=True)
+        client.github = mock_github
+
+        client.remove_labels_from_issue("owner/repo", 123, ["test-label"])
+
+        # Should not call get_issue or edit when labels are disabled
+        mock_repo.get_issue.assert_not_called()
+        mock_issue.edit.assert_not_called()
+
+    def test_disable_labels_has_label(self):
+        """Test that has_label returns False when disable_labels=True."""
+        mock_github = Mock()
+        mock_repo = Mock()
+        mock_issue = Mock()
+
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github.get_repo.return_value = mock_repo
+
+        client = GitHubClient("fake-token", disable_labels=True)
+        client.github = mock_github
+
+        result = client.has_label("owner/repo", 123, "@auto-coder")
+
+        # Should return False without calling get_issue
+        assert result is False
+        mock_repo.get_issue.assert_not_called()
+
+    def test_disable_labels_try_add_work_in_progress_label(self):
+        """Test that try_add_work_in_progress_label returns True when disable_labels=True."""
+        mock_github = Mock()
+        mock_repo = Mock()
+        mock_issue = Mock()
+
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github.get_repo.return_value = mock_repo
+
+        client = GitHubClient("fake-token", disable_labels=True)
+        client.github = mock_github
+
+        result = client.try_add_work_in_progress_label("owner/repo", 123)
+
+        # Should return True to allow processing to continue
+        assert result is True
+        # Should not call get_issue or edit when labels are disabled
+        mock_repo.get_issue.assert_not_called()
+        mock_issue.edit.assert_not_called()
+
 
 class TestIssueProcessorExclusiveProcessing:
     """Test issue processor exclusive processing with @auto-coder label."""
@@ -137,6 +211,7 @@ class TestIssueProcessorExclusiveProcessing:
         are skipped.
         """
         mock_github_client = Mock()
+        mock_github_client.disable_labels = False  # Labels enabled
         mock_issue = Mock()
         mock_issue.number = 123
 
@@ -165,6 +240,7 @@ class TestIssueProcessorExclusiveProcessing:
         @auto-coder label is successfully added.
         """
         mock_github_client = Mock()
+        mock_github_client.disable_labels = False  # Labels enabled
         mock_issue = Mock()
         mock_issue.number = 123
 
@@ -201,6 +277,7 @@ class TestIssueProcessorExclusiveProcessing:
         removed even when processing fails.
         """
         mock_github_client = Mock()
+        mock_github_client.disable_labels = False  # Labels enabled
         mock_issue = Mock()
         mock_issue.number = 123
 
@@ -230,6 +307,7 @@ class TestIssueProcessorExclusiveProcessing:
         with @auto-coder label.
         """
         mock_github_client = Mock()
+        mock_github_client.disable_labels = False  # Labels enabled
         mock_issue = Mock()
         mock_issue.number = 123
 
@@ -264,6 +342,7 @@ class TestPRProcessorExclusiveProcessing:
     ):
         """Test that PRs with @auto-coder label are skipped."""
         mock_github_client = Mock()
+        mock_github_client.disable_labels = False  # Labels enabled
         mock_pr = Mock()
         mock_pr.number = 456
 

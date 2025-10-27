@@ -21,7 +21,7 @@ from .cli_helpers import (
 from .github_client import GitHubClient
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
-from .utils import VERBOSE_ENV_FLAG
+from .utils import VERBOSE_ENV_FLAG, CommandExecutor
 
 logger = get_logger(__name__)
 
@@ -77,6 +77,11 @@ logger = get_logger(__name__)
     help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)',
 )
 @click.option(
+    "--disable-labels/--no-disable-labels",
+    default=None,
+    help="Disable GitHub label operations (@auto-coder label). Auto-detected: disabled in debugger, enabled otherwise",
+)
+@click.option(
     "--skip-main-update/--no-skip-main-update",
     default=True,
     help="When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)",
@@ -125,6 +130,7 @@ def process_issues(
     model_auggie: Optional[str],
     dry_run: bool,
     jules_mode: bool,
+    disable_labels: Optional[bool],
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
     force_clean_before_checkout: bool,
@@ -164,6 +170,12 @@ def process_issues(
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
 
+    # Auto-detect disable_labels if not explicitly set
+    if disable_labels is None:
+        # Disable labels when running in debugger, enable otherwise
+        disable_labels = CommandExecutor.is_running_in_debugger()
+        logger.debug(f"Auto-detected disable_labels={disable_labels} (debugger={disable_labels})")
+
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
@@ -171,6 +183,7 @@ def process_issues(
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
+    logger.info(f"Disable labels: {disable_labels}")
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
@@ -188,6 +201,7 @@ def process_issues(
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
+    click.echo(f"Disable labels: {disable_labels}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
     click.echo(f"Force clean before checkout: {force_clean_before_checkout}")
@@ -198,7 +212,7 @@ def process_issues(
     initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
-    github_client = GitHubClient(github_token_final)
+    github_client = GitHubClient(github_token_final, disable_labels=disable_labels)
     manager = build_backend_manager(
         selected_backends,
         primary_backend,
@@ -234,6 +248,7 @@ def process_issues(
     engine_config = AutomationConfig()
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
+    engine_config.DISABLE_LABELS = bool(disable_labels)
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
 
     automation_engine = AutomationEngine(

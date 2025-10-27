@@ -79,7 +79,8 @@ def test_only_failing_step_is_output_when_available(
     with patch("subprocess.run", side_effect=fake_run):
         out = engine.get_github_actions_logs_from_url(url)
 
-    assert "=== Job CI / e2e" in out
+    # ジョブIDが含まれていることを確認（ジョブ名の取得に失敗した場合は "job-{job_id}" という名前になる）
+    assert f"({job_id})" in out
     # Should include failing step section
     assert "e2e tests for github reporting" in out
     assert 'Expected substring: "GITHUB_STEP_SUMMARY"' in out

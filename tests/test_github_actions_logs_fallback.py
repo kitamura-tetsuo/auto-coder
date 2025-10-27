@@ -2,6 +2,7 @@ import json
 from unittest.mock import Mock, patch
 
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.utils import CommandResult
 
 
 def test_get_github_actions_logs_fallback_to_text_when_zip_fails(
@@ -15,7 +16,8 @@ def test_get_github_actions_logs_fallback_to_text_when_zip_fails(
         "head_branch": "codex/add-comprehensive-tests-for-component",
     }
 
-    def fake_run(cmd, capture_output=True, text=False, timeout=60, cwd=None):
+    # cmd.run_command用のモック関数
+    def fake_cmd_run(cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True):
         # run list -> 失敗 run
         if cmd[:3] == ["gh", "run", "list"]:
             runs = [
@@ -29,7 +31,12 @@ def test_get_github_actions_logs_fallback_to_text_when_zip_fails(
                     "url": "https://example.com/run/16818157306",
                 }
             ]
-            return Mock(returncode=0, stdout=json.dumps(runs), stderr="")
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=json.dumps(runs),
+                stderr="",
+            )
         # run view -> 失敗 job
         if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
             jobs_obj = {
@@ -37,10 +44,12 @@ def test_get_github_actions_logs_fallback_to_text_when_zip_fails(
                     {"databaseId": 47639576037, "name": "test", "conclusion": "failure"}
                 ]
             }
-            return Mock(returncode=0, stdout=json.dumps(jobs_obj), stderr="")
-        # job ZIP -> 失敗
-        if cmd[:2] == ["gh", "api"] and "actions/jobs" in cmd[2]:
-            return Mock(returncode=1, stdout=b"", stderr=b"")
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=json.dumps(jobs_obj),
+                stderr="",
+            )
         # フォールバック: ジョブのテキストログ（Playwright系のエラーフォーマットを含む）
         if cmd[:3] == ["gh", "run", "view"] and "--job" in cmd and "--log" in cmd:
             ui_log = (
@@ -58,13 +67,57 @@ def test_get_github_actions_logs_fallback_to_text_when_zip_fails(
                 "      51 |     });\n"
                 "      52 | });\n"
             )
-            return Mock(returncode=0, stdout=ui_log, stderr="")
-        return Mock(returncode=1, stdout="", stderr="unknown")
-
-    with patch("subprocess.run", side_effect=fake_run):
-        out = engine._get_github_actions_logs(
-            repo_name, pr_data, [{"name": "ci", "conclusion": "failure"}]
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=ui_log,
+                stderr="",
+            )
+        return CommandResult(
+            success=False,
+            returncode=1,
+            stdout="",
+            stderr="unknown",
         )
+
+    # subprocess.run用のモック関数
+    def fake_subprocess_run(cmd, capture_output=True, text=False, timeout=60, cwd=None):
+        # job ZIP -> 失敗
+        if cmd[:2] == ["gh", "api"] and "actions/jobs" in cmd[2]:
+            return Mock(returncode=1, stdout=b"", stderr=b"")
+        # run view -> 失敗 job
+        if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
+            jobs_obj = {
+                "jobs": [
+                    {"databaseId": 47639576037, "name": "test", "conclusion": "failure"}
+                ]
+            }
+            return Mock(returncode=0, stdout=json.dumps(jobs_obj).encode(), stderr=b"")
+        # フォールバック: ジョブのテキストログ（Playwright系のエラーフォーマットを含む）
+        if cmd[:3] == ["gh", "run", "view"] and "--job" in cmd and "--log" in cmd:
+            ui_log = (
+                "INFO ok\n"
+                "Error:   1) [core] \u203a e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 \u203a "
+                "URL label links \u203a converts plain URL to clickable link \n\n"
+                "    Error: expect(received).toContain(expected) // indexOf\n\n"
+                '    Expected substring: "<a href=\\"https://example.com\\""\n'
+                '    Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"\n\n'
+                "      47 |\n"
+                '      48 |         const firstItemHtml = await page.locator(".outliner-item").first().locator(".item-text").innerHTML();\n'
+                "    > 49 |         expect(firstItemHtml).toContain('<a href=\"https://example.com\"');\n"
+                "         |                               ^\n"
+                '      50 |         expect(firstItemHtml).toContain(">https://example.com</a>");\n'
+                "      51 |     });\n"
+                "      52 | });\n"
+            )
+            return Mock(returncode=0, stdout=ui_log.encode(), stderr=b"")
+        return Mock(returncode=1, stdout=b"", stderr=b"unknown")
+
+    with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=fake_cmd_run):
+        with patch("subprocess.run", side_effect=fake_subprocess_run):
+            out = engine._get_github_actions_logs(
+                repo_name, pr_data, [{"name": "ci", "conclusion": "failure"}]
+            )
 
     assert "=== Job test (47639576037) ===" in out
     # 具体的な Playwright の失敗見出し行が抽出されること
@@ -89,7 +142,8 @@ def test_extract_playwright_heading_without_error_prefix(
         "head_branch": "codex/ensure-playwright-header-detection",
     }
 
-    def fake_run(cmd, capture_output=True, text=False, timeout=60, cwd=None):
+    # cmd.run_command用のモック関数
+    def fake_cmd_run(cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True):
         if cmd[:3] == ["gh", "run", "list"]:
             runs = [
                 {
@@ -102,17 +156,24 @@ def test_extract_playwright_heading_without_error_prefix(
                     "url": "https://example.com/run/17000000000",
                 }
             ]
-            return Mock(returncode=0, stdout=json.dumps(runs), stderr="")
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=json.dumps(runs),
+                stderr="",
+            )
         if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
             jobs_obj = {
                 "jobs": [
                     {"databaseId": 49000000000, "name": "test", "conclusion": "failure"}
                 ]
             }
-            return Mock(returncode=0, stdout=json.dumps(jobs_obj), stderr="")
-        # ZIP ダウンロードは失敗させる
-        if cmd[:2] == ["gh", "api"] and "actions/jobs" in cmd[2]:
-            return Mock(returncode=1, stdout=b"", stderr=b"")
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=json.dumps(jobs_obj),
+                stderr="",
+            )
         # テキストログ（先頭に Error: が無い Playwright 見出し）
         if cmd[:3] == ["gh", "run", "view"] and "--job" in cmd and "--log" in cmd:
             ui_log = (
@@ -123,13 +184,49 @@ def test_extract_playwright_heading_without_error_prefix(
                 '    Expected substring: "Some Title"\n'
                 '    Received string:    "Other Title"\n'
             )
-            return Mock(returncode=0, stdout=ui_log, stderr="")
-        return Mock(returncode=1, stdout="", stderr="unknown")
-
-    with patch("subprocess.run", side_effect=fake_run):
-        out = engine._get_github_actions_logs(
-            repo_name, pr_data, [{"name": "ci", "conclusion": "failure"}]
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=ui_log,
+                stderr="",
+            )
+        return CommandResult(
+            success=False,
+            returncode=1,
+            stdout="",
+            stderr="unknown",
         )
+
+    # subprocess.run用のモック関数
+    def fake_subprocess_run(cmd, capture_output=True, text=False, timeout=60, cwd=None):
+        # ZIP ダウンロードは失敗させる
+        if cmd[:2] == ["gh", "api"] and "actions/jobs" in cmd[2]:
+            return Mock(returncode=1, stdout=b"", stderr=b"")
+        if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
+            jobs_obj = {
+                "jobs": [
+                    {"databaseId": 49000000000, "name": "test", "conclusion": "failure"}
+                ]
+            }
+            return Mock(returncode=0, stdout=json.dumps(jobs_obj).encode(), stderr=b"")
+        # テキストログ（先頭に Error: が無い Playwright 見出し）
+        if cmd[:3] == ["gh", "run", "view"] and "--job" in cmd and "--log" in cmd:
+            ui_log = (
+                "info misc\n"
+                "  1) [basic] \u203a e2e/basic/sea-page-title-search-box-a3674e4f-dce0-4543-9e85-1f1899f97f73.spec.ts:16:5 \u203a "
+                "SEA-0001: page title search box \u203a search box navigates to another page\n\n"
+                "    Error: expect(received).toContain(expected) // indexOf\n\n"
+                '    Expected substring: "Some Title"\n'
+                '    Received string:    "Other Title"\n'
+            )
+            return Mock(returncode=0, stdout=ui_log.encode(), stderr=b"")
+        return Mock(returncode=1, stdout=b"", stderr=b"unknown")
+
+    with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=fake_cmd_run):
+        with patch("subprocess.run", side_effect=fake_subprocess_run):
+            out = engine._get_github_actions_logs(
+                repo_name, pr_data, [{"name": "ci", "conclusion": "failure"}]
+            )
 
     # 見出しが含まれること（Error: なしでも）
     assert "[basic] › e2e/basic/sea-page-title-search-box" in out

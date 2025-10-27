@@ -4,6 +4,7 @@ import zipfile
 from unittest.mock import Mock, patch
 
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.utils import CommandResult
 
 
 def test_get_github_actions_logs_uses_gh_api_and_extracts_errors(
@@ -19,7 +20,7 @@ def test_get_github_actions_logs_uses_gh_api_and_extracts_errors(
     }
 
     # side_effect でコマンド毎の戻りを切替
-    def fake_run(cmd, capture_output=True, text=False, timeout=60, cwd=None):
+    def fake_run(cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True):
         if cmd[:3] == ["gh", "run", "list"]:
             runs = [
                 {
@@ -32,7 +33,12 @@ def test_get_github_actions_logs_uses_gh_api_and_extracts_errors(
                     "url": "https://example.com/run/16818157306",
                 }
             ]
-            return Mock(returncode=0, stdout=json.dumps(runs), stderr="")
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=json.dumps(runs),
+                stderr="",
+            )
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_obj = {
                 "jobs": [
@@ -43,20 +49,58 @@ def test_get_github_actions_logs_uses_gh_api_and_extracts_errors(
                     }
                 ]
             }
-            return Mock(returncode=0, stdout=json.dumps(jobs_obj), stderr="")
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=json.dumps(jobs_obj),
+                stderr="",
+            )
+        if cmd[:2] == ["gh", "api"] and "actions/jobs" in cmd[2]:
+            # zip をメモリ上で作って返す
+            bio = io.BytesIO()
+            with zipfile.ZipFile(bio, "w") as zf:
+                zf.writestr("1_log.txt", "INFO: ok\nERROR: boom!\nmore info")
+            return CommandResult(
+                success=True,
+                returncode=0,
+                stdout=bio.getvalue(),
+                stderr=b"",
+            )
+        # デフォルト
+        return CommandResult(
+            success=False,
+            returncode=1,
+            stdout="",
+            stderr="unknown command",
+        )
+
+    # subprocess.run用のモック関数
+    def fake_subprocess_run(cmd, capture_output=True, text=False, timeout=60, cwd=None):
         if cmd[:2] == ["gh", "api"] and "actions/jobs" in cmd[2]:
             # zip をメモリ上で作って返す
             bio = io.BytesIO()
             with zipfile.ZipFile(bio, "w") as zf:
                 zf.writestr("1_log.txt", "INFO: ok\nERROR: boom!\nmore info")
             return Mock(returncode=0, stdout=bio.getvalue(), stderr=b"")
+        if cmd[:3] == ["gh", "run", "view"]:
+            jobs_obj = {
+                "jobs": [
+                    {
+                        "databaseId": 47639576037,
+                        "name": "build",
+                        "conclusion": "failure",
+                    }
+                ]
+            }
+            return Mock(returncode=0, stdout=json.dumps(jobs_obj).encode(), stderr=b"")
         # デフォルト
-        return Mock(returncode=1, stdout="", stderr="unknown command")
+        return Mock(returncode=1, stdout=b"", stderr=b"unknown command")
 
-    with patch("subprocess.run", side_effect=fake_run):
-        out = engine._get_github_actions_logs(
-            repo_name, pr_data, [{"name": "ci", "conclusion": "failure"}]
-        )
+    with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=fake_run):
+        with patch("subprocess.run", side_effect=fake_subprocess_run):
+            out = engine._get_github_actions_logs(
+                repo_name, pr_data, [{"name": "ci", "conclusion": "failure"}]
+            )
 
     assert "=== Job build (47639576037) ===" in out
     assert "ERROR: boom!" in out

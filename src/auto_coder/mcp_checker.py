@@ -318,6 +318,61 @@ def _add_codex_mcp_config() -> bool:
     return False
 
 
+def ensure_mcp_server_configured(
+    server_name: str,
+    backend: str,
+    auto_setup: bool = True,
+    env_vars: dict = None,
+) -> bool:
+    """Ensure an MCP server is configured for the given backend.
+
+    This function checks if the MCP server is configured, and if not,
+    automatically sets up the MCP server and adds the configuration.
+
+    Args:
+        server_name: MCP server name (e.g., 'graphrag', 'test-watcher')
+        backend: Backend name (gemini, qwen, auggie, codex, codex-mcp)
+        auto_setup: If True, automatically run setup if MCP server is not installed
+        env_vars: Environment variables to set during setup
+
+    Returns:
+        True if MCP server is configured (or was successfully added), False otherwise
+    """
+    from .mcp_manager import get_mcp_manager
+
+    manager = get_mcp_manager()
+
+    # Check if server is installed
+    if not manager.is_server_installed(server_name) and auto_setup:
+        logger.info(f"{server_name} MCP server not found")
+        logger.info(f"Automatically setting up {server_name} MCP server...")
+
+        # Import here to avoid circular dependency
+        from .cli_commands_mcp import setup_mcp_programmatically
+
+        success = setup_mcp_programmatically(
+            server_name=server_name,
+            install_dir=None,  # Use default
+            env_vars=env_vars,
+            backends=[backend],
+            silent=True,  # Suppress verbose output
+        )
+
+        if not success:
+            logger.error(f"Failed to automatically set up {server_name} MCP server")
+            return False
+
+        logger.info(f"✅ {server_name} MCP server setup completed successfully")
+
+    # Check if server is installed
+    if not manager.is_server_installed(server_name):
+        logger.warning(f"{server_name} MCP server is not installed")
+        return False
+
+    logger.info(f"✅ {server_name} MCP server is configured for {backend}")
+    return True
+
+
 def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> bool:
     """Ensure graphrag MCP is configured for the given backend.
 

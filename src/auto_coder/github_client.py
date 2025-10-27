@@ -17,10 +17,16 @@ logger = get_logger(__name__)
 class GitHubClient:
     """GitHub API client for managing issues and pull requests."""
 
-    def __init__(self, token: str):
-        """Initialize GitHub client with API token."""
+    def __init__(self, token: str, disable_labels: bool = False):
+        """Initialize GitHub client with API token.
+
+        Args:
+            token: GitHub API token
+            disable_labels: If True, all label operations are no-ops
+        """
         self.github = Github(token)
         self.token = token
+        self.disable_labels = disable_labels
 
     def get_repository(self, repo_name: str) -> Repository.Repository:
         """Get repository object by name (owner/repo)."""
@@ -416,6 +422,10 @@ class GitHubClient:
         self, repo_name: str, issue_number: int, labels: List[str]
     ) -> None:
         """Add labels to an existing issue."""
+        if self.disable_labels:
+            logger.debug(f"Labels disabled - skipping add labels {labels} to issue #{issue_number}")
+            return
+
         try:
             repo = self.get_repository(repo_name)
             issue = repo.get_issue(issue_number)
@@ -438,6 +448,10 @@ class GitHubClient:
         self, repo_name: str, issue_number: int, labels: List[str]
     ) -> None:
         """Remove labels from an existing issue."""
+        if self.disable_labels:
+            logger.debug(f"Labels disabled - skipping remove labels {labels} from issue #{issue_number}")
+            return
+
         try:
             repo = self.get_repository(repo_name)
             issue = repo.get_issue(issue_number)
@@ -460,6 +474,10 @@ class GitHubClient:
 
     def has_label(self, repo_name: str, issue_number: int, label: str) -> bool:
         """Check if an issue has a specific label."""
+        if self.disable_labels:
+            logger.debug(f"Labels disabled - skipping check for label '{label}' on issue #{issue_number}")
+            return False
+
         try:
             repo = self.get_repository(repo_name)
             issue = repo.get_issue(issue_number)
@@ -481,6 +499,10 @@ class GitHubClient:
         Returns True if the label was successfully added (issue was not already being processed).
         Returns False if the label already exists (issue is being processed by another instance).
         """
+        if self.disable_labels:
+            logger.debug(f"Labels disabled - skipping add '{label}' label to issue #{issue_number}")
+            return True  # Return True to allow processing to continue
+
         try:
             repo = self.get_repository(repo_name)
             issue = repo.get_issue(issue_number)

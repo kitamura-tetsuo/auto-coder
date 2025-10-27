@@ -55,6 +55,10 @@ class AutomationConfig:
     # Default: False (do not force clean)
     FORCE_CLEAN_BEFORE_CHECKOUT: bool = False
 
+    # Disable GitHub label operations (@auto-coder label)
+    # Default: False (labels enabled)
+    DISABLE_LABELS: bool = False
+
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True

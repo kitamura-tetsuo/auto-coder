@@ -60,7 +60,7 @@ def _process_issues_normal(
                 push_progress_stage("Checking status")
 
                 # Check if issue already has @auto-coder label (being processed by another instance)
-                if not dry_run:
+                if not dry_run and not github_client.disable_labels:
                     current_labels = issue_data.get("labels", [])
                     if "@auto-coder" in current_labels:
                         logger.info(
@@ -194,7 +194,7 @@ def _process_issues_jules_mode(
                 issue_number = issue_data["number"]
 
                 # Check if issue already has @auto-coder label (being processed by another instance)
-                if not dry_run:
+                if not dry_run and not github_client.disable_labels:
                     current_labels = issue_data.get("labels", [])
                     if "@auto-coder" in current_labels:
                         logger.info(
@@ -837,7 +837,7 @@ def process_single(
 
                 # Check if issue already has @auto-coder label (being processed by another instance)
                 push_progress_stage("Checking status")
-                if not dry_run:
+                if not dry_run and not github_client.disable_labels:
                     current_labels = issue_data.get("labels", [])
                     if "@auto-coder" in current_labels:
                         msg = (

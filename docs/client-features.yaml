@@ -155,6 +155,99 @@ features:
           classes: 2
           methods: 5
 
+  github_actions_logs:
+    name: "GitHub Actions Logs Extraction"
+    description: "Intelligent extraction of GitHub Actions error logs with sufficient context for LLM analysis"
+    components:
+      - name: "Log Extraction Functions"
+        file: "src/auto_coder/pr_processor.py"
+        methods:
+          - name: "_get_github_actions_logs"
+            description: "Get GitHub Actions logs from failed checks, prioritizing details_url from failed_checks"
+            parameters: ["repo_name", "pr_data", "failed_checks"]
+            returns: "String containing extracted error logs"
+            behavior:
+              - "Prioritizes details_url from failed_checks for accurate job identification"
+              - "Falls back to gh run list only when details_url is not available"
+              - "Extracts error context with up to 500 lines of relevant information"
+              - "Filters out successful steps, showing only failed steps"
+            tests:
+              - "tests/test_github_actions_logs_details_url.py::test_get_github_actions_logs_uses_details_url_from_failed_checks"
+              - "tests/test_github_actions_logs.py::test_get_github_actions_logs_uses_gh_api_and_extracts_errors"
+          - name: "get_github_actions_logs_from_url"
+            description: "Extract GitHub Actions logs from a specific URL"
+            parameters: ["url"]
+            returns: "String containing formatted job logs"
+            behavior:
+              - "Extracts run_id and job_id from GitHub Actions URL"
+              - "Fetches job details and logs via gh api"
+              - "Handles both ZIP and plain text log formats"
+              - "Filters logs to show only failed steps"
+              - "Applies error context extraction for better LLM analysis"
+            tests:
+              - "tests/test_github_actions_logs_from_url.py::test_get_github_actions_logs_from_url_fetches_job_zip_and_extracts_errors"
+              - "tests/test_real_github_actions_log_extraction.py::test_get_github_actions_logs_from_url_with_realistic_zip"
+          - name: "_extract_error_context"
+            description: "Intelligently extract error-related information from logs"
+            parameters: ["content", "max_lines (default: 500)"]
+            returns: "String containing extracted error context"
+            behavior:
+              - "Searches for error-related keywords (error, failed, expect(received), .spec.ts, etc.)"
+              - "Includes 10 lines before and after each error line"
+              - "Supports up to 500 lines of output (increased from 500 characters)"
+              - "Falls back to showing entire content if no error keywords found"
+              - "Provides sufficient context for LLM to understand and fix errors"
+            error_keywords:
+              - "error:"
+              - "failed"
+              - "failure"
+              - "expect(received)"
+              - "expected substring:"
+              - "received string:"
+              - ".spec.ts"
+              - "command failed with exit code"
+              - "process completed with exit code"
+              - "error was not a part of any test"
+            tests:
+              - "tests/test_extract_error_context.py::test_extract_error_context_with_playwright_error"
+              - "tests/test_extract_error_context.py::test_extract_error_context_with_multiple_errors"
+              - "tests/test_extract_error_context.py::test_extract_error_context_with_long_log"
+              - "tests/test_extract_error_context.py::test_extract_error_context_no_errors"
+              - "tests/test_extract_error_context.py::test_extract_error_context_empty_log"
+              - "tests/test_extract_error_context.py::test_extract_error_context_preserves_important_context"
+              - "tests/test_real_github_actions_log_extraction.py::test_extract_error_context_with_realistic_playwright_log"
+      - name: "Utility Functions"
+        file: "src/auto_coder/utils.py"
+        methods:
+          - name: "slice_relevant_error_window"
+            description: "Extract relevant error window from logs"
+            parameters: ["content", "max_lines (default: 1500)"]
+            returns: "String containing relevant error window"
+            behavior:
+              - "Increased maximum lines from 800 to 1500"
+              - "Increased fallback lines from 300 to 500"
+              - "Searches for error trigger keywords"
+              - "Returns context around error triggers"
+    improvements:
+      - name: "Correct Job Identification"
+        description: "Fixed issue where wrong GitHub Actions run was being fetched"
+        before: "Used gh run list to get most recent failed run across entire repository"
+        after: "Prioritizes details_url from failed_checks to get the exact job associated with the PR"
+        impact: "Ensures LLM receives logs from the correct failed job"
+      - name: "Sufficient Error Context"
+        description: "Increased log context from 500 characters to 500 lines"
+        before: "Logs were truncated to 500 characters, causing 'insufficient logs' errors"
+        after: "Intelligently extracts up to 500 lines of error context with surrounding information"
+        impact: "LLM receives sufficient information to understand and fix errors"
+      - name: "Intelligent Error Extraction"
+        description: "New _extract_error_context function for smart error extraction"
+        features:
+          - "Searches for error-related keywords"
+          - "Includes 10 lines before and after each error"
+          - "Handles multiple errors in single log"
+          - "Preserves important context for debugging"
+        impact: "LLM receives focused, relevant error information without noise"
+
   github_integration:
     name: "GitHub API Integration"
     description: "Integration with GitHub API to fetch and manage issues and pull requests"
@@ -1864,6 +1957,66 @@ deployment:
             returns: "Dictionary with MCP configuration or None"
         tests:
           - "tests/test_graphrag_mcp_integration.py"
+      - name: "MCPServerManager"
+        file: "src/auto_coder/mcp_manager.py"
+        description: "Unified manager for multiple MCP servers (graphrag, test-watcher, etc.)"
+        methods:
+          - name: "register_server"
+            description: "Register an MCP server configuration"
+            parameters: ["config: MCPServerConfig"]
+            returns: "None"
+          - name: "get_server_config"
+            description: "Get server configuration by name"
+            parameters: ["name: str"]
+            returns: "MCPServerConfig or None"
+          - name: "setup_server"
+            description: "Setup an MCP server (copy files, install dependencies, configure backends)"
+            parameters: ["name: str", "install_dir: Optional[Path]", "env_vars: Optional[Dict]", "backends: Optional[List[str]]", "silent: bool"]
+            returns: "Boolean indicating success"
+          - name: "add_backend_config"
+            description: "Add MCP server configuration to a backend"
+            parameters: ["server_name: str", "backend: str", "install_path: Path"]
+            returns: "Boolean indicating success"
+          - name: "is_server_installed"
+            description: "Check if an MCP server is installed"
+            parameters: ["name: str"]
+            returns: "Boolean indicating if server is installed"
+          - name: "get_server_path"
+            description: "Get the installation path of an MCP server"
+            parameters: ["name: str"]
+            returns: "Path or None"
+        tests:
+          - "tests/test_mcp_manager.py"
+      - name: "TestWatcherIntegration"
+        file: "src/auto_coder/test_watcher_integration.py"
+        description: "Integrates test_watcher MCP server with LLM clients"
+        methods:
+          - name: "ensure_ready"
+            description: "Ensure Test Watcher environment is ready (check installation, start server)"
+            parameters: []
+            returns: "Boolean indicating if environment is ready"
+          - name: "start_mcp_server"
+            description: "Start test_watcher MCP server"
+            parameters: []
+            returns: "Boolean indicating success"
+          - name: "stop_mcp_server"
+            description: "Stop test_watcher MCP server"
+            parameters: []
+            returns: "None"
+          - name: "is_mcp_server_running"
+            description: "Check if MCP server is running"
+            parameters: []
+            returns: "Boolean indicating if server is running"
+          - name: "is_mcp_server_installed"
+            description: "Check if MCP server is installed"
+            parameters: []
+            returns: "Boolean indicating if server is installed"
+          - name: "get_mcp_config_for_llm"
+            description: "Get MCP configuration to pass to LLM client"
+            parameters: []
+            returns: "Dictionary with MCP configuration or None"
+        tests:
+          - "tests/test_test_watcher_integration.py"
       - name: "CLI Force Reindex Option"
         description: "All CLI commands (process-issues, create-feature-issues, fix-to-pass-tests) support --force-reindex flag to force GraphRAG reindexing even if index is up to date"
         file: "src/auto_coder/cli_commands_main.py"
@@ -1937,6 +2090,36 @@ deployment:
         options:
           - "--force: Force update even if index is up to date"
           - "--repo-path: Path to repository to index (default: current directory)"
+      - command: "auto-coder mcp list"
+        description: "List all available MCP servers and their installation status"
+      - command: "auto-coder mcp setup <server_name>"
+        description: "Setup an MCP server (copy files, install dependencies, configure backends)"
+        arguments:
+          - "server_name: Name of the MCP server (e.g., 'test-watcher', 'graphrag')"
+        options:
+          - "--install-dir: Installation directory (default: ~/mcp_servers/{server_name})"
+          - "--backend/-b: Backend(s) to configure (choices: codex, gemini, qwen, auggie, all; default: all)"
+          - "--env/-e: Environment variables in KEY=VALUE format (can be specified multiple times)"
+          - "--silent: Suppress user prompts and run automatically"
+        behavior:
+          - "Copies bundled MCP server files to installation directory"
+          - "Installs dependencies using uv sync"
+          - "Creates .env file with environment variables"
+          - "Makes run_server.sh executable"
+          - "Automatically updates configuration files for specified backends"
+        examples:
+          - "auto-coder mcp setup test-watcher"
+          - "auto-coder mcp setup test-watcher --install-dir ~/my-mcp-servers/test-watcher"
+          - "auto-coder mcp setup test-watcher -b codex -b gemini"
+          - "auto-coder mcp setup test-watcher -e TEST_WATCHER_PROJECT_ROOT=/path/to/project"
+      - command: "auto-coder mcp status <server_name>"
+        description: "Show status of an MCP server"
+        arguments:
+          - "server_name: Name of the MCP server"
+      - command: "auto-coder mcp test <server_name>"
+        description: "Test an MCP server by running it briefly"
+        arguments:
+          - "server_name: Name of the MCP server"
     integration:
       - name: "CodexMCPClient GraphRAG Support"
         description: "CodexMCPClient always uses GraphRAG integration (always enabled)"
@@ -2004,6 +2187,74 @@ deployment:
       - name: "Qdrant"
         description: "Vector database for storing code embeddings"
         default_port: 6333
+      - name: "test_watcher_mcp"
+        bundled_location: "src/auto_coder/mcp_servers/test_watcher/"
+        description: "MCP server for continuous test monitoring with automatic file watching"
+        note: "Standalone MCP server that monitors file changes (respecting .gitignore) and automatically runs Playwright tests"
+        installation: "Create virtual environment in test_watcher directory and install dependencies (watchdog, pathspec)"
+        features:
+          - "File watching with .gitignore support (using watchdog and pathspec)"
+          - "Automatic Playwright test execution on file changes"
+          - "Smart test running with --last-failed support"
+          - "Full test suite execution after all failed tests pass"
+          - "Process management (terminates running tests before starting new ones)"
+          - "JSON report parsing for detailed test results"
+          - "Flaky test detection and reporting"
+          - "Independent operation from coding agents"
+        tools:
+          - name: "start_watching"
+            description: "Start file watching and automatic test execution"
+            parameters: []
+            returns: "Status of the watcher startup (status, message, project_root)"
+          - name: "stop_watching"
+            description: "Stop file watching"
+            parameters: []
+            returns: "Status of the watcher shutdown (status, message)"
+          - name: "query_test_results"
+            description: "Query test results for specific test type"
+            parameters:
+              - "test_type: str - Type of tests to query (unit/integration/e2e/all, default: all)"
+            returns: "Test results (status, summary with passed/failed/flaky/skipped counts, failed_tests list, first_failed_test, flaky_tests list, first_flaky_test)"
+            behavior:
+              - "Returns 'running' status if tests are currently executing"
+              - "Returns 'completed' status with detailed results when tests are done"
+              - "Returns 'idle' status if no tests have been run yet"
+              - "Aggregates results from all test types when test_type='all'"
+          - name: "get_status"
+            description: "Get overall status of the test watcher"
+            parameters: []
+            returns: "Status information (file_watcher_running, playwright_running, project_root, test_results summary)"
+        resources:
+          - "test-watcher://status: Overall status and test results"
+          - "test-watcher://help: Help information about the Test Watcher MCP server"
+        environment_variables:
+          - "TEST_WATCHER_PROJECT_ROOT: Root directory of the project to watch (default: current directory)"
+        requirements:
+          - "Node.js and npm (for Playwright)"
+          - "Playwright installed: npm install -D @playwright/test"
+          - "Python packages: watchdog>=6.0.0, pathspec>=0.12.0"
+        tests:
+          - "tests/test_mcp_test_watcher.py"
+        integration:
+          - name: "TestWatcherClient"
+            file: "src/auto_coder/test_watcher_client.py"
+            description: "Client for querying test_watcher MCP server"
+            methods:
+              - "start_server(): Start the MCP server"
+              - "stop_server(): Stop the MCP server"
+              - "start_watching(): Start file watching"
+              - "stop_watching(): Stop file watching"
+              - "query_test_results(test_type): Query test results"
+              - "get_status(): Get overall status"
+          - name: "run_local_tests Integration"
+            file: "src/auto_coder/fix_to_pass_tests_runner.py"
+            description: "Automatically queries test_watcher MCP if enabled and available"
+            environment_variable: "USE_TEST_WATCHER_MCP (default: true)"
+            behavior:
+              - "Checks if USE_TEST_WATCHER_MCP=true and TEST_WATCHER_MCP_SERVER_PATH is set"
+              - "Queries test_watcher MCP for test results instead of running tests directly"
+              - "Falls back to normal test execution if MCP query fails or tests are running"
+              - "Converts MCP results to expected format for compatibility"
 
   usage:
     examples:
@@ -2075,3 +2326,19 @@ deployment:
         description: "Force update index even if it's up to date"
       - command: "auto-coder process-issues --repo owner/repo"
         description: "Process issues with GraphRAG integration (always enabled, containers auto-started if needed)"
+
+      # MCP Server Management Examples
+      - command: "auto-coder mcp list"
+        description: "List all available MCP servers and their installation status"
+      - command: "auto-coder mcp setup test-watcher"
+        description: "Setup Test Watcher MCP server with default settings (auto-configure all backends)"
+      - command: "auto-coder mcp setup test-watcher --install-dir ~/my-mcp-servers/test-watcher"
+        description: "Setup Test Watcher MCP server in a custom directory"
+      - command: "auto-coder mcp setup test-watcher -b codex -b gemini"
+        description: "Setup Test Watcher MCP server and configure only Codex and Gemini backends"
+      - command: "auto-coder mcp setup test-watcher -e TEST_WATCHER_PROJECT_ROOT=/path/to/project"
+        description: "Setup Test Watcher MCP server with custom environment variables"
+      - command: "auto-coder mcp status test-watcher"
+        description: "Check installation status of Test Watcher MCP server"
+      - command: "auto-coder mcp test test-watcher"
+        description: "Test Test Watcher MCP server by running it briefly"

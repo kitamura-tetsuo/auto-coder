@@ -13,6 +13,7 @@ from .cli_commands_main import (
     fix_to_pass_tests_command,
     process_issues,
 )
+from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
 from .cli_commands_utils import auth_status, get_actions_logs
 from .cli_helpers import qwen_help_has_flags  # Re-export for tests
@@ -40,6 +41,7 @@ main.add_command(auth_status)
 
 # Register command groups
 main.add_command(graphrag_group)
+main.add_command(mcp_group)
 main.add_command(mcp_pdb_group)
 
 

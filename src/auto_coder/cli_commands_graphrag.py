@@ -37,6 +37,9 @@ def run_graphrag_setup_mcp_programmatically(
     Returns:
         True if setup was successful, False otherwise
     """
+    # Use new MCP manager for setup
+    from .mcp_manager import get_mcp_manager
+
     try:
         # Determine installation directory
         if install_dir is None:

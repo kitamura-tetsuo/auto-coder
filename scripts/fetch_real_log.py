@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""実際のGitHub Actionsログを取得するスクリプト"""
+
+import subprocess
+import sys
+import zipfile
+import io
+
+def fetch_job_logs(job_id: str):
+    """指定されたjob_idのログを取得する"""
+    cmd = ["gh", "api", f"repos/kitamura-tetsuo/outliner/actions/jobs/{job_id}/logs"]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, timeout=60)
+        
+        if result.returncode != 0:
+            print(f"Error fetching logs: {result.stderr.decode()}", file=sys.stderr)
+            return None
+        
+        # まずZIPファイルとして解析を試みる
+        try:
+            with zipfile.ZipFile(io.BytesIO(result.stdout), 'r') as zf:
+                print(f"ZIP contains {len(zf.namelist())} files:")
+                for name in zf.namelist():
+                    info = zf.getinfo(name)
+                    print(f"  - {name} ({info.file_size} bytes)")
+
+                # 各ファイルの内容を表示
+                for name in zf.namelist():
+                    if name.lower().endswith('.txt'):
+                        print(f"\n{'='*80}")
+                        print(f"File: {name}")
+                        print('='*80)
+                        with zf.open(name, 'r') as fp:
+                            content = fp.read().decode('utf-8', errors='ignore')
+                            # 最初の100行と最後の100行を表示
+                            lines = content.split('\n')
+                            if len(lines) <= 200:
+                                print(content)
+                            else:
+                                print('\n'.join(lines[:100]))
+                                print(f"\n... ({len(lines) - 200} lines omitted) ...\n")
+                                print('\n'.join(lines[-100:]))
+
+                return result.stdout
+        except zipfile.BadZipFile:
+            # ZIPでない場合はテキストとして扱う
+            print("Response is plain text, not ZIP")
+            content = result.stdout.decode('utf-8', errors='ignore')
+            lines = content.split('\n')
+            print(f"Total lines: {len(lines)}")
+
+            # 最初の100行と最後の100行を表示
+            if len(lines) <= 200:
+                print(content)
+            else:
+                print('\n'.join(lines[:100]))
+                print(f"\n... ({len(lines) - 200} lines omitted) ...\n")
+                print('\n'.join(lines[-100:]))
+
+            return result.stdout
+            
+    except subprocess.TimeoutExpired:
+        print("Error: Command timed out", file=sys.stderr)
+        return None
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return None
+
+if __name__ == "__main__":
+    job_id = "53715705095"
+    if len(sys.argv) > 1:
+        job_id = sys.argv[1]
+    
+    print(f"Fetching logs for job {job_id}...")
+    fetch_job_logs(job_id)
+

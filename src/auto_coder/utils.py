@@ -57,15 +57,12 @@ class CommandExecutor:
     STREAM_POLL_INTERVAL = 0.2
 
     @staticmethod
-    def _should_stream_output(stream_output: Optional[bool]) -> bool:
-        """Determine whether to stream command output in real time."""
-        if stream_output is not None:
-            return stream_output
+    def is_running_in_debugger() -> bool:
+        """Detect if the process is running under a debugger.
 
-        # Allow forcing via env var for manual debugging sessions
-        if os.environ.get("AUTOCODER_STREAM_COMMANDS"):
-            return True
-
+        Returns:
+            True if running in debugger, False otherwise
+        """
         # Detect common debugger environment markers (debugpy, VS Code, PyCharm)
         for marker in CommandExecutor.DEBUGGER_ENV_MARKERS:
             if os.environ.get(marker):
@@ -76,6 +73,19 @@ class CommandExecutor:
             return sys.gettrace() is not None
         except Exception:
             return False
+
+    @staticmethod
+    def _should_stream_output(stream_output: Optional[bool]) -> bool:
+        """Determine whether to stream command output in real time."""
+        if stream_output is not None:
+            return stream_output
+
+        # Allow forcing via env var for manual debugging sessions
+        if os.environ.get("AUTOCODER_STREAM_COMMANDS"):
+            return True
+
+        # Use the debugger detection helper
+        return CommandExecutor.is_running_in_debugger()
 
     @staticmethod
     def _spawn_reader(
@@ -169,7 +179,8 @@ class CommandExecutor:
                         stripped_chunk = chunk.rstrip("\n")
                         if stripped_chunk:
                             # stderr も INFO レベルで出力
-                            logger.info(stripped_chunk)
+                            # depth=2 で _run_with_streaming の呼び出し元を表示
+                            logger.opt(depth=2).info(stripped_chunk)
 
                         # Optional per-chunk callback for early aborts
                         if on_stream is not None:
@@ -348,7 +359,7 @@ def change_fraction(old: str, new: str) -> float:
 def slice_relevant_error_window(text: str) -> str:
     """エラー関連の必要部分のみを返す（プレリュード切捨て＋後半重視・短縮）。
     方針:
-    - 末尾側から優先トリガを探索し、その少し前から末尾までを返す
+    - 優先トリガを探索し、最も早い位置から末尾までを返す
     - 見つからない場合は末尾の数百行に限定
     """
     if not text:
@@ -357,14 +368,14 @@ def slice_relevant_error_window(text: str) -> str:
     # 優先度の高い順でグルーピング
     priority_groups = [
         ["Expected substring:", "Received string:", "expect(received)"],
-        ["Error:   ", ".spec.ts", "##[error]"],
+        ["Error:   ", ".spec.ts", "##[error]", "##[warning]"],
         ["Command failed with exit code", "Process completed with exit code"],
         ["error was not a part of any test", "Notice:", "##[notice]", "notice"],
     ]
     start_idx = None
-    # 末尾から優先トリガを探索
+    # 最も早い優先トリガを探索（前方から）
     for group in priority_groups:
-        for i in range(len(lines) - 1, -1, -1):
+        for i in range(len(lines)):
             low = lines[i].lower()
             if any(g.lower() in low for g in group):
                 start_idx = max(0, i - 30)
@@ -372,12 +383,12 @@ def slice_relevant_error_window(text: str) -> str:
         if start_idx is not None:
             break
     if start_idx is None:
-        # トリガが無ければ、末尾のみ（最大300行）
-        return "\n".join(lines[-300:])
-    # 末尾はそのまま。さらに最大800行に制限
+        # トリガが無ければ、末尾のみ（最大500行）
+        return "\n".join(lines[-500:])
+    # 末尾はそのまま。さらに最大1500行に制限
     sliced = lines[start_idx:]
-    if len(sliced) > 800:
-        sliced = sliced[:800]
+    if len(sliced) > 1500:
+        sliced = sliced[:1500]
     return "\n".join(sliced)
 
 

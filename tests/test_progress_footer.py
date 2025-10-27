@@ -201,6 +201,100 @@ def test_progress_footer_thread_safety():
     assert len(errors) == 0
 
 
+def test_progress_footer_race_condition_print_footer():
+    """Test that print_footer handles race conditions when _current_footer becomes None."""
+    import threading
+    import time
+
+    # Mock stream as a TTY
+    mock_stream = io.StringIO()
+    mock_stream.isatty = lambda: True
+
+    footer = ProgressFooter(stream=mock_stream)
+    errors = []
+
+    def set_and_clear():
+        try:
+            for _ in range(20):
+                footer.set_item("PR", 123)
+                footer.push_stage("Testing")
+                time.sleep(0.001)  # Small delay to increase chance of race condition
+                footer.clear()
+        except Exception as e:
+            errors.append(e)
+
+    def print_repeatedly():
+        try:
+            for _ in range(20):
+                footer.print_footer()
+                time.sleep(0.001)
+        except Exception as e:
+            errors.append(e)
+
+    # Create threads that set/clear and print concurrently
+    threads = []
+    for _ in range(3):
+        t1 = threading.Thread(target=set_and_clear)
+        t2 = threading.Thread(target=print_repeatedly)
+        threads.extend([t1, t2])
+        t1.start()
+        t2.start()
+
+    # Wait for all threads
+    for t in threads:
+        t.join()
+
+    # Should not have any errors (especially TypeError from None subscript)
+    assert len(errors) == 0
+
+
+def test_progress_footer_race_condition_sink_wrapper():
+    """Test that sink_wrapper handles race conditions when _current_footer becomes None."""
+    import threading
+    import time
+
+    # Mock stream as a TTY
+    mock_stream = io.StringIO()
+    mock_stream.isatty = lambda: True
+
+    footer = ProgressFooter(stream=mock_stream)
+    errors = []
+
+    def set_and_clear():
+        try:
+            for _ in range(20):
+                footer.set_item("PR", 456)
+                footer.push_stage("Processing")
+                time.sleep(0.001)
+                footer.clear()
+        except Exception as e:
+            errors.append(e)
+
+    def log_repeatedly():
+        try:
+            for i in range(20):
+                footer.sink_wrapper(f"Log message {i}\n")
+                time.sleep(0.001)
+        except Exception as e:
+            errors.append(e)
+
+    # Create threads that set/clear and log concurrently
+    threads = []
+    for _ in range(3):
+        t1 = threading.Thread(target=set_and_clear)
+        t2 = threading.Thread(target=log_repeatedly)
+        threads.extend([t1, t2])
+        t1.start()
+        t2.start()
+
+    # Wait for all threads
+    for t in threads:
+        t.join()
+
+    # Should not have any errors (especially TypeError from None subscript)
+    assert len(errors) == 0
+
+
 def test_progress_footer_multiple_updates():
     """Test multiple push/pop stages to the progress footer."""
     # Mock stream as a TTY
