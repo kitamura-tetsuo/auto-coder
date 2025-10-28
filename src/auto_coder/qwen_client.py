@@ -193,7 +193,6 @@ class QwenClient(LLMClientBase):
         result = CommandExecutor.run_command(
             cmd,
             stream_output=True,
-            check_success=False,
             env=env,
         )
         logger.info("=" * 60)

@@ -380,6 +380,165 @@ class GitHubClient:
             )
             return []
 
+    def get_pr_closing_issues(self, repo_name: str, pr_number: int) -> List[int]:
+        """Get list of issues that will be closed when PR is merged using GitHub GraphQL API.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            pr_number: PR number to check for closing issues
+
+        Returns:
+            List of issue numbers that will be closed when the PR is merged.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+
+            # GraphQL query to fetch closingIssuesReferences
+            query = """
+            {
+              repository(owner: "%s", name: "%s") {
+                pullRequest(number: %d) {
+                  number
+                  title
+                  closingIssuesReferences(first: 100) {
+                    nodes {
+                      number
+                      title
+                      state
+                    }
+                  }
+                }
+              }
+            }
+            """ % (owner, repo, pr_number)
+
+            # Execute GraphQL query using gh CLI
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-f",
+                    f"query={query}",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            data = json.loads(result.stdout)
+
+            # Extract closing issues
+            closing_issues = []
+            issues = (
+                data.get("data", {})
+                .get("repository", {})
+                .get("pullRequest", {})
+                .get("closingIssuesReferences", {})
+                .get("nodes", [])
+            )
+
+            for issue in issues:
+                closing_issues.append(issue.get("number"))
+
+            if closing_issues:
+                logger.info(
+                    f"PR #{pr_number} will close {len(closing_issues)} issue(s): {closing_issues}"
+                )
+
+            return closing_issues
+
+        except subprocess.CalledProcessError as e:
+            logger.error(
+                f"Failed to execute gh GraphQL query for PR #{pr_number}: {e.stderr}"
+            )
+            return []
+        except Exception as e:
+            logger.error(
+                f"Failed to get closing issues for PR #{pr_number}: {e}"
+            )
+            return []
+
+    def get_parent_issue(self, repo_name: str, issue_number: int) -> Optional[int]:
+        """Get parent issue number for a given issue using GitHub GraphQL API.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue number to check for parent issue
+
+        Returns:
+            Parent issue number if exists, None otherwise.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+
+            # GraphQL query to fetch parent issue (sub-issues feature)
+            # Note: Use 'parent' field, not 'parentIssue'
+            query = """
+            {
+              repository(owner: "%s", name: "%s") {
+                issue(number: %d) {
+                  number
+                  title
+                  parent {
+                    ... on Issue {
+                      number
+                      title
+                      state
+                      url
+                    }
+                  }
+                }
+              }
+            }
+            """ % (owner, repo, issue_number)
+
+            # Execute GraphQL query using gh CLI with sub_issues feature header
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-H",
+                    "GraphQL-Features: sub_issues",
+                    "-f",
+                    f"query={query}",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            data = json.loads(result.stdout)
+
+            # Extract parent issue
+            parent_issue = (
+                data.get("data", {})
+                .get("repository", {})
+                .get("issue", {})
+                .get("parent")
+            )
+
+            if parent_issue:
+                parent_number = parent_issue.get("number")
+                logger.info(
+                    f"Issue #{issue_number} has parent issue #{parent_number}: {parent_issue.get('title')}"
+                )
+                return parent_number
+
+            return None
+
+        except subprocess.CalledProcessError as e:
+            logger.error(
+                f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}"
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                f"Failed to get parent issue for issue #{issue_number}: {e}"
+            )
+            return None
+
     def create_issue(
         self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None
     ) -> Issue.Issue:

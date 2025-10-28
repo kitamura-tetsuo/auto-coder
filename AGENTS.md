@@ -73,7 +73,7 @@ GitHubからissueやエラーのPRを取得して構築・修正を行い、必�
 - Rationale: scattering commit/push logic leads to duplicated behavior, inconsistent error handling, and subtle bugs (e.g., missing unified handling for formatter hooks like dprint).
 - Implementation:
   - `git_utils.git_commit_with_retry(commit_message, cwd=None, max_retries=1)`: Centralized commit helper that automatically detects dprint formatting errors, runs `npx dprint fmt`, stages changes, and retries commit once.
-  - `git_utils.git_push(cwd=None, remote='origin', branch=None)`: Centralized push helper for consistent error handling.
+  - `git_utils.git_push(cwd=None, remote='origin', branch=None, commit_message=None)`: Centralized push helper for consistent error handling. Automatically detects dprint formatting errors in push hooks (stderr containing "dprint output-file-paths"), runs `npx dprint fmt`, stages all changes with `git add -A`, re-commits with the provided commit_message (using `git commit --amend --no-edit` or falling back to `git commit -m`), and retries push.
   - All git commit/push operations throughout the codebase use these helpers.
   - Direct invocations of `git commit` or `git push` via CommandExecutor are prohibited outside of these helpers.
 

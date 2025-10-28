@@ -96,7 +96,6 @@ class CodexClient(LLMClientBase):
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
-                check_success=False,
                 on_stream=_on_stream,
             )
             logger.info("=" * 60)

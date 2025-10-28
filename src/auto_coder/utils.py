@@ -248,7 +248,6 @@ class CommandExecutor:
         cmd: List[str],
         timeout: Optional[int] = None,
         cwd: Optional[str] = None,
-        check_success: bool = True,
         stream_output: Optional[bool] = None,
         env: Optional[Dict[str, str]] = None,
         on_stream: Optional[Callable[[str, str], None]] = None,
@@ -294,7 +293,7 @@ class CommandExecutor:
                 stdout = result.stdout
                 stderr = result.stderr
 
-            success = return_code == 0 if check_success else True
+            success = return_code == 0
 
             return CommandResult(
                 success=success, stdout=stdout, stderr=stderr, returncode=return_code

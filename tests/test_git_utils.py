@@ -11,6 +11,7 @@ import pytest
 
 from src.auto_coder.git_utils import (
     get_current_repo_name,
+    git_checkout_branch,
     git_commit_with_retry,
     git_push,
     is_git_repository,
@@ -323,6 +324,185 @@ class TestGitPush:
             assert mock_cmd.run_command.call_count == 2  # No retry
             assert "failed to push some refs" in result.stderr
 
+    def test_push_with_dprint_error_and_retry(self):
+        """Test push with dprint formatting error triggers retry without commit message."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push fails with dprint error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="You may want to try using `dprint output-file-paths` to see which files it's finding",
+                    returncode=1,
+                ),
+                # Third call: dprint fmt succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fourth call: git add -A succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fifth call: push retry succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
+
+            result = git_push()
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 5
+            # Check that dprint fmt was called
+            calls = mock_cmd.run_command.call_args_list
+            assert calls[2][0][0] == ["npx", "dprint", "fmt"]
+            assert calls[3][0][0] == ["git", "add", "-A"]
+            assert calls[4][0][0] == ["git", "push"]
+
+    def test_push_with_dprint_error_and_commit_message(self):
+        """Test push with dprint formatting error and commit message triggers re-commit."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push fails with dprint error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="You may want to try using `dprint output-file-paths` to see which files it's finding",
+                    returncode=1,
+                ),
+                # Third call: dprint fmt succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fourth call: git add -A succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fifth call: git commit --amend --no-edit succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Sixth call: push retry succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
+
+            result = git_push(commit_message="Fix: automated changes")
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 6
+            # Check that dprint fmt was called
+            calls = mock_cmd.run_command.call_args_list
+            assert calls[2][0][0] == ["npx", "dprint", "fmt"]
+            assert calls[3][0][0] == ["git", "add", "-A"]
+            assert calls[4][0][0] == ["git", "commit", "--amend", "--no-edit"]
+            assert calls[5][0][0] == ["git", "push"]
+
+    def test_push_with_dprint_error_fmt_fails(self):
+        """Test push with dprint error but formatter fails."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push fails with dprint error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="dprint output-file-paths error detected",
+                    returncode=1,
+                ),
+                # Third call: dprint fmt fails
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="dprint command not found",
+                    returncode=1,
+                ),
+            ]
+
+            result = git_push()
+
+            assert result.success is False
+            assert "dprint output-file-paths" in result.stderr
+            assert mock_cmd.run_command.call_count == 3
+
+    def test_push_with_dprint_error_commit_amend_fails(self):
+        """Test push with dprint error when commit amend fails, falls back to regular commit."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Second call: push fails with dprint error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="dprint output-file-paths error detected",
+                    returncode=1,
+                ),
+                # Third call: dprint fmt succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fourth call: git add -A succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fifth call: git commit --amend --no-edit fails
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="fatal: You are in the middle of a merge -- cannot amend.",
+                    returncode=1,
+                ),
+                # Sixth call: git commit -m succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Seventh call: push retry succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
+
+            result = git_push(commit_message="Fix: automated changes")
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 7
+            # Check that regular commit was called after amend failed
+            calls = mock_cmd.run_command.call_args_list
+            assert calls[4][0][0] == ["git", "commit", "--amend", "--no-edit"]
+            assert calls[5][0][0] == ["git", "commit", "-m", "Fix: automated changes"]
+            assert calls[6][0][0] == ["git", "push"]
+
+    def test_push_with_dprint_error_and_upstream_retry(self):
+        """Test push with dprint error and then upstream error triggers both retries."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: get current branch
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
+                # Second call: push fails with dprint error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="You may want to try using `dprint output-file-paths` to see which files it's finding",
+                    returncode=1,
+                ),
+                # Third call: dprint fmt succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fourth call: git add -A succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fifth call: push retry fails with upstream error
+                CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="fatal: The current branch feature has no upstream branch.\nTo push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin feature\n",
+                    returncode=1,
+                ),
+                # Sixth call: push with --set-upstream succeeds
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
+
+            result = git_push()
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 6
+            # Check the final call used --set-upstream
+            final_call_args = mock_cmd.run_command.call_args_list[5][0][0]
+            assert final_call_args == ["git", "push", "--set-upstream", "origin", "feature"]
+
 
 class TestParseGithubRepoFromUrl:
     """Tests for parse_github_repo_from_url function."""
@@ -448,3 +628,137 @@ class TestSaveCommitFailureHistory:
             assert "timestamp" in data
         finally:
             os.chdir(original_cwd)
+
+
+class TestGitCheckoutBranch:
+    """Tests for git_checkout_branch function."""
+
+    def test_successful_checkout_existing_branch(self):
+        """Test successful checkout of an existing branch."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git checkout
+                CommandResult(success=True, stdout="Switched to branch 'feature'\n", stderr="", returncode=0),
+                # Second call: verify current branch
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
+            ]
+
+            result = git_checkout_branch("feature")
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 2
+            # Verify checkout command
+            assert mock_cmd.run_command.call_args_list[0][0][0] == ["git", "checkout", "feature"]
+            # Verify verification command
+            assert mock_cmd.run_command.call_args_list[1][0][0] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
+
+    def test_successful_checkout_create_new_branch(self):
+        """Test successful checkout with creating a new branch."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git checkout -b
+                CommandResult(success=True, stdout="Switched to a new branch 'new-feature'\n", stderr="", returncode=0),
+                # Second call: verify current branch
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
+            ]
+
+            result = git_checkout_branch("new-feature", create_new=True)
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 2
+            # Verify checkout command with -b flag
+            assert mock_cmd.run_command.call_args_list[0][0][0] == ["git", "checkout", "-b", "new-feature"]
+
+    def test_successful_checkout_create_from_base_branch(self):
+        """Test successful checkout with creating a new branch from base branch."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git checkout -B
+                CommandResult(success=True, stdout="Switched to branch 'new-feature'\n", stderr="", returncode=0),
+                # Second call: verify current branch
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
+            ]
+
+            result = git_checkout_branch("new-feature", create_new=True, base_branch="main")
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 2
+            # Verify checkout command with -B flag
+            assert mock_cmd.run_command.call_args_list[0][0][0] == ["git", "checkout", "-B", "new-feature"]
+
+    def test_checkout_failure(self):
+        """Test checkout failure."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=False, stdout="", stderr="error: pathspec 'nonexistent' did not match any file(s) known to git", returncode=1
+            )
+
+            result = git_checkout_branch("nonexistent")
+
+            assert result.success is False
+            assert "pathspec 'nonexistent' did not match" in result.stderr
+            # Should only call checkout, not verification
+            assert mock_cmd.run_command.call_count == 1
+
+    def test_checkout_success_but_verification_fails(self):
+        """Test checkout succeeds but verification command fails."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git checkout succeeds
+                CommandResult(success=True, stdout="Switched to branch 'feature'\n", stderr="", returncode=0),
+                # Second call: verification fails
+                CommandResult(success=False, stdout="", stderr="fatal: not a git repository", returncode=128),
+            ]
+
+            result = git_checkout_branch("feature")
+
+            assert result.success is False
+            assert "verification failed" in result.stderr
+            assert mock_cmd.run_command.call_count == 2
+
+    def test_checkout_success_but_branch_mismatch(self):
+        """Test checkout succeeds but current branch doesn't match expected."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git checkout
+                CommandResult(success=True, stdout="Switched to branch 'feature'\n", stderr="", returncode=0),
+                # Second call: verify returns different branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+            ]
+
+            result = git_checkout_branch("feature")
+
+            assert result.success is False
+            assert "Branch mismatch" in result.stderr
+            assert "expected 'feature'" in result.stderr
+            assert "currently on 'main'" in result.stderr
+            assert mock_cmd.run_command.call_count == 2
+
+    def test_checkout_with_cwd(self):
+        """Test checkout with custom working directory."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="Switched to branch 'feature'\n", stderr="", returncode=0),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
+            ]
+
+            result = git_checkout_branch("feature", cwd="/custom/path")
+
+            assert result.success is True
+            # Check that cwd was passed to both calls
+            assert mock_cmd.run_command.call_args_list[0][1]["cwd"] == "/custom/path"
+            assert mock_cmd.run_command.call_args_list[1][1]["cwd"] == "/custom/path"

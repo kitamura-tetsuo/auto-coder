@@ -20,7 +20,7 @@ from .fix_to_pass_tests_runner import (
     extract_important_errors,
     run_local_tests,
 )
-from .git_utils import ensure_pushed, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
 from .progress_footer import (
     newline_progress,
@@ -546,7 +546,7 @@ def _check_github_actions_status(
     try:
         # Use gh CLI to get PR status checks (text output)
         result = cmd.run_command(
-            ["gh", "pr", "checks", str(pr_number)], check_success=False
+            ["gh", "pr", "checks", str(pr_number)]
         )
 
         # Note: gh pr checks returns non-zero exit code when some checks fail
@@ -898,8 +898,8 @@ def _force_checkout_pr_manually(
             )
             return False
 
-        # Force checkout the branch
-        checkout_result = cmd.run_command(["git", "checkout", "-B", branch_name])
+        # Force checkout the branch (create or reset)
+        checkout_result = git_checkout_branch(branch_name, create_new=True, base_branch=branch_name)
         if checkout_result.success:
             log_action(f"Successfully manually checked out PR #{pr_number}")
             return True
@@ -1226,8 +1226,7 @@ def _poll_pr_mergeable(
                     repo_name,
                     "--json",
                     "mergeable,mergeStateStatus",
-                ],
-                check_success=False,
+                ]
             )
             if result.stdout:
                 try:
@@ -1259,8 +1258,7 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
                 repo_name,
                 "--json",
                 "mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
-            ],
-            check_success=False,
+            ]
         )
         allowed: List[str] = []
         if result.stdout:

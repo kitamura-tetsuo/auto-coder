@@ -13,6 +13,9 @@ def test_apply_issue_actions_directly_calls_llm_client():
     mock_llm_client = Mock()
     mock_llm_client._run_llm_cli = Mock(return_value="Issue analyzed and fixed")
 
+    mock_github_client = Mock()
+    mock_github_client.get_parent_issue.return_value = None  # No parent issue
+
     repo_name = "test/repo"
     issue_data = {
         "number": 123,
@@ -28,28 +31,36 @@ def test_apply_issue_actions_directly_calls_llm_client():
     # Execute
     with patch("src.auto_coder.issue_processor.render_prompt") as mock_render:
         with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
-            mock_render.return_value = "Test prompt for issue"
-            mock_result = Mock()
-            mock_result.success = True
-            mock_result.stdout = ""
-            mock_cmd.run_command.return_value = mock_result
+            with patch("src.auto_coder.issue_processor.ensure_pushed") as mock_ensure_pushed:
+                mock_render.return_value = "Test prompt for issue"
 
-            actions = _apply_issue_actions_directly(
-                repo_name, issue_data, config, dry_run, mock_llm_client
-            )
+                # Mock git commands
+                def cmd_side_effect(cmd_list, check_success=True):
+                    result = Mock()
+                    result.success = True
+                    result.stdout = ""
+                    result.stderr = ""
+
+                    # Work branch does not exist yet
+                    if cmd_list == ["git", "rev-parse", "--verify", "issue-123"]:
+                        result.success = False
+                        result.stderr = "fatal: Needed a single revision"
+
+                    return result
+
+                mock_cmd.run_command.side_effect = cmd_side_effect
+                mock_ensure_pushed.return_value = Mock(success=True, stdout="No unpushed commits")
+
+                actions = _apply_issue_actions_directly(
+                    repo_name, issue_data, config, dry_run, mock_github_client, mock_llm_client
+                )
 
     # Verify
     mock_llm_client._run_llm_cli.assert_called_once_with("Test prompt for issue")
-    # ブランチ切り替えが最初に呼ばれたことを確認
-    assert mock_cmd.run_command.call_count >= 1
-    first_call_args = mock_cmd.run_command.call_args_list[0][0][0]
-    assert first_call_args[0] == "git"
-    assert first_call_args[1] == "checkout"
-    assert first_call_args[2] == config.MAIN_BRANCH  # デフォルトブランチに切り替え
-
     assert len(actions) > 0
     assert any("Issue analyzed" in action for action in actions)
-    assert any("Switched to branch" in action for action in actions)
+    # ブランチ作成または切り替えのメッセージを確認
+    assert any("work branch" in action for action in actions)
 
 
 def test_apply_issue_actions_directly_switches_to_pr_branch():
@@ -57,6 +68,8 @@ def test_apply_issue_actions_directly_switches_to_pr_branch():
     # Setup
     mock_llm_client = Mock()
     mock_llm_client._run_llm_cli = Mock(return_value="Issue analyzed and fixed")
+
+    mock_github_client = Mock()
 
     repo_name = "test/repo"
     issue_data = {
@@ -74,15 +87,17 @@ def test_apply_issue_actions_directly_switches_to_pr_branch():
     # Execute
     with patch("src.auto_coder.issue_processor.render_prompt") as mock_render:
         with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
-            mock_render.return_value = "Test prompt for issue"
-            mock_result = Mock()
-            mock_result.success = True
-            mock_result.stdout = ""
-            mock_cmd.run_command.return_value = mock_result
+            with patch("src.auto_coder.issue_processor.ensure_pushed") as mock_ensure_pushed:
+                mock_render.return_value = "Test prompt for issue"
+                mock_result = Mock()
+                mock_result.success = True
+                mock_result.stdout = ""
+                mock_cmd.run_command.return_value = mock_result
+                mock_ensure_pushed.return_value = Mock(success=True, stdout="No unpushed commits")
 
-            actions = _apply_issue_actions_directly(
-                repo_name, issue_data, config, dry_run, mock_llm_client
-            )
+                actions = _apply_issue_actions_directly(
+                    repo_name, issue_data, config, dry_run, mock_github_client, mock_llm_client
+                )
 
     # Verify
     mock_llm_client._run_llm_cli.assert_called_once_with("Test prompt for issue")
@@ -104,6 +119,9 @@ def test_apply_issue_actions_directly_fails_on_branch_switch_error():
     mock_llm_client = Mock()
     mock_llm_client._run_llm_cli = Mock(return_value="Issue analyzed and fixed")
 
+    mock_github_client = Mock()
+    mock_github_client.get_parent_issue.return_value = None  # No parent issue
+
     repo_name = "test/repo"
     issue_data = {
         "number": 123,
@@ -119,22 +137,24 @@ def test_apply_issue_actions_directly_fails_on_branch_switch_error():
     # Execute
     with patch("src.auto_coder.issue_processor.render_prompt") as mock_render:
         with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
-            mock_render.return_value = "Test prompt for issue"
-            mock_result = Mock()
-            mock_result.success = False
-            mock_result.stderr = "fatal: branch not found"
-            mock_cmd.run_command.return_value = mock_result
+            with patch("src.auto_coder.issue_processor.ensure_pushed") as mock_ensure_pushed:
+                mock_render.return_value = "Test prompt for issue"
+                mock_result = Mock()
+                mock_result.success = False
+                mock_result.stderr = "fatal: branch not found"
+                mock_cmd.run_command.return_value = mock_result
+                mock_ensure_pushed.return_value = Mock(success=True, stdout="No unpushed commits")
 
-            actions = _apply_issue_actions_directly(
-                repo_name, issue_data, config, dry_run, mock_llm_client
-            )
+                actions = _apply_issue_actions_directly(
+                    repo_name, issue_data, config, dry_run, mock_github_client, mock_llm_client
+                )
 
     # Verify
     # LLMは呼ばれないはず（ブランチ切り替えで失敗して終了）
     mock_llm_client._run_llm_cli.assert_not_called()
     # ブランチ切り替えのエラーメッセージが含まれているはず
     assert len(actions) == 1
-    assert "Failed to switch to branch" in actions[0]
+    assert "Failed to" in actions[0]
     assert "fatal: branch not found" in actions[0]
 
 

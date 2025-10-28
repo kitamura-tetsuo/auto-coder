@@ -164,7 +164,7 @@ def git_commit_with_retry(
 
     for attempt in range(max_retries + 1):
         result = cmd.run_command(
-            ["git", "commit", "-m", commit_message], cwd=cwd, check_success=False
+            ["git", "commit", "-m", commit_message], cwd=cwd
         )
 
         # If commit succeeded, return immediately
@@ -188,14 +188,14 @@ def git_commit_with_retry(
 
                 # Run dprint formatter
                 fmt_result = cmd.run_command(
-                    ["npx", "dprint", "fmt"], cwd=cwd, check_success=False
+                    ["npx", "dprint", "fmt"], cwd=cwd
                 )
 
                 if fmt_result.success:
                     logger.info("Successfully ran dprint formatter")
                     # Stage the formatted files
                     add_result = cmd.run_command(
-                        ["git", "add", "-u"], cwd=cwd, check_success=False
+                        ["git", "add", "-u"], cwd=cwd
                     )
                     if add_result.success:
                         logger.info("Staged formatted files, retrying commit...")
@@ -222,6 +222,69 @@ def git_commit_with_retry(
     return result
 
 
+def git_checkout_branch(
+    branch_name: str,
+    create_new: bool = False,
+    base_branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+) -> CommandResult:
+    """
+    Switch to a git branch and verify the checkout was successful.
+
+    This function centralizes git checkout operations and ensures that after
+    switching branches, the current branch matches the expected branch.
+
+    Args:
+        branch_name: Name of the branch to checkout
+        create_new: If True, creates a new branch with -b flag
+        base_branch: If create_new is True and base_branch is specified, creates
+                     the new branch from base_branch (using -B flag)
+        cwd: Optional working directory for the git command
+
+    Returns:
+        CommandResult with the result of the checkout operation.
+        success=True only if checkout succeeded AND current branch matches expected branch.
+    """
+    cmd = CommandExecutor()
+
+    # Build checkout command
+    checkout_cmd: List[str] = ["git", "checkout"]
+    if create_new:
+        if base_branch:
+            # Create new branch from base_branch (or reset if exists)
+            checkout_cmd.append("-B")
+        else:
+            # Create new branch
+            checkout_cmd.append("-b")
+    checkout_cmd.append(branch_name)
+
+    # Execute checkout
+    result = cmd.run_command(checkout_cmd, cwd=cwd)
+
+    if not result.success:
+        logger.error(f"Failed to checkout branch '{branch_name}': {result.stderr}")
+        sys.exit(1)
+
+    # Verify that we're now on the expected branch
+    verify_result = cmd.run_command(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=cwd
+    )
+
+    if not verify_result.success:
+        logger.error(f"Failed to verify current branch after checkout: {verify_result.stderr}")
+        sys.exit(1)
+
+    current_branch = verify_result.stdout.strip()
+    if current_branch != branch_name:
+        error_msg = f"Branch mismatch after checkout: expected '{branch_name}', but currently on '{current_branch}'"
+        logger.error(error_msg)
+        sys.exit(1)
+
+    logger.info(f"Successfully checked out branch '{branch_name}'")
+    return result
+
+
 def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") -> bool:
     """
     Check if there are unpushed commits in the current branch.
@@ -238,8 +301,7 @@ def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") ->
     # Get current branch
     branch_result = cmd.run_command(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=cwd,
-        check_success=False
+        cwd=cwd
     )
     if not branch_result.success:
         logger.warning(f"Failed to get current branch: {branch_result.stderr}")
@@ -250,8 +312,7 @@ def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") ->
     # Check if there are unpushed commits
     result = cmd.run_command(
         ["git", "rev-list", f"{remote}/{current_branch}..HEAD", "--count"],
-        cwd=cwd,
-        check_success=False
+        cwd=cwd
     )
 
     if not result.success:
@@ -268,18 +329,23 @@ def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") ->
 
 
 def git_push(
-    cwd: Optional[str] = None, remote: str = "origin", branch: Optional[str] = None
+    cwd: Optional[str] = None,
+    remote: str = "origin",
+    branch: Optional[str] = None,
+    commit_message: Optional[str] = None,
 ) -> CommandResult:
     """
     Push changes to remote repository.
 
     This function centralizes git push operations for consistent error handling.
     Automatically handles upstream branch setup if needed.
+    Also handles dprint formatting errors by running formatter and retrying push.
 
     Args:
         cwd: Optional working directory for the git command
         remote: Remote name (default: 'origin')
         branch: Optional branch name. If None, pushes current branch
+        commit_message: Optional commit message for re-committing after dprint formatting
 
     Returns:
         CommandResult with the result of the push operation
@@ -293,8 +359,7 @@ def git_push(
     if not target_branch:
         branch_result = cmd.run_command(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=cwd,
-            check_success=False
+            cwd=cwd
         )
         if branch_result.returncode == 0:
             target_branch = branch_result.stdout.strip()
@@ -312,7 +377,7 @@ def git_push(
     if branch:
         push_cmd.extend([remote, branch])
 
-    result = cmd.run_command(push_cmd, cwd=cwd, check_success=False)
+    result = cmd.run_command(push_cmd, cwd=cwd)
 
     # Check if push failed due to missing upstream
     if result.returncode != 0:
@@ -327,7 +392,85 @@ def git_push(
             )
             # Retry with --set-upstream
             push_cmd_with_upstream = ["git", "push", "--set-upstream", remote, target_branch]
-            result = cmd.run_command(push_cmd_with_upstream, cwd=cwd, check_success=False)
+            result = cmd.run_command(push_cmd_with_upstream, cwd=cwd)
+
+    # Check if push failed due to dprint formatting issues
+    if result.returncode != 0:
+        is_dprint_error = (
+            "dprint output-file-paths" in result.stderr
+            or "You may want to try using `dprint output-file-paths`" in result.stderr
+        )
+
+        if is_dprint_error:
+            logger.info(
+                "Detected dprint formatting issues in push hook, running 'npx dprint fmt' and retrying..."
+            )
+
+            # Run dprint formatter
+            fmt_result = cmd.run_command(
+                ["npx", "dprint", "fmt"], cwd=cwd
+            )
+
+            if fmt_result.success:
+                logger.info("Successfully ran dprint formatter")
+                # Stage all changes including formatted files
+                add_result = cmd.run_command(
+                    ["git", "add", "-A"], cwd=cwd
+                )
+                if add_result.success:
+                    logger.info("Staged formatted files")
+
+                    # Re-commit with the same message if provided
+                    if commit_message:
+                        logger.info("Re-committing changes after dprint formatting...")
+                        commit_result = cmd.run_command(
+                            ["git", "commit", "--amend", "--no-edit"],
+                            cwd=cwd
+                        )
+                        if not commit_result.success:
+                            logger.warning(
+                                f"Failed to amend commit: {commit_result.stderr}"
+                            )
+                            # Try regular commit if amend fails
+                            commit_result = cmd.run_command(
+                                ["git", "commit", "-m", commit_message],
+                                cwd=cwd
+                            )
+                            if not commit_result.success:
+                                logger.warning(
+                                    f"Failed to commit formatted changes: {commit_result.stderr}"
+                                )
+                                return CommandResult(
+                                    success=False,
+                                    stdout=commit_result.stdout,
+                                    stderr=commit_result.stderr,
+                                    returncode=commit_result.returncode,
+                                )
+
+                    logger.info("Retrying push...")
+                    # Retry push
+                    result = cmd.run_command(push_cmd, cwd=cwd)
+
+                    # If still failing due to upstream, try with --set-upstream
+                    if result.returncode != 0:
+                        is_upstream_error = (
+                            "has no upstream branch" in result.stderr
+                            or "--set-upstream" in result.stderr
+                        )
+                        if is_upstream_error:
+                            logger.info(
+                                f"Branch {target_branch} has no upstream, setting upstream to {remote}/{target_branch}"
+                            )
+                            push_cmd_with_upstream = ["git", "push", "--set-upstream", remote, target_branch]
+                            result = cmd.run_command(push_cmd_with_upstream, cwd=cwd)
+                else:
+                    logger.warning(
+                        f"Failed to stage formatted files: {add_result.stderr}"
+                    )
+            else:
+                logger.warning(
+                    f"Failed to run dprint formatter: {fmt_result.stderr}"
+                )
 
     if result.returncode == 0:
         logger.info(

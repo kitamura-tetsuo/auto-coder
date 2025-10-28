@@ -742,3 +742,105 @@ class TestGitHubClient:
         assert result is True
         # Should not call get_pulls since GraphQL found a PR
         mock_github.get_repo.assert_not_called()
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.github_client.Github")
+    def test_get_pr_closing_issues_success(
+        self, mock_github_class, mock_run, mock_github_token
+    ):
+        """Test successful retrieval of closing issues for a PR."""
+        # Setup
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 456,
+                        "title": "Fix bug",
+                        "closingIssuesReferences": {
+                            "nodes": [
+                                {"number": 123, "title": "Bug report", "state": "OPEN"},
+                                {"number": 124, "title": "Another bug", "state": "OPEN"},
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        mock_github = Mock()
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.get_pr_closing_issues("test/repo", 456)
+
+        # Assert
+        assert result == [123, 124]
+        mock_run.assert_called_once()
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.github_client.Github")
+    def test_get_pr_closing_issues_empty(
+        self, mock_github_class, mock_run, mock_github_token
+    ):
+        """Test PR with no closing issues."""
+        # Setup
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 456,
+                        "title": "Fix bug",
+                        "closingIssuesReferences": {"nodes": []},
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        mock_github = Mock()
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.get_pr_closing_issues("test/repo", 456)
+
+        # Assert
+        assert result == []
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.github_client.Github")
+    def test_get_pr_closing_issues_error(
+        self, mock_github_class, mock_run, mock_github_token
+    ):
+        """Test error handling when GraphQL query fails."""
+        # Setup
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "GraphQL error"
+        mock_run.side_effect = Exception("Command failed")
+
+        mock_github = Mock()
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.get_pr_closing_issues("test/repo", 456)
+
+        # Assert
+        assert result == []

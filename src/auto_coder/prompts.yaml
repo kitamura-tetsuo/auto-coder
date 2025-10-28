@@ -273,6 +273,50 @@ tests:
       * Do **not** include explanations of your reasoning.
       * Wrap the entire commit message in triple backticks (```) before and after.
 
+  commit_and_push: |-
+    You are an expert Git operations assistant.
+
+    The automated commit/push operation has failed with the following error:
+    $error_message
+
+    Commit message that was attempted:
+    $commit_message
+
+    **Your task is to:**
+    1. First, review the current state by running:
+       * `git status` to check the current state
+       * `git diff` to inspect unstaged changes
+       * `git diff --cached` to inspect staged changes
+
+    2. Analyze the error and determine the root cause:
+       * Is it a formatting issue (e.g., dprint, prettier)?
+       * Is it a merge conflict?
+       * Is it a pre-commit hook failure?
+       * Is it a network/authentication issue?
+
+    3. Take appropriate actions to resolve the issue:
+       * If it's a formatting issue, run the appropriate formatter (e.g., `npx dprint fmt`, `npm run format`)
+       * If it's a merge conflict, resolve the conflicts
+       * If it's a hook failure, fix the underlying issue that the hook detected
+       * Stage any additional changes with `git add`
+
+    4. After resolving the issue, commit and push the changes:
+       * Use `git commit -m "$commit_message"` with the original commit message
+       * Use `git push` to push the changes
+
+    5. Verify the operation succeeded:
+       * Check `git status` to ensure there are no uncommitted changes
+       * Confirm the push was successful
+
+    **Important:**
+    * Do NOT modify the commit message unless absolutely necessary
+    * Do NOT skip or bypass pre-commit hooks
+    * Do NOT force push unless explicitly required
+    * Ensure all changes are properly staged before committing
+    * If the issue cannot be resolved automatically, provide a clear error message
+
+    After completing the operation, output a single line starting with "COMMIT_PUSH_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>".
+
 
 gemini:
   pr_analysis: |-
