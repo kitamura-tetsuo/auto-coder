@@ -250,6 +250,9 @@ class TestIssueProcessorParentIssueBranch:
                 result.stdout = "Switched to a new branch 'issue-100'\n"
             elif cmd_list == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
                 result.stdout = f"{current_branch[0]}\n"
+            elif cmd_list[0] == "git" and cmd_list[1] == "push":
+                # Handle push commands
+                result.stdout = "Branch pushed successfully\n"
 
             return result
 
@@ -296,11 +299,17 @@ class TestIssueProcessorParentIssueBranch:
             call[0][0] == ["git", "checkout", "-b", "issue-100"] for call in checkout_calls
         ), "Should create work branch issue-100"
 
-        # Verify push was called for parent branch (this uses issue_processor.cmd)
-        cmd_calls = mock_cmd.run_command.call_args_list
+        # Verify push was called for parent branch (this uses git_utils.CommandExecutor)
+        push_calls = [
+            call for call in git_calls
+            if call[0][0][0] == "git" and call[0][0][1] == "push"
+        ]
         assert any(
-            call[0][0] == ["git", "push", "-u", "origin", "issue-1"] for call in cmd_calls
+            call[0][0] == ["git", "push", "-u", "origin", "issue-1"] for call in push_calls
         ), "Should push parent branch issue-1"
+        assert any(
+            call[0][0] == ["git", "push", "-u", "origin", "issue-100"] for call in push_calls
+        ), "Should push work branch issue-100"
 
     @patch("src.auto_coder.git_utils.CommandExecutor")
     @patch("src.auto_coder.issue_processor.cmd")

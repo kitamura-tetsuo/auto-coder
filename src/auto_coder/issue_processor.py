@@ -722,6 +722,11 @@ def _apply_issue_actions_directly(
                     base_branch = parent_branch
                     pr_base_branch = parent_branch  # PRのマージ先も親issueブランチに設定
                     logger.info(f"Parent branch {parent_branch} exists, using it as base")
+
+                    # 最新の状態を取得
+                    pull_result = cmd.run_command(["git", "pull"])
+                    if not pull_result.success:
+                        logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
                 else:
                     # 親issueのブランチが存在しない場合は作成
                     logger.info(f"Parent branch {parent_branch} does not exist, creating it")
@@ -739,21 +744,11 @@ def _apply_issue_actions_directly(
                     if not pull_result.success:
                         logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
 
-                    # 親issueのブランチを作成
+                    # 親issueのブランチを作成（自動的にリモートにプッシュされる）
                     create_parent_result = git_checkout_branch(parent_branch, create_new=True)
                     if create_parent_result.success:
-                        actions.append(f"Created parent branch: {parent_branch}")
-                        logger.info(f"Successfully created parent branch: {parent_branch}")
-
-                        # 親issueのブランチをpush
-                        push_parent_result = cmd.run_command(
-                            ["git", "push", "-u", "origin", parent_branch]
-                        )
-                        if push_parent_result.success:
-                            actions.append(f"Pushed parent branch: {parent_branch}")
-                            logger.info(f"Successfully pushed parent branch: {parent_branch}")
-                        else:
-                            logger.warning(f"Failed to push parent branch: {push_parent_result.stderr}")
+                        actions.append(f"Created and published parent branch: {parent_branch}")
+                        logger.info(f"Successfully created and published parent branch: {parent_branch}")
 
                         base_branch = parent_branch
                         pr_base_branch = parent_branch  # PRのマージ先も親issueブランチに設定

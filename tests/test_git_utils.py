@@ -664,14 +664,18 @@ class TestGitCheckoutBranch:
                 CommandResult(success=True, stdout="Switched to a new branch 'new-feature'\n", stderr="", returncode=0),
                 # Second call: verify current branch
                 CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
+                # Third call: git push -u origin new-feature
+                CommandResult(success=True, stdout="Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("new-feature", create_new=True)
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 2
+            assert mock_cmd.run_command.call_count == 3
             # Verify checkout command with -b flag
             assert mock_cmd.run_command.call_args_list[0][0][0] == ["git", "checkout", "-b", "new-feature"]
+            # Verify push command
+            assert mock_cmd.run_command.call_args_list[2][0][0] == ["git", "push", "-u", "origin", "new-feature"]
 
     def test_successful_checkout_create_from_base_branch(self):
         """Test successful checkout with creating a new branch from base branch."""
@@ -683,14 +687,18 @@ class TestGitCheckoutBranch:
                 CommandResult(success=True, stdout="Switched to branch 'new-feature'\n", stderr="", returncode=0),
                 # Second call: verify current branch
                 CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
+                # Third call: git push -u origin new-feature
+                CommandResult(success=True, stdout="Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("new-feature", create_new=True, base_branch="main")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 2
+            assert mock_cmd.run_command.call_count == 3
             # Verify checkout command with -B flag
             assert mock_cmd.run_command.call_args_list[0][0][0] == ["git", "checkout", "-B", "new-feature"]
+            # Verify push command
+            assert mock_cmd.run_command.call_args_list[2][0][0] == ["git", "push", "-u", "origin", "new-feature"]
 
     def test_checkout_failure(self):
         """Test checkout failure."""
@@ -762,3 +770,41 @@ class TestGitCheckoutBranch:
             # Check that cwd was passed to both calls
             assert mock_cmd.run_command.call_args_list[0][1]["cwd"] == "/custom/path"
             assert mock_cmd.run_command.call_args_list[1][1]["cwd"] == "/custom/path"
+
+    def test_create_new_branch_push_failure(self):
+        """Test creating a new branch when push fails (should still succeed)."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git checkout -b
+                CommandResult(success=True, stdout="Switched to a new branch 'new-feature'\n", stderr="", returncode=0),
+                # Second call: verify current branch
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
+                # Third call: git push fails
+                CommandResult(success=False, stdout="", stderr="fatal: unable to access remote", returncode=1),
+            ]
+
+            result = git_checkout_branch("new-feature", create_new=True)
+
+            # Should still succeed even if push fails
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 3
+
+    def test_create_new_branch_without_publish(self):
+        """Test creating a new branch without publishing to remote."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git checkout -b
+                CommandResult(success=True, stdout="Switched to a new branch 'new-feature'\n", stderr="", returncode=0),
+                # Second call: verify current branch
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
+            ]
+
+            result = git_checkout_branch("new-feature", create_new=True, publish=False)
+
+            assert result.success is True
+            # Should only have 2 calls (checkout and verify), no push
+            assert mock_cmd.run_command.call_count == 2

@@ -227,12 +227,14 @@ def git_checkout_branch(
     create_new: bool = False,
     base_branch: Optional[str] = None,
     cwd: Optional[str] = None,
+    publish: bool = True,
 ) -> CommandResult:
     """
     Switch to a git branch and verify the checkout was successful.
 
     This function centralizes git checkout operations and ensures that after
     switching branches, the current branch matches the expected branch.
+    If creating a new branch, it will automatically push to remote and set up tracking.
 
     Args:
         branch_name: Name of the branch to checkout
@@ -240,6 +242,7 @@ def git_checkout_branch(
         base_branch: If create_new is True and base_branch is specified, creates
                      the new branch from base_branch (using -B flag)
         cwd: Optional working directory for the git command
+        publish: If True and create_new is True, push the new branch to remote and set up tracking
 
     Returns:
         CommandResult with the result of the checkout operation.
@@ -263,7 +266,7 @@ def git_checkout_branch(
 
     if not result.success:
         logger.error(f"Failed to checkout branch '{branch_name}': {result.stderr}")
-        sys.exit(1)
+        return result
 
     # Verify that we're now on the expected branch
     verify_result = cmd.run_command(
@@ -273,15 +276,39 @@ def git_checkout_branch(
 
     if not verify_result.success:
         logger.error(f"Failed to verify current branch after checkout: {verify_result.stderr}")
-        sys.exit(1)
+        return CommandResult(
+            success=False,
+            stdout=result.stdout,
+            stderr=f"Checkout succeeded but verification failed: {verify_result.stderr}",
+            returncode=1
+        )
 
     current_branch = verify_result.stdout.strip()
     if current_branch != branch_name:
         error_msg = f"Branch mismatch after checkout: expected '{branch_name}', but currently on '{current_branch}'"
         logger.error(error_msg)
-        sys.exit(1)
+        return CommandResult(
+            success=False,
+            stdout=result.stdout,
+            stderr=error_msg,
+            returncode=1
+        )
 
     logger.info(f"Successfully checked out branch '{branch_name}'")
+
+    # If creating a new branch, push to remote and set up tracking
+    if create_new and publish:
+        logger.info(f"Publishing new branch '{branch_name}' to remote...")
+        push_result = cmd.run_command(
+            ["git", "push", "-u", "origin", branch_name],
+            cwd=cwd
+        )
+        if not push_result.success:
+            logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
+            # Don't exit on push failure - the branch is still created locally
+        else:
+            logger.info(f"Successfully published branch '{branch_name}' to remote")
+
     return result
 
 
