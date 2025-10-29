@@ -1099,6 +1099,88 @@ def _resolve_merge_conflicts_with_llm(
     return actions
 
 
+def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
+    """Extract issue numbers from PR body using GitHub's linking keywords.
+
+    Supports keywords: close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved
+    Formats: #123, owner/repo#123
+
+    Args:
+        pr_body: PR description/body text
+
+    Returns:
+        List of issue numbers found in the PR body
+    """
+    if not pr_body:
+        return []
+
+    # GitHub's supported keywords for linking issues
+    keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
+
+    # Pattern to match: keyword #123 or keyword owner/repo#123
+    # We only extract the issue number, ignoring cross-repo references for now
+    pattern = rf"{keywords}\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
+
+    matches = re.finditer(pattern, pr_body, re.IGNORECASE)
+    issue_numbers = [int(m.group(1)) for m in matches]
+
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_issues = []
+    for num in issue_numbers:
+        if num not in seen:
+            seen.add(num)
+            unique_issues.append(num)
+
+    return unique_issues
+
+
+def _close_linked_issues(repo_name: str, pr_number: int) -> None:
+    """Close issues linked in the PR body after successful merge.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_number: PR number that was merged
+    """
+    try:
+        # Get PR body
+        result = cmd.run_command(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"]
+        )
+
+        if not result.success or not result.stdout:
+            logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking")
+            return
+
+        pr_data = json.loads(result.stdout)
+        pr_body = pr_data.get("body", "")
+
+        # Extract linked issues
+        linked_issues = _extract_linked_issues_from_pr_body(pr_body)
+
+        if not linked_issues:
+            logger.debug(f"No linked issues found in PR #{pr_number} body")
+            return
+
+        # Close each linked issue
+        for issue_num in linked_issues:
+            try:
+                close_result = cmd.run_command(
+                    ["gh", "issue", "close", str(issue_num), "--repo", repo_name, "--comment", f"Closed by PR #{pr_number}"]
+                )
+
+                if close_result.success:
+                    logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
+                    log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
+                else:
+                    logger.warning(f"Failed to close issue #{issue_num}: {close_result.stderr}")
+            except Exception as e:
+                logger.warning(f"Error closing issue #{issue_num}: {e}")
+
+    except Exception as e:
+        logger.warning(f"Error processing linked issues for PR #{pr_number}: {e}")
+
+
 def _merge_pr(
     repo_name: str, pr_number: int, analysis: Dict[str, Any], config: AutomationConfig
 ) -> bool:
@@ -1107,6 +1189,9 @@ def _merge_pr(
     Fallbacks (no LLM):
     - After conflict resolution and retry failure, poll mergeable state briefly
     - Try alternative merge methods allowed by repo settings (--merge/--rebase/--squash)
+
+    After successful merge, automatically closes any issues referenced in the PR body
+    using GitHub's linking keywords (closes, fixes, resolves, etc.)
     """
     try:
         cmd_list = ["gh", "pr", "merge", str(pr_number)]
@@ -1118,6 +1203,7 @@ def _merge_pr(
 
             if result.success:
                 log_action(f"Successfully auto-merged PR #{pr_number}")
+                _close_linked_issues(repo_name, pr_number)
                 return True
             else:
                 # Log the auto-merge failure but continue with direct merge
@@ -1134,6 +1220,7 @@ def _merge_pr(
 
         if result.success:
             log_action(f"Successfully merged PR #{pr_number}")
+            _close_linked_issues(repo_name, pr_number)
             return True
         else:
             # Check if the failure is due to merge conflicts
@@ -1156,6 +1243,7 @@ def _merge_pr(
                         log_action(
                             f"Successfully merged PR #{pr_number} after conflict resolution"
                         )
+                        _close_linked_issues(repo_name, pr_number)
                         return True
                     else:
                         # Simple non-LLM fallbacks
@@ -1171,6 +1259,7 @@ def _merge_pr(
                                 log_action(
                                     f"Successfully merged PR #{pr_number} after waiting for mergeable state"
                                 )
+                                _close_linked_issues(repo_name, pr_number)
                                 return True
                         # 2) Try alternative merge methods allowed by repo
                         allowed = _get_allowed_merge_methods(repo_name)
@@ -1189,6 +1278,7 @@ def _merge_pr(
                                 log_action(
                                     f"Successfully merged PR #{pr_number} with fallback method {m}"
                                 )
+                                _close_linked_issues(repo_name, pr_number)
                                 return True
                         return False
                 else:

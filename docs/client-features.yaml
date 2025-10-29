@@ -1236,6 +1236,64 @@ workflows:
       - "Label is added at start of processing in each loop"
       - "Label is removed after processing completes or on error"
       - "Provides basic protection against concurrent processing"
+    auto_close_linked_issues:
+      name: "Automatic Issue Closing on PR Merge"
+      description: "Automatically closes issues referenced in PR body when PR is merged"
+      file: "src/auto_coder/pr_processor.py"
+      methods:
+        - name: "_extract_linked_issues_from_pr_body"
+          description: "Extract issue numbers from PR body using GitHub's linking keywords"
+          parameters: ["pr_body"]
+          returns: "List of issue numbers"
+          supported_keywords:
+            - "close, closes, closed"
+            - "fix, fixes, fixed"
+            - "resolve, resolves, resolved"
+          supported_formats:
+            - "#123 (same repository)"
+            - "owner/repo#123 (cross-repository, extracts number only)"
+          behavior:
+            - "Case-insensitive keyword matching"
+            - "Removes duplicate issue numbers"
+            - "Preserves order of first occurrence"
+        - name: "_close_linked_issues"
+          description: "Close issues linked in PR body after successful merge"
+          parameters: ["repo_name", "pr_number"]
+          returns: "None"
+          behavior:
+            - "Retrieves PR body via gh pr view --json body"
+            - "Extracts linked issue numbers using _extract_linked_issues_from_pr_body"
+            - "Closes each linked issue via gh issue close with comment 'Closed by PR #<number>'"
+            - "Logs success/failure for each issue"
+            - "Gracefully handles errors (no exceptions raised)"
+        - name: "_merge_pr"
+          description: "Merge PR and automatically close linked issues"
+          behavior:
+            - "Calls _close_linked_issues after every successful merge"
+            - "Works with all merge methods (--squash, --merge, --rebase)"
+            - "Works with auto-merge and direct merge"
+            - "Works after conflict resolution"
+      tests:
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_closes_keyword"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_fixes_keyword"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_resolves_keyword"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_multiple_keywords"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_case_insensitive"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_all_keyword_variants"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_with_cross_repo_reference"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_removes_duplicates"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_empty_body"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_none_body"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_no_keywords"
+        - "tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_preserves_order"
+        - "tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_close_single_issue"
+        - "tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_close_multiple_issues"
+        - "tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_no_linked_issues"
+        - "tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_pr_view_failure"
+        - "tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_issue_close_failure"
+        - "tests/test_pr_merge_close_issues.py::TestMergePRWithIssueClosing::test_merge_pr_closes_issues_on_success"
+        - "tests/test_pr_merge_close_issues.py::TestMergePRWithIssueClosing::test_merge_pr_does_not_close_issues_on_failure"
+        - "tests/test_pr_merge_close_issues.py::TestMergePRWithIssueClosing::test_merge_pr_auto_merge_closes_issues"
     tests:
       - "tests/test_exclusive_processing_label.py::TestPRProcessorExclusiveProcessing::test_process_pull_requests_skips_when_label_exists"
 

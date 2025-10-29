@@ -447,9 +447,6 @@ def _create_pr_for_issue(
                         f"PR body was: {pr_body[:200]}"
                     )
                     logger.error(error_msg)
-                    # Exit the application as requested
-                    import sys
-                    sys.exit(1)
                 else:
                     logger.info(f"Verified: PR #{pr_number} is correctly linked to issue #{issue_number}")
 
