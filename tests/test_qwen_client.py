@@ -28,6 +28,10 @@ class TestQwenClient:
         out = client._run_qwen_cli("hello")
         assert "ok line 1" in out and "ok line 2" in out
 
+        # Verify qwen CLI is used (OAuth, no API key)
+        args = mock_run_command.call_args[0][0]
+        assert args[0] == "qwen"
+
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
     def test_run_prompt_failure_nonzero(self, mock_run_command, mock_run):
@@ -37,3 +41,7 @@ class TestQwenClient:
         client = QwenClient()
         with pytest.raises(RuntimeError):
             client._run_qwen_cli("oops")
+
+        # Verify qwen CLI is used (OAuth, no API key)
+        args = mock_run_command.call_args[0][0]
+        assert args[0] == "qwen"

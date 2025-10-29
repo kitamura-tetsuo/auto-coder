@@ -16,3 +16,7 @@ def test_run_qwen_cli_alias_delegates_and_returns_output(mock_run_command, mock_
     out = client._run_qwen_cli("probe")
 
     assert "alias line 1" in out and "alias line 2" in out
+
+    # Verify qwen CLI is used (OAuth, no API key)
+    args = mock_run_command.call_args[0][0]
+    assert args[0] == "qwen"

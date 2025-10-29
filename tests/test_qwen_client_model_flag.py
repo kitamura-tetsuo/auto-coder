@@ -15,6 +15,9 @@ def test_run_prompt_includes_model_flag_when_model_set(mock_run_command, mock_ru
 
     assert mock_run_command.call_count == 1
     args = mock_run_command.call_args[0][0]
+
+    # Verify qwen CLI is used (OAuth, no API key)
+    assert args[0] == "qwen"
     assert "-m" in args and "qwen3-coder-plus" in args
     assert "-p" in args
     # The prompt should be present as a separate argument

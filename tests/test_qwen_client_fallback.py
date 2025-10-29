@@ -41,14 +41,23 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(
     assert output == "ModelStudio OK"
     assert mock_run_command.call_count == 1
 
-    # The first provider should be the configured ModelStudio API key.
+    # The first provider should use codex CLI with ModelStudio configuration
+    first_cmd = mock_run_command.call_args_list[0][0][0]
     first_env = mock_run_command.call_args_list[0].kwargs["env"]
+
+    # Verify codex command is used for providers with API keys
+    assert first_cmd[0] == "codex"
+    assert "exec" in first_cmd
+    assert "-s" in first_cmd
+    assert "workspace-write" in first_cmd
+    assert "--dangerously-bypass-approvals-and-sandbox" in first_cmd
+
+    # Verify environment variables are set
     assert first_env["OPENAI_API_KEY"] == "dashscope-xyz"
     assert (
         first_env["OPENAI_BASE_URL"]
         == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     )
-    assert first_env["OPENAI_MODEL"] == "qwen3-coder-plus"
 
     # After a successful call the active provider index should remain at zero.
     assert client._active_provider_index == 0
@@ -90,6 +99,13 @@ def test_qwen_client_fallback_to_openrouter(
     assert output == "OpenRouter OK"
     assert mock_run_command.call_count == 2
 
+    # Both calls should use codex CLI (providers have API keys)
+    first_cmd = mock_run_command.call_args_list[0][0][0]
+    second_cmd = mock_run_command.call_args_list[1][0][0]
+
+    assert first_cmd[0] == "codex"
+    assert second_cmd[0] == "codex"
+
     # First call should target ModelStudio, second OpenRouter.
     first_env = mock_run_command.call_args_list[0].kwargs["env"]
     assert first_env["OPENAI_API_KEY"] == "dashscope-xyz"
@@ -97,7 +113,6 @@ def test_qwen_client_fallback_to_openrouter(
     second_env = mock_run_command.call_args_list[1].kwargs["env"]
     assert second_env["OPENAI_API_KEY"] == "openrouter-123"
     assert second_env["OPENAI_BASE_URL"] == "https://openrouter.ai/api/v1"
-    assert second_env["OPENAI_MODEL"] == "qwen/qwen3-coder:free"
 
     assert client.model_name == "qwen/qwen3-coder:free"
 
@@ -136,6 +151,16 @@ def test_qwen_client_fallbacks_to_oauth_after_api_keys(
 
     assert output == "OAuth OK"
     assert mock_run_command.call_count == 3
+
+    # First two calls should use codex (providers with API keys)
+    first_cmd = mock_run_command.call_args_list[0][0][0]
+    second_cmd = mock_run_command.call_args_list[1][0][0]
+    third_cmd = mock_run_command.call_args_list[2][0][0]
+
+    assert first_cmd[0] == "codex"
+    assert second_cmd[0] == "codex"
+    # Third call should use qwen (OAuth, no API key)
+    assert third_cmd[0] == "qwen"
 
     first_env = mock_run_command.call_args_list[0].kwargs["env"]
     second_env = mock_run_command.call_args_list[1].kwargs["env"]

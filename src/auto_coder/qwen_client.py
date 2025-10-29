@@ -65,15 +65,30 @@ class QwenClient(LLMClientBase):
         self._active_provider_index: int = 0
         self._last_used_model: Optional[str] = self.model_name
 
-        # Verify qwen CLI is available
-        try:
-            result = subprocess.run(
-                ["qwen", "--version"], capture_output=True, text=True, timeout=10
-            )
-            if result.returncode != 0:
-                raise RuntimeError("qwen CLI not available or not working")
-        except Exception as e:
-            raise RuntimeError(f"qwen CLI not available: {e}")
+        # Verify required CLIs are available
+        # Check if any provider requires codex (has api_key or base_url)
+        needs_codex = any(p.api_key or p.base_url for p in self._provider_chain)
+        needs_qwen = any(not (p.api_key or p.base_url) for p in self._provider_chain)
+
+        if needs_codex:
+            try:
+                result = subprocess.run(
+                    ["codex", "--version"], capture_output=True, text=True, timeout=10
+                )
+                if result.returncode != 0:
+                    raise RuntimeError("codex CLI not available or not working")
+            except Exception as e:
+                raise RuntimeError(f"codex CLI not available (required for providers): {e}")
+
+        if needs_qwen:
+            try:
+                result = subprocess.run(
+                    ["qwen", "--version"], capture_output=True, text=True, timeout=10
+                )
+                if result.returncode != 0:
+                    raise RuntimeError("qwen CLI not available or not working")
+            except Exception as e:
+                raise RuntimeError(f"qwen CLI not available: {e}")
 
     # ----- Model switching (keep simple; Qwen may not need to switch models) -----
     def switch_to_conflict_model(self) -> None:
@@ -152,41 +167,73 @@ class QwenClient(LLMClientBase):
             env.pop("OPENAI_BASE_URL", None)
             env.pop("OPENAI_MODEL", None)
 
-        cmd = ["qwen", "-y"]
+        # Determine if we should use codex or qwen CLI
+        # Use codex when provider has api_key or base_url (OpenAI-compatible providers)
+        use_codex = bool(provider.api_key or provider.base_url)
 
-        if self.use_env_vars:
-            # Pass credentials via environment variables
+        if use_codex:
+            # Use codex exec with -c options for model_provider and model
+            cmd = ["codex", "exec", "-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox"]
+
+            # Set model_provider based on provider name
+            if provider.name and provider.name.lower() != "qwen-oauth":
+                cmd.extend(["-c", f'model_provider="{provider.name.lower()}"'])
+
+            # Set model
+            if model_to_use:
+                cmd.extend(["-c", f'model="{model_to_use}"'])
+
+            # Set API key and base URL via environment variables
             if provider.api_key:
                 env["OPENAI_API_KEY"] = provider.api_key
             if provider.base_url:
                 env["OPENAI_BASE_URL"] = provider.base_url
-            if model_to_use:
-                env["OPENAI_MODEL"] = model_to_use
 
-            # Model flag for qwen CLI
-            if model_to_use:
-                cmd.extend(["-m", model_to_use])
+            # Add prompt
+            cmd.append(escaped_prompt)
+
+            cli_name = "codex"
+            display_cmd = f"codex exec -s workspace-write -c model_provider=\"{provider.name.lower()}\" -c model=\"{model_to_use}\" --dangerously-bypass-approvals-and-sandbox [prompt]"
         else:
-            # Pass credentials via command-line options
-            if provider.api_key:
-                cmd.extend(["--openai-api-key", provider.api_key])
-            if provider.base_url:
-                cmd.extend(["--openai-base-url", provider.base_url])
-            if model_to_use:
-                cmd.extend(["-m", model_to_use])
+            # Use qwen CLI for OAuth (no provider)
+            cmd = ["qwen", "-y"]
 
-        cmd.extend(["-p", escaped_prompt])
+            if self.use_env_vars:
+                # Pass credentials via environment variables
+                if provider.api_key:
+                    env["OPENAI_API_KEY"] = provider.api_key
+                if provider.base_url:
+                    env["OPENAI_BASE_URL"] = provider.base_url
+                if model_to_use:
+                    env["OPENAI_MODEL"] = model_to_use
+
+                # Model flag for qwen CLI
+                if model_to_use:
+                    cmd.extend(["-m", model_to_use])
+            else:
+                # Pass credentials via command-line options
+                if provider.api_key:
+                    cmd.extend(["--openai-api-key", provider.api_key])
+                if provider.base_url:
+                    cmd.extend(["--openai-base-url", provider.base_url])
+                if model_to_use:
+                    cmd.extend(["-m", model_to_use])
+
+            cmd.extend(["-p", escaped_prompt])
+
+            cli_name = "qwen"
+            display_cmd = f"qwen -m {model_to_use} -p [prompt]" if model_to_use else "qwen -p [prompt]"
 
         logger.warning(
-            "LLM invocation: qwen CLI is being called. Keep LLM calls minimized."
+            "LLM invocation: %s CLI is being called. Keep LLM calls minimized.", cli_name
         )
         logger.debug(
-            "Running qwen CLI with prompt length: %d characters", len(original_prompt)
+            "Running %s CLI with prompt length: %d characters", cli_name, len(original_prompt)
         )
         logger.info(
-            "🤖 Running (%s): qwen %s",
+            "🤖 Running (%s): %s",
             provider.display_name,
-            "-m %s -p [prompt]" % model_to_use if model_to_use else "-p [prompt]",
+            display_cmd,
         )
         logger.info("=" * 60)
 
@@ -212,7 +259,7 @@ class QwenClient(LLMClientBase):
 
         if result.returncode != 0:
             raise RuntimeError(
-                f"qwen CLI failed with return code {result.returncode}\n{full_output}"
+                f"{cli_name} CLI failed with return code {result.returncode}\n{full_output}"
             )
 
         return full_output

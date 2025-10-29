@@ -29,6 +29,10 @@ def test_qwen_client_run_llm_cli_delegates(mock_run_command, mock_run):
     out = client._run_llm_cli("hello")
     assert "qwen ok" in out
 
+    # Verify qwen CLI is used (OAuth, no API key)
+    args = mock_run_command.call_args[0][0]
+    assert args[0] == "qwen"
+
 
 @patch("subprocess.run")
 @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
