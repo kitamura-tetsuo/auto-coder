@@ -37,7 +37,7 @@ logger = get_logger(__name__)
     "backends",
     multiple=True,
     default=("codex",),
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie"]),
+    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
     help="AI backend(s) to use in priority order (default: codex)",
 )
 @click.option(
@@ -45,7 +45,7 @@ logger = get_logger(__name__)
     "message_backends",
     multiple=True,
     default=None,
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie"]),
+    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
     help="AI backend(s) for message generation in priority order (default: same as --backend)",
 )
 @click.option(
@@ -77,6 +77,9 @@ logger = get_logger(__name__)
 @click.option("--model-qwen", help="Model to use when backend=qwen")
 @click.option(
     "--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)"
+)
+@click.option(
+    "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
 )
 @click.option(
     "--dry-run", is_flag=True, help="Run in dry-run mode without making changes"
@@ -140,6 +143,7 @@ def process_issues(
     model_gemini: Optional[str],
     model_qwen: Optional[str],
     model_auggie: Optional[str],
+    model_claude: Optional[str],
     dry_run: bool,
     jules_mode: bool,
     disable_labels: Optional[bool],
@@ -156,7 +160,7 @@ def process_issues(
 
     selected_backends = normalize_backends(backends)
     primary_backend = selected_backends[0]
-    models = build_models_map(model_gemini, model_qwen, model_auggie)
+    models = build_models_map(model_gemini, model_qwen, model_auggie, model_claude)
     primary_model = models.get(primary_backend)
 
     # Configure verbose flag and setup logger with specified options
@@ -191,7 +195,7 @@ def process_issues(
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
-    if primary_backend in ("gemini", "qwen", "auggie"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
@@ -209,7 +213,7 @@ def process_issues(
 
     click.echo(f"Processing repository: {repo_name}")
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
-    if primary_backend in ("gemini", "qwen", "auggie"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
@@ -329,7 +333,7 @@ def process_issues(
     "backends",
     multiple=True,
     default=("codex",),
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie"]),
+    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
     help="AI backend(s) to use in priority order (default: codex)",
 )
 @click.option(
@@ -363,6 +367,9 @@ def process_issues(
     "--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)"
 )
 @click.option(
+    "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
+)
+@click.option(
     "--force-reindex",
     is_flag=True,
     default=False,
@@ -390,6 +397,7 @@ def create_feature_issues(
     model_gemini: Optional[str],
     model_qwen: Optional[str],
     model_auggie: Optional[str],
+    model_claude: Optional[str],
     force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
@@ -399,7 +407,7 @@ def create_feature_issues(
 
     selected_backends = normalize_backends(backends)
     primary_backend = selected_backends[0]
-    models = build_models_map(model_gemini, model_qwen, model_auggie)
+    models = build_models_map(model_gemini, model_qwen, model_auggie, model_claude)
     primary_model = models.get(primary_backend)
 
     # Configure verbose flag and setup logger with specified options
@@ -422,14 +430,14 @@ def create_feature_issues(
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
-    if primary_backend in ("gemini", "qwen", "auggie"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
-    if primary_backend in ("gemini", "qwen", "auggie"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
@@ -472,7 +480,7 @@ def create_feature_issues(
     "backends",
     multiple=True,
     default=("codex",),
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie"]),
+    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
     help="AI backend(s) to use in priority order (default: codex)",
 )
 @click.option(
@@ -480,7 +488,7 @@ def create_feature_issues(
     "message_backends",
     multiple=True,
     default=None,
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie"]),
+    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
     help="AI backend(s) for message generation in priority order (default: same as --backend)",
 )
 @click.option(
@@ -512,6 +520,9 @@ def create_feature_issues(
 @click.option("--model-qwen", help="Model to use when backend=qwen")
 @click.option(
     "--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)"
+)
+@click.option(
+    "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
 )
 @click.option(
     "--max-attempts",
@@ -549,6 +560,7 @@ def fix_to_pass_tests_command(
     model_gemini: Optional[str],
     model_qwen: Optional[str],
     model_auggie: Optional[str],
+    model_claude: Optional[str],
     max_attempts: Optional[int],
     dry_run: bool,
     force_reindex: bool,
@@ -562,7 +574,7 @@ def fix_to_pass_tests_command(
     """
     selected_backends = normalize_backends(backends)
     primary_backend = selected_backends[0]
-    models = build_models_map(model_gemini, model_qwen, model_auggie)
+    models = build_models_map(model_gemini, model_qwen, model_auggie, model_claude)
     primary_model = models.get(primary_backend)
 
     if verbose:
@@ -582,7 +594,7 @@ def fix_to_pass_tests_command(
 
     backend_list_str = ", ".join(selected_backends)
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
-    if primary_backend in ("gemini", "qwen", "auggie"):
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Force reindex: {force_reindex}")

@@ -10,6 +10,7 @@ import click
 from .auggie_client import AuggieClient
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager
+from .claude_client import ClaudeClient
 from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
 from .gemini_client import GeminiClient
@@ -327,10 +328,28 @@ def check_auggie_cli_or_fail() -> None:
     )
 
 
+def check_claude_cli_or_fail() -> None:
+    """Check if claude CLI is available and working."""
+    try:
+        result = subprocess.run(
+            ["claude", "--version"], capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            click.echo("Using claude CLI")
+            return
+    except Exception:
+        pass
+    raise click.ClickException(
+        "Claude CLI is required. Please install it from:\n"
+        "https://claude.ai/download"
+    )
+
+
 def build_models_map(
     model_gemini: Optional[str] = None,
     model_qwen: Optional[str] = None,
     model_auggie: Optional[str] = None,
+    model_claude: Optional[str] = None,
 ) -> dict[str, str]:
     """Compute per-backend model map with sensible defaults.
 
@@ -339,6 +358,7 @@ def build_models_map(
       - gemini: gemini-2.5-pro
       - qwen: qwen3-coder-plus
       - auggie: GPT-5
+      - claude: sonnet
       - codex/codex-mcp: placeholders (unused by CLI but kept for uniformity)
     """
     models: dict[str, str] = {}
@@ -351,6 +371,8 @@ def build_models_map(
     models["qwen"] = model_qwen or "qwen3-coder-plus"
     # auggie
     models["auggie"] = model_auggie or "GPT-5"
+    # claude
+    models["claude"] = model_claude or "sonnet"
     return models
 
 
@@ -378,6 +400,8 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_qwen_cli_or_fail()
         elif backend_name == "auggie":
             check_auggie_cli_or_fail()
+        elif backend_name == "claude":
+            check_claude_cli_or_fail()
         else:
             raise click.ClickException(f"Unsupported backend specified: {backend_name}")
 
@@ -410,6 +434,9 @@ def build_backend_manager(
     def _am() -> str:
         return models.get("auggie", "GPT-5")
 
+    def _cm() -> str:
+        return models.get("claude", "sonnet")
+
     factories_all = {
         "codex": lambda: CodexClient(model_name="codex"),
         "codex-mcp": lambda: CodexMCPClient(
@@ -428,6 +455,7 @@ def build_backend_manager(
             preserve_existing_env=qwen_preserve_env,
         ),
         "auggie": lambda: AuggieClient(model_name=_am()),
+        "claude": lambda: ClaudeClient(model_name=_cm()),
     }
 
     missing_factories = [

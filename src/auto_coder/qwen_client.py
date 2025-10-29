@@ -228,6 +228,8 @@ class QwenClient(LLMClientBase):
         # rate limit with 'Alibaba Cloud ModelStudio compatible endpoint'
         if "error: 400 model access denied." in low:
             return True
+        if "openai api streaming error: 429 free allocated quota exceeded." in low:
+            return True
         # rate limit with 'OpenRouter free tier compatible endpoint'
         if "openai api streaming error: 429 provider returned error" in low:
             return True

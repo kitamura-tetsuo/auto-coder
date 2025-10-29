@@ -250,6 +250,26 @@ def git_checkout_branch(
     """
     cmd = CommandExecutor()
 
+    # Check for uncommitted changes before checkout
+    status_result = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
+    has_changes = status_result.success and status_result.stdout.strip()
+
+    if has_changes:
+        logger.info("Detected uncommitted changes before checkout, committing them first")
+        # Add all changes
+        add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+        if not add_result.success:
+            logger.warning(f"Failed to add changes: {add_result.stderr}")
+
+        # Commit changes
+        commit_result = git_commit_with_retry(
+            commit_message="WIP: Auto-commit before branch checkout",
+            cwd=cwd,
+            max_retries=1
+        )
+        if not commit_result.success:
+            logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
+
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
     if create_new:
@@ -265,8 +285,34 @@ def git_checkout_branch(
     result = cmd.run_command(checkout_cmd, cwd=cwd)
 
     if not result.success:
-        logger.error(f"Failed to checkout branch '{branch_name}': {result.stderr}")
-        return result
+        # If checkout failed due to uncommitted changes, try to commit and retry
+        if "would be overwritten by checkout" in result.stderr:
+            logger.warning("Checkout failed due to uncommitted changes, attempting to commit and retry")
+
+            # Add all changes
+            add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+            if not add_result.success:
+                logger.error(f"Failed to add changes: {add_result.stderr}")
+                return result
+
+            # Commit changes
+            commit_result = git_commit_with_retry(
+                commit_message="WIP: Auto-commit before branch checkout (retry)",
+                cwd=cwd,
+                max_retries=1
+            )
+            if not commit_result.success:
+                logger.error(f"Failed to commit changes: {commit_result.stderr}")
+                return result
+
+            # Retry checkout
+            result = cmd.run_command(checkout_cmd, cwd=cwd)
+            if not result.success:
+                logger.error(f"Failed to checkout branch '{branch_name}' after commit: {result.stderr}")
+                return result
+        else:
+            logger.error(f"Failed to checkout branch '{branch_name}': {result.stderr}")
+            return result
 
     # Verify that we're now on the expected branch
     verify_result = cmd.run_command(
