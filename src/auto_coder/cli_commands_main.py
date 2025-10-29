@@ -18,6 +18,7 @@ from .cli_helpers import (
     initialize_graphrag,
     normalize_backends,
 )
+from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
@@ -274,6 +275,63 @@ def process_issues(
     automation_engine = AutomationEngine(
         github_client, manager, dry_run=dry_run, config=engine_config, message_backend_manager=message_manager
     )
+
+    # Check if we should resume work on current branch
+    # (only if not on main branch and no --only target specified)
+    if not only_target:
+        current_branch = get_current_branch()
+        if current_branch and current_branch != engine_config.MAIN_BRANCH:
+            logger.info(f"Detected work in progress on branch '{current_branch}'")
+
+            # Search for an open PR with this head branch
+            target_type = None
+            target_data = None
+            number = None
+
+            # Try to find PR by head branch
+            try:
+                pr_data = github_client.find_pr_by_head_branch(repo_name, current_branch)
+                if pr_data:
+                    target_type = "pr"
+                    target_data = pr_data
+                    number = pr_data.get("number")
+                    logger.info(f"Found open PR #{number} for current branch")
+            except Exception as e:
+                logger.debug(f"No open PR found for branch '{current_branch}': {e}")
+
+            # If no PR found, try to extract number from branch name and look for issue
+            if not target_type:
+                number = extract_number_from_branch(current_branch)
+                if number:
+                    try:
+                        issue_data = github_client.get_issue_details_by_number(repo_name, number)
+                        if issue_data and issue_data.get("state") == "open":
+                            target_type = "issue"
+                            target_data = issue_data
+                            logger.info(f"Found open issue #{number} for current branch")
+                    except Exception as e:
+                        logger.debug(f"No open issue found for #{number}: {e}")
+
+            # If we found an open PR or issue, process it
+            if target_type and target_data and number:
+                click.echo(f"Resuming work on {target_type} #{number} (branch: {current_branch})")
+                logger.info(f"Resuming work on {target_type} #{number}")
+
+                # Run single-item processing
+                _ = automation_engine.process_single(
+                    repo_name, target_type, number, jules_mode=jules_mode
+                )
+                # Print brief summary to stdout
+                click.echo(f"Processed {target_type} #{number}")
+                # Close MCP session if present
+                try:
+                    manager.close()
+                    message_manager.close()
+                except Exception:
+                    pass
+                return
+            else:
+                logger.info(f"No open PR or issue found for branch '{current_branch}', proceeding with normal processing")
 
     # If only_target is provided, parse and process a single item
     if only_target:

@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.auto_coder.git_utils import (
+    extract_number_from_branch,
+    get_current_branch,
     get_current_repo_name,
     git_checkout_branch,
     git_commit_with_retry,
@@ -930,3 +932,85 @@ class TestGitCheckoutBranch:
             assert "would be overwritten by checkout" in result.stderr
             # Should stop after commit fails
             assert mock_cmd.run_command.call_count == 4
+
+
+class TestGetCurrentBranch:
+    """Tests for get_current_branch function."""
+
+    def test_get_current_branch_success(self):
+        """Test successful retrieval of current branch."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True, stdout="main\n", stderr="", returncode=0
+            )
+
+            result = get_current_branch()
+
+            assert result == "main"
+            mock_cmd.run_command.assert_called_once_with(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=None
+            )
+
+    def test_get_current_branch_with_cwd(self):
+        """Test get_current_branch with custom working directory."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True, stdout="feature-branch\n", stderr="", returncode=0
+            )
+
+            result = get_current_branch(cwd="/path/to/repo")
+
+            assert result == "feature-branch"
+            mock_cmd.run_command.assert_called_once_with(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd="/path/to/repo"
+            )
+
+    def test_get_current_branch_failure(self):
+        """Test get_current_branch when git command fails."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=False, stdout="", stderr="fatal: not a git repository", returncode=128
+            )
+
+            result = get_current_branch()
+
+            assert result is None
+
+
+class TestExtractNumberFromBranch:
+    """Tests for extract_number_from_branch function."""
+
+    def test_extract_issue_number(self):
+        """Test extracting issue number from branch name."""
+        assert extract_number_from_branch("issue-123") == 123
+        assert extract_number_from_branch("issue-456") == 456
+
+    def test_extract_pr_number(self):
+        """Test extracting PR number from branch name."""
+        assert extract_number_from_branch("pr-789") == 789
+        assert extract_number_from_branch("pr-101") == 101
+
+    def test_extract_number_with_prefix(self):
+        """Test extracting number from branch with prefix."""
+        assert extract_number_from_branch("feature/issue-123") == 123
+        assert extract_number_from_branch("fix/pr-456") == 456
+
+    def test_extract_number_case_insensitive(self):
+        """Test case-insensitive extraction."""
+        assert extract_number_from_branch("ISSUE-123") == 123
+        assert extract_number_from_branch("PR-456") == 456
+        assert extract_number_from_branch("Issue-789") == 789
+
+    def test_extract_number_no_match(self):
+        """Test extraction when no number pattern found."""
+        assert extract_number_from_branch("main") is None
+        assert extract_number_from_branch("feature-branch") is None
+        assert extract_number_from_branch("develop") is None
+        assert extract_number_from_branch("") is None
+        assert extract_number_from_branch(None) is None

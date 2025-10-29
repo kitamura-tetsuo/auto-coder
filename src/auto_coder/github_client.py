@@ -168,6 +168,34 @@ class GitHubClient:
             logger.error(f"Failed to get Issue #{issue_number} from {repo_name}: {e}")
             raise
 
+    def find_pr_by_head_branch(
+        self, repo_name: str, branch_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """Find an open PR by its head branch name.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            branch_name: Name of the head branch to search for
+
+        Returns:
+            PR details dict if found, None otherwise
+        """
+        try:
+            prs = self.get_open_pull_requests(repo_name)
+            for pr in prs:
+                if pr.head.ref == branch_name:
+                    logger.info(
+                        f"Found PR #{pr.number} with head branch '{branch_name}'"
+                    )
+                    return self.get_pr_details(pr)
+            logger.debug(f"No open PR found with head branch '{branch_name}'")
+            return None
+        except Exception as e:
+            logger.warning(
+                f"Failed to search for PR with head branch '{branch_name}': {e}"
+            )
+            return None
+
     def get_linked_prs_via_graphql(
         self, repo_name: str, issue_number: int
     ) -> List[int]:

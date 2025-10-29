@@ -649,3 +649,172 @@ class TestCLIProcessIssues:
         config = kwargs["config"]
         assert config.FORCE_CLEAN_BEFORE_CHECKOUT is False
 
+    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli_commands_main.get_current_branch")
+    @patch("src.auto_coder.cli_commands_main.extract_number_from_branch")
+    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    def test_process_issues_resume_on_pr_branch(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_extract_number,
+        mock_get_branch,
+        mock_check_cli,
+        mock_initialize_graphrag,
+    ):
+        """Test resuming work on PR branch when not on main."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = Mock()
+        mock_automation_engine = Mock()
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        # Current branch is feature-branch
+        mock_get_branch.return_value = "feature-branch"
+
+        # PR with head branch "feature-branch" is found
+        mock_github_client.find_pr_by_head_branch.return_value = {
+            "number": 123,
+            "state": "open",
+            "title": "Test PR",
+            "head_branch": "feature-branch",
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify resume message
+        assert "Resuming work on pr #123" in result.output
+        # Verify find_pr_by_head_branch was called
+        mock_github_client.find_pr_by_head_branch.assert_called_once_with(
+            "test/repo", "feature-branch"
+        )
+        # Verify process_single was called
+        mock_automation_engine.process_single.assert_called_once_with(
+            "test/repo", "pr", 123, jules_mode=True
+        )
+
+    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli_commands_main.get_current_branch")
+    @patch("src.auto_coder.cli_commands_main.extract_number_from_branch")
+    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    def test_process_issues_resume_on_issue_branch(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_extract_number,
+        mock_get_branch,
+        mock_check_cli,
+        mock_initialize_graphrag,
+    ):
+        """Test resuming work on issue branch when PR not found."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = Mock()
+        mock_automation_engine = Mock()
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        # Current branch is issue-456
+        mock_get_branch.return_value = "issue-456"
+        mock_extract_number.return_value = 456
+
+        # No PR found by head branch
+        mock_github_client.find_pr_by_head_branch.return_value = None
+
+        # Issue #456 is open
+        mock_github_client.get_issue_details_by_number.return_value = {
+            "number": 456,
+            "state": "open",
+            "title": "Test Issue",
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify resume message
+        assert "Resuming work on issue #456" in result.output
+        # Verify find_pr_by_head_branch was called first
+        mock_github_client.find_pr_by_head_branch.assert_called_once_with(
+            "test/repo", "issue-456"
+        )
+        # Verify extract_number_from_branch was called
+        mock_extract_number.assert_called_once_with("issue-456")
+        # Verify process_single was called
+        mock_automation_engine.process_single.assert_called_once_with(
+            "test/repo", "issue", 456, jules_mode=True
+        )
+
+    @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
+    @patch("src.auto_coder.cli_commands_main.get_current_branch")
+    @patch("src.auto_coder.cli_commands_main.AutomationEngine")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
+    @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    def test_process_issues_no_resume_on_main_branch(
+        self,
+        mock_github_client_class,
+        mock_codex_client_class,
+        mock_automation_engine_class,
+        mock_get_branch,
+        mock_check_cli,
+        mock_initialize_graphrag,
+    ):
+        """Test normal processing when on main branch."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client_class.return_value = mock_github_client
+        mock_codex_client_class.return_value = Mock()
+        mock_automation_engine = Mock()
+        mock_automation_engine_class.return_value = mock_automation_engine
+        mock_check_cli.return_value = None
+
+        # Current branch is main
+        mock_get_branch.return_value = "main"
+
+        runner = CliRunner()
+        result = runner.invoke(
+            process_issues,
+            [
+                "--repo",
+                "test/repo",
+                "--github-token",
+                "test_token",
+            ],
+        )
+
+        assert result.exit_code == 0
+        # Verify normal run was called
+        mock_automation_engine.run.assert_called_once()
+        # Verify process_single was NOT called
+        mock_automation_engine.process_single.assert_not_called()
+

@@ -24,6 +24,61 @@ from .utils import CommandExecutor, CommandResult
 logger = get_logger(__name__)
 
 
+def get_current_branch(cwd: Optional[str] = None) -> Optional[str]:
+    """
+    Get the current git branch name.
+
+    Args:
+        cwd: Optional working directory for git command
+
+    Returns:
+        Current branch name or None if failed
+    """
+    cmd = CommandExecutor()
+    branch_result = cmd.run_command(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=cwd
+    )
+    if branch_result.success:
+        return branch_result.stdout.strip()
+    else:
+        logger.warning(f"Failed to get current branch: {branch_result.stderr}")
+        return None
+
+
+def extract_number_from_branch(branch_name: str) -> Optional[int]:
+    """
+    Extract issue or PR number from branch name.
+
+    Supports patterns like:
+    - issue-123
+    - pr-456
+    - feature/issue-789
+    - fix/pr-101
+
+    Args:
+        branch_name: Branch name to parse
+
+    Returns:
+        Extracted number or None if no number found
+    """
+    if not branch_name:
+        return None
+
+    # Try to match issue-XXX or pr-XXX pattern
+    patterns = [
+        r"issue-(\d+)",
+        r"pr-(\d+)",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, branch_name, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
 def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
     """
     Get the GitHub repository name (owner/repo) from the current directory.

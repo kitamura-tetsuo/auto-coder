@@ -183,6 +183,80 @@ class TestGitHubClient:
                 state="open", sort="created", direction="asc"
             )
 
+    @patch("src.auto_coder.github_client.Github")
+    def test_find_pr_by_head_branch_found(self, mock_github_class, mock_github_token):
+        """Test finding PR by head branch when PR exists."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+
+        # Create mock PRs with different head branches
+        mock_pr1 = Mock(spec=PullRequest.PullRequest)
+        mock_pr1.number = 123
+        mock_pr1.head = Mock(ref="feature-branch")
+
+        mock_pr2 = Mock(spec=PullRequest.PullRequest)
+        mock_pr2.number = 456
+        mock_pr2.head = Mock(ref="another-branch")
+
+        mock_repo.get_pulls.return_value = [mock_pr1, mock_pr2]
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Mock get_pr_details to return a simple dict
+        with patch.object(client, 'get_pr_details') as mock_get_details:
+            mock_get_details.return_value = {"number": 123, "head_branch": "feature-branch"}
+
+            # Execute
+            result = client.find_pr_by_head_branch("test/repo", "feature-branch")
+
+            # Assert
+            assert result is not None
+            assert result["number"] == 123
+            mock_get_details.assert_called_once_with(mock_pr1)
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_find_pr_by_head_branch_not_found(self, mock_github_class, mock_github_token):
+        """Test finding PR by head branch when PR does not exist."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+
+        mock_pr1 = Mock(spec=PullRequest.PullRequest)
+        mock_pr1.head = Mock(ref="other-branch")
+
+        mock_repo.get_pulls.return_value = [mock_pr1]
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.find_pr_by_head_branch("test/repo", "non-existent-branch")
+
+        # Assert
+        assert result is None
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_find_pr_by_head_branch_error(self, mock_github_class, mock_github_token):
+        """Test finding PR by head branch when error occurs."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+        mock_repo.get_pulls.side_effect = GithubException(500, "Server Error")
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient(mock_github_token)
+
+        # Execute
+        result = client.find_pr_by_head_branch("test/repo", "feature-branch")
+
+        # Assert
+        assert result is None
+
     def test_get_issue_details(self, mock_github_token):
         """Test issue details extraction."""
         # Setup
