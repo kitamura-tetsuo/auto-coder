@@ -17,34 +17,34 @@ from loguru import logger
 @dataclass
 class MCPServerConfig:
     """Configuration for an MCP server."""
-    
+
     name: str
     """Server name (e.g., 'graphrag', 'test-watcher')"""
-    
+
     bundled_path: Path
     """Path to bundled server in auto_coder package"""
-    
+
     install_dir: Optional[Path] = None
     """Installation directory (default: ~/mcp_servers/{name})"""
-    
+
     requires_uv: bool = True
     """Whether the server requires uv for dependency management"""
-    
+
     env_vars: Optional[Dict[str, str]] = None
     """Environment variables to set in .env file"""
-    
+
     setup_callback: Optional[callable] = None
     """Optional callback for custom setup logic"""
 
 
 class MCPServerManager:
     """Manager for multiple MCP servers."""
-    
+
     def __init__(self):
         """Initialize MCP Server Manager."""
         self.servers: Dict[str, MCPServerConfig] = {}
         self._register_builtin_servers()
-    
+
     def _register_builtin_servers(self):
         """Register built-in MCP servers."""
         # Get auto_coder package directory
@@ -54,7 +54,7 @@ class MCPServerManager:
         except ImportError:
             # Development mode
             package_dir = Path(__file__).parent
-        
+
         # Register graphrag_mcp
         self.register_server(MCPServerConfig(
             name="graphrag",
@@ -70,7 +70,7 @@ class MCPServerManager:
                 "QDRANT_COLLECTION": "document_chunks",
             }
         ))
-        
+
         # Register test_watcher
         self.register_server(MCPServerConfig(
             name="test-watcher",
@@ -81,27 +81,27 @@ class MCPServerManager:
                 "TEST_WATCHER_PROJECT_ROOT": str(Path.cwd()),
             }
         ))
-    
+
     def register_server(self, config: MCPServerConfig):
         """Register an MCP server.
-        
+
         Args:
             config: Server configuration
         """
         self.servers[config.name] = config
         logger.debug(f"Registered MCP server: {config.name}")
-    
+
     def get_server_config(self, name: str) -> Optional[MCPServerConfig]:
         """Get server configuration by name.
-        
+
         Args:
             name: Server name
-            
+
         Returns:
             Server configuration or None if not found
         """
         return self.servers.get(name)
-    
+
     def setup_server(
         self,
         name: str,
@@ -111,14 +111,14 @@ class MCPServerManager:
         silent: bool = False,
     ) -> bool:
         """Setup an MCP server.
-        
+
         Args:
             name: Server name
             install_dir: Installation directory (overrides default)
             env_vars: Environment variables (overrides default)
             backends: List of backends to configure (default: all)
             silent: Suppress user prompts
-            
+
         Returns:
             True if setup was successful, False otherwise
         """
@@ -126,21 +126,21 @@ class MCPServerManager:
         if not config:
             logger.error(f"Unknown MCP server: {name}")
             return False
-        
+
         # Use provided install_dir or default
         target_dir = install_dir or config.install_dir
         if not target_dir:
             logger.error(f"No installation directory specified for {name}")
             return False
-        
+
         # Check if bundled server exists
         if not config.bundled_path.exists():
             logger.error(f"Bundled server not found: {config.bundled_path}")
             return False
-        
+
         # Create installation directory
         target_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Copy bundled server to installation directory
         logger.info(f"Copying {name} server to {target_dir}...")
         try:
@@ -148,7 +148,7 @@ class MCPServerManager:
             for item in config.bundled_path.iterdir():
                 if item.name in ['.venv', '__pycache__', '.git', 'server.log']:
                     continue
-                
+
                 dest = target_dir / item.name
                 if item.is_dir():
                     if dest.exists():
@@ -156,12 +156,12 @@ class MCPServerManager:
                     shutil.copytree(item, dest)
                 else:
                     shutil.copy2(item, dest)
-            
+
             logger.info(f"✅ Copied {name} server files")
         except Exception as e:
             logger.error(f"Failed to copy server files: {e}")
             return False
-        
+
         # Create .env file if env_vars provided
         merged_env_vars = {**(config.env_vars or {}), **(env_vars or {})}
         if merged_env_vars:
@@ -174,7 +174,7 @@ class MCPServerManager:
             except Exception as e:
                 logger.error(f"Failed to create .env file: {e}")
                 return False
-        
+
         # Install dependencies with uv if required
         if config.requires_uv:
             logger.info(f"Installing dependencies with uv...")
@@ -193,7 +193,7 @@ class MCPServerManager:
             except Exception as e:
                 logger.error(f"Failed to install dependencies: {e}")
                 return False
-        
+
         # Make run_server.sh executable
         run_script = target_dir / "run_server.sh"
         if run_script.exists():
@@ -202,7 +202,7 @@ class MCPServerManager:
                 logger.info(f"✅ Made run_server.sh executable")
             except Exception as e:
                 logger.warning(f"Failed to make run_server.sh executable: {e}")
-        
+
         # Run custom setup callback if provided
         if config.setup_callback:
             try:
@@ -210,19 +210,19 @@ class MCPServerManager:
             except Exception as e:
                 logger.error(f"Custom setup callback failed: {e}")
                 return False
-        
+
         # Configure backends
         if backends is None:
-            backends = ["codex", "gemini", "qwen", "auggie"]
-        
+            backends = ["codex", "gemini", "qwen", "auggie", "claude"]
+
         success = True
         for backend in backends:
             if not self.add_backend_config(name, backend, target_dir):
                 logger.warning(f"Failed to configure {backend} backend for {name}")
                 success = False
-        
+
         return success
-    
+
     def add_backend_config(
         self,
         server_name: str,
@@ -230,12 +230,12 @@ class MCPServerManager:
         install_path: Path,
     ) -> bool:
         """Add MCP server configuration to a backend.
-        
+
         Args:
             server_name: MCP server name
             backend: Backend name (codex, gemini, qwen, auggie)
             install_path: Path to installed server
-            
+
         Returns:
             True if configuration was added successfully, False otherwise
         """
@@ -248,6 +248,8 @@ class MCPServerManager:
                 return self._add_qwen_config(server_name, install_path)
             elif backend == "auggie":
                 return self._add_auggie_config(server_name, install_path)
+            elif backend == "claude":
+                return self._add_claude_config(server_name, install_path)
             else:
                 logger.warning(f"Unknown backend: {backend}")
                 return False
@@ -406,6 +408,45 @@ class MCPServerManager:
             return result
         except Exception as e:
             logger.error(f"Failed to add Windsurf/Claude config for {server_name}: {e}")
+    def _add_claude_config(self, server_name: str, install_path: Path) -> bool:
+        """Add MCP server configuration to Claude CLI config.
+
+        Args:
+            server_name: MCP server name
+            install_path: Path to installed server
+
+        Returns:
+            True if configuration was added successfully, False otherwise
+        """
+        try:
+            from .claude_client import ClaudeClient
+
+            client = ClaudeClient()
+
+            # Use run_server.sh if it exists
+            run_script = install_path / "run_server.sh"
+            if run_script.exists():
+                result = client.add_mcp_server_config(
+                    server_name,
+                    str(run_script),
+                    []
+                )
+            else:
+                # Fallback to uv
+                result = client.add_mcp_server_config(
+                    server_name,
+                    "uv",
+                    ["--directory", str(install_path), "run", "main.py"]
+                )
+
+            if result:
+                logger.info(f"✅ Claude設定を更新しました ({server_name})")
+            else:
+                logger.error(f"Claude設定の更新に失敗しました ({server_name})")
+
+            return result
+        except Exception as e:
+            logger.error(f"Failed to add Claude config for {server_name}: {e}")
             return False
 
     def is_server_installed(self, name: str) -> bool:

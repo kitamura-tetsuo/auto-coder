@@ -20,7 +20,7 @@ class TestMCPChecker:
         """Test Gemini MCP check when config file doesn't exist."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        
+
         result = check_graphrag_mcp_for_backend("gemini")
         assert result is False
 
@@ -28,12 +28,12 @@ class TestMCPChecker:
         """Test Gemini MCP check when graphrag is configured."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        
+
         # Create config directory and file
         config_dir = tmp_path / ".gemini"
         config_dir.mkdir()
         config_file = config_dir / "config.json"
-        
+
         config = {
             "mcpServers": {
                 "graphrag": {
@@ -42,10 +42,10 @@ class TestMCPChecker:
                 }
             }
         }
-        
+
         with open(config_file, "w") as f:
             json.dump(config, f)
-        
+
         result = check_graphrag_mcp_for_backend("gemini")
         assert result is True
 
@@ -53,12 +53,12 @@ class TestMCPChecker:
         """Test Gemini MCP check when only other servers are configured."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        
+
         # Create config directory and file
         config_dir = tmp_path / ".gemini"
         config_dir.mkdir()
         config_file = config_dir / "config.json"
-        
+
         config = {
             "mcpServers": {
                 "mcp-pdb": {
@@ -67,10 +67,10 @@ class TestMCPChecker:
                 }
             }
         }
-        
+
         with open(config_file, "w") as f:
             json.dump(config, f)
-        
+
         result = check_graphrag_mcp_for_backend("gemini")
         assert result is False
 
@@ -78,7 +78,7 @@ class TestMCPChecker:
         """Test Qwen MCP check when config file doesn't exist."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        
+
         result = check_graphrag_mcp_for_backend("qwen")
         assert result is False
 
@@ -86,21 +86,21 @@ class TestMCPChecker:
         """Test Qwen MCP check when graphrag is configured."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        
+
         # Create config directory and file
         config_dir = tmp_path / ".qwen"
         config_dir.mkdir()
         config_file = config_dir / "config.toml"
-        
+
         config_content = """
 [mcp_servers.graphrag]
 command = "/path/to/graphrag_mcp/run_server.sh"
 args = []
 """
-        
+
         with open(config_file, "w") as f:
             f.write(config_content)
-        
+
         result = check_graphrag_mcp_for_backend("qwen")
         assert result is True
 
@@ -108,12 +108,12 @@ args = []
         """Test Auggie MCP check when graphrag is configured in Windsurf."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        
+
         # Create Windsurf config directory and file
         config_dir = tmp_path / ".windsurf"
         config_dir.mkdir()
         config_file = config_dir / "settings.json"
-        
+
         config = {
             "mcpServers": {
                 "graphrag": {
@@ -122,10 +122,10 @@ args = []
                 }
             }
         }
-        
+
         with open(config_file, "w") as f:
             json.dump(config, f)
-        
+
         result = check_graphrag_mcp_for_backend("auggie")
         assert result is True
 
@@ -133,12 +133,12 @@ args = []
         """Test Codex MCP check when graphrag is configured."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        
+
         # Create config directory and file
         config_dir = tmp_path / ".codex"
         config_dir.mkdir()
         config_file = config_dir / "config.json"
-        
+
         config = {
             "mcpServers": {
                 "graphrag": {
@@ -147,10 +147,10 @@ args = []
                 }
             }
         }
-        
+
         with open(config_file, "w") as f:
             json.dump(config, f)
-        
+
         result = check_graphrag_mcp_for_backend("codex")
         assert result is True
 
@@ -267,3 +267,48 @@ args = []
         result = ensure_graphrag_mcp_configured("gemini")
         assert result is True
 
+
+
+
+    def test_check_claude_mcp_not_configured(self, tmp_path, monkeypatch):
+        """Test Claude MCP check when config file doesn't exist."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = check_graphrag_mcp_for_backend("claude")
+        assert result is False
+
+    def test_check_claude_mcp_configured(self, tmp_path, monkeypatch):
+        """Test Claude MCP check when graphrag is configured."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        config_dir = tmp_path / ".claude"
+        config_dir.mkdir()
+        config_file = config_dir / "config.json"
+        config = {"mcpServers": {"graphrag": {"command": "/path/run_server.sh", "args": []}}}
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+        result = check_graphrag_mcp_for_backend("claude")
+        assert result is True
+
+    def test_suggest_graphrag_mcp_setup_claude(self):
+        """Test setup suggestion for Claude."""
+        suggestion = suggest_graphrag_mcp_setup("claude")
+        assert "auto-coder graphrag setup-mcp" in suggestion
+        assert "Claude CLI" in suggestion
+        assert "claude mcp" in suggestion
+
+    def test_add_claude_mcp_config(self, tmp_path, monkeypatch):
+        """Test adding Claude MCP configuration returns False (manual setup required)."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = add_graphrag_mcp_config("claude")
+        assert result is False
+
+    def test_ensure_graphrag_mcp_configured_claude_already_configured(self, tmp_path, monkeypatch):
+        """Test ensure_graphrag_mcp_configured when Claude already configured."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        config_dir = tmp_path / ".claude"
+        config_dir.mkdir()
+        config_file = config_dir / "config.json"
+        config = {"mcpServers": {"graphrag": {"command": "/path/run_server.sh", "args": []}}}
+        with open(config_file, "w") as f:
+            json.dump(config, f)
+        result = ensure_graphrag_mcp_configured("claude", auto_setup=False)
+        assert result is True

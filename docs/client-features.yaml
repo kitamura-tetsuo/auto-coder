@@ -476,6 +476,13 @@ features:
           - "Uses 'qwen mcp add' command to add MCP servers instead of manual file editing"
           - "Automatically adds servers to user scope (--scope user)"
           - "Verifies configuration via 'qwen mcp list' command"
+      - name: "ClaudeClient"
+        file: "src/auto_coder/claude_client.py"
+        description: "Claude CLI client with MCP configuration support"
+        config_location: "~/.claude/config.json"
+        config_format: "JSON"
+        mcp_check_command: "claude mcp"
+
       - name: "AuggieClient"
         file: "src/auto_coder/auggie_client.py"
         description: "Auggie CLI client with MCP configuration support"
@@ -510,6 +517,11 @@ features:
       - "tests/test_llm_client_mcp.py::TestQwenClientMCP::test_ensure_mcp_server_configured"
       - "tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_check_mcp_server_not_configured"
       - "tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_check_mcp_server_not_configured"
+      - "tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_check_mcp_server_configured"
+      - "tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_add_mcp_server_config"
+      - "tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_ensure_mcp_server_configured"
+
       - "tests/test_llm_client_mcp.py::TestCodexClientMCP::test_check_mcp_server_not_configured"
       - "tests/test_llm_client_mcp.py::TestCodexClientMCP::test_add_mcp_server_config"
       - "tests/test_llm_client_mcp.py::TestCodexMCPClientMCP::test_check_mcp_server_not_configured"
@@ -530,13 +542,15 @@ features:
             returns: "Boolean indicating if graphrag MCP is configured"
             behavior:
               - "Reads backend-specific configuration files to check for graphrag MCP server"
-              - "Supports gemini, qwen, auggie, and codex backends"
+              - "Supports gemini, qwen, auggie, codex, and claude backends"
+
               - "Returns False for unknown backends"
             config_locations:
               - "Gemini: ~/.gemini/config.json"
               - "Qwen: ~/.qwen/config.toml"
               - "Auggie: ~/.windsurf/settings.json or Claude Desktop config"
               - "Codex: ~/.codex/config.json or ~/.config/codex/config.json"
+              - "Claude: ~/.claude/config.json"
           - name: "add_graphrag_mcp_config"
             description: "Add graphrag MCP configuration for a specific backend"
             parameters: ["backend"]

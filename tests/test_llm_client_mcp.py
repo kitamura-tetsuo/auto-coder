@@ -542,3 +542,96 @@ class TestBackendManagerMCP(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+
+
+class TestClaudeClientMCP(unittest.TestCase):
+    """Test Claude client MCP configuration methods."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        self.temp_dir = tempfile.mkdtemp()
+        self.config_dir = Path(self.temp_dir) / ".claude"
+        self.config_path = self.config_dir / "config.json"
+
+    @patch("subprocess.run")
+    def test_check_mcp_server_not_configured(self, mock_run):
+        """Test checking for MCP server when not configured."""
+        # First call from __init__: 'claude --version'
+        # Second call from check: 'claude mcp'
+        def side_effect(cmd, **kwargs):
+            if "--version" in cmd:
+                m = MagicMock()
+                m.returncode = 0
+                m.stdout = "1.0.0"
+                return m
+            elif len(cmd) >= 2 and cmd[0] == "claude" and cmd[1] == "mcp":
+                m = MagicMock()
+                m.returncode = 0
+                m.stdout = "other-server\n"
+                return m
+            raise FileNotFoundError()
+
+        mock_run.side_effect = side_effect
+
+        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
+            from src.auto_coder.claude_client import ClaudeClient
+            client = ClaudeClient()
+            result = client.check_mcp_server_configured("graphrag")
+            self.assertFalse(result)
+
+    @patch("subprocess.run")
+    def test_check_mcp_server_configured(self, mock_run):
+        """Test checking for MCP server when configured."""
+        def side_effect(cmd, **kwargs):
+            if "--version" in cmd:
+                m = MagicMock(); m.returncode = 0; m.stdout = "1.0.0"; return m
+            elif len(cmd) >= 2 and cmd[0] == "claude" and cmd[1] == "mcp":
+                m = MagicMock(); m.returncode = 0; m.stdout = "graphrag\n"; return m
+            raise FileNotFoundError()
+        mock_run.side_effect = side_effect
+
+        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
+            from src.auto_coder.claude_client import ClaudeClient
+            client = ClaudeClient()
+            self.assertTrue(client.check_mcp_server_configured("graphrag"))
+
+    @patch("subprocess.run")
+    def test_add_mcp_server_config(self, mock_run):
+        """Test adding MCP server configuration writes to ~/.claude/config.json."""
+        # Only __init__ uses subprocess.run here
+        mock_run.return_value = MagicMock(returncode=0, stdout="1.0.0")
+
+        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
+            from src.auto_coder.claude_client import ClaudeClient
+            client = ClaudeClient()
+            ok = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            self.assertTrue(ok)
+            # Verify config file created and contains the server
+            self.assertTrue(self.config_path.exists())
+            with open(self.config_path, "r") as f:
+                cfg = json.load(f)
+            self.assertIn("mcpServers", cfg)
+            self.assertIn("mcp-pdb", cfg["mcpServers"])
+
+    @patch("subprocess.run")
+    def test_ensure_mcp_server_configured(self, mock_run):
+        """Test ensuring MCP server is configured for Claude."""
+        calls = {"mcp": 0}
+        def side_effect(cmd, **kwargs):
+            if "--version" in cmd:
+                m = MagicMock(); m.returncode = 0; m.stdout = "1.0.0"; return m
+            if len(cmd) >= 2 and cmd[0] == "claude" and cmd[1] == "mcp":
+                calls["mcp"] += 1
+                m = MagicMock(); m.returncode = 0
+                # first check -> not configured, second check -> configured
+                m.stdout = "other\n" if calls["mcp"] == 1 else "graphrag\n"
+                return m
+            raise FileNotFoundError()
+        mock_run.side_effect = side_effect
+
+        with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
+            from src.auto_coder.claude_client import ClaudeClient
+            client = ClaudeClient()
+            ok = client.ensure_mcp_server_configured("graphrag", "uv", ["run", "main.py"])
+            self.assertTrue(ok)
