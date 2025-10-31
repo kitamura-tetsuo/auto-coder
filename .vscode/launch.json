@@ -73,21 +73,6 @@
             "request": "launch",
             "module": "auto_coder.cli",
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
-            "args": [
-                "process-issues"
-            ],
-            "python": "${command:python.interpreterPath}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            }
-        },
-        {
-            "name": "Process Issues (Live)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "auto_coder.cli",
-            "console": "integratedTerminal",
             "args": [
                 "process-issues",
                 "--ignore-dependabot-prs",
@@ -109,8 +94,8 @@
                 "--backend",
                 "auggie",
                 "--model-auggie",
-                "sonnet4.5",
-                // "gpt5",
+                // "sonnet4.5",
+                "gpt5",
                 "--backend",
                 "qwen",
                 "--message-backend",
