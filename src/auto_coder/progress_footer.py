@@ -36,6 +36,9 @@ class ProgressFooter:
         # Store current item info for re-rendering
         self._current_item_type: Optional[str] = None
         self._current_item_number: Optional[int] = None
+        # Store related issues and branch name
+        self._related_issues: list[int] = []
+        self._branch_name: Optional[str] = None
 
     def _format_footer(
         self,
@@ -52,15 +55,27 @@ class ProgressFooter:
         Returns:
             Formatted footer string
         """
-        # Use ANSI color codes for better visibility
-        # Bright Cyan for item info, Bright Yellow for stages
-        # Build nested display: [PR #123] Stage1 / Stage2 / Stage3
+        # Build the main item display: [Issue #num/PR #num/#branch_name]
+        main_display = f"\033[96m[{item_type} #{item_number}"
+        
+        # Add branch name if available
+        if self._branch_name:
+            main_display += f"/{self._branch_name}"
+        
+        main_display += "\033[0m"
+        
+        # Add related issues if available
+        if self._related_issues:
+            related_issues_str = ", ".join([f"#{issue}" for issue in self._related_issues])
+            main_display += f" \033[95m[Related Issue {related_issues_str}]\033[0m"
+        
+        # Add stages if available
         if self._stage_stack:
             all_stages = " / ".join(self._stage_stack)
-            return f"\033[96m[{item_type} #{item_number}]\033[0m \033[93m{all_stages}\033[0m"
+            return f"{main_display} \033[93m{all_stages}\033[0m"
         else:
-            # No stages, just show item info
-            return f"\033[96m[{item_type} #{item_number}]\033[0m"
+            # No stages, just show main info
+            return main_display
 
     def print_footer(self) -> None:
         """Print the current footer at the bottom of the terminal."""
@@ -87,6 +102,8 @@ class ProgressFooter:
         self,
         item_type: str,
         item_number: int,
+        related_issues: Optional[list[int]] = None,
+        branch_name: Optional[str] = None,
     ) -> None:
         """
         Set the current item being processed.
@@ -94,10 +111,14 @@ class ProgressFooter:
         Args:
             item_type: Type of item being processed ("PR" or "Issue")
             item_number: Number of the PR or Issue
+            related_issues: List of related issue numbers
+            branch_name: Branch name to display
         """
         with self._lock:
             self._current_item_type = item_type
             self._current_item_number = item_number
+            self._related_issues = related_issues or []
+            self._branch_name = branch_name
             self._is_active = True
             self._render_footer()
 
@@ -186,6 +207,10 @@ class ProgressFooter:
             self._current_footer = None
             self._is_active = False
             self._stage_stack.clear()
+            self._current_item_type = None
+            self._current_item_number = None
+            self._related_issues = []
+            self._branch_name = None
 
     def newline(self) -> None:
         """
@@ -235,16 +260,23 @@ def setup_progress_footer_logging() -> None:
     setup_logger(progress_footer=footer)
 
 
-def set_progress_item(item_type: str, item_number: int) -> None:
+def set_progress_item(
+    item_type: str,
+    item_number: int,
+    related_issues: Optional[list[int]] = None,
+    branch_name: Optional[str] = None
+) -> None:
     """
     Set the current item being processed in the global progress footer.
 
     Args:
         item_type: Type of item being processed ("PR" or "Issue")
         item_number: Number of the PR or Issue
+        related_issues: List of related issue numbers
+        branch_name: Branch name to display
     """
     footer = get_progress_footer()
-    footer.set_item(item_type, item_number)
+    footer.set_item(item_type, item_number, related_issues, branch_name)
 
 
 def push_progress_stage(stage: str) -> None:
@@ -288,7 +320,14 @@ class ProgressContext:
         # Footer is automatically cleared on exit
     """
 
-    def __init__(self, item_type: str, item_number: int, initial_stage: str):
+    def __init__(
+        self,
+        item_type: str,
+        item_number: int,
+        initial_stage: str,
+        related_issues: Optional[list[int]] = None,
+        branch_name: Optional[str] = None
+    ):
         """
         Initialize the progress context.
 
@@ -296,14 +335,18 @@ class ProgressContext:
             item_type: Type of item being processed ("PR" or "Issue")
             item_number: Number of the PR or Issue
             initial_stage: Initial processing stage
+            related_issues: List of related issue numbers
+            branch_name: Branch name to display
         """
         self.item_type = item_type
         self.item_number = item_number
         self.initial_stage = initial_stage
+        self.related_issues = related_issues
+        self.branch_name = branch_name
 
     def __enter__(self):
         """Enter the context and display the initial footer."""
-        set_progress_item(self.item_type, self.item_number)
+        set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
         push_progress_stage(self.initial_stage)
         return self
 
@@ -344,7 +387,7 @@ class ProgressStage:
             pass
     """
 
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         """
         Initialize the progress stage context.
 
@@ -352,17 +395,23 @@ class ProgressStage:
             *args: Can be:
                 - (stage: str): Just push a stage onto the stack
                 - (item_type: str, item_number: int, stage: str): Set item info and push stage
+                - (item_type: str, item_number: int, stage: str, related_issues: list[int], branch_name: str): Full info
+            **kwargs: Can include related_issues and branch_name for the 3-argument version
         """
         if len(args) == 1:
             # Just a stage
             self.item_type = None
             self.item_number = None
             self.stage = args[0]
+            self.related_issues = None
+            self.branch_name = None
         elif len(args) == 3:
             # Item type, number, and stage
             self.item_type = args[0]
             self.item_number = args[1]
             self.stage = args[2]
+            self.related_issues = kwargs.get('related_issues')
+            self.branch_name = kwargs.get('branch_name')
         else:
             raise ValueError(
                 "ProgressStage requires either 1 argument (stage) or 3 arguments (item_type, item_number, stage)"
@@ -372,7 +421,7 @@ class ProgressStage:
         """Enter the context and push the stage."""
         if self.item_type and self.item_number:
             # Set item info and push stage
-            set_progress_item(self.item_type, self.item_number)
+            set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
             push_progress_stage(self.stage)
         else:
             # Just push stage
