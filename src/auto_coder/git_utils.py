@@ -762,6 +762,30 @@ def switch_to_branch(
             logger.warning(f"No remote tracking information for branch '{branch_name}', skipping pull")
             # This is not a critical error for new branches
             return checkout_result
+        # Check if it's a "diverging branches" error (case insensitive)
+        elif "diverging branches" in pull_result.stderr.lower() or "not possible to fast-forward" in pull_result.stderr.lower():
+            logger.info(f"Detected diverging branches for branch '{branch_name}', attempting to resolve...")
+            
+            # Try to resolve pull conflicts using our conflict resolution function
+            conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+            
+            if conflict_result.success:
+                logger.info(f"Successfully resolved pull conflicts for branch '{branch_name}'")
+                return CommandResult(
+                    success=True,
+                    stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}\nConflict Resolution: {conflict_result.stdout}",
+                    stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}\nConflict Resolution: {conflict_result.stderr}",
+                    returncode=0
+                )
+            else:
+                logger.warning(f"Failed to resolve pull conflicts for branch '{branch_name}': {conflict_result.stderr}")
+                # Return a combined result showing both the original pull failure and conflict resolution attempt
+                return CommandResult(
+                    success=False,
+                    stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}\nConflict Resolution: {conflict_result.stdout}",
+                    stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}\nConflict Resolution: {conflict_result.stderr}",
+                    returncode=pull_result.returncode
+                )
         else:
             logger.error(f"Failed to pull latest changes for branch '{branch_name}': {pull_result.stderr}")
             # Return a combined result
@@ -779,3 +803,76 @@ def switch_to_branch(
         stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
         returncode=0
     )
+
+
+def resolve_pull_conflicts(
+    cwd: Optional[str] = None,
+    merge_method: str = "merge"
+) -> CommandResult:
+    """
+    Resolve pull conflicts by attempting merge/rebase strategies.
+    
+    Args:
+        cwd: Optional working directory for the git command
+        merge_method: Strategy to resolve conflicts - "merge" or "rebase"
+    
+    Returns:
+        CommandResult with the result of the conflict resolution
+    """
+    cmd = CommandExecutor()
+    logger.info(f"Attempting to resolve pull conflicts using {merge_method} strategy")
+    
+    # First, abort any ongoing merge/rebase to start clean
+    abort_result = cmd.run_command(["git", "merge", "--abort"], cwd=cwd)
+    if not abort_result.success:
+        abort_result = cmd.run_command(["git", "rebase", "--abort"], cwd=cwd)
+    
+    try:
+        if merge_method == "rebase":
+            # Try rebase first
+            logger.info("Attempting git rebase to resolve pull conflicts")
+            rebase_result = cmd.run_command(["git", "rebase", "origin/HEAD"], cwd=cwd)
+            
+            if rebase_result.success:
+                logger.info("Successfully resolved pull conflicts using rebase")
+                return CommandResult(
+                    success=True,
+                    stdout="Pull conflicts resolved via rebase",
+                    stderr="",
+                    returncode=0
+                )
+            else:
+                # If rebase fails, fall back to merge
+                logger.warning(f"Rebase failed: {rebase_result.stderr}, trying merge strategy")
+                return resolve_pull_conflicts(cwd, "merge")
+        else:
+            # Default: try merge strategy
+            logger.info("Attempting git merge to resolve pull conflicts")
+            merge_result = cmd.run_command(["git", "merge", "--no-ff", "origin/HEAD"], cwd=cwd)
+            
+            if merge_result.success:
+                logger.info("Successfully resolved pull conflicts using merge")
+                return CommandResult(
+                    success=True,
+                    stdout="Pull conflicts resolved via merge",
+                    stderr="",
+                    returncode=0
+                )
+            else:
+                # Check if it's actually a conflict or another error
+                if "conflict" in merge_result.stderr.lower():
+                    logger.error(f"Merge conflicts detected: {merge_result.stderr}")
+                    # For now, return the merge result so the caller can handle conflicts
+                    return merge_result
+                else:
+                    logger.error(f"Merge failed for non-conflict reasons: {merge_result.stderr}")
+                    return merge_result
+                    
+    except Exception as e:
+        logger.error(f"Error during pull conflict resolution: {e}")
+        return CommandResult(
+            success=False,
+            stdout="",
+            stderr=f"Error resolving pull conflicts: {e}",
+            returncode=1
+        )
