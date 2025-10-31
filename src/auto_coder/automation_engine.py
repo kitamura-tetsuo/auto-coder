@@ -687,37 +687,6 @@ DO NOT include git commit or push commands in your response."""
         """Get GitHub Actions logs for failed checks."""
         return "Test failed: assertion error"
 
-    # Package lock conflict resolution methods
-    def _is_package_lock_only_conflict(self, conflict_info: str) -> bool:
-        """Check if conflict is only in package lock files."""
-        return "package-lock.json" in conflict_info or "yarn.lock" in conflict_info or "pnpm-lock.yaml" in conflict_info
-
-    def _resolve_package_lock_conflicts(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
-        """Resolve package lock conflicts."""
-        return [
-            "Detected package-lock.json only conflicts",
-            "Removed conflicted file: package-lock.json",
-            "Successfully ran npm install",
-            "Staged regenerated dependency files",
-            "Committed resolved dependency conflicts",
-            "Successfully pushed resolved package-lock.json conflicts"
-        ]
-
-    def _resolve_merge_conflicts_with_gemini(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
-        """Resolve merge conflicts using Gemini."""
-        return ["Resolved merge conflicts with Gemini"]
-
-    def _is_package_json_deps_only_conflict(self, conflict_info: str) -> bool:
-        """Check if conflict is only in package.json dependencies."""
-        return "package.json" in conflict_info
-
-    def _resolve_package_json_dependency_conflicts(self, pr_data: Dict[str, Any], conflict_info: str) -> List[str]:
-        """Resolve package.json dependency conflicts."""
-        return ["Resolved package.json dependency conflicts"]
-
-    def _get_deps_only_conflicted_package_json_paths(self, conflict_info: str) -> List[str]:
-        """Get paths of package.json files with dependency-only conflicts."""
-        return ["package.json"]
 
     def _poll_pr_mergeable(self, repo_name: str, pr_number: int, timeout_seconds: int = 30, interval: int = 2) -> bool:
         """Poll PR mergeable status."""

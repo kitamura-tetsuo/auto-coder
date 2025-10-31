@@ -2,19 +2,62 @@
 
 import json
 import os
+import sys
+import time
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
+from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor
+from .utils import CommandExecutor, CommandResult
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
+def scan_conflict_markers() -> List[str]:
+    """Scan for conflict markers in the current working directory.
+    
+    Returns:
+        List of file paths that contain conflict markers, empty list if none found.
+    """
+    flagged = []
+    
+    try:
+        # Use git to find files with conflicts
+        result = cmd.run_command(["git", "diff", "--name-only", "--diff-filter=U"])
+        
+        if result.success:
+            conflict_files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+            flagged.extend(conflict_files)
+        
+        # Also check for actual conflict markers in files
+        status_result = cmd.run_command(["git", "status", "--porcelain"])
+        if status_result.success:
+            for line in status_result.stdout.splitlines():
+                if line.strip() and line.startswith("UU "):  # Both modified (merge conflict)
+                    filename = line[3:].strip()
+                    # Read the file and check for conflict markers
+                    try:
+                        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+                            content = f.read()
+                            if "<<<<<<< " in content or "=======" in content or ">>>>>>> " in content:
+                                flagged.append(filename)
+                    except Exception:
+                        # If we can't read the file, still flag it
+                        flagged.append(filename)
+        
+        # Remove duplicates and return
+        return list(set(flagged))
+        
+    except Exception as e:
+        logger.error(f"Error scanning conflict markers: {e}")
+        return []
+
+
 def resolve_merge_conflicts_with_llm(
-    pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool
+    pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool, llm_client=None
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
@@ -41,10 +84,16 @@ def resolve_merge_conflicts_with_llm(
         )
 
         # Use LLM to resolve conflicts
+        if llm_client is None:
+            actions.append("No LLM client available for merge conflict resolution")
+            return actions
+            
         logger.info(
             f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}"
         )
-        response = "Resolved merge conflicts"  # Placeholder
+        
+        # Call LLM to resolve conflicts
+        response = llm_client._run_llm_cli(prompt)
 
         # Parse the response
         if response and len(response.strip()) > 0:
@@ -57,29 +106,29 @@ def resolve_merge_conflicts_with_llm(
                 return actions
 
             # Verify no conflict markers remain before committing
-            # flagged = _scan_conflict_markers()
-            # if flagged:
-            #     actions.append(
-            #         f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing"
-            #     )
-            #     return actions
+            flagged = scan_conflict_markers()
+            if flagged:
+                actions.append(
+                    f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing"
+                )
+                return actions
 
             # Commit via helper and push
-            # commit_res = _commit_with_message(
-            #     f"Resolve merge conflicts for PR #{pr_data['number']}"
-            # )
-            # if commit_res.success:
-            #     actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
-            # else:
-            #     actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
-            #     return actions
+            commit_res = git_commit_with_retry(
+                f"Resolve merge conflicts for PR #{pr_data['number']}"
+            )
+            if commit_res.success:
+                actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
+            else:
+                actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
+                return actions
 
-            # push_res = _push_current_branch()
-            # if push_res.success:
-            #     actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
-            #     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-            # else:
-            #     actions.append(f"Failed to push resolved merge: {push_res.stderr}")
+            push_res = git_push()
+            if push_res.success:
+                actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
+                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+            else:
+                actions.append(f"Failed to push resolved merge: {push_res.stderr}")
         else:
             actions.append(
                 "LLM did not provide a clear response for merge conflict resolution"
@@ -90,6 +139,159 @@ def resolve_merge_conflicts_with_llm(
         actions.append(f"Error resolving merge conflicts: {e}")
 
     return actions
+
+
+def _perform_base_branch_merge_and_conflict_resolution(
+    pr_number: int,
+    base_branch: str,
+    config: AutomationConfig,
+    llm_client=None,
+    repo_name: str = None,
+    pr_data: Dict[str, Any] = None,
+    dry_run: bool = False
+) -> bool:
+    """Perform base branch merge and resolve conflicts using LLM.
+    
+    This is a common subroutine used by both _update_with_base_branch and _resolve_pr_merge_conflicts.
+    
+    Returns:
+        True if conflicts were resolved successfully, False otherwise
+    """
+    try:
+        if dry_run:
+            logger.info(f"[DRY RUN] Would resolve merge conflicts for PR #{pr_number}")
+            return True
+            
+        # Step 0: Clean up any existing git state
+        logger.info(
+            f"Cleaning up git state before resolving conflicts for PR #{pr_number}"
+        )
+
+        # Reset any uncommitted changes
+        reset_result = cmd.run_command(["git", "reset", "--hard"])
+        if not reset_result.success:
+            logger.warning(f"Failed to reset git state: {reset_result.stderr}")
+
+        # Clean untracked files
+        clean_result = cmd.run_command(["git", "clean", "-fd"])
+        if not clean_result.success:
+            logger.warning(f"Failed to clean untracked files: {clean_result.stderr}")
+
+        # Abort any ongoing merge
+        abort_result = cmd.run_command(["git", "merge", "--abort"])
+        if abort_result.success:
+            logger.info("Aborted ongoing merge")
+
+        # Step 1: Checkout the PR branch (if not already checked out)
+        logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
+        checkout_result = cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
+
+        if not checkout_result.success:
+            logger.error(
+                f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}"
+            )
+            return False
+
+        # Step 2: Fetch the latest base branch
+        logger.info(f"Fetching latest {base_branch} branch")
+        fetch_result = cmd.run_command(["git", "fetch", "origin", base_branch])
+
+        if not fetch_result.success:
+            logger.error(f"Failed to fetch {base_branch} branch: {fetch_result.stderr}")
+            return False
+
+        # Step 3: Attempt to merge base branch
+        logger.info(f"Merging origin/{base_branch} into PR #{pr_number}")
+        merge_result = cmd.run_command(["git", "merge", f"origin/{base_branch}"])
+
+        if merge_result.success:
+            # No conflicts, push the updated branch using centralized helper with retry
+            logger.info(
+                f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes"
+            )
+            push_result = git_push()
+
+            if push_result.success:
+                logger.info(f"Successfully pushed updated branch for PR #{pr_number}")
+                return True
+            else:
+                # Push failed - try one more time after a brief pause
+                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
+                time.sleep(2)
+                retry_push_result = git_push()
+                if retry_push_result.success:
+                    logger.info(f"Successfully pushed updated branch for PR #{pr_number} (after retry)")
+                    return True
+                else:
+                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
+                    logger.error("Push failure detected during merge conflict resolution")
+                    return False
+        else:
+            # Merge conflicts detected, use LLM to resolve them
+            logger.info(
+                f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve"
+            )
+
+            # Get conflict information
+            conflict_info = _get_merge_conflict_info()
+
+            # Use LLM to resolve conflicts
+            if pr_data is None:
+                pr_data = {"number": pr_number, "base_branch": base_branch}
+            else:
+                pr_data = {**pr_data, "base_branch": base_branch}
+                
+            resolve_actions = resolve_merge_conflicts_with_llm(
+                pr_data, conflict_info, config, False, llm_client
+            )
+
+            # Log the resolution actions
+            for action in resolve_actions:
+                logger.info(f"Conflict resolution action: {action}")
+
+            # Check if conflicts were resolved successfully
+            status_result = cmd.run_command(["git", "status", "--porcelain"])
+
+            if status_result.success and not status_result.stdout.strip():
+                logger.info(f"Merge conflicts resolved for PR #{pr_number}")
+                return True
+            else:
+                logger.error(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                return False
+
+    except Exception as e:
+        logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
+        return False
+
+
+def resolve_pr_merge_conflicts(
+    repo_name: str, pr_number: int, config: AutomationConfig, llm_client=None
+) -> bool:
+    """Resolve merge conflicts for a PR by checking it out and merging with its base branch.
+    
+    This function has been moved from pr_processor.py to conflict_resolver.py for better organization.
+    """
+    try:
+        # Get PR details to determine the target base branch
+        pr_details_result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--json", "base"])
+        if not pr_details_result.success:
+            logger.error(f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}")
+            return False
+
+        try:
+            pr_data = json.loads(pr_details_result.stdout)
+            base_branch = pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
+        except Exception:
+            base_branch = config.MAIN_BRANCH
+
+        # Use the common subroutine
+        return _perform_base_branch_merge_and_conflict_resolution(
+            pr_number, base_branch, config, llm_client, repo_name, pr_data
+        )
+
+    except Exception as e:
+        logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
+        return False
 
 
 def is_package_lock_only_conflict(conflict_info: str) -> bool:
