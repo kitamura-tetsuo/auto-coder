@@ -67,7 +67,8 @@ class CommandExecutor:
         """
         # Detect common debugger environment markers (debugpy, VS Code, PyCharm)
         for marker in CommandExecutor.DEBUGGER_ENV_MARKERS:
-            if os.environ.get(marker):
+            value = os.environ.get(marker, "").strip().lower()
+            if value in {"1", "true", "yes"}:
                 return True
 
         # Heuristic: when a debugger is attached (sys.gettrace), favor streaming
@@ -83,7 +84,8 @@ class CommandExecutor:
             return stream_output
 
         # Allow forcing via env var for manual debugging sessions
-        if os.environ.get("AUTOCODER_STREAM_COMMANDS"):
+        value = os.environ.get("AUTOCODER_STREAM_COMMANDS", "").strip().lower()
+        if value in {"1", "true", "yes"}:
             return True
 
         # Use the debugger detection helper
