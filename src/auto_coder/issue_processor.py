@@ -980,7 +980,7 @@ def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
     body += "\n*This feature request was generated automatically by Auto-Coder.*"
     return body
 
-
+@progress_stage("Processing single PR/IS")
 def process_single(
     github_client,
     config: AutomationConfig,
@@ -1033,11 +1033,10 @@ def process_single(
                     related_issues = _extract_linked_issues_from_pr_body(pr_body)
                 
                 set_progress_item("PR", number, related_issues, branch_name)
-                push_progress_stage("Processing single PR")
 
                 # Check GitHub Actions status before processing
-                push_progress_stage("Checking GitHub Actions")
-                github_checks = _check_github_actions_status(repo_name, pr_data, config)
+                with ProgressStage("Checking GitHub Actions")
+                    github_checks = _check_github_actions_status(repo_name, pr_data, config)
 
                 # If GitHub Actions are still in progress, switch to main and exit
                 if github_checks.get("in_progress", False):
