@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.10.31.3+g021067e"
+version = "2025.10.31.21+gade5e26"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -15,15 +15,12 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "requests>=2.31.0",
-    "pydantic>=2.0.0",
+    "pydantic>=2.0.0,<3.0.0",
     "pydantic-settings>=2.0.0",
     "click>=8.1.0",
     "python-dotenv>=1.0.0",
@@ -36,6 +33,7 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     "watchdog>=6.0.0",
     "pathspec>=0.12.0",
+    "playwright>=1.54.0",
 ]
 
 [project.optional-dependencies]
@@ -106,14 +104,14 @@ auto_coder = [
 
 [tool.black]
 line-length = 88
-target-version = ['py39']
+target-version = ['py311']
 
 [tool.isort]
 profile = "black"
 line_length = 88
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true

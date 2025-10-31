@@ -14,13 +14,15 @@ import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from auto_coder.progress_decorators import progress_stage
+
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import (
     WorkspaceFixResult,
     extract_important_errors,
     run_local_tests,
 )
-from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch
+from .git_utils import ensure_pushed_with_fallback, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch
 from .logger_config import get_logger
 from .progress_footer import (
     newline_progress,
@@ -83,7 +85,14 @@ def process_pull_requests(
                 pr_number = pr_data["number"]
 
                 # First pass: check if PR can be merged
-                with ProgressStage("PR", pr_number, "First pass"):
+                branch_name = pr_data.get("head", {}).get("ref")
+                pr_body = pr_data.get("body", "")
+                related_issues = []
+                if pr_body:
+                    # Extract linked issues from PR body
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
+                
+                with ProgressStage("PR", pr_number, "First pass", related_issues=related_issues, branch_name=branch_name):
                     # Skip if PR already has @auto-coder label (being processed by another instance)
                     if not dry_run and not github_client.disable_labels:
                         if not github_client.try_add_work_in_progress_label(
@@ -108,8 +117,7 @@ def process_pull_requests(
                         labeled_pr_numbers.add(pr_number)
 
                     try:
-                        with ProgressStage("Checking GitHub Actions"):
-                            github_checks = _check_github_actions_status(
+                        github_checks = _check_github_actions_status(
                                 repo_name, pr_data, config
                             )
 
@@ -214,7 +222,14 @@ def process_pull_requests(
                     continue
 
                 # Second pass: fix issues
-                with ProgressStage("PR", pr_number, "Second pass"):
+                branch_name = pr_data.get("head", {}).get("ref")
+                pr_body = pr_data.get("body", "")
+                related_issues = []
+                if pr_body:
+                    # Extract linked issues from PR body
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
+                
+                with ProgressStage("PR", pr_number, "Second pass", related_issues=related_issues, branch_name=branch_name):
                     # Label should already be present from first pass
                     # No need to add it again
 
@@ -537,6 +552,7 @@ def _create_pr_analysis_prompt(
     )
 
 
+@progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(
     repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig
 ) -> Dict[str, Any]:
@@ -707,7 +723,13 @@ def _handle_pr_merge(
     try:
         # Ensure any unpushed commits are pushed before starting
         logger.info(f"Checking for unpushed commits before processing PR #{pr_number}...")
-        push_result = ensure_pushed()
+        push_result = ensure_pushed_with_fallback(
+            llm_client=llm_client,
+            message_backend_manager=llm_client,  # Use llm_client as both for backward compatibility
+            commit_message=f"Auto-Coder: PR #{pr_number} processing",
+            issue_number=pr_number,
+            repo_name=repo_name
+        )
         if push_result.success and "No unpushed commits" not in push_result.stdout:
             actions.append(f"Pushed unpushed commits: {push_result.stdout}")
             logger.info("Successfully pushed unpushed commits")

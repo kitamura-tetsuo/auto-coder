@@ -10,7 +10,7 @@ from src.auto_coder.utils import CommandResult
 class TestPRProcessorPushFailure:
     """Test that PR processor exits on git push failure."""
 
-    @patch("src.auto_coder.pr_processor.ensure_pushed")
+    @patch("src.auto_coder.pr_processor.ensure_pushed_with_fallback")
     @patch("src.auto_coder.pr_processor.sys.exit")
     def test_handle_pr_merge_exits_on_ensure_pushed_failure(
         self, mock_exit, mock_ensure_pushed
