@@ -83,6 +83,45 @@
             }
         },
         {
+            "name": "Process Issues (Live)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "args": [
+                "process-issues",
+                "--ignore-dependabot-prs",
+                "--no-jules-mode",
+                // "--force-reindex",
+                "--qwen-use-cli-options",
+                "--backend",
+                "claude",
+                "--model-claude",
+                "MiniMax-M2",
+                // "--backend",
+                // "qwen",
+                // "--backend",
+                // "gemini",
+                // "--backend",
+                // "codex-mcp",
+                // "--backend",
+                // "codex",
+                "--backend",
+                "auggie",
+                "--model-auggie",
+                "sonnet4.5",
+                // "gpt5",
+                "--backend",
+                "qwen",
+                "--message-backend",
+                "qwen"
+            ],
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
+        {
             "name": "Process Issues (Live) - Outliner",
             "type": "debugpy",
             "request": "launch",
