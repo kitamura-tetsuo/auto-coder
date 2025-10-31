@@ -62,7 +62,7 @@ class ProgressFooter:
         if self._branch_name:
             main_display += f"/{self._branch_name}"
         
-        main_display += "\033[0m"
+        main_display += "]\033[0m"
         
         # Add related issues if available
         if self._related_issues:
