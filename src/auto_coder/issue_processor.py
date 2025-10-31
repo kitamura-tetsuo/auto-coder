@@ -792,7 +792,6 @@ def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
     body += "\n*This feature request was generated automatically by Auto-Coder.*"
     return body
 
-@progress_stage("Processing single PR/IS")
 def process_single(
     github_client,
     config: AutomationConfig,
@@ -809,220 +808,221 @@ def process_single(
     target_type: 'issue' | 'pr' | 'auto'
     When 'auto', try PR first then fall back to issue.
     """
-    logger.info(
-        f"Processing single target: type={target_type}, number={number} for {repo_name}"
-    )
-    result = {
-        "repository": repo_name,
-        "timestamp": datetime.now().isoformat(),
-        "dry_run": dry_run,
-        "jules_mode": jules_mode,
-        "issues_processed": [],
-        "prs_processed": [],
-        "errors": [],
-    }
-    try:
-        resolved_type = target_type
-        if target_type == "auto":
-            # Prefer PR to avoid mislabeling PR issues
-            try:
-                pr_data = github_client.get_pr_details_by_number(repo_name, number)
-                resolved_type = "pr"
-            except Exception:
-                resolved_type = "issue"
-        if resolved_type == "pr":
-            try:
-                from .pr_processor import _take_pr_actions, _check_github_actions_status, _extract_linked_issues_from_pr_body
-                
-                pr_data = github_client.get_pr_details_by_number(repo_name, number)
-                
-                # Extract branch name and related issues from PR data
-                branch_name = pr_data.get("head", {}).get("ref")
-                pr_body = pr_data.get("body", "")
-                related_issues = []
-                if pr_body:
-                    # Extract linked issues from PR body
-                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
-                
-                set_progress_item("PR", number, related_issues, branch_name)
-
-                # Check GitHub Actions status before processing
-                github_checks = _check_github_actions_status(repo_name, pr_data, config)
-
-                # If GitHub Actions are still in progress, switch to main and exit
-                if github_checks.get("in_progress", False):
-                    logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
-
-                    # Switch to main branch with pull
-                    switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
-                    if switch_result.success:
-                        logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                        # Exit the program
-                        logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
-                        sys.exit(0)
-                    else:
-                        logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
-                        result["errors"].append(f"Failed to switch to main branch: {switch_result.stderr}")
-                        return result
-
-                actions = _take_pr_actions(
-                    repo_name, pr_data, config, dry_run, llm_client
-                )
-                processed_pr = {
-                    "pr_data": pr_data,
-                    "actions_taken": actions,
-                    "priority": "single",
-                }
-                result["prs_processed"].append(processed_pr)
-                newline_progress()
-            except Exception as e:
-                msg = f"Failed to process PR #{number}: {e}"
-                logger.error(msg)
-                result["errors"].append(msg)
-                newline_progress()
-        else:
-            try:
-                set_progress_item("Issue", number)
-                push_progress_stage("Getting issue details")
-                issue_data = github_client.get_issue_details_by_number(
-                    repo_name, number
-                )
-
-                # Check if issue already has @auto-coder label (being processed by another instance)
-                push_progress_stage("Checking status")
-                if not dry_run and not github_client.disable_labels:
-                    current_labels = issue_data.get("labels", [])
-                    if "@auto-coder" in current_labels:
-                        msg = (
-                            f"Skipping issue #{number} - already has @auto-coder label"
-                        )
-                        logger.info(msg)
-                        result["errors"].append(msg)
-                        newline_progress()
-                        return result
-
-                # Add @auto-coder label now that we're actually going to process this issue
-                if not dry_run:
-                    if not github_client.try_add_work_in_progress_label(
-                        repo_name, number
-                    ):
-                        msg = (
-                            f"Skipping issue #{number} - @auto-coder label was just added by another instance"
-                        )
-                        logger.info(msg)
-                        result["errors"].append(msg)
-                        newline_progress()
-                        return result
-
-                processed_issue = {
-                    "issue_data": issue_data,
-                    "analysis": None,
-                    "solution": None,
-                    "actions_taken": [],
-                }
-
+    with ProgressStage("Processing single PR/IS"):
+        logger.info(
+            f"Processing single target: type={target_type}, number={number} for {repo_name}"
+        )
+        result = {
+            "repository": repo_name,
+            "timestamp": datetime.now().isoformat(),
+            "dry_run": dry_run,
+            "jules_mode": jules_mode,
+            "issues_processed": [],
+            "prs_processed": [],
+            "errors": [],
+        }
+        try:
+            resolved_type = target_type
+            if target_type == "auto":
+                # Prefer PR to avoid mislabeling PR issues
                 try:
-                    if jules_mode:
-                        # Mimic jules mode behavior
-                        push_progress_stage("Adding jules label")
-                        current_labels = issue_data.get("labels", [])
-                        if "jules" not in current_labels:
-                            if not dry_run:
-                                github_client.add_labels_to_issue(
-                                    repo_name, number, ["jules"]
-                                )
-                                processed_issue["actions_taken"].append(
-                                    f"Added 'jules' label to issue #{number}"
-                                )
-                            else:
-                                processed_issue["actions_taken"].append(
-                                    f"[DRY RUN] Would add 'jules' label to issue #{number}"
-                                )
-                        else:
-                            processed_issue["actions_taken"].append(
-                                f"Issue #{number} already has 'jules' label"
-                            )
-                    else:
-                        push_progress_stage("Processing")
-                        actions = _take_issue_actions(
-                            repo_name, issue_data, config, dry_run, github_client, llm_client, message_backend_manager
-                        )
-                        processed_issue["actions_taken"] = actions
-                finally:
-                    # Remove @auto-coder label after processing
-                    if not dry_run:
-                        try:
-                            github_client.remove_labels_from_issue(
-                                repo_name, number, ["@auto-coder"]
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to remove @auto-coder label from issue #{number}: {e}"
-                            )
-                    # Clear progress header after processing
-                    newline_progress()
+                    pr_data = github_client.get_pr_details_by_number(repo_name, number)
+                    resolved_type = "pr"
+                except Exception:
+                    resolved_type = "issue"
+            if resolved_type == "pr":
+                try:
+                    from .pr_processor import _take_pr_actions, _check_github_actions_status, _extract_linked_issues_from_pr_body
+                    
+                    pr_data = github_client.get_pr_details_by_number(repo_name, number)
+                    
+                    # Extract branch name and related issues from PR data
+                    branch_name = pr_data.get("head", {}).get("ref")
+                    pr_body = pr_data.get("body", "")
+                    related_issues = []
+                    if pr_body:
+                        # Extract linked issues from PR body
+                        related_issues = _extract_linked_issues_from_pr_body(pr_body)
+                    
+                    set_progress_item("PR", number, related_issues, branch_name)
 
-                result["issues_processed"].append(processed_issue)
-            except Exception as e:
-                msg = f"Failed to process issue #{number}: {e}"
-                logger.error(msg)
-                # Try to remove @auto-coder label on error
-                if not dry_run:
-                    try:
-                        github_client.remove_labels_from_issue(
-                            repo_name, number, ["@auto-coder"]
-                        )
-                    except Exception:
-                        pass
-                result["errors"].append(msg)
-                newline_progress()
-    except Exception as e:
-        msg = f"Error in process_single: {e}"
-        logger.error(msg)
-        result["errors"].append(msg)
+                    # Check GitHub Actions status before processing
+                    github_checks = _check_github_actions_status(repo_name, pr_data, config)
 
-    # After processing, check if the single PR/issue is now closed
-    # If so, switch to main branch, pull, and exit
-    try:
-        # Check if we processed exactly one item
-        if not dry_run and (result["issues_processed"] or result["prs_processed"]):
-            # Get the processed item
-            processed_item = None
-            item_number = None
-            item_type = None
-
-            if result["issues_processed"]:
-                processed_item = result["issues_processed"][0]
-                issue_data = processed_item.get("issue_data", {})
-                item_number = issue_data.get("number")
-                item_type = "issue"
-            elif result["prs_processed"]:
-                processed_item = result["prs_processed"][0]
-                pr_data = processed_item.get("pr_data", {})
-                item_number = pr_data.get("number")
-                item_type = "pr"
-
-            if item_number and item_type:
-                # Check the current state of the item
-                with ProgressStage("Checking final status"):
-                    if item_type == "issue":
-                        current_item = github_client.get_issue_details_by_number(repo_name, item_number)
-                    else:
-                        current_item = github_client.get_pr_details_by_number(repo_name, item_number)
-
-                    if current_item.get("state") == "closed":
-                        logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
+                    # If GitHub Actions are still in progress, switch to main and exit
+                    if github_checks.get("in_progress", False):
+                        logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
 
                         # Switch to main branch with pull
                         switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
                         if switch_result.success:
                             logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
                             # Exit the program
-                            logger.info(f"Exiting after closing {item_type} #{item_number}")
+                            logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
                             sys.exit(0)
                         else:
                             logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
-    except Exception as e:
-        logger.warning(f"Failed to check/handle closed item state: {e}")
+                            result["errors"].append(f"Failed to switch to main branch: {switch_result.stderr}")
+                            return result
 
-    return result
+                    actions = _take_pr_actions(
+                        repo_name, pr_data, config, dry_run, llm_client
+                    )
+                    processed_pr = {
+                        "pr_data": pr_data,
+                        "actions_taken": actions,
+                        "priority": "single",
+                    }
+                    result["prs_processed"].append(processed_pr)
+                    newline_progress()
+                except Exception as e:
+                    msg = f"Failed to process PR #{number}: {e}"
+                    logger.error(msg)
+                    result["errors"].append(msg)
+                    newline_progress()
+            else:
+                try:
+                    set_progress_item("Issue", number)
+                    push_progress_stage("Getting issue details")
+                    issue_data = github_client.get_issue_details_by_number(
+                        repo_name, number
+                    )
+
+                    # Check if issue already has @auto-coder label (being processed by another instance)
+                    push_progress_stage("Checking status")
+                    if not dry_run and not github_client.disable_labels:
+                        current_labels = issue_data.get("labels", [])
+                        if "@auto-coder" in current_labels:
+                            msg = (
+                                f"Skipping issue #{number} - already has @auto-coder label"
+                            )
+                            logger.info(msg)
+                            result["errors"].append(msg)
+                            newline_progress()
+                            return result
+
+                    # Add @auto-coder label now that we're actually going to process this issue
+                    if not dry_run:
+                        if not github_client.try_add_work_in_progress_label(
+                            repo_name, number
+                        ):
+                            msg = (
+                                f"Skipping issue #{number} - @auto-coder label was just added by another instance"
+                            )
+                            logger.info(msg)
+                            result["errors"].append(msg)
+                            newline_progress()
+                            return result
+
+                    processed_issue = {
+                        "issue_data": issue_data,
+                        "analysis": None,
+                        "solution": None,
+                        "actions_taken": [],
+                    }
+
+                    try:
+                        if jules_mode:
+                            # Mimic jules mode behavior
+                            push_progress_stage("Adding jules label")
+                            current_labels = issue_data.get("labels", [])
+                            if "jules" not in current_labels:
+                                if not dry_run:
+                                    github_client.add_labels_to_issue(
+                                        repo_name, number, ["jules"]
+                                    )
+                                    processed_issue["actions_taken"].append(
+                                        f"Added 'jules' label to issue #{number}"
+                                    )
+                                else:
+                                    processed_issue["actions_taken"].append(
+                                        f"[DRY RUN] Would add 'jules' label to issue #{number}"
+                                    )
+                            else:
+                                processed_issue["actions_taken"].append(
+                                    f"Issue #{number} already has 'jules' label"
+                                )
+                        else:
+                            push_progress_stage("Processing")
+                            actions = _take_issue_actions(
+                                repo_name, issue_data, config, dry_run, github_client, llm_client, message_backend_manager
+                            )
+                            processed_issue["actions_taken"] = actions
+                    finally:
+                        # Remove @auto-coder label after processing
+                        if not dry_run:
+                            try:
+                                github_client.remove_labels_from_issue(
+                                    repo_name, number, ["@auto-coder"]
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to remove @auto-coder label from issue #{number}: {e}"
+                                )
+                        # Clear progress header after processing
+                        newline_progress()
+
+                    result["issues_processed"].append(processed_issue)
+                except Exception as e:
+                    msg = f"Failed to process issue #{number}: {e}"
+                    logger.error(msg)
+                    # Try to remove @auto-coder label on error
+                    if not dry_run:
+                        try:
+                            github_client.remove_labels_from_issue(
+                                repo_name, number, ["@auto-coder"]
+                            )
+                        except Exception:
+                            pass
+                    result["errors"].append(msg)
+                    newline_progress()
+        except Exception as e:
+            msg = f"Error in process_single: {e}"
+            logger.error(msg)
+            result["errors"].append(msg)
+
+        # After processing, check if the single PR/issue is now closed
+        # If so, switch to main branch, pull, and exit
+        try:
+            # Check if we processed exactly one item
+            if not dry_run and (result["issues_processed"] or result["prs_processed"]):
+                # Get the processed item
+                processed_item = None
+                item_number = None
+                item_type = None
+
+                if result["issues_processed"]:
+                    processed_item = result["issues_processed"][0]
+                    issue_data = processed_item.get("issue_data", {})
+                    item_number = issue_data.get("number")
+                    item_type = "issue"
+                elif result["prs_processed"]:
+                    processed_item = result["prs_processed"][0]
+                    pr_data = processed_item.get("pr_data", {})
+                    item_number = pr_data.get("number")
+                    item_type = "pr"
+
+                if item_number and item_type:
+                    # Check the current state of the item
+                    with ProgressStage("Checking final status"):
+                        if item_type == "issue":
+                            current_item = github_client.get_issue_details_by_number(repo_name, item_number)
+                        else:
+                            current_item = github_client.get_pr_details_by_number(repo_name, item_number)
+
+                        if current_item.get("state") == "closed":
+                            logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
+
+                            # Switch to main branch with pull
+                            switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
+                            if switch_result.success:
+                                logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
+                                # Exit the program
+                                logger.info(f"Exiting after closing {item_type} #{item_number}")
+                                sys.exit(0)
+                            else:
+                                logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
+        except Exception as e:
+            logger.warning(f"Failed to check/handle closed item state: {e}")
+
+        return result
