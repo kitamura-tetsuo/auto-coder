@@ -847,8 +847,7 @@ def process_single(
                 set_progress_item("PR", number, related_issues, branch_name)
 
                 # Check GitHub Actions status before processing
-                with ProgressStage("Checking GitHub Actions")
-                    github_checks = _check_github_actions_status(repo_name, pr_data, config)
+                github_checks = _check_github_actions_status(repo_name, pr_data, config)
 
                 # If GitHub Actions are still in progress, switch to main and exit
                 if github_checks.get("in_progress", False):

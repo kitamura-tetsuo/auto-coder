@@ -14,6 +14,8 @@ import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from auto_coder.progress_decorators import progress_stage
+
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import (
     WorkspaceFixResult,
@@ -115,8 +117,7 @@ def process_pull_requests(
                         labeled_pr_numbers.add(pr_number)
 
                     try:
-                        with ProgressStage("Checking GitHub Actions"):
-                            github_checks = _check_github_actions_status(
+                        github_checks = _check_github_actions_status(
                                 repo_name, pr_data, config
                             )
 
@@ -551,6 +552,7 @@ def _create_pr_analysis_prompt(
     )
 
 
+@progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(
     repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig
 ) -> Dict[str, Any]:
