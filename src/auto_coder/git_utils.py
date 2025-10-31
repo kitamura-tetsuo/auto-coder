@@ -19,6 +19,7 @@ except ImportError:
     GIT_AVAILABLE = False
 
 from .logger_config import get_logger
+from .prompt_loader import render_prompt
 from .utils import CommandExecutor, CommandResult
 
 logger = get_logger(__name__)
@@ -620,6 +621,132 @@ def git_push(
         )
 
 
+def ensure_pushed_with_fallback(
+    cwd: Optional[str] = None,
+    remote: str = "origin",
+    llm_client=None,
+    message_backend_manager=None,
+    commit_message: Optional[str] = None,
+    issue_number: Optional[int] = None,
+    repo_name: Optional[str] = None,
+) -> CommandResult:
+    """
+    Ensure all commits are pushed to remote with enhanced error handling.
+    
+    This function handles non-fast-forward errors by pulling first, then pushing.
+    If push still fails, it falls back to LLM resolution.
+
+    Args:
+        cwd: Optional working directory for git command
+        remote: Remote name (default: 'origin')
+        llm_client: LLM backend manager for fallback resolution
+        message_backend_manager: Message backend manager for fallback resolution
+        commit_message: Commit message for LLM context
+        issue_number: Issue number for LLM context
+        repo_name: Repository name for history saving
+
+    Returns:
+        CommandResult object with success status and output
+    """
+    cmd = CommandExecutor()
+    
+    # Check if there are unpushed commits
+    if not check_unpushed_commits(cwd=cwd, remote=remote):
+        logger.debug("No unpushed commits found")
+        return CommandResult(
+            success=True,
+            stdout="No unpushed commits",
+            stderr="",
+            returncode=0
+        )
+
+    # Push unpushed commits
+    logger.info("Pushing unpushed commits...")
+    push_result = git_push(cwd=cwd, remote=remote, commit_message=commit_message)
+    
+    # If push succeeded, return the result
+    if push_result.success:
+        return push_result
+    
+    # Check if this is a non-fast-forward error
+    is_non_fast_forward = (
+        "non-fast-forward" in push_result.stderr.lower() or
+        "Updates were rejected because the tip of your current branch is behind" in push_result.stderr or
+        "the tip of your current branch is behind its remote counterpart" in push_result.stderr
+    )
+    
+    if is_non_fast_forward:
+        logger.info("Detected non-fast-forward error, attempting to pull and retry push...")
+        
+        # Get current branch and pull from the specific remote branch
+        branch_result = cmd.run_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd
+        )
+        if not branch_result.success:
+            logger.warning(f"Failed to get current branch: {branch_result.stderr}")
+            return push_result
+            
+        current_branch = branch_result.stdout.strip()
+        logger.info(f"Pulling latest changes from {remote}/{current_branch}...")
+        pull_result = cmd.run_command(["git", "pull", remote, current_branch], cwd=cwd)
+        
+        if not pull_result.success:
+            logger.warning(f"Pull failed: {pull_result.stderr}")
+            # Check if it's a conflict that can be resolved
+            if "conflict" in pull_result.stderr.lower() or "merge conflict" in pull_result.stderr.lower():
+                logger.info("Detected merge conflicts during pull, attempting to resolve...")
+                # Try to resolve pull conflicts
+                conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+                if not conflict_result.success:
+                    logger.error(f"Failed to resolve pull conflicts: {conflict_result.stderr}")
+                    # Don't return here - still attempt LLM fallback
+                else:
+                    # If conflict resolution succeeded, continue with retry push
+                    logger.info("Successfully resolved pull conflicts")
+            else:
+                # Pull failed for non-conflict reasons
+                logger.error(f"Pull failed for non-conflict reasons: {pull_result.stderr}")
+                # Don't return here - still attempt LLM fallback
+        
+        # Retry the push after pull
+        logger.info("Retrying push after pull...")
+        retry_push_result = git_push(cwd=cwd, remote=remote, commit_message=commit_message)
+        
+        if retry_push_result.success:
+            logger.info("Successfully pushed after resolving non-fast-forward error")
+            return retry_push_result
+        else:
+            logger.warning(f"Push still failed after pull: {retry_push_result.stderr}")
+            # Update push_result for LLM fallback
+            push_result = retry_push_result
+    
+    # If push still failed and we have LLM clients, try LLM fallback
+    if (llm_client is not None or message_backend_manager is not None) and commit_message:
+        logger.info("Attempting to resolve push failure using LLM...")
+        llm_success = try_llm_commit_push(
+            commit_message,
+            push_result.stderr,
+            llm_client,
+            message_backend_manager,
+        )
+        if llm_success:
+            logger.info("LLM successfully resolved push failure")
+            return CommandResult(
+                success=True,
+                stdout="Successfully resolved push failure using LLM",
+                stderr="",
+                returncode=0
+            )
+        else:
+            logger.error("LLM failed to resolve push failure")
+    else:
+        logger.warning("No LLM client available for push failure resolution")
+    
+    # Return the final push result
+    return push_result
+
+
 def ensure_pushed(cwd: Optional[str] = None, remote: str = "origin") -> CommandResult:
     """
     Ensure all commits are pushed to remote. If there are unpushed commits, push them.
@@ -876,3 +1003,176 @@ def resolve_pull_conflicts(
             stderr=f"Error resolving pull conflicts: {e}",
             returncode=1
         )
+
+
+def try_llm_commit_push(
+    commit_message: str,
+    error_message: str,
+    llm_client=None,
+    message_backend_manager=None,
+) -> bool:
+    """
+    Try to use LLM to resolve commit/push failures.
+
+    Args:
+        commit_message: The commit message that was attempted
+        error_message: The error message from the failed commit/push
+        llm_client: LLM backend manager for commit/push operations
+        message_backend_manager: Message backend manager for commit/push operations
+
+    Returns:
+        True if LLM successfully resolved the issue, False otherwise
+    """
+    cmd = CommandExecutor()
+    
+    try:
+        # Use message_backend_manager if available, otherwise fall back to llm_client
+        manager = message_backend_manager if message_backend_manager is not None else llm_client
+
+        if manager is None:
+            logger.error("No LLM manager available for commit/push resolution")
+            return False
+
+        # Create prompt for LLM to resolve commit/push failure
+        prompt = render_prompt(
+            "tests.commit_and_push",
+            commit_message=commit_message,
+            error_message=error_message,
+        )
+
+        # Execute LLM to resolve the issue
+        response = manager._run_llm_cli(prompt)
+
+        if not response:
+            logger.error("No response from LLM for commit/push resolution")
+            return False
+
+        # Check if LLM indicated success
+        if "COMMIT_PUSH_RESULT: SUCCESS" in response:
+            logger.info("LLM successfully resolved commit/push failure")
+
+            # Verify that there are no uncommitted changes
+            status_result = cmd.run_command(
+                ["git", "status", "--porcelain"]
+            )
+            if status_result.stdout.strip():
+                logger.error("LLM claimed success but there are still uncommitted changes")
+                logger.error(f"Uncommitted changes: {status_result.stdout}")
+                return False
+
+            # Verify that the push was successful by checking if there are unpushed commits
+            unpushed_result = cmd.run_command(
+                ["git", "log", "@{u}..HEAD", "--oneline"]
+            )
+            if unpushed_result.success and unpushed_result.stdout.strip():
+                logger.error("LLM claimed success but there are still unpushed commits")
+                logger.error(f"Unpushed commits: {unpushed_result.stdout}")
+                return False
+
+            return True
+        elif "COMMIT_PUSH_RESULT: FAILED:" in response:
+            # Extract failure reason
+            failure_reason = response.split("COMMIT_PUSH_RESULT: FAILED:", 1)[1].strip()
+            logger.error(f"LLM failed to resolve commit/push: {failure_reason}")
+            return False
+        else:
+            logger.error("LLM did not provide a clear success/failure indication")
+            logger.error(f"LLM response: {response[:500]}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error while trying to use LLM for commit/push: {e}")
+        return False
+
+
+def commit_and_push_changes(
+    result_data: Dict[str, Any],
+    repo_name: Optional[str] = None,
+    issue_number: Optional[int] = None,
+    llm_client=None,
+    message_backend_manager=None,
+) -> str:
+    """
+    Commit changes and push them to remote using centralized git helper.
+    
+    This function handles the complete commit-and-push workflow, including
+    handling non-fast-forward errors by pulling and retrying.
+
+    Args:
+        result_data: Dictionary containing 'summary' key with commit message
+        repo_name: Repository name (e.g., 'owner/repo') for history saving
+        issue_number: Issue number for context in history
+        llm_client: LLM backend manager for commit/push operations
+        message_backend_manager: Message backend manager for commit/push operations
+
+    Returns:
+        Action message describing the commit result
+    """
+    global cmd  # Use the existing CommandExecutor instance
+    cmd = CommandExecutor()
+    
+    summary = result_data.get("summary", "Auto-Coder: Automated changes")
+
+    # Check if there are any changes to commit
+    status_result = cmd.run_command(
+        ["git", "status", "--porcelain"]
+    )
+    if not status_result.stdout.strip():
+        return "No changes to commit"
+
+    # Stage all changes
+    add_result = cmd.run_command(["git", "add", "-A"])
+    if not add_result.success:
+        return f"Failed to stage changes: {add_result.stderr}"
+
+    # Commit using centralized helper with dprint retry logic
+    commit_result = git_commit_with_retry(summary)
+
+    if commit_result.success:
+        # Use ensure_pushed which handles non-fast-forward errors and LLM fallback
+        push_result = ensure_pushed_with_fallback(
+            llm_client=llm_client,
+            message_backend_manager=message_backend_manager,
+            commit_message=summary,
+            issue_number=issue_number,
+            repo_name=repo_name
+        )
+        
+        if push_result.success:
+            return f"Successfully committed and pushed changes: {summary}"
+        else:
+            logger.error(f"Failed to push changes after retry: {push_result.stderr}")
+            return f"Failed to commit and push changes: {push_result.stderr}"
+    else:
+        # Commit failed - try to use LLM to resolve the commit failure
+        if llm_client is not None or message_backend_manager is not None:
+            logger.info("Attempting to resolve commit failure using LLM...")
+            llm_success = try_llm_commit_push(
+                summary,
+                commit_result.stderr,
+                llm_client,
+                message_backend_manager,
+            )
+            if llm_success:
+                return f"Successfully committed and pushed changes using LLM: {summary}"
+            else:
+                logger.error("LLM failed to resolve commit failure")
+                # Save history and exit immediately
+                context = {
+                    "type": "issue",
+                    "issue_number": issue_number,
+                    "commit_message": summary,
+                }
+                save_commit_failure_history(commit_result.stderr, context, repo_name)
+                # This line will never be reached due to sys.exit in save_commit_failure_history
+                return f"Failed to commit changes: {commit_result.stderr}"
+        else:
+            # Save history and exit immediately
+            context = {
+                "type": "issue",
+                "issue_number": issue_number,
+                "commit_message": summary,
+            }
+            save_commit_failure_history(commit_result.stderr, context, repo_name)
+            # This line will never be reached due to sys.exit in save_commit_failure_history
+            return f"Failed to commit changes: {commit_result.stderr}"

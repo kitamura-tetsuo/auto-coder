@@ -20,7 +20,7 @@ from .fix_to_pass_tests_runner import (
     extract_important_errors,
     run_local_tests,
 )
-from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch
+from .git_utils import ensure_pushed_with_fallback, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch
 from .logger_config import get_logger
 from .progress_footer import (
     newline_progress,
@@ -721,7 +721,13 @@ def _handle_pr_merge(
     try:
         # Ensure any unpushed commits are pushed before starting
         logger.info(f"Checking for unpushed commits before processing PR #{pr_number}...")
-        push_result = ensure_pushed()
+        push_result = ensure_pushed_with_fallback(
+            llm_client=llm_client,
+            message_backend_manager=llm_client,  # Use llm_client as both for backward compatibility
+            commit_message=f"Auto-Coder: PR #{pr_number} processing",
+            issue_number=pr_number,
+            repo_name=repo_name
+        )
         if push_result.success and "No unpushed commits" not in push_result.stdout:
             actions.append(f"Pushed unpushed commits: {push_result.stdout}")
             logger.info("Successfully pushed unpushed commits")

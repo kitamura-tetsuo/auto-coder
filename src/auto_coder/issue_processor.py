@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch
+from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch, try_llm_commit_push, commit_and_push_changes
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item, push_progress_stage
 from .prompt_loader import render_prompt
@@ -460,194 +460,6 @@ def _create_pr_for_issue(
         return f"Error creating PR for issue #{issue_number}: {e}"
 
 
-def _try_llm_commit_push(
-    commit_message: str,
-    error_message: str,
-    llm_client=None,
-    message_backend_manager=None,
-) -> bool:
-    """
-    Try to use LLM to resolve commit/push failures.
-
-    Args:
-        commit_message: The commit message that was attempted
-        error_message: The error message from the failed commit/push
-        llm_client: LLM backend manager for commit/push operations
-        message_backend_manager: Message backend manager for commit/push operations
-
-    Returns:
-        True if LLM successfully resolved the issue, False otherwise
-    """
-    try:
-        # Use message_backend_manager if available, otherwise fall back to llm_client
-        manager = message_backend_manager if message_backend_manager is not None else llm_client
-
-        if manager is None:
-            logger.error("No LLM manager available for commit/push resolution")
-            return False
-
-        # Create prompt for LLM to resolve commit/push failure
-        prompt = render_prompt(
-            "tests.commit_and_push",
-            commit_message=commit_message,
-            error_message=error_message,
-        )
-
-        # Execute LLM to resolve the issue
-        response = manager._run_llm_cli(prompt)
-
-        if not response:
-            logger.error("No response from LLM for commit/push resolution")
-            return False
-
-        # Check if LLM indicated success
-        if "COMMIT_PUSH_RESULT: SUCCESS" in response:
-            logger.info("LLM successfully resolved commit/push failure")
-
-            # Verify that there are no uncommitted changes
-            status_result = cmd.run_command(
-                ["git", "status", "--porcelain"]
-            )
-            if status_result.stdout.strip():
-                logger.error("LLM claimed success but there are still uncommitted changes")
-                logger.error(f"Uncommitted changes: {status_result.stdout}")
-                return False
-
-            # Verify that the push was successful by checking if there are unpushed commits
-            unpushed_result = cmd.run_command(
-                ["git", "log", "@{u}..HEAD", "--oneline"]
-            )
-            if unpushed_result.success and unpushed_result.stdout.strip():
-                logger.error("LLM claimed success but there are still unpushed commits")
-                logger.error(f"Unpushed commits: {unpushed_result.stdout}")
-                return False
-
-            return True
-        elif "COMMIT_PUSH_RESULT: FAILED:" in response:
-            # Extract failure reason
-            failure_reason = response.split("COMMIT_PUSH_RESULT: FAILED:", 1)[1].strip()
-            logger.error(f"LLM failed to resolve commit/push: {failure_reason}")
-            return False
-        else:
-            logger.error("LLM did not provide a clear success/failure indication")
-            logger.error(f"LLM response: {response[:500]}")
-            return False
-
-    except Exception as e:
-        logger.error(f"Error while trying to use LLM for commit/push: {e}")
-        return False
-
-
-def _commit_changes(
-    result_data: Dict[str, Any],
-    repo_name: Optional[str] = None,
-    issue_number: Optional[int] = None,
-    llm_client=None,
-    message_backend_manager=None,
-) -> str:
-    """
-    Commit changes using centralized git helper.
-
-    Args:
-        result_data: Dictionary containing 'summary' key with commit message
-        repo_name: Repository name (e.g., 'owner/repo') for history saving
-        issue_number: Issue number for context in history
-        llm_client: LLM backend manager for commit/push operations
-        message_backend_manager: Message backend manager for commit/push operations
-
-    Returns:
-        Action message describing the commit result
-    """
-    # Push llm commited changes.
-    push_result = git_push()
-
-    summary = result_data.get("summary", "Auto-Coder: Automated changes")
-
-    # Check if there are any changes to commit
-    status_result = cmd.run_command(
-        ["git", "status", "--porcelain"]
-    )
-    if not status_result.stdout.strip():
-        return "No changes to commit"
-
-    # Stage all changes
-    add_result = cmd.run_command(["git", "add", "-A"])
-    if not add_result.success:
-        return f"Failed to stage changes: {add_result.stderr}"
-
-    # Commit using centralized helper with dprint retry logic
-    commit_result = git_commit_with_retry(summary)
-
-    if commit_result.success:
-        # Push changes to remote with retry, passing commit message for dprint re-commit
-        push_result = git_push(commit_message=summary)
-        if push_result.success:
-            return f"Successfully committed and pushed changes: {summary}"
-        else:
-            # Push failed - try one more time after a brief pause
-            logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
-            import time
-            time.sleep(2)
-            retry_push_result = git_push(commit_message=summary)
-            if retry_push_result.success:
-                return f"Successfully committed and pushed changes (after retry): {summary}"
-            else:
-                logger.error(f"Failed to push changes after retry: {retry_push_result.stderr}")
-
-                # Try to use LLM to resolve the push failure
-                if llm_client is not None or message_backend_manager is not None:
-                    logger.info("Attempting to resolve push failure using LLM...")
-                    llm_success = _try_llm_commit_push(
-                        summary,
-                        retry_push_result.stderr,
-                        llm_client,
-                        message_backend_manager,
-                    )
-                    if llm_success:
-                        return f"Successfully committed and pushed changes using LLM: {summary}"
-                    else:
-                        logger.error("LLM failed to resolve push failure")
-                        logger.error("Exiting application due to git push failure")
-                        sys.exit(1)
-                else:
-                    logger.error("No LLM client available to resolve push failure")
-                    logger.error("Exiting application due to git push failure")
-                    sys.exit(1)
-    else:
-        # Commit failed - try to use LLM to resolve the commit failure
-        if llm_client is not None or message_backend_manager is not None:
-            logger.info("Attempting to resolve commit failure using LLM...")
-            llm_success = _try_llm_commit_push(
-                summary,
-                commit_result.stderr,
-                llm_client,
-                message_backend_manager,
-            )
-            if llm_success:
-                return f"Successfully committed and pushed changes using LLM: {summary}"
-            else:
-                logger.error("LLM failed to resolve commit failure")
-                # Save history and exit immediately
-                context = {
-                    "type": "issue",
-                    "issue_number": issue_number,
-                    "commit_message": summary,
-                }
-                save_commit_failure_history(commit_result.stderr, context, repo_name)
-                # This line will never be reached due to sys.exit in save_commit_failure_history
-                return f"Failed to commit changes: {commit_result.stderr}"
-        else:
-            # Save history and exit immediately
-            context = {
-                "type": "issue",
-                "issue_number": issue_number,
-                "commit_message": summary,
-            }
-            save_commit_failure_history(commit_result.stderr, context, repo_name)
-            # This line will never be reached due to sys.exit in save_commit_failure_history
-            return f"Failed to commit changes: {commit_result.stderr}"
-
-
 def _apply_issue_actions_directly(
     repo_name: str,
     issue_data: Dict[str, Any],
@@ -842,7 +654,7 @@ def _apply_issue_actions_directly(
 
             # Commit any changes made
             push_progress_stage("Committing changes")
-            commit_action = _commit_changes(
+            commit_action = commit_and_push_changes(
                 {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
                 repo_name=repo_name,
                 issue_number=issue_data['number'],
