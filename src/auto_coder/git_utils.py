@@ -701,3 +701,81 @@ def save_commit_failure_history(
 
     # Exit the application immediately
     sys.exit(1)
+
+
+def switch_to_branch(
+    branch_name: str,
+    create_new: bool = False,
+    base_branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+    publish: bool = True,
+    pull_after_switch: bool = True,
+) -> CommandResult:
+    """
+    Switch to a git branch and automatically pull latest changes.
+    
+    This function centralizes branch switching operations with automatic pull.
+    It combines git_checkout_branch with automatic pull to ensure the branch
+    is synchronized with the remote repository.
+    
+    Args:
+        branch_name: Name of the branch to switch to
+        create_new: If True, creates a new branch with -b flag
+        base_branch: If create_new is True and base_branch is specified, creates
+                     the new branch from base_branch (using -B flag)
+        cwd: Optional working directory for the git command
+        publish: If True and create_new is True, push the new branch to remote and set up tracking
+        pull_after_switch: If True, automatically pull latest changes after successful checkout
+    
+    Returns:
+        CommandResult with the result of the checkout operation.
+        success=True only if checkout succeeded AND (pull succeeded if requested) AND
+        current branch matches expected branch.
+    """
+    cmd = CommandExecutor()
+    
+    # First, checkout the branch using existing logic
+    checkout_result = git_checkout_branch(
+        branch_name=branch_name,
+        create_new=create_new,
+        base_branch=base_branch,
+        cwd=cwd,
+        publish=publish,
+    )
+    
+    if not checkout_result.success:
+        logger.error(f"Failed to checkout branch '{branch_name}': {checkout_result.stderr}")
+        return checkout_result
+    
+    # If pull is not requested, return the checkout result
+    if not pull_after_switch:
+        logger.info(f"Successfully switched to branch '{branch_name}' (skipping pull)")
+        return checkout_result
+    
+    # Pull the latest changes from remote
+    logger.info(f"Pulling latest changes for branch '{branch_name}'...")
+    pull_result = cmd.run_command(["git", "pull", "origin", branch_name], cwd=cwd)
+    
+    if not pull_result.success:
+        # Check if it's a "no tracking information" error (new branch)
+        if "no tracking information" in pull_result.stderr or "fatal: No such ref was fetched" in pull_result.stderr:
+            logger.warning(f"No remote tracking information for branch '{branch_name}', skipping pull")
+            # This is not a critical error for new branches
+            return checkout_result
+        else:
+            logger.error(f"Failed to pull latest changes for branch '{branch_name}': {pull_result.stderr}")
+            # Return a combined result
+            return CommandResult(
+                success=False,
+                stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
+                stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
+                returncode=pull_result.returncode
+            )
+    
+    logger.info(f"Successfully switched to branch '{branch_name}' and pulled latest changes")
+    return CommandResult(
+        success=True,
+        stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
+        stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
+        returncode=0
+    )

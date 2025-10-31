@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item, push_progress_stage
 from .prompt_loader import render_prompt
@@ -719,27 +719,22 @@ def _apply_issue_actions_directly(
                     base_branch = parent_branch
                     pr_base_branch = parent_branch  # PRのマージ先も親issueブランチに設定
                     logger.info(f"Parent branch {parent_branch} exists, using it as base")
-
-                    # 最新の状態を取得
-                    pull_result = cmd.run_command(["git", "pull"])
-                    if not pull_result.success:
-                        logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
+                    
+                    # ブランチを最新状態へ更新
+                    switch_result = switch_to_branch(parent_branch, pull_after_switch=True)
+                    if not switch_result.success:
+                        logger.warning(f"Failed to pull latest changes from {parent_branch}: {switch_result.stderr}")
                 else:
                     # 親issueのブランチが存在しない場合は作成
                     logger.info(f"Parent branch {parent_branch} does not exist, creating it")
 
                     # まずデフォルトブランチに切り替え
-                    checkout_main_result = git_checkout_branch(config.MAIN_BRANCH)
-                    if not checkout_main_result.success:
-                        error_msg = f"Failed to switch to main branch {config.MAIN_BRANCH}: {checkout_main_result.stderr}"
+                    switch_main_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
+                    if not switch_main_result.success:
+                        error_msg = f"Failed to switch to main branch {config.MAIN_BRANCH}: {switch_main_result.stderr}"
                         actions.append(error_msg)
                         logger.error(error_msg)
                         return actions
-
-                    # 最新の状態を取得
-                    pull_result = cmd.run_command(["git", "pull"])
-                    if not pull_result.success:
-                        logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
 
                     # 親issueのブランチを作成（自動的にリモートにプッシュされる）
                     create_parent_result = git_checkout_branch(parent_branch, create_new=True)
@@ -777,17 +772,12 @@ def _apply_issue_actions_directly(
                 logger.info(f"Work branch {work_branch} does not exist, creating from {base_branch}")
 
                 # ベースブランチに切り替え
-                checkout_base_result = git_checkout_branch(base_branch)
-                if not checkout_base_result.success:
-                    error_msg = f"Failed to switch to base branch {base_branch}: {checkout_base_result.stderr}"
+                switch_base_result = switch_to_branch(base_branch, pull_after_switch=True)
+                if not switch_base_result.success:
+                    error_msg = f"Failed to switch to base branch {base_branch}: {switch_base_result.stderr}"
                     actions.append(error_msg)
                     logger.error(error_msg)
                     return actions
-
-                # 最新の状態を取得
-                pull_result = cmd.run_command(["git", "pull"])
-                if not pull_result.success:
-                    logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
 
                 # 作業用ブランチを作成して切り替え
                 checkout_new_result = git_checkout_branch(work_branch, create_new=True)
@@ -1044,24 +1034,16 @@ def process_single(
                 if github_checks.get("in_progress", False):
                     logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
 
-                    # Switch to main branch
-                    checkout_result = git_checkout_branch(config.MAIN_BRANCH)
-                    if checkout_result.success:
+                    # Switch to main branch with pull
+                    switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
+                    if switch_result.success:
                         logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-
-                        # Pull latest changes
-                        pull_result = cmd.run_command(["git", "pull"])
-                        if pull_result.success:
-                            logger.info(f"Successfully pulled latest changes from {config.MAIN_BRANCH}")
-                        else:
-                            logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
-
                         # Exit the program
                         logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
                         sys.exit(0)
                     else:
-                        logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {checkout_result.stderr}")
-                        result["errors"].append(f"Failed to switch to main branch: {checkout_result.stderr}")
+                        logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
+                        result["errors"].append(f"Failed to switch to main branch: {switch_result.stderr}")
                         return result
 
                 actions = _take_pr_actions(
@@ -1212,23 +1194,15 @@ def process_single(
                     if current_item.get("state") == "closed":
                         logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
 
-                        # Switch to main branch
-                        checkout_result = git_checkout_branch(config.MAIN_BRANCH)
-                        if checkout_result.success:
+                        # Switch to main branch with pull
+                        switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
+                        if switch_result.success:
                             logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-
-                            # Pull latest changes
-                            pull_result = cmd.run_command(["git", "pull"])
-                            if pull_result.success:
-                                logger.info(f"Successfully pulled latest changes from {config.MAIN_BRANCH}")
-                            else:
-                                logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
-
                             # Exit the program
                             logger.info(f"Exiting after closing {item_type} #{item_number}")
                             sys.exit(0)
                         else:
-                            logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {checkout_result.stderr}")
+                            logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
     except Exception as e:
         logger.warning(f"Failed to check/handle closed item state: {e}")
 

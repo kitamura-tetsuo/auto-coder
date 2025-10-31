@@ -20,7 +20,7 @@ from .fix_to_pass_tests_runner import (
     extract_important_errors,
     run_local_tests,
 )
-from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch
 from .logger_config import get_logger
 from .progress_footer import (
     newline_progress,
