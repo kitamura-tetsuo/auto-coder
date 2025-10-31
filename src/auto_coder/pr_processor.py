@@ -83,7 +83,14 @@ def process_pull_requests(
                 pr_number = pr_data["number"]
 
                 # First pass: check if PR can be merged
-                with ProgressStage("PR", pr_number, "First pass"):
+                branch_name = pr_data.get("head", {}).get("ref")
+                pr_body = pr_data.get("body", "")
+                related_issues = []
+                if pr_body:
+                    # Extract linked issues from PR body
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
+                
+                with ProgressStage("PR", pr_number, "First pass", related_issues=related_issues, branch_name=branch_name):
                     # Skip if PR already has @auto-coder label (being processed by another instance)
                     if not dry_run and not github_client.disable_labels:
                         if not github_client.try_add_work_in_progress_label(
@@ -214,7 +221,14 @@ def process_pull_requests(
                     continue
 
                 # Second pass: fix issues
-                with ProgressStage("PR", pr_number, "Second pass"):
+                branch_name = pr_data.get("head", {}).get("ref")
+                pr_body = pr_data.get("body", "")
+                related_issues = []
+                if pr_body:
+                    # Extract linked issues from PR body
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
+                
+                with ProgressStage("PR", pr_number, "Second pass", related_issues=related_issues, branch_name=branch_name):
                     # Label should already be present from first pass
                     # No need to add it again
 

@@ -1020,11 +1020,20 @@ def process_single(
                 resolved_type = "issue"
         if resolved_type == "pr":
             try:
-                from .pr_processor import _take_pr_actions, _check_github_actions_status
-
-                set_progress_item("PR", number)
-                push_progress_stage("Processing single PR")
+                from .pr_processor import _take_pr_actions, _check_github_actions_status, _extract_linked_issues_from_pr_body
+                
                 pr_data = github_client.get_pr_details_by_number(repo_name, number)
+                
+                # Extract branch name and related issues from PR data
+                branch_name = pr_data.get("head", {}).get("ref")
+                pr_body = pr_data.get("body", "")
+                related_issues = []
+                if pr_body:
+                    # Extract linked issues from PR body
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
+                
+                set_progress_item("PR", number, related_issues, branch_name)
+                push_progress_stage("Processing single PR")
 
                 # Check GitHub Actions status before processing
                 push_progress_stage("Checking GitHub Actions")
