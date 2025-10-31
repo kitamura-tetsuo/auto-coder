@@ -1030,11 +1030,40 @@ def process_single(
                 resolved_type = "issue"
         if resolved_type == "pr":
             try:
-                from .pr_processor import _take_pr_actions
+                from .pr_processor import _take_pr_actions, _check_github_actions_status
 
                 set_progress_item("PR", number)
                 push_progress_stage("Processing single PR")
                 pr_data = github_client.get_pr_details_by_number(repo_name, number)
+
+                # Check GitHub Actions status before processing
+                push_progress_stage("Checking GitHub Actions")
+                github_checks = _check_github_actions_status(repo_name, pr_data, config)
+
+                # If GitHub Actions are still in progress, switch to main and exit
+                if github_checks.get("in_progress", False):
+                    logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
+
+                    # Switch to main branch
+                    checkout_result = git_checkout_branch(config.MAIN_BRANCH)
+                    if checkout_result.success:
+                        logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
+
+                        # Pull latest changes
+                        pull_result = cmd.run_command(["git", "pull"])
+                        if pull_result.success:
+                            logger.info(f"Successfully pulled latest changes from {config.MAIN_BRANCH}")
+                        else:
+                            logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
+
+                        # Exit the program
+                        logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
+                        sys.exit(0)
+                    else:
+                        logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {checkout_result.stderr}")
+                        result["errors"].append(f"Failed to switch to main branch: {checkout_result.stderr}")
+                        return result
+
                 actions = _take_pr_actions(
                     repo_name, pr_data, config, dry_run, llm_client
                 )
@@ -1150,4 +1179,57 @@ def process_single(
         msg = f"Error in process_single: {e}"
         logger.error(msg)
         result["errors"].append(msg)
+
+    # After processing, check if the single PR/issue is now closed
+    # If so, switch to main branch, pull, and exit
+    try:
+        # Check if we processed exactly one item
+        if not dry_run and (result["issues_processed"] or result["prs_processed"]):
+            # Get the processed item
+            processed_item = None
+            item_number = None
+            item_type = None
+
+            if result["issues_processed"]:
+                processed_item = result["issues_processed"][0]
+                issue_data = processed_item.get("issue_data", {})
+                item_number = issue_data.get("number")
+                item_type = "issue"
+            elif result["prs_processed"]:
+                processed_item = result["prs_processed"][0]
+                pr_data = processed_item.get("pr_data", {})
+                item_number = pr_data.get("number")
+                item_type = "pr"
+
+            if item_number and item_type:
+                # Check the current state of the item
+                with ProgressStage("Checking final status"):
+                    if item_type == "issue":
+                        current_item = github_client.get_issue_details_by_number(repo_name, item_number)
+                    else:
+                        current_item = github_client.get_pr_details_by_number(repo_name, item_number)
+
+                    if current_item.get("state") == "closed":
+                        logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
+
+                        # Switch to main branch
+                        checkout_result = git_checkout_branch(config.MAIN_BRANCH)
+                        if checkout_result.success:
+                            logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
+
+                            # Pull latest changes
+                            pull_result = cmd.run_command(["git", "pull"])
+                            if pull_result.success:
+                                logger.info(f"Successfully pulled latest changes from {config.MAIN_BRANCH}")
+                            else:
+                                logger.warning(f"Failed to pull latest changes: {pull_result.stderr}")
+
+                            # Exit the program
+                            logger.info(f"Exiting after closing {item_type} #{item_number}")
+                            sys.exit(0)
+                        else:
+                            logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {checkout_result.stderr}")
+    except Exception as e:
+        logger.warning(f"Failed to check/handle closed item state: {e}")
+
     return result
