@@ -9,7 +9,7 @@ mcp = FastMCP("GraphRAG Code Analysis",
 code_tool = CodeAnalysisTool()
 
 @mcp.tool()
-def find_symbol(fqname: str) -> dict:
+def find_symbol(fqname: str, session_id: str = None) -> dict:
     """
     Find a code symbol by fully qualified name.
 
@@ -18,6 +18,8 @@ def find_symbol(fqname: str) -> dict:
 
     Args:
         fqname: Fully qualified name (e.g., 'src/utils.ts::calculateHash' or 'src/models/User.ts::User::getName')
+        session_id: Optional session identifier for repository isolation.
+                   If not provided, will auto-generate from repository path.
 
     Returns:
         Symbol details including:
@@ -31,14 +33,15 @@ def find_symbol(fqname: str) -> dict:
         - file: Source file path
         - start_line, end_line: Source location
         - tags: Associated tags
+        - session_id: Session identifier used for the query
 
     Example:
-        find_symbol("src/utils/hash.ts::calculateHash")
+        find_symbol("src/utils/hash.ts::calculateHash", session_id="my_repo_123")
     """
-    return code_tool.find_symbol(fqname)
+    return code_tool.find_symbol(fqname, session_id)
 
 @mcp.tool()
-def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> dict:
+def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1, session_id: str = None) -> dict:
     """
     Get the call graph for a symbol to understand function/method relationships.
 
@@ -50,19 +53,22 @@ def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> d
         symbol_id: Symbol ID (obtained from find_symbol)
         direction: 'callers' (who calls this), 'callees' (what this calls), or 'both' (default: 'both')
         depth: Traversal depth 1-3 (default: 1). Higher depth shows indirect relationships.
+        session_id: Optional session identifier for repository isolation.
+                   If not provided, will auto-generate from repository path.
 
     Returns:
         Call graph with:
         - nodes: List of related symbols with their details
         - edges: List of call relationships with call counts
+        - session_id: Session identifier used for the query
 
     Example:
-        get_call_graph("symbol_123", direction="callers", depth=2)
+        get_call_graph("symbol_123", direction="callers", depth=2, session_id="my_repo_123")
     """
-    return code_tool.get_call_graph(symbol_id, direction, depth)
+    return code_tool.get_call_graph(symbol_id, direction, depth, session_id)
 
 @mcp.tool()
-def get_dependencies(file_path: str) -> dict:
+def get_dependencies(file_path: str, session_id: str = None) -> dict:
     """
     Get file dependencies (import relationships).
 
@@ -71,19 +77,22 @@ def get_dependencies(file_path: str) -> dict:
 
     Args:
         file_path: File path (e.g., 'src/utils.ts')
+        session_id: Optional session identifier for repository isolation.
+                   If not provided, will auto-generate from repository path.
 
     Returns:
         Dependency information:
         - imports: List of files this file imports (with import counts)
         - imported_by: List of files that import this file (with import counts)
+        - session_id: Session identifier used for the query
 
     Example:
-        get_dependencies("src/utils/hash.ts")
+        get_dependencies("src/utils/hash.ts", session_id="my_repo_123")
     """
-    return code_tool.get_dependencies(file_path)
+    return code_tool.get_dependencies(file_path, session_id)
 
 @mcp.tool()
-def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
+def impact_analysis(symbol_ids: list, max_depth: int = 2, session_id: str = None) -> dict:
     """
     Analyze the impact of changing given symbols across the codebase.
 
@@ -97,20 +106,23 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
     Args:
         symbol_ids: List of symbol IDs to analyze (obtained from find_symbol)
         max_depth: Maximum traversal depth 1-3 (default: 2)
+        session_id: Optional session identifier for repository isolation.
+                   If not provided, will auto-generate from repository path.
 
     Returns:
         Impact analysis:
         - affected_symbols: List of symbols that would be affected
         - affected_files: List of files that would be affected
         - impact_summary: Summary statistics (total counts, breakdown by kind)
+        - session_id: Session identifier used for the query
 
     Example:
-        impact_analysis(["symbol_123", "symbol_456"], max_depth=2)
+        impact_analysis(["symbol_123", "symbol_456"], max_depth=2, session_id="my_repo_123")
     """
-    return code_tool.impact_analysis(symbol_ids, max_depth)
+    return code_tool.impact_analysis(symbol_ids, max_depth, session_id)
 
 @mcp.tool()
-def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) -> dict:
+def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None, session_id: str = None) -> dict:
     """
     Search for code using natural language semantic similarity.
 
@@ -124,15 +136,18 @@ def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) 
         limit: Maximum number of results to return (default: 10)
         kind_filter: Optional list of symbol kinds to filter results
                     (e.g., ['Function', 'Class', 'Method'])
+        session_id: Optional session identifier for repository isolation.
+                   If not provided, will auto-generate from repository path.
 
     Returns:
         Semantically similar symbols:
         - symbols: List of matching symbols with similarity scores
+        - session_id: Session identifier used for the query
 
     Example:
-        semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"])
+        semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"], session_id="my_repo_123")
     """
-    return code_tool.semantic_code_search(query, limit, kind_filter)
+    return code_tool.semantic_code_search(query, limit, kind_filter, session_id)
 
 @mcp.resource("https://graphrag.db/schema/neo4j")
 def get_graph_schema() -> str:
