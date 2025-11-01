@@ -15,6 +15,19 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
+def _get_merge_conflict_info() -> str:
+    """Get information about merge conflicts."""
+    try:
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        return (
+            result.stdout
+            if result.success
+            else "Could not get merge conflict information"
+        )
+    except Exception as e:
+        return f"Error getting conflict info: {e}"
+
+
 def scan_conflict_markers() -> List[str]:
     """Scan for conflict markers in the current working directory.
 
@@ -122,8 +135,8 @@ def resolve_merge_conflicts_with_llm(
             flagged = scan_conflict_markers()
             if flagged:
                 actions.append(
-                    f"Conflict markers still present in {len(flagged)} file(s): "
-                    f"{', '.join(sorted(set(flagged)))}; not committing"
+                    f"Conflict markers still present in {len(flagged)} "
+                    f"file(s): {', '.join(sorted(set(flagged)))}; not committing"
                 )
                 return actions
 
@@ -539,8 +552,8 @@ def resolve_package_json_dependency_conflicts(
     Rules:
     - For dependencies/devDependencies/peerDependencies/optionalDependencies:
       - Union of packages
-      - When versions differ: pick newer semver if determinable; otherwise prefer
-        the side that has more deps in that section overall
+      - When versions differ: pick newer semver if determinable;
+        otherwise prefer the side that has more deps in that section overall
     - Non-dependency sections follow 'ours' (since they are identical by detection)
 
     When eligible_paths is provided, only those package.json files are processed.

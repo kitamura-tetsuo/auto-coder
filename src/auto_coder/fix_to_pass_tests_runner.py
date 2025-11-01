@@ -1,7 +1,6 @@
 """Test execution functionality for Auto-Coder automation engine."""
 
 import csv
-import json
 import math
 import os
 import re

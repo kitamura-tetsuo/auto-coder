@@ -146,6 +146,7 @@ def semantic_code_search(
     return code_tool.semantic_code_search(query, limit, kind_filter, collection_name)
 
 
+
 @mcp.resource("https://graphrag.db/schema/neo4j")
 def get_graph_schema() -> str:
     """

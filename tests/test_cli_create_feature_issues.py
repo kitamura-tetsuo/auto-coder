@@ -19,8 +19,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_codex_with_model_warns_and_ignores(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -58,8 +60,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_success_default_codex(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -133,8 +137,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_with_env_vars_default_codex(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -168,8 +174,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.GeminiClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_backend_gemini_custom_model(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_gemini_client_class,
         mock_automation_engine_class,
@@ -207,8 +215,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_force_reindex_flag(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -248,8 +258,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_default_no_force_reindex(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,

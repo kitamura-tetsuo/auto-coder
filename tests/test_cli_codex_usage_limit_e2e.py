@@ -70,6 +70,13 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
     env["PATH"] = f"{bin_dir}:{original_path}"
     env["PYTHONPATH"] = "/home/node/.local/lib/python3.11/site-packages:/home/node/1/auto-coder/src"
 
+    # Ensure PYTHONPATH includes site-packages so subprocess can find installed modules
+    import site
+    user_site = site.getusersitepackages()
+    system_sites = site.getsitepackages()
+    python_path = os.pathsep.join([user_site] + system_sites)
+    env["PYTHONPATH"] = python_path
+
     result = subprocess.run(
         [sys.executable, "-c", python_code],
         capture_output=True,
