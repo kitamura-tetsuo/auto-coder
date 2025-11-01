@@ -530,8 +530,11 @@ class GraphRAGIndexManager:
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
 
-        # Collection name
-        collection_name = "code_embeddings"
+        # Collection name - use repository-hashed naming to prevent data contamination
+        repo_path_str = str(self.repo_path.resolve())
+        repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:12]
+        collection_name = f"code_embeddings_{repo_hash}"
+        logger.info(f"Using collection name: {collection_name} for repository: {repo_path_str}")
 
         # Load embedding model
         logger.info("Loading embedding model...")
