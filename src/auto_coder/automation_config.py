@@ -59,6 +59,12 @@ class AutomationConfig:
     # Default: False (labels enabled)
     DISABLE_LABELS: bool = False
 
+    # Enable historical search for GitHub Actions logs
+    # When GitHub Actions checks fail, search through commit history
+    # to find Action logs from previous commits
+    # Default: False (search only current state)
+    SEARCH_GITHUB_ACTIONS_HISTORY: bool = False
+
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True

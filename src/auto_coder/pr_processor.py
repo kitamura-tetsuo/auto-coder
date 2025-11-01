@@ -2409,15 +2409,223 @@ def get_github_actions_logs_from_url(url: str) -> str:
         return f"Error getting logs: {e}"
 
 
-def _get_github_actions_logs(repo_name: str, config: AutomationConfig, *args) -> str:
+def _search_github_actions_logs_from_history(
+    repo_name: str,
+    config: AutomationConfig,
+    failed_checks: List[Dict[str, Any]],
+    max_commits: int = 10,
+) -> Optional[str]:
+    """Search for GitHub Actions logs from commit history.
+
+    This function iterates through commits from oldest to newest to find
+    Action logs for the failed checks.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        config: AutomationConfig instance
+        failed_checks: List of failed check dictionaries with details_url
+        max_commits: Maximum number of commits to search (default: 10)
+
+    Returns:
+        String containing the first successful logs found, or None if not found
+    """
+    try:
+        logger.info(
+            f"Starting historical search for GitHub Actions logs (max {max_commits} commits)"
+        )
+
+        # Get commit history (oldest to newest)
+        result = cmd.run_command(
+            ["git", "log", "--oneline", f"-{max_commits}"],
+            timeout=30,
+        )
+
+        if not result.success:
+            logger.warning(
+                f"Failed to get git history: {result.stderr}"
+            )
+            return None
+
+        commits = result.stdout.strip().split("\n")
+        logger.info(
+            f"Searching through {len(commits)} commits for GitHub Actions logs"
+        )
+
+        # Iterate through commits (oldest to newest)
+        for commit in reversed(commits):
+            if not commit.strip():
+                continue
+
+            commit_hash = commit.split()[0]
+            commit_msg = " ".join(commit.split()[1:])
+
+            logger.debug(
+                f"Checking commit {commit_hash}: {commit_msg[:80]}"
+            )
+
+            try:
+                # Check out this commit temporarily
+                checkout_result = cmd.run_command(
+                    ["git", "checkout", commit_hash, "--detach"],
+                    timeout=30,
+                )
+
+                if not checkout_result.success:
+                    logger.debug(
+                        f"Failed to checkout commit {commit_hash}, skipping"
+                    )
+                    continue
+
+                # Get the failed checks for this commit
+                try:
+                    # Use gh to get check status for this commit
+                    checks_result = cmd.run_command(
+                        ["gh", "pr", "checks", "--json", "name,conclusion,detailsUrl"],
+                        timeout=30,
+                    )
+
+                    if checks_result.returncode == 0 and checks_result.stdout.strip():
+                        try:
+                            checks_data = json.loads(checks_result.stdout)
+                            # Filter for failed checks
+                            commit_failed_checks = [
+                                check
+                                for check in checks_data
+                                if check.get("conclusion", "").lower()
+                                in ["failure", "failed", "error"]
+                            ]
+
+                            if commit_failed_checks:
+                                logger.info(
+                                    f"Found {len(commit_failed_checks)} failed checks in commit {commit_hash}"
+                                )
+
+                                # Try to get logs for these checks
+                                commit_logs = _get_github_actions_logs(
+                                    repo_name,
+                                    config,
+                                    commit_failed_checks,
+                                    search_history=False,  # Prevent recursion
+                                )
+
+                                if commit_logs and commit_logs != "No detailed logs available":
+                                    logger.info(
+                                        f"Successfully retrieved logs from commit {commit_hash}"
+                                    )
+
+                                    # Restore to original state before returning
+                                    cmd.run_command(
+                                        ["git", "checkout", "-"],
+                                        timeout=30,
+                                    )
+
+                                    return (
+                                        f"[From historical commit {commit_hash}: {commit_msg[:80]}]\n"
+                                        + commit_logs
+                                    )
+                        except Exception as e:
+                            logger.debug(
+                                f"Error parsing checks for commit {commit_hash}: {e}"
+                            )
+                except Exception as e:
+                    logger.debug(
+                        f"Error checking commit {commit_hash}: {e}"
+                    )
+
+                # Return to previous branch/commit
+                cmd.run_command(
+                    ["git", "checkout", "-"],
+                    timeout=30,
+                )
+
+            except Exception as e:
+                logger.debug(
+                    f"Error processing commit {commit_hash}: {e}"
+                )
+                # Try to return to previous state
+                try:
+                    cmd.run_command(
+                        ["git", "checkout", "-"],
+                        timeout=30,
+                    )
+                except Exception:
+                    pass
+
+        logger.info(
+            "No historical logs found after searching commit history"
+        )
+        return None
+
+    except Exception as e:
+        logger.error(
+            f"Error during historical search for GitHub Actions logs: {e}"
+        )
+        return None
+
+
+def _get_github_actions_logs(
+    repo_name: str,
+    config: AutomationConfig,
+    *args,
+    search_history: Optional[bool] = None,
+    **kwargs,
+) -> str:
     """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        config: AutomationConfig instance
+        *args: Arguments (failed_checks list)
+        search_history: Optional parameter to enable historical search.
+                       If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                       If True, searches through commit history for logs.
+                       If False, uses current state only (backward compatible).
+        **kwargs: Additional keyword arguments (ignored for compatibility)
+
+    Returns:
+        String containing GitHub Actions logs
 
     呼び出し互換:
     - _get_github_actions_logs(repo, config, failed_checks)
+    - _get_github_actions_logs(repo, config, failed_checks, search_history=True)
     """
+    # Determine search_history value (backward compatible)
+    if search_history is None:
+        search_history = config.SEARCH_GITHUB_ACTIONS_HISTORY
+
+    # Handle the case where historical search is explicitly enabled
+    if search_history:
+        logger.info(
+            "Historical search enabled: Searching through commit history for GitHub Actions logs"
+        )
+
+        # Extract failed_checks from args
+        failed_checks: List[Dict[str, Any]] = []
+        if len(args) >= 1 and isinstance(args[0], list):
+            failed_checks = args[0]
+        elif len(args) == 0:
+            # No failed_checks provided
+            return "No detailed logs available"
+
+        # Try historical search first
+        historical_logs = _search_github_actions_logs_from_history(
+            repo_name, config, failed_checks, max_commits=10
+        )
+
+        if historical_logs:
+            logger.info(
+                "Historical search succeeded: Found logs from commit history"
+            )
+            return historical_logs
+
+        logger.info(
+            "Historical search failed or found no logs, falling back to current behavior"
+        )
+
+    # Default behavior (or fallback from historical search)
     # 引数パターンを解決
     failed_checks: List[Dict[str, Any]] = []
-    if len(args) == 1 and isinstance(args[0], list):
+    if len(args) >= 1 and isinstance(args[0], list):
         failed_checks = args[0]
     else:
         # 不明な呼び出し
