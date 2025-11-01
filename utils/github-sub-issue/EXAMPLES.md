@@ -14,27 +14,27 @@ gh issue create --title "機能: ユーザー認証システム" --body "完全�
 
 ```bash
 # データベーススキーマの設計
-gh-sub-issue create --parent 100 --title "データベーススキーマの設計" --label "database"
+github-sub-issue create --parent 100 --title "データベーススキーマの設計" --label "database"
 
 # JWT トークンの実装
-gh-sub-issue create --parent 100 --title "JWT トークンの実装" --label "backend"
+github-sub-issue create --parent 100 --title "JWT トークンの実装" --label "backend"
 
 # ログイン UI の作成
-gh-sub-issue create --parent 100 --title "ログイン UI の作成" --label "frontend"
+github-sub-issue create --parent 100 --title "ログイン UI の作成" --label "frontend"
 ```
 
 ### 3. 既存の issue を sub-issue として追加
 
 ```bash
 # 既存の issue #95 を sub-issue として追加
-gh-sub-issue add 100 95
+github-sub-issue add 100 95
 ```
 
 ### 4. 進捗を確認
 
 ```bash
 # すべての sub-issue を表示
-gh-sub-issue list 100 --state all
+github-sub-issue list 100 --state all
 
 # 出力例:
 # 📋 Sub-issues (4 total):
@@ -49,10 +49,10 @@ gh-sub-issue list 100 --state all
 
 ```bash
 # sub-issue #95 を削除
-gh-sub-issue remove 100 95
+github-sub-issue remove 100 95
 
 # 複数の sub-issue を削除
-gh-sub-issue remove 100 95 96 97 --force
+github-sub-issue remove 100 95 96 97 --force
 ```
 
 ## 高度な使用例
@@ -61,7 +61,7 @@ gh-sub-issue remove 100 95 96 97 --force
 
 ```bash
 # 別のリポジトリの issue を sub-issue として追加
-gh-sub-issue add https://github.com/owner/repo1/issues/100 \
+github-sub-issue add https://github.com/owner/repo1/issues/100 \
   https://github.com/owner/repo2/issues/200
 ```
 
@@ -69,7 +69,7 @@ gh-sub-issue add https://github.com/owner/repo1/issues/100 \
 
 ```bash
 # JSON 形式で sub-issue を取得
-gh-sub-issue list 100 --json | jq '.[] | select(.state == "OPEN") | .number'
+github-sub-issue list 100 --json | jq '.[] | select(.state == "OPEN") | .number'
 
 # 出力例:
 # 102
@@ -86,11 +86,11 @@ PARENT=$(gh issue create --title "Sprint 1" --body "Sprint 1 のタスク" | gre
 
 # タスクリストから sub-issue を作成
 while IFS= read -r task; do
-  gh-sub-issue create --parent "$PARENT" --title "$task" --label "sprint-1"
+  github-sub-issue create --parent "$PARENT" --title "$task" --label "sprint-1"
 done < tasks.txt
 
 # 進捗を表示
-gh-sub-issue list "$PARENT"
+github-sub-issue list "$PARENT"
 ```
 
 ### CI/CD での使用
@@ -115,9 +115,9 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install gh-sub-issue
+      - name: Install github-sub-issue
         run: |
-          cd utils/gh-sub-issue
+          cd utils/github-sub-issue
           pip install -e .
       
       - name: Create sub-issues
@@ -127,13 +127,13 @@ jobs:
           ISSUE_NUMBER=${{ github.event.issue.number }}
           
           # タスクリストから sub-issue を作成
-          gh-sub-issue create --parent "$ISSUE_NUMBER" \
+          github-sub-issue create --parent "$ISSUE_NUMBER" \
             --title "タスク 1: 設計" --label "design"
           
-          gh-sub-issue create --parent "$ISSUE_NUMBER" \
+          github-sub-issue create --parent "$ISSUE_NUMBER" \
             --title "タスク 2: 実装" --label "implementation"
           
-          gh-sub-issue create --parent "$ISSUE_NUMBER" \
+          github-sub-issue create --parent "$ISSUE_NUMBER" \
             --title "タスク 3: テスト" --label "testing"
 ```
 
@@ -144,7 +144,7 @@ jobs:
 現在のディレクトリが GitHub リポジトリではない場合、`--repo` オプションを使用してください:
 
 ```bash
-gh-sub-issue list 123 --repo owner/repo
+github-sub-issue list 123 --repo owner/repo
 ```
 
 ### エラー: "The provided sub-issue does not exist"
@@ -152,7 +152,7 @@ gh-sub-issue list 123 --repo owner/repo
 issue ID が正しく取得されていない可能性があります。`--verbose` オプションでデバッグ情報を確認してください:
 
 ```bash
-gh-sub-issue --verbose add 123 456
+github-sub-issue --verbose add 123 456
 ```
 
 ### エラー: "authentication required"
@@ -174,7 +174,7 @@ gh auth login
 ### 2. ラベルを活用
 
 ```bash
-gh-sub-issue create --parent 100 \
+github-sub-issue create --parent 100 \
   --title "API エンドポイントの実装" \
   --label "backend,api,priority-high"
 ```
@@ -182,7 +182,7 @@ gh-sub-issue create --parent 100 \
 ### 3. アサインを明確に
 
 ```bash
-gh-sub-issue create --parent 100 \
+github-sub-issue create --parent 100 \
   --title "フロントエンド実装" \
   --assignee "@me"
 ```
@@ -191,10 +191,10 @@ gh-sub-issue create --parent 100 \
 
 ```bash
 # 毎日の進捗確認
-gh-sub-issue list 100 --state all
+github-sub-issue list 100 --state all
 
-# JSON 形式で進捗率を計算
-gh-sub-issue list 100 --json | \
+# JSON 形式で進捗率計算
+github-sub-issue list 100 --json | \
   jq '[.[] | select(.state == "CLOSED")] | length' | \
   awk '{print "完了率: " ($1/4)*100 "%"}'
 ```

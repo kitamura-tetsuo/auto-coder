@@ -280,4 +280,3 @@ class TestIssueProcessorSkipSubIssues:
 
         # Verify labels were NOT removed in dry run
         mock_github_client.remove_labels_from_issue.assert_not_called()
-

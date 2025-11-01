@@ -69,6 +69,13 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{original_path}"
 
+    # Ensure PYTHONPATH includes site-packages so subprocess can find installed modules
+    import site
+    user_site = site.getusersitepackages()
+    system_sites = site.getsitepackages()
+    python_path = os.pathsep.join([user_site] + system_sites)
+    env["PYTHONPATH"] = python_path
+
     result = subprocess.run(
         [sys.executable, "-c", python_code],
         capture_output=True,

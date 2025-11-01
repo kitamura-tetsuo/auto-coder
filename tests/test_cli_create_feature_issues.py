@@ -19,8 +19,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_codex_with_model_warns_and_ignores(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -58,8 +60,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_success_default_codex(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -112,7 +116,9 @@ class TestCLICreateFeatureIssues:
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
-    def test_create_feature_issues_missing_codex_cli(self, mock_check_cli, mock_initialize_graphrag):
+    def test_create_feature_issues_missing_codex_cli(
+        self, mock_check_cli, mock_initialize_graphrag
+    ):
         """Default backend codex missing should error."""
         mock_check_cli.side_effect = click.ClickException("Codex CLI missing")
         runner = CliRunner()
@@ -131,8 +137,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_with_env_vars_default_codex(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -166,8 +174,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.GeminiClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_backend_gemini_custom_model(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_gemini_client_class,
         mock_automation_engine_class,
@@ -205,8 +215,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_force_reindex_flag(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -246,8 +258,10 @@ class TestCLICreateFeatureIssues:
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
     @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
+    @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
     def test_create_feature_issues_default_no_force_reindex(
         self,
+        mock_check_github_sub_issue,
         mock_github_client_class,
         mock_codex_client_class,
         mock_automation_engine_class,
@@ -280,4 +294,3 @@ class TestCLICreateFeatureIssues:
         assert "Force reindex: False" in result.output
         # Verify initialize_graphrag was called with force_reindex=False
         mock_initialize_graphrag.assert_called_once_with(force_reindex=False)
-

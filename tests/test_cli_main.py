@@ -68,4 +68,3 @@ class TestCLIMain:
         assert "--model-qwen" in result.output
         assert "--model-auggie" in result.output
         assert "--verbose" in result.output
-

@@ -38,7 +38,7 @@ class TestMCPChecker:
             "mcpServers": {
                 "graphrag": {
                     "command": "/path/to/graphrag_mcp/run_server.sh",
-                    "args": []
+                    "args": [],
                 }
             }
         }
@@ -63,7 +63,7 @@ class TestMCPChecker:
             "mcpServers": {
                 "mcp-pdb": {
                     "command": "uv",
-                    "args": ["run", "--with", "mcp-pdb", "mcp-pdb"]
+                    "args": ["run", "--with", "mcp-pdb", "mcp-pdb"],
                 }
             }
         }
@@ -118,7 +118,7 @@ args = []
             "mcpServers": {
                 "graphrag": {
                     "command": "/path/to/graphrag_mcp/run_server.sh",
-                    "args": []
+                    "args": [],
                 }
             }
         }
@@ -143,7 +143,7 @@ args = []
             "mcpServers": {
                 "graphrag": {
                     "command": "/path/to/graphrag_mcp/run_server.sh",
-                    "args": []
+                    "args": [],
                 }
             }
         }
@@ -241,7 +241,9 @@ args = []
         result = ensure_graphrag_mcp_configured("gemini")
         assert result is False
 
-    def test_ensure_graphrag_mcp_configured_already_configured(self, tmp_path, monkeypatch):
+    def test_ensure_graphrag_mcp_configured_already_configured(
+        self, tmp_path, monkeypatch
+    ):
         """Test ensure_graphrag_mcp_configured when already configured."""
         # Point home to tmp_path
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -255,7 +257,7 @@ args = []
             "mcpServers": {
                 "graphrag": {
                     "command": "/path/to/graphrag_mcp/run_server.sh",
-                    "args": []
+                    "args": [],
                 }
             }
         }
@@ -266,9 +268,6 @@ args = []
         # Ensure configuration (should detect existing)
         result = ensure_graphrag_mcp_configured("gemini")
         assert result is True
-
-
-
 
     def test_check_claude_mcp_not_configured(self, tmp_path, monkeypatch):
         """Test Claude MCP check when config file doesn't exist."""
@@ -282,7 +281,9 @@ args = []
         config_dir = tmp_path / ".claude"
         config_dir.mkdir()
         config_file = config_dir / "config.json"
-        config = {"mcpServers": {"graphrag": {"command": "/path/run_server.sh", "args": []}}}
+        config = {
+            "mcpServers": {"graphrag": {"command": "/path/run_server.sh", "args": []}}
+        }
         with open(config_file, "w") as f:
             json.dump(config, f)
         result = check_graphrag_mcp_for_backend("claude")
@@ -301,13 +302,17 @@ args = []
         result = add_graphrag_mcp_config("claude")
         assert result is False
 
-    def test_ensure_graphrag_mcp_configured_claude_already_configured(self, tmp_path, monkeypatch):
+    def test_ensure_graphrag_mcp_configured_claude_already_configured(
+        self, tmp_path, monkeypatch
+    ):
         """Test ensure_graphrag_mcp_configured when Claude already configured."""
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_dir = tmp_path / ".claude"
         config_dir.mkdir()
         config_file = config_dir / "config.json"
-        config = {"mcpServers": {"graphrag": {"command": "/path/run_server.sh", "args": []}}}
+        config = {
+            "mcpServers": {"graphrag": {"command": "/path/run_server.sh", "args": []}}
+        }
         with open(config_file, "w") as f:
             json.dump(config, f)
         result = ensure_graphrag_mcp_configured("claude", auto_setup=False)
