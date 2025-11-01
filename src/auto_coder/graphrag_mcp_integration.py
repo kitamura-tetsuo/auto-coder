@@ -284,3 +284,75 @@ class GraphRAGMCPIntegration:
                 "https://graphrag.db/collection/qdrant",
             ],
         }
+
+    def create_session(self, repo_path: str) -> str:
+        """Create a new session for repository isolation.
+
+        Args:
+            repo_path: Path to the repository
+
+        Returns:
+            Session identifier string
+        """
+        import time
+
+        # Create a unique session ID based on repository path and timestamp
+        session_id = f"session_{int(time.time() * 1000)}"
+        logger.info(f"Created session '{session_id}' for repository: {repo_path}")
+        return session_id
+
+    def get_session_context(self, session_id: str) -> Optional[dict]:
+        """Get session context information.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Dictionary with session context or None if session not found
+        """
+        # For now, return basic session info
+        # In a full implementation, this would retrieve stored session data
+        return {"session_id": session_id}
+
+    def get_repo_label_for_session(self, session_id: str) -> Optional[str]:
+        """Get repository label for a session.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Repository label string or None if session not found
+        """
+        # For now, use a simple session-based label
+        # In a full implementation, this would map session to repository
+        repo_hash = hashlib.sha256(session_id.encode()).hexdigest()[:8].upper()
+        return f"Repo_{repo_hash}"
+
+
+class BackwardCompatibilityLayer:
+    """Provides backward compatibility for existing API usage."""
+
+    def __init__(self, graphrag_integration: GraphRAGMCPIntegration):
+        self.graphrag_integration = graphrag_integration
+        self.default_session_id = None
+        self.compatibility_mode = True
+
+    def get_compatibility_session(self) -> str:
+        """Get or create default session for compatibility mode.
+
+        Returns:
+            Session identifier using current working directory as repository
+        """
+        if not self.default_session_id:
+            # Use current working directory as default repository
+            cwd = Path.cwd().resolve()
+            self.default_session_id = self.graphrag_integration.create_session(str(cwd))
+        return self.default_session_id
+
+    def is_compatibility_mode(self) -> bool:
+        """Check if operating in backward compatibility mode.
+
+        Returns:
+            True if in compatibility mode, False otherwise
+        """
+        return self.compatibility_mode
