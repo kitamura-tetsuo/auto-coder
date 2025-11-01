@@ -11,16 +11,28 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry
-from .issue_processor import create_feature_issues, process_issues, process_single, _take_issue_actions
+from .issue_processor import (
+    _take_issue_actions,
+    create_feature_issues,
+    process_issues,
+    process_single,
+)
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
-from .pr_processor import _check_github_actions_status
+from .pr_processor import (
+    _check_github_actions_status,
+)
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
-from .pr_processor import _extract_linked_issues_from_pr_body
+from .pr_processor import (
+    _extract_linked_issues_from_pr_body,
+)
 from .pr_processor import _get_github_actions_logs as _pr_get_github_actions_logs
 from .pr_processor import _get_pr_diff as _pr_get_diff
-from .pr_processor import _take_pr_actions
-from .pr_processor import get_github_actions_logs_from_url, process_pull_requests
+from .pr_processor import (
+    _take_pr_actions,
+    get_github_actions_logs_from_url,
+    process_pull_requests,
+)
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -48,19 +60,19 @@ class AutomationEngine:
         # Note: レポートディレクトリはリポジトリごとに作成されるため、
         # ここでは作成しない（_save_reportで作成）
 
-    def _get_candidates(self, repo_name: str, max_items: int = 10) -> List[Dict[str, Any]]:
+    def _get_candidates(
+        self, repo_name: str, max_items: int = 10
+    ) -> List[Dict[str, Any]]:
         """Get PR and issue candidates for processing.
-        
+
         Returns:
             List of candidate items with type, data, and priority information
         """
         candidates = []
-        
+
         try:
             # Get PR candidates
-            prs = self.github.get_open_pull_requests(
-                repo_name, limit=max_items
-            )
+            prs = self.github.get_open_pull_requests(repo_name, limit=max_items)
             for pr in prs:
                 try:
                     pr_data = self.github.get_pr_details(pr)
@@ -69,110 +81,111 @@ class AutomationEngine:
                         current_labels = pr_data.get("labels", [])
                         if "@auto-coder" in current_labels:
                             continue
-                    
+
                     # Check GitHub Actions status for priority
                     github_checks = _check_github_actions_status(
                         repo_name, pr_data, self.config
                     )
                     mergeable = pr_data.get("mergeable", True)
-                    
+
                     # Priority scoring: mergeable + passing checks = highest priority
                     priority = 1
                     if github_checks["success"]:
                         priority += 2
                     if mergeable:
                         priority += 1
-                    
-                    candidates.append({
-                        "type": "pr",
-                        "data": pr_data,
-                        "priority": priority,
-                        "branch_name": pr_data.get("head", {}).get("ref"),
-                        "related_issues": _extract_linked_issues_from_pr_body(
-                            pr_data.get("body", "")
-                        )
-                    })
+
+                    candidates.append(
+                        {
+                            "type": "pr",
+                            "data": pr_data,
+                            "priority": priority,
+                            "branch_name": pr_data.get("head", {}).get("ref"),
+                            "related_issues": _extract_linked_issues_from_pr_body(
+                                pr_data.get("body", "")
+                            ),
+                        }
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to process PR candidate: {e}")
                     continue
-            
+
             # Get issue candidates
-            issues = self.github.get_open_issues(
-                repo_name, limit=max_items
-            )
+            issues = self.github.get_open_issues(repo_name, limit=max_items)
             for issue in issues:
                 try:
                     issue_data = self.github.get_issue_details(issue)
                     issue_number = issue_data["number"]
-                    
+
                     # Skip if already has @auto-coder label
                     if not self.github.disable_labels:
                         current_labels = issue_data.get("labels", [])
                         if "@auto-coder" in current_labels:
                             continue
-                    
+
                     # Skip if has open sub-issues
                     open_sub_issues = self.github.get_open_sub_issues(
                         repo_name, issue_number
                     )
                     if open_sub_issues:
                         continue
-                    
+
                     # Skip if already has a linked PR
                     if self.github.has_linked_pr(repo_name, issue_number):
                         continue
-                    
+
                     # Issues get lower priority than PRs by default
-                    candidates.append({
-                        "type": "issue",
-                        "data": issue_data,
-                        "priority": 0,
-                        "issue_number": issue_number
-                    })
+                    candidates.append(
+                        {
+                            "type": "issue",
+                            "data": issue_data,
+                            "priority": 0,
+                            "issue_number": issue_number,
+                        }
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to process issue candidate: {e}")
                     continue
-        
+
         except Exception as e:
             logger.error(f"Failed to get candidates: {e}")
-        
+
         # Sort by priority (higher first)
         candidates.sort(key=lambda x: x["priority"], reverse=True)
         return candidates
-    
-    def _select_best_candidate(self, candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+
+    def _select_best_candidate(
+        self, candidates: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
         """Select the best candidate to process next."""
         if not candidates:
             return None
-        
+
         # Return the highest priority candidate
         return candidates[0]
-    
+
     def _process_single_candidate(
-        self,
-        repo_name: str,
-        candidate: Dict[str, Any],
-        jules_mode: bool = False
+        self, repo_name: str, candidate: Dict[str, Any], jules_mode: bool = False
     ) -> Dict[str, Any]:
         """Process a single candidate (PR or issue)."""
         try:
             candidate_type = candidate["type"]
             candidate_data = candidate["data"]
-            
+
             if candidate_type == "pr":
                 # Process single PR
                 result = {
                     "pr_data": candidate_data,
                     "actions_taken": [],
-                    "priority": candidate["priority"]
+                    "priority": candidate["priority"],
                 }
-                
+
                 # Add @auto-coder label to mark as being processed
                 if not self.dry_run and not self.github.disable_labels:
                     self.github.try_add_work_in_progress_label(
                         repo_name, candidate_data["number"]
                     )
-                
+
                 try:
                     # Process PR using existing logic
                     actions = _take_pr_actions(
@@ -190,23 +203,23 @@ class AutomationEngine:
                             logger.warning(
                                 f"Failed to remove @auto-coder label from PR #{candidate_data['number']}: {e}"
                             )
-                
+
                 return result
-                
+
             elif candidate_type == "issue":
                 # Process single issue
                 result = {
                     "issue_data": candidate_data,
                     "actions_taken": [],
-                    "priority": candidate["priority"]
+                    "priority": candidate["priority"],
                 }
-                
+
                 # Add @auto-coder label to mark as being processed
                 if not self.dry_run and not self.github.disable_labels:
                     self.github.try_add_work_in_progress_label(
                         repo_name, candidate["issue_number"]
                     )
-                
+
                 try:
                     # Process issue using existing logic
                     if jules_mode:
@@ -251,16 +264,16 @@ class AutomationEngine:
                             logger.warning(
                                 f"Failed to remove @auto-coder label from issue #{candidate['issue_number']}: {e}"
                             )
-                
+
                 return result
-        
+
         except Exception as e:
             error_msg = f"Failed to process candidate: {e}"
             logger.error(error_msg)
             return {
                 "error": error_msg,
                 "candidate_type": candidate.get("type"),
-                "candidate_data": candidate.get("data", {})
+                "candidate_data": candidate.get("data", {}),
             }
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
@@ -293,7 +306,7 @@ class AutomationEngine:
                 self.llm,
                 self.message_backend_manager,
             )
-            
+
             prs_result = process_pull_requests(
                 self.github,
                 self.config,
@@ -309,7 +322,9 @@ class AutomationEngine:
             self._save_report(results, "automation_report", repo_name)
 
             logger.info(f"Automation completed")
-            logger.info(f"Processed {len(issues_result)} issues and {len(prs_result)} PRs")
+            logger.info(
+                f"Processed {len(issues_result)} issues and {len(prs_result)} PRs"
+            )
             return results
 
         except Exception as e:
