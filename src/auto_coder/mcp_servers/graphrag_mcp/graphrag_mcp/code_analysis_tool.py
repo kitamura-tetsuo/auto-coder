@@ -410,7 +410,8 @@ class CodeAnalysisTool:
         return result
 
     def semantic_code_search(self, query: str, limit: int = 10,
-                            kind_filter: Optional[List[str]] = None) -> Dict[str, Any]:
+                            kind_filter: Optional[List[str]] = None,
+                            collection_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Search for code using semantic similarity.
 
@@ -418,6 +419,7 @@ class CodeAnalysisTool:
             query: Natural language query describing what you're looking for
             limit: Maximum number of results to return
             kind_filter: Optional list of symbol kinds to filter (e.g., ['Function', 'Class'])
+            collection_name: Optional collection name to search in. If not specified, uses default collection.
 
         Returns:
             Semantically similar code symbols with scores
@@ -444,10 +446,13 @@ class CodeAnalysisTool:
         # Generate embedding for query
         query_embedding = self.model.encode(query)
 
+        # Use specified collection or default to self.qdrant_collection
+        collection_to_use = collection_name if collection_name is not None else self.qdrant_collection
+
         # Search Qdrant
         try:
             search_result = self.qdrant_client.search(
-                collection_name=self.qdrant_collection,
+                collection_name=collection_to_use,
                 query_vector=query_embedding.tolist(),
                 limit=limit * 2  # Get more results for filtering
             )
