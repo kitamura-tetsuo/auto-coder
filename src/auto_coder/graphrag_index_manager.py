@@ -147,7 +147,11 @@ class GraphRAGIndexManager:
         Returns:
             Repository-specific label in the format 'Repo_XXXXXXXX'
         """
-        repo_hash = hashlib.sha256(str(self.repo_path.resolve()).encode()).hexdigest()[:8].upper()
+        repo_hash = (
+            hashlib.sha256(str(self.repo_path.resolve()).encode())
+            .hexdigest()[:8]
+            .upper()
+        )
         return f"Repo_{repo_hash}"
 
     def is_index_up_to_date(self) -> bool:
@@ -518,7 +522,7 @@ class GraphRAGIndexManager:
                 # Clear existing data for this repository
                 session.run(
                     "MATCH (n) WHERE n.repo_path = $repo_path DETACH DELETE n",
-                    repo_path=repo_path
+                    repo_path=repo_path,
                 )
 
                 # Insert nodes with repository-specific label
@@ -533,10 +537,12 @@ class GraphRAGIndexManager:
                         CREATE (n:{repo_label}:CodeNode)
                         SET n = $props
                         """,
-                        props=node_data
+                        props=node_data,
                     )
 
-                logger.info(f"Inserted {len(nodes)} nodes with label '{repo_label}' into Neo4j")
+                logger.info(
+                    f"Inserted {len(nodes)} nodes with label '{repo_label}' into Neo4j"
+                )
 
                 # Insert edges
                 edges = graph_data.get("edges", [])
@@ -551,7 +557,7 @@ class GraphRAGIndexManager:
                         to_id=edge.get("to"),
                         type=edge.get("type", "UNKNOWN"),
                         count=edge.get("count", 1),
-                        repo_path=repo_path
+                        repo_path=repo_path,
                     )
 
                 logger.info(f"Inserted {len(edges)} edges into Neo4j")
