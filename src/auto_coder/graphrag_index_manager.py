@@ -522,7 +522,7 @@ class GraphRAGIndexManager:
                 # Clear existing data for this repository
                 session.run(
                     "MATCH (n) WHERE n.repo_path = $repo_path DETACH DELETE n",
-                    repo_path=repo_path
+                    repo_path=repo_path,
                 )
 
                 # Insert nodes with repository-specific label
@@ -557,7 +557,7 @@ class GraphRAGIndexManager:
                         to_id=edge.get("to"),
                         type=edge.get("type", "UNKNOWN"),
                         count=edge.get("count", 1),
-                        repo_path=repo_path
+                        repo_path=repo_path,
                     )
 
                 logger.info(f"Inserted {len(edges)} edges into Neo4j")

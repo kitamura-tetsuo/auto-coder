@@ -97,17 +97,13 @@ class CodeAnalysisTool:
             logger.info(f"Loaded embedding model: {self.model_name}")
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
-<<<<<<< HEAD
-            raise RuntimeError(f"Failed to load embedding model '{self.model_name}'. Error: {e}")
-    
-    def find_symbol(self, fqname: str, repo_label: Optional[str] = None) -> Dict[str, Any]:
-=======
             raise RuntimeError(
                 f"Failed to load embedding model '{self.model_name}'. Error: {e}"
             )
 
-    def find_symbol(self, fqname: str) -> Dict[str, Any]:
->>>>>>> origin/main
+    def find_symbol(
+        self, fqname: str, repo_label: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Find a code symbol by fully qualified name.
 
@@ -133,7 +129,9 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build query with repository label filter if provided
-                node_match = f"(s:{repo_label}:CodeNode)" if repo_label else "(s:CodeNode)"
+                node_match = (
+                    f"(s:{repo_label}:CodeNode)" if repo_label else "(s:CodeNode)"
+                )
 
                 cypher_query = f"""
                 MATCH {node_match}
@@ -169,15 +167,14 @@ class CodeAnalysisTool:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
-<<<<<<< HEAD
-    
-    def get_call_graph(self, symbol_id: str, direction: str = 'both', depth: int = 1, repo_label: Optional[str] = None) -> Dict[str, Any]:
-=======
 
     def get_call_graph(
-        self, symbol_id: str, direction: str = "both", depth: int = 1
+        self,
+        symbol_id: str,
+        direction: str = "both",
+        depth: int = 1,
+        repo_label: Optional[str] = None,
     ) -> Dict[str, Any]:
->>>>>>> origin/main
         """
         Get call graph for a symbol.
 
@@ -216,10 +213,26 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build base node match with repository label if provided
-                node_match = f"(s:{repo_label}:CodeNode {{id: $symbol_id}})" if repo_label else "(s:CodeNode {{id: $symbol_id}})"
-                caller_match = f"(caller:{repo_label}:CodeNode)" if repo_label else "(caller:CodeNode)"
-                callee_match = f"(callee:{repo_label}:CodeNode)" if repo_label else "(callee:CodeNode)"
-                related_match = f"(related:{repo_label}:CodeNode)" if repo_label else "(related:CodeNode)"
+                node_match = (
+                    f"(s:{repo_label}:CodeNode {{id: $symbol_id}})"
+                    if repo_label
+                    else "(s:CodeNode {{id: $symbol_id}})"
+                )
+                caller_match = (
+                    f"(caller:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(caller:CodeNode)"
+                )
+                callee_match = (
+                    f"(callee:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(callee:CodeNode)"
+                )
+                related_match = (
+                    f"(related:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(related:CodeNode)"
+                )
 
                 # Build Cypher query based on direction
                 if direction == "callers":
@@ -256,15 +269,6 @@ class CodeAnalysisTool:
                 query_result = session.run(cypher_query, symbol_id=symbol_id)
 
                 for record in query_result:
-<<<<<<< HEAD
-                    result["nodes"].append({
-                        "id": record["id"],
-                        "kind": record["kind"],
-                        "fqname": record["fqname"],
-                        "file": record["file"],
-                        "start_line": record["start_line"]
-                    })
-=======
                     result["nodes"].append(
                         {
                             "id": record["id"],
@@ -274,7 +278,6 @@ class CodeAnalysisTool:
                             "start_line": record["start_line"],
                         }
                     )
->>>>>>> origin/main
 
                     # Add edges
                     for edge in record["edges"]:
@@ -288,13 +291,10 @@ class CodeAnalysisTool:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
-<<<<<<< HEAD
-    
-    def get_dependencies(self, file_path: str, repo_label: Optional[str] = None) -> Dict[str, Any]:
-=======
 
-    def get_dependencies(self, file_path: str) -> Dict[str, Any]:
->>>>>>> origin/main
+    def get_dependencies(
+        self, file_path: str, repo_label: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Get file dependencies (imports).
 
@@ -321,8 +321,12 @@ class CodeAnalysisTool:
             with self.neo4j_driver.session() as session:
                 # Build node matches with repository label if provided
                 file_match = f"(f:{repo_label}:File)" if repo_label else "(f:File)"
-                importer_match = f"(importer:{repo_label}:File)" if repo_label else "(importer:File)"
-                imported_match = f"(imported:{repo_label}:File)" if repo_label else "(imported:File)"
+                importer_match = (
+                    f"(importer:{repo_label}:File)" if repo_label else "(importer:File)"
+                )
+                imported_match = (
+                    f"(imported:{repo_label}:File)" if repo_label else "(imported:File)"
+                )
 
                 # Get imports (what this file imports)
                 cypher_query = f"""
@@ -333,16 +337,9 @@ class CodeAnalysisTool:
 
                 query_result = session.run(cypher_query, file_path=file_path)
                 for record in query_result:
-<<<<<<< HEAD
-                    result["imports"].append({
-                        "file": record["file"],
-                        "count": record["count"]
-                    })
-=======
                     result["imports"].append(
                         {"file": record["file"], "count": record["count"]}
                     )
->>>>>>> origin/main
 
                 # Get imported_by (what files import this)
                 cypher_query = f"""
@@ -362,13 +359,12 @@ class CodeAnalysisTool:
 
         return result
 
-<<<<<<< HEAD
-    def impact_analysis(self, symbol_ids: List[str], max_depth: int = 2, repo_label: Optional[str] = None) -> Dict[str, Any]:
-=======
     def impact_analysis(
-        self, symbol_ids: List[str], max_depth: int = 2
+        self,
+        symbol_ids: List[str],
+        max_depth: int = 2,
+        repo_label: Optional[str] = None,
     ) -> Dict[str, Any]:
->>>>>>> origin/main
         """
         Analyze the impact of changing given symbols.
 
@@ -406,12 +402,36 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build base node match with repository label if provided
-                base_node_match = f"(changed:{repo_label}:CodeNode)" if repo_label else "(changed:CodeNode)"
-                caller_match = f"(caller:{repo_label}:CodeNode)" if repo_label else "(caller:CodeNode)"
-                changed_file_match = f"(changed_file:{repo_label}:File)" if repo_label else "(changed_file:File)"
-                importing_file_match = f"(importing_file:{repo_label}:File)" if repo_label else "(importing_file:File)"
-                importing_symbol_match = f"(importing_symbol:{repo_label}:CodeNode)" if repo_label else "(importing_symbol:CodeNode)"
-                implementer_match = f"(implementer:{repo_label}:CodeNode)" if repo_label else "(implementer:CodeNode)"
+                base_node_match = (
+                    f"(changed:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(changed:CodeNode)"
+                )
+                caller_match = (
+                    f"(caller:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(caller:CodeNode)"
+                )
+                changed_file_match = (
+                    f"(changed_file:{repo_label}:File)"
+                    if repo_label
+                    else "(changed_file:File)"
+                )
+                importing_file_match = (
+                    f"(importing_file:{repo_label}:File)"
+                    if repo_label
+                    else "(importing_file:File)"
+                )
+                importing_symbol_match = (
+                    f"(importing_symbol:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(importing_symbol:CodeNode)"
+                )
+                implementer_match = (
+                    f"(implementer:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(implementer:CodeNode)"
+                )
 
                 # Find all symbols that depend on the changed symbols
                 cypher_query = f"""

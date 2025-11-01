@@ -61,7 +61,9 @@ class GraphRAGMCPIntegration:
         else:
             repo_path = Path(repo_path)
 
-        repo_hash = hashlib.sha256(str(repo_path.resolve()).encode()).hexdigest()[:8].upper()
+        repo_hash = (
+            hashlib.sha256(str(repo_path.resolve()).encode()).hexdigest()[:8].upper()
+        )
         return f"Repo_{repo_hash}"
 
     def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
