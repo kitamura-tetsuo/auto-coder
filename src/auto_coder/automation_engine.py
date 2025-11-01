@@ -229,15 +229,6 @@ class AutomationEngine:
         """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。"""
         return get_github_actions_logs_from_url(url)
 
-    def _get_github_actions_logs(
-        self,
-        repo_name: str,
-        pr_data: Dict[str, Any],
-        failed_checks: List[Dict[str, Any]],
-    ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。"""
-        return _pr_get_github_actions_logs(repo_name, self.config, failed_checks)
-
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
         return _pr_get_diff(repo_name, pr_number, self.config)
