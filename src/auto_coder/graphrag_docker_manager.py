@@ -67,6 +67,7 @@ class GraphRAGDockerManager:
             else:
                 # Fallback for older Python versions
                 import pkg_resources
+
                 compose_content = pkg_resources.resource_string(
                     "auto_coder", "docker-compose.graphrag.yml"
                 ).decode("utf-8")
@@ -80,7 +81,9 @@ class GraphRAGDockerManager:
                 logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
                 return str(compose_file)
         except Exception as e:
-            logger.error(f"Failed to extract docker-compose.graphrag.yml from package: {e}")
+            logger.error(
+                f"Failed to extract docker-compose.graphrag.yml from package: {e}"
+            )
             raise FileNotFoundError(
                 "docker-compose.graphrag.yml not found in package. "
                 "Please ensure the package is installed correctly."
@@ -180,7 +183,9 @@ class GraphRAGDockerManager:
                 "Permission denied when accessing Docker. Retrying with sudo..."
             )
             sudo_cmd = ["sudo"] + cmd
-            logger.debug(f"Running docker compose command with sudo: {' '.join(sudo_cmd)}")
+            logger.debug(
+                f"Running docker compose command with sudo: {' '.join(sudo_cmd)}"
+            )
             result = self.executor.run_command(sudo_cmd, timeout=timeout)
 
         return result
@@ -307,7 +312,12 @@ class GraphRAGDockerManager:
         """
         try:
             # Use docker inspect to check health status
-            cmd = ["docker", "inspect", "--format={{.State.Health.Status}}", "auto-coder-neo4j"]
+            cmd = [
+                "docker",
+                "inspect",
+                "--format={{.State.Health.Status}}",
+                "auto-coder-neo4j",
+            ]
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -338,7 +348,12 @@ class GraphRAGDockerManager:
         """
         try:
             # Use docker inspect to check health status
-            cmd = ["docker", "inspect", "--format={{.State.Health.Status}}", "auto-coder-qdrant"]
+            cmd = [
+                "docker",
+                "inspect",
+                "--format={{.State.Health.Status}}",
+                "auto-coder-qdrant",
+            ]
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -392,7 +407,15 @@ class GraphRAGDockerManager:
             # The network name is typically prefixed with the project name
             # For docker-compose, it's usually <directory>_<network_name>
             # We'll use docker network ls to find it
-            cmd = ["docker", "network", "ls", "--format", "{{.Name}}", "--filter", "name=graphrag"]
+            cmd = [
+                "docker",
+                "network",
+                "ls",
+                "--format",
+                "{{.Name}}",
+                "--filter",
+                "name=graphrag",
+            ]
             result = subprocess.run(cmd, capture_output=True, timeout=5)
 
             if result.returncode != 0:
@@ -433,10 +456,21 @@ class GraphRAGDockerManager:
                 cmd = ["sudo"] + cmd
                 result = subprocess.run(cmd, capture_output=True, timeout=5)
 
-            container_name = result.stdout.decode().strip().lstrip("/") if result.returncode == 0 else None
+            container_name = (
+                result.stdout.decode().strip().lstrip("/")
+                if result.returncode == 0
+                else None
+            )
 
             # Check if already connected
-            cmd = ["docker", "network", "inspect", network_name, "--format", "{{range .Containers}}{{.Name}} {{end}}"]
+            cmd = [
+                "docker",
+                "network",
+                "inspect",
+                network_name,
+                "--format",
+                "{{range .Containers}}{{.Name}} {{end}}",
+            ]
             result = subprocess.run(cmd, capture_output=True, timeout=5)
 
             if result.returncode != 0:
@@ -447,8 +481,12 @@ class GraphRAGDockerManager:
             if result.returncode == 0:
                 connected_containers = result.stdout.decode().strip()
                 # Check both container ID and name
-                if container_id in connected_containers or (container_name and container_name in connected_containers):
-                    logger.debug(f"Container {container_id} ({container_name}) already connected to {network_name}")
+                if container_id in connected_containers or (
+                    container_name and container_name in connected_containers
+                ):
+                    logger.debug(
+                        f"Container {container_id} ({container_name}) already connected to {network_name}"
+                    )
                     return
 
             # Connect to network
@@ -461,12 +499,16 @@ class GraphRAGDockerManager:
                 result = subprocess.run(cmd, capture_output=True, timeout=10)
 
             if result.returncode == 0:
-                logger.info(f"Connected container {container_id} ({container_name}) to GraphRAG network {network_name}")
+                logger.info(
+                    f"Connected container {container_id} ({container_name}) to GraphRAG network {network_name}"
+                )
             else:
                 stderr = result.stderr.decode()
                 # Ignore "already exists in network" error
                 if "already exists in network" in stderr:
-                    logger.debug(f"Container {container_id} ({container_name}) already connected to {network_name}")
+                    logger.debug(
+                        f"Container {container_id} ({container_name}) already connected to {network_name}"
+                    )
                 else:
                     logger.warning(f"Failed to connect to GraphRAG network: {stderr}")
 
@@ -483,4 +525,3 @@ class GraphRAGDockerManager:
             "neo4j": self._check_neo4j_health(),
             "qdrant": self._check_qdrant_health(),
         }
-

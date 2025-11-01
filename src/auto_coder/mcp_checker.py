@@ -54,7 +54,9 @@ def _check_gemini_mcp() -> bool:
         mcp_servers = config.get("mcpServers", {})
         for server_name in mcp_servers.keys():
             if "graphrag" in server_name.lower():
-                logger.info(f"Found graphrag MCP server in Gemini config: {server_name}")
+                logger.info(
+                    f"Found graphrag MCP server in Gemini config: {server_name}"
+                )
                 return True
 
         logger.debug("No graphrag MCP server found in Gemini config")
@@ -106,18 +108,28 @@ def _check_auggie_mcp() -> bool:
             mcp_servers = config.get("mcpServers", {})
             for server_name in mcp_servers.keys():
                 if "graphrag" in server_name.lower():
-                    logger.info(f"Found graphrag MCP server in Windsurf config: {server_name}")
+                    logger.info(
+                        f"Found graphrag MCP server in Windsurf config: {server_name}"
+                    )
                     return True
 
         # Check Claude Desktop config
-        claude_config = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+        claude_config = (
+            Path.home()
+            / "Library"
+            / "Application Support"
+            / "Claude"
+            / "claude_desktop_config.json"
+        )
         if claude_config.exists():
             with open(claude_config, "r", encoding="utf-8") as f:
                 config = json.load(f)
             mcp_servers = config.get("mcpServers", {})
             for server_name in mcp_servers.keys():
                 if "graphrag" in server_name.lower():
-                    logger.info(f"Found graphrag MCP server in Claude config: {server_name}")
+                    logger.info(
+                        f"Found graphrag MCP server in Claude config: {server_name}"
+                    )
                     return True
 
         logger.debug("No graphrag MCP server found in Auggie/Windsurf/Claude config")
@@ -143,7 +155,9 @@ def _check_claude_mcp() -> bool:
         mcp_servers = config.get("mcpServers", {})
         for server_name in mcp_servers.keys():
             if "graphrag" in server_name.lower():
-                logger.info(f"Found graphrag MCP server in Claude config: {server_name}")
+                logger.info(
+                    f"Found graphrag MCP server in Claude config: {server_name}"
+                )
                 return True
 
         logger.debug("No graphrag MCP server found in Claude config")
@@ -175,7 +189,9 @@ def _check_codex_mcp() -> bool:
             mcp_servers = config.get("mcpServers", {})
             for server_name in mcp_servers.keys():
                 if "graphrag" in server_name.lower():
-                    logger.info(f"Found graphrag MCP server in Codex config: {server_name}")
+                    logger.info(
+                        f"Found graphrag MCP server in Codex config: {server_name}"
+                    )
                     return True
 
         logger.debug("No graphrag MCP server found in Codex config")
@@ -215,23 +231,38 @@ If automatic setup failed, you can run the setup command manually:
 """
 
     if backend == "gemini":
-        return base_setup + """3. Restart Gemini CLI
+        return (
+            base_setup
+            + """3. Restart Gemini CLI
 4. Verify with: gemini (then type /mcp)
 """
+        )
     elif backend == "qwen":
-        return base_setup + """3. Restart Qwen Code CLI
+        return (
+            base_setup
+            + """3. Restart Qwen Code CLI
 4. Verify with: qwen mcp list
 """
+        )
     elif backend == "auggie":
-        return base_setup + """3. Restart Windsurf/Claude application
+        return (
+            base_setup
+            + """3. Restart Windsurf/Claude application
 """
+        )
     elif backend == "claude":
-        return base_setup + """3. Restart Claude CLI
+        return (
+            base_setup
+            + """3. Restart Claude CLI
 4. Verify with: claude mcp list
 """
+        )
     elif backend in ("codex", "codex-mcp"):
-        return base_setup + """3. Restart Codex CLI
+        return (
+            base_setup
+            + """3. Restart Codex CLI
 """
+        )
     else:
         return f"No setup instructions available for backend: {backend}"
 
@@ -278,7 +309,9 @@ def _add_gemini_mcp_config() -> bool:
         )
         return False
 
-    logger.info("GraphRAG MCP server directory exists, but configuration not found in Gemini config")
+    logger.info(
+        "GraphRAG MCP server directory exists, but configuration not found in Gemini config"
+    )
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -301,10 +334,11 @@ def _add_claude_mcp_config() -> bool:
         )
         return False
 
-    logger.info("GraphRAG MCP server directory exists, but configuration not found in Claude config")
+    logger.info(
+        "GraphRAG MCP server directory exists, but configuration not found in Claude config"
+    )
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
-
 
 
 def _add_qwen_mcp_config() -> bool:
@@ -325,7 +359,9 @@ def _add_qwen_mcp_config() -> bool:
         )
         return False
 
-    logger.info("GraphRAG MCP server directory exists, but configuration not found in Qwen config")
+    logger.info(
+        "GraphRAG MCP server directory exists, but configuration not found in Qwen config"
+    )
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -348,7 +384,9 @@ def _add_auggie_mcp_config() -> bool:
         )
         return False
 
-    logger.info("GraphRAG MCP server directory exists, but configuration not found in Windsurf config")
+    logger.info(
+        "GraphRAG MCP server directory exists, but configuration not found in Windsurf config"
+    )
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -371,7 +409,9 @@ def _add_codex_mcp_config() -> bool:
         )
         return False
 
-    logger.info("GraphRAG MCP server directory exists, but configuration not found in Codex config")
+    logger.info(
+        "GraphRAG MCP server directory exists, but configuration not found in Codex config"
+    )
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -492,7 +532,9 @@ def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> boo
             logger.info(f"✅ GraphRAG MCP server successfully configured for {backend}")
             return True
         else:
-            logger.warning(f"Configuration was added but verification failed for {backend}")
+            logger.warning(
+                f"Configuration was added but verification failed for {backend}"
+            )
             return False
     else:
         logger.error(f"Failed to add GraphRAG MCP configuration for {backend}")
@@ -517,4 +559,3 @@ def check_and_warn_graphrag_mcp(backend: str) -> None:
         logger.info(suggest_graphrag_mcp_setup(backend))
     else:
         logger.info(f"GraphRAG MCP server is configured for {backend}")
-

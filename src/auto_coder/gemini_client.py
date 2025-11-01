@@ -299,18 +299,26 @@ class GeminiClient(LLMClientBase):
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if server_name.lower() in output:
-                    logger.info(f"Found MCP server '{server_name}' via 'gemini mcp list'")
+                    logger.info(
+                        f"Found MCP server '{server_name}' via 'gemini mcp list'"
+                    )
                     return True
-                logger.debug(f"MCP server '{server_name}' not found via 'gemini mcp list'")
+                logger.debug(
+                    f"MCP server '{server_name}' not found via 'gemini mcp list'"
+                )
                 return False
             else:
-                logger.debug(f"'gemini mcp list' command failed with return code {result.returncode}")
+                logger.debug(
+                    f"'gemini mcp list' command failed with return code {result.returncode}"
+                )
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Gemini MCP config: {e}")
             return False
 
-    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+    def add_mcp_server_config(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Add MCP server configuration to Gemini CLI config.
 
         Args:
