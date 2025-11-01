@@ -1,5 +1,7 @@
 import os
+import hashlib
 import logging
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
@@ -17,7 +19,7 @@ logger = logging.getLogger('graphrag')
 class CodeAnalysisTool:
     """MCP Tool for querying TypeScript/JavaScript code structure using GraphRAG."""
 
-    def __init__(self):
+    def __init__(self, repo_path: Optional[str] = None):
         # Neo4j connection
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
@@ -37,8 +39,37 @@ class CodeAnalysisTool:
         # Connection state
         self._connected = False
 
+        # Repository path for label filtering
+        self.repo_path = Path(repo_path) if repo_path else Path.cwd()
+        self._repo_label = None
+        self._repo_hash = None
+
         # Don't connect immediately - wait until first use
         # This allows the MCP server to start even if Neo4j/Qdrant are not running
+
+    def _get_repo_label(self) -> str:
+        """Get repository-specific label for Neo4j queries.
+
+        Returns:
+            Repository label in format Repo_{HASH}
+        """
+        if self._repo_label is None:
+            repo_path_str = str(self.repo_path.resolve())
+            self._repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
+            self._repo_label = f"Repo_{self._repo_hash}"
+
+        return self._repo_label
+
+    def _get_repo_hash(self) -> str:
+        """Get repository hash.
+
+        Returns:
+            8-character MD5 hash of repository path
+        """
+        if self._repo_hash is None:
+            self._get_repo_label()
+
+        return self._repo_hash
 
     def _ensure_connected(self):
         """Ensure connections are established (lazy initialization)."""
@@ -89,7 +120,7 @@ class CodeAnalysisTool:
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
             raise RuntimeError(f"Failed to load embedding model '{self.model_name}'. Error: {e}")
-    
+
     def find_symbol(self, fqname: str) -> Dict[str, Any]:
         """
         Find a code symbol by fully qualified name.
@@ -115,22 +146,38 @@ class CodeAnalysisTool:
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
             return result
-        
+
+        repo_label = self._get_repo_label()
+        repo_hash = self._get_repo_hash()
+
         try:
             with self.neo4j_driver.session() as session:
-                cypher_query = """
+                # Query with repository label filtering (for labeled nodes)
+                # Also query unlabeled nodes for backward compatibility
+                cypher_query = f"""
                 MATCH (s)
-                WHERE s.fqname = $fqname AND s.kind IN ['Function', 'Method', 'Class', 'Interface', 'Type']
-                RETURN s.id as id, s.kind as kind, s.fqname as fqname, 
+                WHERE (
+                    (s:{repo_label}:CodeNode AND s.repo_hash = $repo_hash)
+                    OR
+                    (s:CodeNode AND NOT s:{repo_label} AND s.repo_path = $repo_path)
+                )
+                AND s.fqname = $fqname
+                AND s.kind IN ['Function', 'Method', 'Class', 'Interface', 'Type']
+                RETURN s.id as id, s.kind as kind, s.fqname as fqname,
                        s.sig as signature, s.short as short_summary,
                        s.complexity as complexity, s.tokens_est as tokens_est,
                        s.file as file, s.start_line as start_line, s.end_line as end_line,
                        s.tags as tags
                 """
-                
-                query_result = session.run(cypher_query, fqname=fqname)
+
+                query_result = session.run(
+                    cypher_query,
+                    fqname=fqname,
+                    repo_hash=repo_hash,
+                    repo_path=str(self.repo_path.resolve())
+                )
                 record = query_result.single()
-                
+
                 if record:
                     result["symbol"] = {
                         "id": record["id"],
@@ -147,10 +194,10 @@ class CodeAnalysisTool:
                     }
                 else:
                     result["error"] = f"Symbol '{fqname}' not found"
-                    
+
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
-        
+
         return result
     
     def get_call_graph(self, symbol_id: str, direction: str = 'both', depth: int = 1) -> Dict[str, Any]:
@@ -187,14 +234,27 @@ class CodeAnalysisTool:
         if depth < 1 or depth > 3:
             result["error"] = "Depth must be between 1 and 3"
             return result
-        
+
+        repo_label = self._get_repo_label()
+        repo_hash = self._get_repo_hash()
+
         try:
             with self.neo4j_driver.session() as session:
-                # Build Cypher query based on direction
+                # Build Cypher query based on direction with repo label filtering
                 if direction == 'callers':
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
+                    MATCH (s)
+                    WHERE (
+                        (s:{repo_label}:CodeNode AND s.id = $symbol_id AND s.repo_hash = $repo_hash)
+                        OR
+                        (s:CodeNode AND NOT s:{repo_label} AND s.id = $symbol_id AND s.repo_path = $repo_path)
+                    )
                     MATCH path = (caller)-[:CALLS*1..{depth}]->(s)
+                    WHERE (
+                        (caller:{repo_label}:CodeNode AND caller.repo_hash = $repo_hash)
+                        OR
+                        (caller:CodeNode AND NOT caller:{repo_label} AND caller.repo_path = $repo_path)
+                    )
                     WITH caller, s, relationships(path) as rels
                     RETURN DISTINCT caller.id as id, caller.kind as kind, caller.fqname as fqname,
                            caller.file as file, caller.start_line as start_line,
@@ -202,8 +262,18 @@ class CodeAnalysisTool:
                     """
                 elif direction == 'callees':
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
+                    MATCH (s)
+                    WHERE (
+                        (s:{repo_label}:CodeNode AND s.id = $symbol_id AND s.repo_hash = $repo_hash)
+                        OR
+                        (s:CodeNode AND NOT s:{repo_label} AND s.id = $symbol_id AND s.repo_path = $repo_path)
+                    )
                     MATCH path = (s)-[:CALLS*1..{depth}]->(callee)
+                    WHERE (
+                        (callee:{repo_label}:CodeNode AND callee.repo_hash = $repo_hash)
+                        OR
+                        (callee:CodeNode AND NOT callee:{repo_label} AND callee.repo_path = $repo_path)
+                    )
                     WITH callee, s, relationships(path) as rels
                     RETURN DISTINCT callee.id as id, callee.kind as kind, callee.fqname as fqname,
                            callee.file as file, callee.start_line as start_line,
@@ -211,9 +281,24 @@ class CodeAnalysisTool:
                     """
                 else:  # both
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
+                    MATCH (s)
+                    WHERE (
+                        (s:{repo_label}:CodeNode AND s.id = $symbol_id AND s.repo_hash = $repo_hash)
+                        OR
+                        (s:CodeNode AND NOT s:{repo_label} AND s.id = $symbol_id AND s.repo_path = $repo_path)
+                    )
                     OPTIONAL MATCH path1 = (caller)-[:CALLS*1..{depth}]->(s)
+                    WHERE (
+                        (caller:{repo_label}:CodeNode AND caller.repo_hash = $repo_hash)
+                        OR
+                        (caller:CodeNode AND NOT caller:{repo_label} AND caller.repo_path = $repo_path)
+                    )
                     OPTIONAL MATCH path2 = (s)-[:CALLS*1..{depth}]->(callee)
+                    WHERE (
+                        (callee:{repo_label}:CodeNode AND callee.repo_hash = $repo_hash)
+                        OR
+                        (callee:CodeNode AND NOT callee:{repo_label} AND callee.repo_path = $repo_path)
+                    )
                     WITH s, caller, callee, relationships(path1) + relationships(path2) as rels
                     WHERE caller IS NOT NULL OR callee IS NOT NULL
                     WITH COALESCE(caller, callee) as related, rels
@@ -221,9 +306,14 @@ class CodeAnalysisTool:
                            related.file as file, related.start_line as start_line,
                            [r IN rels WHERE r IS NOT NULL | {{from: startNode(r).id, to: endNode(r).id, count: r.count}}] as edges
                     """
-                
-                query_result = session.run(cypher_query, symbol_id=symbol_id)
-                
+
+                query_result = session.run(
+                    cypher_query,
+                    symbol_id=symbol_id,
+                    repo_hash=repo_hash,
+                    repo_path=str(self.repo_path.resolve())
+                )
+
                 for record in query_result:
                     result["nodes"].append({
                         "id": record["id"],
@@ -232,18 +322,18 @@ class CodeAnalysisTool:
                         "file": record["file"],
                         "start_line": record["start_line"]
                     })
-                    
+
                     # Add edges
                     for edge in record["edges"]:
                         if edge and edge not in result["edges"]:
                             result["edges"].append(edge)
-                
+
                 if not result["nodes"]:
                     result["error"] = f"No {direction} found for symbol '{symbol_id}'"
-                    
+
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
-        
+
         return result
     
     def get_dependencies(self, file_path: str) -> Dict[str, Any]:
@@ -272,31 +362,66 @@ class CodeAnalysisTool:
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
             return result
-        
+
+        repo_label = self._get_repo_label()
+        repo_hash = self._get_repo_hash()
+
         try:
             with self.neo4j_driver.session() as session:
                 # Get imports (what this file imports)
-                cypher_query = """
-                MATCH (f:File {file: $file_path})-[r:IMPORTS]->(imported:File)
+                cypher_query = f"""
+                MATCH (f)
+                WHERE (
+                    (f:{repo_label}:File AND f.file = $file_path AND f.repo_hash = $repo_hash)
+                    OR
+                    (f:File AND NOT f:{repo_label} AND f.file = $file_path AND f.repo_path = $repo_path)
+                )
+                MATCH (f)-[r:IMPORTS]->(imported:File)
+                WHERE (
+                    (imported:{repo_label}:File AND imported.repo_hash = $repo_hash)
+                    OR
+                    (imported:File AND NOT imported:{repo_label} AND imported.repo_path = $repo_path)
+                )
                 RETURN imported.file as file, r.count as count
                 ORDER BY count DESC
                 """
-                
-                query_result = session.run(cypher_query, file_path=file_path)
+
+                query_result = session.run(
+                    cypher_query,
+                    file_path=file_path,
+                    repo_hash=repo_hash,
+                    repo_path=str(self.repo_path.resolve())
+                )
                 for record in query_result:
                     result["imports"].append({
                         "file": record["file"],
                         "count": record["count"]
                     })
-                
+
                 # Get imported_by (what files import this)
-                cypher_query = """
-                MATCH (importer:File)-[r:IMPORTS]->(f:File {file: $file_path})
+                cypher_query = f"""
+                MATCH (importer:File)
+                WHERE (
+                    (importer:{repo_label}:File AND importer.repo_hash = $repo_hash)
+                    OR
+                    (importer:File AND NOT importer:{repo_label} AND importer.repo_path = $repo_path)
+                )
+                MATCH (importer)-[r:IMPORTS]->(f)
+                WHERE (
+                    (f:{repo_label}:File AND f.file = $file_path AND f.repo_hash = $repo_hash)
+                    OR
+                    (f:File AND NOT f:{repo_label} AND f.file = $file_path AND f.repo_path = $repo_path)
+                )
                 RETURN importer.file as file, r.count as count
                 ORDER BY count DESC
                 """
-                
-                query_result = session.run(cypher_query, file_path=file_path)
+
+                query_result = session.run(
+                    cypher_query,
+                    file_path=file_path,
+                    repo_hash=repo_hash,
+                    repo_path=str(self.repo_path.resolve())
+                )
                 for record in query_result:
                     result["imported_by"].append({
                         "file": record["file"],
@@ -342,26 +467,60 @@ class CodeAnalysisTool:
             result["error"] = "max_depth must be between 1 and 3"
             return result
 
+        repo_label = self._get_repo_label()
+        repo_hash = self._get_repo_hash()
+
         try:
             with self.neo4j_driver.session() as session:
-                # Find all symbols that depend on the changed symbols
+                # Find all symbols that depend on the changed symbols with repo label filtering
                 cypher_query = f"""
                 MATCH (changed)
-                WHERE changed.id IN $symbol_ids
+                WHERE (
+                    (changed:{repo_label}:CodeNode AND changed.id IN $symbol_ids AND changed.repo_hash = $repo_hash)
+                    OR
+                    (changed:CodeNode AND NOT changed:{repo_label} AND changed.id IN $symbol_ids AND changed.repo_path = $repo_path)
+                )
 
                 // Find callers (symbols that call the changed symbols)
                 OPTIONAL MATCH (caller)-[:CALLS*1..{max_depth}]->(changed)
-                WHERE caller.id NOT IN $symbol_ids
+                WHERE (
+                    (caller:{repo_label}:CodeNode AND caller.repo_hash = $repo_hash)
+                    OR
+                    (caller:CodeNode AND NOT caller:{repo_label} AND caller.repo_path = $repo_path)
+                )
+                AND caller.id NOT IN $symbol_ids
 
                 // Find symbols in files that import changed symbols' files
-                OPTIONAL MATCH (changed_file:File)-[:CONTAINS]->(changed)
-                OPTIONAL MATCH (importing_file:File)-[:IMPORTS*1..{max_depth}]->(changed_file)
+                OPTIONAL MATCH (changed_file:File)
+                WHERE (
+                    (changed_file:{repo_label}:File AND changed_file.repo_hash = $repo_hash)
+                    OR
+                    (changed_file:File AND NOT changed_file:{repo_label} AND changed_file.repo_path = $repo_path)
+                )
+                OPTIONAL MATCH (changed_file)-[:CONTAINS]->(changed)
+                OPTIONAL MATCH (importing_file:File)
+                WHERE (
+                    (importing_file:{repo_label}:File AND importing_file.repo_hash = $repo_hash)
+                    OR
+                    (importing_file:File AND NOT importing_file:{repo_label} AND importing_file.repo_path = $repo_path)
+                )
+                OPTIONAL MATCH (importing_file)-[:IMPORTS*1..{max_depth}]->(changed_file)
                 OPTIONAL MATCH (importing_file)-[:CONTAINS]->(importing_symbol)
-                WHERE importing_symbol.id NOT IN $symbol_ids
+                WHERE (
+                    (importing_symbol:{repo_label}:CodeNode AND importing_symbol.repo_hash = $repo_hash)
+                    OR
+                    (importing_symbol:CodeNode AND NOT importing_symbol:{repo_label} AND importing_symbol.repo_path = $repo_path)
+                )
+                AND importing_symbol.id NOT IN $symbol_ids
 
                 // Find symbols that extend/implement changed symbols
                 OPTIONAL MATCH (implementer)-[:EXTENDS|IMPLEMENTS*1..{max_depth}]->(changed)
-                WHERE implementer.id NOT IN $symbol_ids
+                WHERE (
+                    (implementer:{repo_label}:CodeNode AND implementer.repo_hash = $repo_hash)
+                    OR
+                    (implementer:CodeNode AND NOT implementer:{repo_label} AND implementer.repo_path = $repo_path)
+                )
+                AND implementer.id NOT IN $symbol_ids
 
                 WITH changed, caller, importing_symbol, implementer
                 WHERE caller IS NOT NULL OR importing_symbol IS NOT NULL OR implementer IS NOT NULL
@@ -374,7 +533,12 @@ class CodeAnalysisTool:
                        affected.start_line as start_line, affected.end_line as end_line
                 """
 
-                query_result = session.run(cypher_query, symbol_ids=symbol_ids)
+                query_result = session.run(
+                    cypher_query,
+                    symbol_ids=symbol_ids,
+                    repo_hash=repo_hash,
+                    repo_path=str(self.repo_path.resolve())
+                )
 
                 for record in query_result:
                     affected_symbol = {
@@ -441,15 +605,28 @@ class CodeAnalysisTool:
                 result["error"] = f"Failed to load embedding model: {e}"
                 return result
 
+        repo_hash = self._get_repo_hash()
+
         # Generate embedding for query
         query_embedding = self.model.encode(query)
 
-        # Search Qdrant
+        # Search Qdrant with repository filtering
         try:
+            # Get more results for filtering and repository-specific filtering
             search_result = self.qdrant_client.search(
                 collection_name=self.qdrant_collection,
                 query_vector=query_embedding.tolist(),
-                limit=limit * 2  # Get more results for filtering
+                limit=limit * 3,  # Get more results for filtering
+                query_filter={
+                    "must": [
+                        {
+                            "key": "repo_hash",
+                            "match": {
+                                "value": repo_hash
+                            }
+                        }
+                    ]
+                }
             )
 
             # Process results
