@@ -116,7 +116,7 @@ class TestSettings:
         """Test Config class attributes."""
         settings = Settings()
 
-        # Check that Config class is properly set
-        assert hasattr(settings.Config, "env_file")
-        assert settings.Config.env_file == ".env"
-        assert settings.Config.env_file_encoding == "utf-8"
+        # Check that model_config is properly set
+        assert hasattr(Settings, "model_config")
+        assert Settings.model_config["env_file"] == ".env"
+        assert Settings.model_config["env_file_encoding"] == "utf-8"

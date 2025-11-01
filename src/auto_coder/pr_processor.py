@@ -14,8 +14,6 @@ import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from .progress_decorators import progress_stage
-
 from .automation_config import AutomationConfig
 from .conflict_resolver import (
     resolve_merge_conflicts_with_llm,
@@ -35,6 +33,7 @@ from .git_utils import (
     switch_to_branch,
 )
 from .logger_config import get_logger
+from .progress_decorators import progress_stage
 from .progress_footer import (
     ProgressStage,
     newline_progress,

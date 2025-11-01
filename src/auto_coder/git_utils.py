@@ -1246,3 +1246,97 @@ def commit_and_push_changes(
             save_commit_failure_history(commit_result.stderr, context, repo_name)
             # This line will never be reached due to sys.exit in save_commit_failure_history
             return f"Failed to commit changes: {commit_result.stderr}"
+
+
+def parse_commit_history_with_actions(
+    depth: int = 10, repo_path: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Parse git commit history and identify commits that triggered GitHub Actions.
+
+    Args:
+        depth: Number of commits to analyze (default: 10)
+        repo_path: Path to the repository (default: current directory)
+
+    Returns:
+        List of dictionaries containing commit information and GitHub Actions status.
+        Each dict contains: commit_hash, message, author, date, has_actions, action_runs
+    """
+    cmd = CommandExecutor()
+
+    # Get commit history
+    log_result = cmd.run_command(
+        ["git", "log", f"--max-count={depth}", "--oneline", "--pretty=format:%h|%s|%an|%ad"],
+        cwd=repo_path,
+    )
+
+    if not log_result.success:
+        logger.error(f"Failed to get git log: {log_result.stderr}")
+        return []
+
+    commits_with_actions = []
+
+    # Get GitHub Actions runs using gh CLI
+    gh_result = cmd.run_command(["gh", "run", "list", "--limit", str(depth)])
+
+    # Parse GitHub Actions runs to create a lookup
+    action_runs_by_commit = {}
+    if gh_result.success:
+        for line in gh_result.stdout.strip().split("\n"):
+            if not line.strip():
+                continue
+
+            # Try to parse tab-separated format
+            if "\t" in line:
+                parts = line.split("\t")
+                if len(parts) >= 4:
+                    conclusion = parts[1].strip().lower()
+                    details_url = parts[3] if len(parts) > 3 else ""
+
+                    # Extract commit hash from details URL if available
+                    if details_url and "/commit/" in details_url:
+                        commit_hash = details_url.split("/commit/")[-1].split("/")[0]
+                        if commit_hash not in action_runs_by_commit:
+                            action_runs_by_commit[commit_hash] = []
+                        action_runs_by_commit[commit_hash].append(
+                            {"conclusion": conclusion, "url": details_url}
+                        )
+
+    # Parse commit log
+    for line in log_result.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+
+        parts = line.split("|", 3)
+        if len(parts) >= 4:
+            commit_hash = parts[0]
+            message = parts[1]
+            author = parts[2]
+            date = parts[3]
+
+            # Check if commit has GitHub Actions runs
+            has_actions = commit_hash in action_runs_by_commit
+            action_runs = action_runs_by_commit.get(commit_hash, [])
+
+            # Skip documentation-only commits (simple heuristic)
+            is_docs_only = any(
+                keyword in message.lower()
+                for keyword in ["docs", "documentation", "readme", "changelog"]
+            ) and not any(
+                keyword in message.lower()
+                for keyword in ["fix", "bug", "feature", "refactor", "test"]
+            )
+
+            commits_with_actions.append(
+                {
+                    "commit_hash": commit_hash,
+                    "message": message,
+                    "author": author,
+                    "date": date,
+                    "has_actions": has_actions and not is_docs_only,
+                    "action_runs": action_runs,
+                }
+            )
+
+    # Filter to only return commits that have Action runs
+    return [commit for commit in commits_with_actions if commit["has_actions"]]

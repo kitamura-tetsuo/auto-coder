@@ -13,7 +13,7 @@ import warnings
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Optional
 
 logger = __import__("logging").getLogger(__name__)
 
@@ -54,7 +54,7 @@ class BackwardCompatibilityLayer:
             config: Compatibility configuration. If None, uses defaults.
         """
         self.config = config or CompatibilityConfig()
-        self._deprecated_warnings_shown = set()
+        self._deprecated_warnings_shown: set[str] = set()
 
     def extract_session_id(
         self,

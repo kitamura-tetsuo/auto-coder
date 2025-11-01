@@ -4,13 +4,14 @@ Main automation engine for Auto-Coder.
 
 import json
 import os
+import subprocess
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
-from .git_utils import git_commit_with_retry, git_push
+from .git_utils import git_commit_with_retry
 from .issue_processor import create_feature_issues, process_issues, process_single
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
@@ -530,10 +531,7 @@ class AutomationEngine:
         self, repo_name: str, pr_data: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Check GitHub Actions status for PR."""
-        import subprocess
-
         try:
-            pr_number = pr_data.get("number")
             # Run gh CLI to get GitHub Actions status for the PR
             result = subprocess.run(
                 ["gh", "run", "list", "--limit", "50"],
@@ -688,13 +686,14 @@ PR Details:
 GitHub Actions Logs:
 {github_logs}
 
-Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
+Please fix the issues that are causing the GitHub Actions failures.
+Make the necessary code changes to resolve the errors.
 DO NOT include git commit or push commands in your response."""
 
             # Call the LLM to get the fix
             if self.llm and hasattr(self.llm, "_run_gemini_cli"):
-                llm_response = self.llm._run_gemini_cli(prompt)
-                actions.append(f"Applied GitHub Actions fix")
+                self.llm._run_gemini_cli(prompt)
+                actions.append("Applied GitHub Actions fix")
 
                 # Commit the changes using the centralized commit logic
                 commit_result = self._commit_with_message(
@@ -723,7 +722,12 @@ DO NOT include git commit or push commands in your response."""
         self, pr_data: Dict[str, Any], github_logs: str, fix_actions: List[str]
     ) -> str:
         """Format direct fix comment."""
-        return f"Auto-Coder Applied GitHub Actions Fixes\n\n**PR:** #{pr_data['number']} - {pr_data['title']}\n\nError: {github_logs}\n\nFixes applied: {', '.join(fix_actions)}"
+        return (
+            f"Auto-Coder Applied GitHub Actions Fixes\n\n"
+            f"**PR:** #{pr_data['number']} - {pr_data['title']}\n\n"
+            f"Error: {github_logs}\n\n"
+            f"Fixes applied: {', '.join(fix_actions)}"
+        )
 
     def _commit_with_message(self, message: str) -> Any:
         """Commit with specific message."""
@@ -752,12 +756,6 @@ DO NOT include git commit or push commands in your response."""
     def _checkout_pr_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
         """Checkout PR branch."""
         return True
-
-    def _get_github_actions_logs(
-        self, repo_name: str, failed_checks: List[Dict[str, Any]]
-    ) -> str:
-        """Get GitHub Actions logs for failed checks."""
-        return "Test failed: assertion error"
 
     def _poll_pr_mergeable(
         self,

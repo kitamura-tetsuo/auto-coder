@@ -202,7 +202,10 @@ def stub_git_and_gh_commands(monkeypatch, request):
     orig_run = subprocess.run
     orig_popen = subprocess.Popen
 
-    print(f"DEBUG: stub_git_and_gh_commands initialized, orig_run = {orig_run}", file=__import__('sys').stderr)
+    print(
+        f"DEBUG: stub_git_and_gh_commands initialized, orig_run = {orig_run}",
+        file=__import__("sys").stderr,
+    )
 
     def _as_text_or_bytes(text_output: str, text: bool):
         if text:
@@ -232,7 +235,10 @@ def stub_git_and_gh_commands(monkeypatch, request):
             pass_through_programs = ("python", "python3", "/usr/bin/python3")
             if program in pass_through_programs:
                 # Debug output
-                print(f"DEBUG: Intercepted python command: {program}", file=__import__('sys').stderr)
+                print(
+                    f"DEBUG: Intercepted python command: {program}",
+                    file=__import__("sys").stderr,
+                )
 
                 # Ensure PYTHONPATH includes user site-packages and current directory
                 import os
@@ -240,8 +246,10 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
                 # Get user site-packages path
                 user_site = site.getusersitepackages()
-                print(f"DEBUG: user_site = {user_site!r}", file=__import__('sys').stderr)
-                print(f"DEBUG: cwd = {os.getcwd()!r}", file=__import__('sys').stderr)
+                print(
+                    f"DEBUG: user_site = {user_site!r}", file=__import__("sys").stderr
+                )
+                print(f"DEBUG: cwd = {os.getcwd()!r}", file=__import__("sys").stderr)
 
                 # Build environment with proper PYTHONPATH
                 if env is None:
@@ -251,18 +259,38 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
                 # Add user site-packages and current directory to PYTHONPATH
                 pythonpath = env.get("PYTHONPATH", "")
-                print(f"DEBUG: initial pythonpath = {pythonpath!r}", file=__import__('sys').stderr)
+                print(
+                    f"DEBUG: initial pythonpath = {pythonpath!r}",
+                    file=__import__("sys").stderr,
+                )
                 paths_to_add = [user_site, os.getcwd()]
-                print(f"DEBUG: paths_to_add = {paths_to_add!r}", file=__import__('sys').stderr)
+                print(
+                    f"DEBUG: paths_to_add = {paths_to_add!r}",
+                    file=__import__("sys").stderr,
+                )
                 for path in paths_to_add:
-                    print(f"DEBUG: checking path={path!r}, truthy={bool(path)}, in_pythonpath={path in pythonpath.split(os.pathsep)}", file=__import__('sys').stderr)
+                    print(
+                        f"DEBUG: checking path={path!r}, truthy={bool(path)}, in_pythonpath={path in pythonpath.split(os.pathsep)}",
+                        file=__import__("sys").stderr,
+                    )
                     if path and path not in pythonpath.split(os.pathsep):
-                        env["PYTHONPATH"] = f"{path}:{pythonpath}" if pythonpath else path
+                        env["PYTHONPATH"] = (
+                            f"{path}:{pythonpath}" if pythonpath else path
+                        )
                         pythonpath = env["PYTHONPATH"]
-                        print(f"DEBUG: updated pythonpath to {pythonpath!r}", file=__import__('sys').stderr)
+                        print(
+                            f"DEBUG: updated pythonpath to {pythonpath!r}",
+                            file=__import__("sys").stderr,
+                        )
 
-                print(f"DEBUG: final PYTHONPATH = {env.get('PYTHONPATH')!r}", file=__import__('sys').stderr)
-                print(f"DEBUG: calling orig_run with env['PYTHONPATH']={env.get('PYTHONPATH')!r}", file=__import__('sys').stderr)
+                print(
+                    f"DEBUG: final PYTHONPATH = {env.get('PYTHONPATH')!r}",
+                    file=__import__("sys").stderr,
+                )
+                print(
+                    f"DEBUG: calling orig_run with env['PYTHONPATH']={env.get('PYTHONPATH')!r}",
+                    file=__import__("sys").stderr,
+                )
 
                 result = orig_run(
                     cmd,
@@ -275,7 +303,10 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     env=env,
                 )
 
-                print(f"DEBUG: orig_run returned with returncode={result.returncode}", file=__import__('sys').stderr)
+                print(
+                    f"DEBUG: orig_run returned with returncode={result.returncode}",
+                    file=__import__("sys").stderr,
+                )
                 return result
 
             # Stubbed commands

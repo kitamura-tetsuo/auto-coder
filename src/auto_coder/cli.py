@@ -8,7 +8,11 @@ import click
 try:
     from dotenv import load_dotenv
 except ImportError:
-    load_dotenv = lambda: None  # Fallback if python-dotenv is not installed
+    # Fallback if python-dotenv is not installed
+    def load_dotenv():
+        """No-op function when python-dotenv is not installed."""
+        pass
+
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_graphrag import graphrag_group

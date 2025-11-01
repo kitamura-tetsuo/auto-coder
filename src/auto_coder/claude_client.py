@@ -83,7 +83,8 @@ class ClaudeClient(LLMClientBase):
                 f"Running claude CLI with prompt length: {len(prompt)} characters"
             )
             logger.info(
-                f"🤖 Running: claude --print --dangerously-skip-permissions --allow-dangerously-skip-permissions --model {self.model_name} [prompt]"
+                f"🤖 Running: claude --print --dangerously-skip-permissions "
+                f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]"
             )
             logger.info("=" * 60)
 
