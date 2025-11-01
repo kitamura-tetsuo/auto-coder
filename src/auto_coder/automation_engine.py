@@ -224,10 +224,29 @@ class AutomationEngine:
         return get_github_actions_logs_from_url(url)
 
     def _get_github_actions_logs(
-        self, repo_name: str, pr_data: Dict[str, Any], failed_checks: List[Dict[str, Any]]
+        self,
+        repo_name: str,
+        pr_data: Dict[str, Any],
+        failed_checks: List[Dict[str, Any]],
+        search_history: Optional[bool] = None,
     ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。"""
-        return _pr_get_github_actions_logs(repo_name, self.config, failed_checks)
+        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+
+        Args:
+            repo_name: Repository name
+            pr_data: PR data dictionary
+            failed_checks: List of failed check dictionaries
+            search_history: Optional parameter to enable historical search.
+                           If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                           If True, searches through commit history for logs.
+                           If False, uses current state only.
+
+        Returns:
+            String containing GitHub Actions logs
+        """
+        return _pr_get_github_actions_logs(
+            repo_name, self.config, failed_checks, search_history=search_history
+        )
 
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
@@ -799,8 +818,26 @@ DO NOT include git commit or push commands in your response."""
         """Checkout PR branch."""
         return True
 
-    def _get_github_actions_logs(self, repo_name: str, failed_checks: List[Dict[str, Any]]) -> str:
-        """Get GitHub Actions logs for failed checks."""
+    def _get_github_actions_logs(
+        self,
+        repo_name: str,
+        pr_data: Dict[str, Any],
+        failed_checks: List[Dict[str, Any]],
+        search_history: Optional[bool] = None,
+    ) -> str:
+        """Get GitHub Actions logs for failed checks.
+
+        This is a compatibility stub for tests.
+
+        Args:
+            repo_name: Repository name
+            pr_data: PR data dictionary (unused in stub)
+            failed_checks: List of failed check dictionaries
+            search_history: Optional parameter (unused in stub)
+
+        Returns:
+            Test log string
+        """
         return "Test failed: assertion error"
 
 
