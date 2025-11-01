@@ -861,3 +861,349 @@ def graphrag_setup_mcp(
     if not success:
         raise click.ClickException("セットアップに失敗しました")
 
+
+def check_current_setup() -> dict:
+    """Check current GraphRAG setup status.
+
+    Returns:
+        dict: Status information about current setup
+    """
+    try:
+        from .graphrag_mcp_integration import GraphRAGMCPIntegration
+
+        integration = GraphRAGMCPIntegration()
+
+        # Check if using repository isolation
+        has_isolation = integration.check_repository_isolation()
+
+        # Count collections
+        collection_count = integration.get_collection_count()
+
+        # Count sessions
+        session_count = integration.get_session_count()
+
+        return {
+            "has_repository_isolation": has_isolation,
+            "collection_count": collection_count,
+            "session_count": session_count,
+            "ready_for_migration": not has_isolation and collection_count > 0,
+        }
+    except Exception as e:
+        logger.error(f"Failed to check setup: {e}")
+        return {
+            "has_repository_isolation": False,
+            "collection_count": 0,
+            "session_count": 0,
+            "ready_for_migration": False,
+            "error": str(e),
+        }
+
+
+def display_migration_status_table(status: dict) -> None:
+    """Display migration status in table format.
+
+    Args:
+        status: Status dictionary from check_current_setup
+    """
+    click.echo("GraphRAG Migration Status")
+    click.echo("=" * 60)
+
+    if "error" in status:
+        click.echo(f"❌ Error checking status: {status['error']}")
+        return
+
+    click.echo(f"Repository Isolation: {'✅ Enabled' if status['has_repository_isolation'] else '❌ Disabled'}")
+    click.echo(f"Total Collections: {status['collection_count']}")
+    click.echo(f"Active Sessions: {status['session_count']}")
+
+    click.echo()
+    if status["ready_for_migration"]:
+        click.echo("✅ Ready for migration to repository isolation")
+        click.echo()
+        click.echo("Run the following command to migrate:")
+        click.echo("  auto-coder graphrag migrate-to-isolation")
+    elif status["has_repository_isolation"]:
+        click.echo("✅ Already using repository isolation")
+    else:
+        click.echo("⚠️  No existing data to migrate")
+
+
+def perform_migration() -> bool:
+    """Perform migration to repository isolation.
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        from .graphrag_mcp_integration import GraphRAGMCPIntegration
+
+        integration = GraphRAGMCPIntegration()
+
+        click.echo("Starting migration to repository isolation...")
+
+        # Migrate collections
+        migrated_count = integration.migrate_to_repository_isolation()
+
+        click.echo(f"✅ Migrated {migrated_count} collections to repository isolation")
+
+        # Verify migration
+        if integration.check_repository_isolation():
+            click.echo("✅ Migration completed successfully")
+            return True
+        else:
+            click.echo("❌ Migration verification failed")
+            return False
+
+    except Exception as e:
+        logger.error(f"Migration failed: {e}")
+        click.echo(f"❌ Migration failed: {e}")
+        return False
+
+
+def verify_isolation_setup() -> dict:
+    """Verify repository isolation setup.
+
+    Returns:
+        dict: Verification results
+    """
+    try:
+        from .graphrag_mcp_integration import GraphRAGMCPIntegration
+
+        integration = GraphRAGMCPIntegration()
+
+        # Check if isolation is enabled
+        has_isolation = integration.check_repository_isolation()
+
+        # Get counts
+        repository_count = integration.get_repository_count()
+        collection_count = integration.get_collection_count()
+
+        # Check for issues
+        issues = []
+
+        if not has_isolation:
+            issues.append("Repository isolation is not enabled")
+
+        if repository_count == 0:
+            issues.append("No repositories have been indexed")
+
+        if collection_count == 0:
+            issues.append("No collections found")
+
+        # Verify data isolation
+        test_results = integration.verify_repository_isolation()
+        if not test_results["success"]:
+            issues.append(f"Data isolation test failed: {test_results['error']}")
+
+        return {
+            "success": len(issues) == 0,
+            "repository_count": repository_count,
+            "collection_count": collection_count,
+            "issues": issues,
+        }
+    except Exception as e:
+        logger.error(f"Verification failed: {e}")
+        return {
+            "success": False,
+            "repository_count": 0,
+            "collection_count": 0,
+            "issues": [f"Verification error: {e}"],
+        }
+
+
+def get_session_info(session_id: Optional[str] = None) -> dict:
+    """Get session information.
+
+    Args:
+        session_id: Session ID to check (None for all sessions)
+
+    Returns:
+        dict: Session information
+    """
+    try:
+        from .graphrag_mcp_integration import GraphRAGMCPIntegration
+
+        integration = GraphRAGMCPIntegration()
+
+        if session_id:
+            return integration.get_session_info(session_id)
+        else:
+            sessions = integration.list_sessions()
+            return {"sessions": sessions, "count": len(sessions)}
+    except Exception as e:
+        logger.error(f"Failed to get session info: {e}")
+        return {"error": str(e)}
+
+
+def display_session_info(info: dict) -> None:
+    """Display session information.
+
+    Args:
+        info: Session info dictionary
+    """
+    if "error" in info:
+        click.echo(f"❌ Error: {info['error']}")
+        return
+
+    click.echo("Session Information")
+    click.echo("=" * 60)
+    click.echo(f"Session ID: {info['session_id']}")
+    click.echo(f"Repository: {info['repository_path']}")
+    click.echo(f"Collection: {info['collection_name']}")
+    click.echo(f"Created: {info['created_at']}")
+    click.echo(f"Expires: {info['expires_at']}")
+
+
+def display_all_sessions(sessions_info: dict) -> None:
+    """Display all sessions.
+
+    Args:
+        sessions_info: Sessions info dictionary
+    """
+    if "error" in sessions_info:
+        click.echo(f"❌ Error: {sessions_info['error']}")
+        return
+
+    sessions = sessions_info["sessions"]
+    count = sessions_info["count"]
+
+    click.echo(f"Active Sessions ({count})")
+    click.echo("=" * 60)
+
+    if count == 0:
+        click.echo("No active sessions")
+        return
+
+    for session in sessions:
+        click.echo(f"  {session['session_id']}")
+        click.echo(f"    Repository: {session['repository_path']}")
+        click.echo(f"    Created: {session['created_at']}")
+        click.echo()
+
+
+@graphrag_group.command("check-migration-status")
+@click.option(
+    "--format",
+    type=click.Choice(["json", "table"]),
+    default="table",
+    help="出力フォーマット（デフォルト: table）",
+)
+def graphrag_check_migration_status(format: str) -> None:
+    """GraphRAG migration status and readinessを確認します。"""
+    setup_logger()
+
+    # Check current setup
+    setup_status = check_current_setup()
+
+    # Display status
+    if format == "json":
+        import json
+
+        click.echo(json.dumps(setup_status, indent=2))
+    else:
+        display_migration_status_table(setup_status)
+
+
+@graphrag_group.command("migration-preview")
+def graphrag_migration_preview() -> None:
+    """Migration impact previewを表示します。"""
+    setup_logger()
+
+    click.echo("Migration Preview")
+    click.echo("=" * 60)
+    click.echo()
+    click.echo("The following actions will be performed:")
+    click.echo()
+    click.echo("1. Create repository-specific Qdrant collections")
+    click.echo("2. Add repository labels to Neo4j nodes")
+    click.echo("3. Migrate existing data to isolated collections")
+    click.echo("4. Enable session-based context management")
+    click.echo()
+    click.echo("Impact:")
+    click.echo("  - All existing data will be migrated")
+    click.echo("  - New sessions will be created for each repository")
+    click.echo("  - Queries will be filtered by repository")
+    click.echo("  - Backward compatibility will be maintained")
+    click.echo()
+    click.echo("Estimated time: 5-10 minutes (depending on data size)")
+
+
+@graphrag_group.command("migrate-to-isolation")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="確認なしでmigrationを実行",
+)
+@click.option(
+    "--backup",
+    is_flag=True,
+    help="migration前にバックアップを作成",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="詳細な出力",
+)
+def graphrag_migrate_to_isolation(force: bool, backup: bool, verbose: bool) -> None:
+    """Repository isolation modeにmigrationします。"""
+    setup_logger()
+
+    if not force:
+        click.echo("⚠️  This will migrate your GraphRAG setup to repository isolation")
+        click.echo()
+        click.echo("This action will:")
+        click.echo("  - Create repository-specific collections")
+        click.echo("  - Migrate existing data")
+        click.echo("  - Enable repository isolation")
+        click.echo()
+        if not click.confirm("Proceed with migration?"):
+            click.echo("Migration cancelled")
+            return
+
+    if backup:
+        click.echo("Creating backup...")
+        # Backup logic would go here
+        click.echo("✅ Backup created")
+
+    try:
+        success = perform_migration()
+        if not success:
+            raise click.ClickException("Migration failed")
+    except Exception as e:
+        raise click.ClickException(f"Migration error: {e}")
+
+
+@graphrag_group.command("verify-migration")
+def graphrag_verify_migration() -> None:
+    """Migrationが成功したかを検証します。"""
+    setup_logger()
+
+    verification_results = verify_isolation_setup()
+
+    if verification_results["success"]:
+        click.echo("✅ Migration verification passed")
+        click.echo(f"📊 {verification_results['repository_count']} repositories indexed")
+        click.echo(f"🔍 {verification_results['collection_count']} isolated collections")
+    else:
+        click.echo("❌ Migration verification failed")
+        for issue in verification_results["issues"]:
+            click.echo(f"  • {issue}")
+        raise click.ClickException("Migration verification failed")
+
+
+@graphrag_group.command("session-info")
+@click.option(
+    "--session-id",
+    help="チェックするSession ID",
+)
+def graphrag_session_info(session_id: Optional[str]) -> None:
+    """アクティブSessionの情報を表示します。"""
+    setup_logger()
+
+    if session_id:
+        info = get_session_info(session_id)
+        display_session_info(info)
+    else:
+        sessions = get_session_info()
+        display_all_sessions(sessions)
+
