@@ -549,7 +549,26 @@ def check_github_sub_issue_or_setup() -> None:
         )
         if result.returncode == 0:
             click.echo("✅ github-sub-issue tool installed successfully")
-            return
+            # Verify the tool is actually available after installation
+            try:
+                verify_result = subprocess.run(
+                    ["github-sub-issue", "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if verify_result.returncode == 0:
+                    click.echo("✅ github-sub-issue CLI is now available and working")
+                    return
+                else:
+                    click.echo("⚠️  Installation completed but verification failed")
+                    raise click.ClickException(
+                        "github-sub-issue tool installation completed but verification failed"
+                    )
+            except Exception as e:
+                raise click.ClickException(
+                    f"github-sub-issue tool installation completed but verification failed: {e}"
+                )
         else:
             click.echo(f"❌ Installation failed: {result.stderr}")
             raise click.ClickException(
