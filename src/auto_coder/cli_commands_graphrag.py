@@ -37,6 +37,9 @@ def run_graphrag_setup_mcp_programmatically(
     Returns:
         True if setup was successful, False otherwise
     """
+    # Use new MCP manager for setup
+    from .mcp_manager import get_mcp_manager
+
     try:
         # Determine installation directory
         if install_dir is None:
@@ -344,7 +347,7 @@ if __name__ == "__main__":
             with open(main_py_path, "w", encoding="utf-8") as f:
                 f.write(main_py_content)
             if not silent:
-                logger.info("✅ main.py を修正しました（.envパスを明示的に指定）")
+                logger.info(f"✅ main.py を修正しました（.envパスを明示的に指定）")
         except Exception as e:
             logger.error(f"main.py の修正に失敗しました: {e}")
             return False
@@ -871,7 +874,7 @@ def graphrag_setup_mcp(
         # Remove existing directory
         try:
             shutil.rmtree(install_path)
-            click.echo(f"既存のディレクトリを削除しました: {install_path}")
+            click.echo(f"既存のディレクトリ削除しました: {install_path}")
         except Exception as e:
             raise click.ClickException(f"ディレクトリの削除に失敗しました: {e}")
 

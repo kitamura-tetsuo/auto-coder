@@ -82,7 +82,21 @@ class TestAutomationEngine:
         test_repo_name,
     ):
         """Test successful automation run."""
-        # Setup
+        # Setup - Mock GitHub client methods needed for _get_candidates
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = [Mock(number=1)]
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1, "title": "Test PR", "body": "", "head": {"ref": "test"}, "labels": [], "mergeable": True
+        }
+        mock_github_client.get_issue_details.return_value = {
+            "number": 1, "title": "Test Issue", "body": "", "labels": [], "state": "open"
+        }
+        mock_github_client.disable_labels = False
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.remove_labels_from_issue.return_value = True
+        
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
         mock_process_issues.return_value = [{"issue": "processed"}]
         mock_process_prs.return_value = [{"pr": "processed"}]
@@ -119,7 +133,21 @@ class TestAutomationEngine:
         test_repo_name,
     ):
         """Test successful run with jules mode."""
-        # Setup
+        # Setup - Mock GitHub client methods needed for _get_candidates
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = [Mock(number=1)]
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1, "title": "Test PR", "body": "", "head": {"ref": "test"}, "labels": [], "mergeable": True
+        }
+        mock_github_client.get_issue_details.return_value = {
+            "number": 1, "title": "Test Issue", "body": "", "labels": [], "state": "open"
+        }
+        mock_github_client.disable_labels = False
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.remove_labels_from_issue.return_value = True
+        
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
         mock_process_issues.return_value = [{"issue": "labeled"}]
         mock_process_prs.return_value = [{"pr": "processed"}]
@@ -155,7 +183,21 @@ class TestAutomationEngine:
         test_repo_name,
     ):
         """Test automation run with error."""
-        # Setup
+        # Setup - Mock GitHub client methods needed for _get_candidates
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = [Mock(number=1)]
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1, "title": "Test PR", "body": "", "head": {"ref": "test"}, "labels": [], "mergeable": True
+        }
+        mock_github_client.get_issue_details.return_value = {
+            "number": 1, "title": "Test Issue", "body": "", "labels": [], "state": "open"
+        }
+        mock_github_client.disable_labels = False
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.remove_labels_from_issue.return_value = True
+        
         mock_process_issues.side_effect = Exception("Test error")
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)

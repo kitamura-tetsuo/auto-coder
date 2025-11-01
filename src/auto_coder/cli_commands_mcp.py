@@ -120,7 +120,7 @@ def mcp_setup(
             logger.info("\nNext steps:")
             logger.info(f"1. Review configuration: {server_path}/.env")
             logger.info(f"2. Test the server: cd {server_path} && ./run_server.sh")
-            logger.info("3. The server is now configured for your LLM backends")
+            logger.info(f"3. The server is now configured for your LLM backends")
     else:
         logger.error(f"Failed to setup {server_name} MCP server")
         raise click.ClickException(f"Setup failed for {server_name}")

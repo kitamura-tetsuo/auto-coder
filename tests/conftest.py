@@ -24,43 +24,12 @@ def _clear_sensitive_env(monkeypatch, request):
             monkeypatch.delenv(key, raising=False)
         return
 
-    # Preserve PYTHONPATH before changing HOME
-    import os
-    original_home = os.environ.get("HOME", "")
-    python_path = os.environ.get("PYTHONPATH")
-
-    # Get the original user site-packages directory
-    import site
-    try:
-        original_user_site = site.getusersitepackages()
-    except:
-        original_user_site = None
-
     # 影響のある環境変数をクリア
     for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     # ホームディレクトリを一時ディレクトリに切り替え、~/.config/gh/hosts.yml 等の実ファイル影響を遮断
     tmp_home = tempfile.mkdtemp(prefix="ac_test_home_")
     monkeypatch.setenv("HOME", tmp_home)
-
-    # Build PYTHONPATH to include:
-    # 1. Original user site-packages (for user-installed packages like python-dotenv)
-    # 2. Project src directory (for project modules)
-    pythonpath_parts = []
-    if original_user_site and os.path.exists(original_user_site):
-        pythonpath_parts.append(original_user_site)
-
-    # Add project src directory (this is needed for project imports to work)
-    project_src = os.path.join(os.path.dirname(__file__), "..", "src")
-    if os.path.exists(project_src):
-        pythonpath_parts.append(project_src)
-
-    # Add existing PYTHONPATH if any
-    if python_path:
-        pythonpath_parts.append(python_path)
-
-    if pythonpath_parts:
-        monkeypatch.setenv("PYTHONPATH", ":".join(pythonpath_parts))
 
 
 @pytest.fixture

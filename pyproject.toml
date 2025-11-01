@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.11.1.9+gf47687a"
+version = "2025.11.1.32+g90dc0c8"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -16,9 +16,8 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "requests>=2.31.0",
     "pydantic>=2.0.0,<3.0.0",
@@ -105,7 +104,7 @@ auto_coder = [
 
 [tool.black]
 line-length = 88
-target-version = ['py311', 'py312']
+target-version = ['py311']
 
 [tool.isort]
 profile = "black"
@@ -123,3 +122,9 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --cov=src/auto_coder --cov-report=html --cov-report=term-missing"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+]

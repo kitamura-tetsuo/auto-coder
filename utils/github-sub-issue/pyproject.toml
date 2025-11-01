@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gh-sub-issue"
+name = "github-sub-issue"
 version = "0.1.0"
 description = "GitHub sub-issues 機能を操作するための Python ユーティリティー"
 readme = "README.md"
@@ -28,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-gh-sub-issue = "gh_sub_issue.cli:main"
+github-sub-issue = "github_sub_issue.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
