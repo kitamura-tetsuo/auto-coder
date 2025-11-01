@@ -38,6 +38,17 @@ class GraphRAGIndexManager:
             )
         self.index_state_file = Path(index_state_file)
 
+    def _get_collection_name(self) -> str:
+        """Generate repository-specific collection name using hash of repo path.
+
+        Returns:
+            Collection name prefixed with 'repo_' followed by hash of repo path
+        """
+        repo_hash = hashlib.sha256(str(self.repo_path.resolve()).encode()).hexdigest()[
+            :16
+        ]
+        return f"repo_{repo_hash}"
+
     def _get_codebase_hash(self) -> str:
         """Calculate hash of codebase to detect changes.
 
@@ -577,8 +588,9 @@ class GraphRAGIndexManager:
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
 
-        # Collection name
-        collection_name = "code_embeddings"
+        # Repository-specific collection name
+        collection_name = self._get_collection_name()
+        logger.info(f"Using collection: {collection_name}")
 
         # Load embedding model
         logger.info("Loading embedding model...")

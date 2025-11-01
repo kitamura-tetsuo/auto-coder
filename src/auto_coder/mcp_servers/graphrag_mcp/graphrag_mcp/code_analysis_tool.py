@@ -1,5 +1,7 @@
+import hashlib
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 from neo4j import GraphDatabase
@@ -19,7 +21,7 @@ logger = logging.getLogger("graphrag")
 class CodeAnalysisTool:
     """MCP Tool for querying TypeScript/JavaScript code structure using GraphRAG."""
 
-    def __init__(self):
+    def __init__(self, repo_path: Optional[str] = None):
         # Neo4j connection
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
@@ -29,7 +31,17 @@ class CodeAnalysisTool:
         # Qdrant connection
         self.qdrant_host = os.getenv("QDRANT_HOST", "localhost")
         self.qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
-        self.qdrant_collection = os.getenv("QDRANT_COLLECTION", "code_chunks")
+
+        # Generate repository-specific collection name if repo_path is provided
+        if repo_path:
+            self.repo_path = Path(repo_path).resolve()
+            repo_hash = hashlib.sha256(str(self.repo_path).encode()).hexdigest()[:16]
+            self.qdrant_collection = f"repo_{repo_hash}"
+        else:
+            # Fall back to environment variable for backward compatibility
+            self.repo_path = None
+            self.qdrant_collection = os.getenv("QDRANT_COLLECTION", "code_chunks")
+
         self.qdrant_client = None
 
         # Embedding model

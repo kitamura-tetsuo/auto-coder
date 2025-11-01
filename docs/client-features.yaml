@@ -771,7 +771,7 @@ features:
             parameters: ["graph_data", "in_container"]
             behavior:
               - "Connects to Qdrant (http://localhost:6333 or container URL)"
-              - "Recreates code_embeddings collection"
+              - "Recreates repository-specific collection using hash of repo path"
               - "Creates text representation from node metadata (fqname, sig, short)"
               - "Generates embeddings using sentence-transformers (all-MiniLM-L6-v2)"
               - "Stores embeddings with node metadata as payload"
