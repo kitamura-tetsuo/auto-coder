@@ -143,8 +143,6 @@ class GraphRAGMCPIntegration:
                             logger.info("Retrying after cleanup...")
                             # Try to stop containers before retry
                             self.docker_manager.stop()
-                            import time
-
                             time.sleep(2)
                 except Exception as e:
                     logger.error(
@@ -360,7 +358,8 @@ class GraphRAGMCPIntegration:
         """
         with self.session_lock:
             expired_sessions = [
-                sid for sid, session in self.active_sessions.items()
+                sid
+                for sid, session in self.active_sessions.items()
                 if session.is_expired(max_age_hours)
             ]
 
@@ -419,7 +418,6 @@ class GraphRAGMCPIntegration:
                     session.update_access_time()
                     return session
             return None
-
 
     def get_mcp_config_for_llm(self) -> Optional[dict]:
         """Get MCP configuration to pass to LLM client.

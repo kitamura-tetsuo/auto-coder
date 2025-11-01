@@ -1,5 +1,5 @@
-from mcp.server.fastmcp import FastMCP, Context
 from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
+from mcp.server.fastmcp import Context, FastMCP
 
 # Create an MCP server
 mcp = FastMCP("GraphRAG Code Analysis",

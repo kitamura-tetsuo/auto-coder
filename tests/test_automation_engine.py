@@ -96,7 +96,7 @@ class TestAutomationEngine:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.try_add_work_in_progress_label.return_value = True
         mock_github_client.remove_labels_from_issue.return_value = True
-        
+
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
         mock_process_issues.return_value = [{"issue": "processed"}]
         mock_process_prs.return_value = [{"pr": "processed"}]
@@ -147,7 +147,7 @@ class TestAutomationEngine:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.try_add_work_in_progress_label.return_value = True
         mock_github_client.remove_labels_from_issue.return_value = True
-        
+
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
         mock_process_issues.return_value = [{"issue": "labeled"}]
         mock_process_prs.return_value = [{"pr": "processed"}]
@@ -197,7 +197,7 @@ class TestAutomationEngine:
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.try_add_work_in_progress_label.return_value = True
         mock_github_client.remove_labels_from_issue.return_value = True
-        
+
         mock_process_issues.side_effect = Exception("Test error")
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)

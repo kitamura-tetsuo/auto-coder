@@ -343,7 +343,7 @@ def git_checkout_branch(
 
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
-    
+
     if create_new:
         # Check if the branch already exists
         if branch_exists(branch_name, cwd=cwd):

@@ -531,8 +531,10 @@ class GraphRAGIndexManager:
                 session.run(f"MATCH (n:{repo_label}:CodeNode) DETACH DELETE n")
 
                 # Also delete unlabeled nodes matching this repo_path for cleanup
-                session.run("MATCH (n:CodeNode) WHERE n.repo_path = $repo_path DETACH DELETE n",
-                           repo_path=repo_path)
+                session.run(
+                    "MATCH (n:CodeNode) WHERE n.repo_path = $repo_path DETACH DELETE n",
+                    repo_path=repo_path,
+                )
 
                 # Insert nodes with repository-specific label
                 nodes = graph_data.get("nodes", [])
@@ -551,7 +553,9 @@ class GraphRAGIndexManager:
                         props=node_data,
                     )
 
-                logger.info(f"Inserted {len(nodes)} nodes with label {repo_label} into Neo4j")
+                logger.info(
+                    f"Inserted {len(nodes)} nodes with label {repo_label} into Neo4j"
+                )
 
                 # Insert edges
                 edges = graph_data.get("edges", [])
@@ -567,7 +571,7 @@ class GraphRAGIndexManager:
                         type=edge.get("type", "UNKNOWN"),
                         count=edge.get("count", 1),
                         repo_path=repo_path,
-                        repo_hash=repo_hash
+                        repo_hash=repo_hash,
                     )
 
                 logger.info(f"Inserted {len(edges)} edges into Neo4j")
@@ -694,7 +698,7 @@ class GraphRAGIndexManager:
                         "repo_path": repo_path_str,
                         "repo_hash": repo_hash,
                         "repo_label": repo_label,
-                    }
+                    },
                 )
                 points.append(point)
 
