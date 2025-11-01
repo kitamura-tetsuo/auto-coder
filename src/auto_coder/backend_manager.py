@@ -7,11 +7,10 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from auto_coder.progress_footer import ProgressStage
-
 from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
+from .progress_footer import ProgressStage
 
 logger = get_logger(__name__)
 

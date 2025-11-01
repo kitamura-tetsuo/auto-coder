@@ -400,7 +400,8 @@ class CodexMCPClient(LLMClientBase):
                 f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)"
             )
             logger.info(
-                "🤖 Running under MCP session: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]"
+                "🤖 Running under MCP session: codex exec -s workspace-write "
+                "--dangerously-bypass-approvals-and-sandbox [prompt]"
             )
 
             proc = subprocess.Popen(

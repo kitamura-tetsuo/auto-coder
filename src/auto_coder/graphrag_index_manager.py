@@ -577,8 +577,25 @@ class GraphRAGIndexManager:
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
 
-        # Collection name
-        collection_name = "code_embeddings"
+        # Collection name - use environment variable or generate repository-specific name
+        # This implements Qdrant Collection Separation to avoid conflicts between repositories
+        import hashlib
+
+        collection_name = os.getenv(
+            "QDRANT_COLLECTION"
+        )  # Allow override via environment variable
+        if not collection_name:
+            # Generate repository-specific collection name based on resolved path
+            # This ensures each repository gets its own collection
+            repo_hash = hashlib.md5(str(self.repo_path.resolve()).encode()).hexdigest()[
+                :8
+            ]
+            collection_name = f"code_embeddings_{repo_hash}"
+            logger.info(
+                f"Generated repository-specific collection name: {collection_name}"
+            )
+        else:
+            logger.info(f"Using configured collection name: {collection_name}")
 
         # Load embedding model
         logger.info("Loading embedding model...")

@@ -4,5 +4,6 @@
       "command": "/home/node/graphrag_mcp/run_server.sh",
       "args": []
     }
-  }
+  },
+  "$version": 2
 }

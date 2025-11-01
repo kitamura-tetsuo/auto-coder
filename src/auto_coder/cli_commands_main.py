@@ -2,6 +2,7 @@
 
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -13,6 +14,7 @@ from .cli_helpers import (
     build_backend_manager,
     build_models_map,
     check_backend_prerequisites,
+    check_github_sub_issue_or_setup,
     check_graphrag_mcp_for_backends,
     ensure_test_script_or_fail,
     initialize_graphrag,
@@ -503,6 +505,7 @@ def create_feature_issues(
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
     check_backend_prerequisites(selected_backends)
+    check_github_sub_issue_or_setup()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
@@ -671,6 +674,7 @@ def fix_to_pass_tests_command(
 
     # Check backend CLI availability
     check_backend_prerequisites(selected_backends)
+    check_github_sub_issue_or_setup()
 
     backend_list_str = ", ".join(selected_backends)
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")

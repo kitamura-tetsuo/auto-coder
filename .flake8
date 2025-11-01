@@ -13,6 +13,7 @@ exclude =
     dist,
     node_modules,
     graph_builder/node_modules,
+    graph_builder/dist,
     src/auto_coder/mcp_servers,
     src/auto_coder/graph_builder
 per-file-ignores =
