@@ -19,9 +19,13 @@ from .issue_processor import (
 )
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
-from .pr_processor import _check_github_actions_status
+from .pr_processor import (
+    _check_github_actions_status,
+)
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
-from .pr_processor import _extract_linked_issues_from_pr_body
+from .pr_processor import (
+    _extract_linked_issues_from_pr_body,
+)
 from .pr_processor import _get_github_actions_logs as _pr_get_github_actions_logs
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import (
