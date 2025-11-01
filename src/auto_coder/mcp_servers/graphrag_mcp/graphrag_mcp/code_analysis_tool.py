@@ -6,10 +6,6 @@ from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from auto_coder.backward_compatibility_layer import (
-    BackwardCompatibilityLayer,
-    get_compatibility_layer,
-)
 # Configure logging to write to a file instead of stdout
 logging.basicConfig(
     level=logging.INFO,
