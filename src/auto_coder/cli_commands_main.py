@@ -230,7 +230,7 @@ def process_issues(
     click.echo(f"Verbose logging: {verbose}")
 
     # Initialize GraphRAG (always enabled)
-    initialize_graphrag(force_reindex=force_reindex)
+    # initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
     github_client = GitHubClient(github_token_final, disable_labels=disable_labels)
