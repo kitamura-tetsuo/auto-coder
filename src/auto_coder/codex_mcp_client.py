@@ -36,12 +36,17 @@ logger = get_logger(__name__)
 def _safe_debug(msg):
     """Safely call logger.debug, ignoring errors during shutdown."""
     try:
+        # Check if logger handlers are still valid
+        if not logger._core.handlers:
+            return
+
+        # Skip logging of Mock/MagicMock objects to avoid spam
+        if "MagicMock" in str(msg) or "Mock" in str(msg):
+            return
+
         logger.debug(msg)
-    except (ValueError, BrokenPipeError):
-        # Ignore "I/O operation on closed file" errors during shutdown
-        pass
     except Exception:
-        # Ignore other logging errors
+        # Silently ignore any logging errors during cleanup
         pass
 
 
