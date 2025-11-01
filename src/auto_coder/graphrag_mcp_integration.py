@@ -5,7 +5,6 @@ Integrates graphrag_mcp server with LLM clients to provide
 Neo4j and Qdrant context during LLM invocations.
 """
 
-import json
 import os
 import shlex
 import subprocess
@@ -215,10 +214,7 @@ class GraphRAGMCPIntegration:
         # Check if any MCP server process is running (started by another terminal)
         try:
             result = subprocess.run(
-                ["ps", "aux"],
-                capture_output=True,
-                text=True,
-                timeout=5
+                ["ps", "aux"], capture_output=True, text=True, timeout=5
             )
             # Look for graphrag_mcp main.py process
             for line in result.stdout.splitlines():
@@ -266,4 +262,3 @@ class GraphRAGMCPIntegration:
                 "https://graphrag.db/collection/qdrant",
             ],
         }
-

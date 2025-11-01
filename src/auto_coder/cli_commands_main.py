@@ -2,6 +2,7 @@
 
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -13,6 +14,7 @@ from .cli_helpers import (
     build_backend_manager,
     build_models_map,
     check_backend_prerequisites,
+    check_github_sub_issue_or_setup,
     check_graphrag_mcp_for_backends,
     ensure_test_script_or_fail,
     initialize_graphrag,
@@ -111,6 +113,11 @@ logger = get_logger(__name__)
     help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
 )
 @click.option(
+    "--enable-graphrag/--disable-graphrag",
+    default=True,
+    help="Enable GraphRAG integration (default: enabled)",
+)
+@click.option(
     "--only",
     "only_target",
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
@@ -152,6 +159,7 @@ def process_issues(
     ignore_dependabot_prs: bool,
     force_clean_before_checkout: bool,
     only_target: Optional[str],
+    enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
@@ -191,7 +199,9 @@ def process_issues(
     if disable_labels is None:
         # Disable labels when running in debugger, enable otherwise
         disable_labels = CommandExecutor.is_running_in_debugger()
-        logger.debug(f"Auto-detected disable_labels={disable_labels} (debugger={disable_labels})")
+        logger.debug(
+            f"Auto-detected disable_labels={disable_labels} (debugger={disable_labels})"
+        )
 
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")
@@ -225,8 +235,9 @@ def process_issues(
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
-    # Initialize GraphRAG (always enabled)
-    initialize_graphrag(force_reindex=force_reindex)
+    # Initialize GraphRAG (conditionally enabled)
+    if enable_graphrag:
+        initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
     github_client = GitHubClient(github_token_final, disable_labels=disable_labels)
@@ -239,14 +250,16 @@ def process_issues(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=True,  # Always enable GraphRAG
+        enable_graphrag=enable_graphrag,
     )
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Initialize message backend manager (use same backends if not specified)
-    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
+    message_backend_list = (
+        normalize_backends(message_backends) if message_backends else selected_backends
+    )
     message_primary_backend = message_backend_list[0]
     message_manager = build_backend_manager(
         message_backend_list,
@@ -262,8 +275,12 @@ def process_issues(
 
     if message_backends:
         message_backend_str = ", ".join(message_backend_list)
-        logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-        click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
+        logger.info(
+            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
+        )
+        click.echo(
+            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
+        )
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
@@ -273,7 +290,11 @@ def process_issues(
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
 
     automation_engine = AutomationEngine(
-        github_client, manager, dry_run=dry_run, config=engine_config, message_backend_manager=message_manager
+        github_client,
+        manager,
+        dry_run=dry_run,
+        config=engine_config,
+        message_backend_manager=message_manager,
     )
 
     # Check if we should resume work on current branch
@@ -290,7 +311,9 @@ def process_issues(
 
             # Try to find PR by head branch
             try:
-                pr_data = github_client.find_pr_by_head_branch(repo_name, current_branch)
+                pr_data = github_client.find_pr_by_head_branch(
+                    repo_name, current_branch
+                )
                 if pr_data:
                     target_type = "pr"
                     target_data = pr_data
@@ -304,17 +327,23 @@ def process_issues(
                 number = extract_number_from_branch(current_branch)
                 if number:
                     try:
-                        issue_data = github_client.get_issue_details_by_number(repo_name, number)
+                        issue_data = github_client.get_issue_details_by_number(
+                            repo_name, number
+                        )
                         if issue_data and issue_data.get("state") == "open":
                             target_type = "issue"
                             target_data = issue_data
-                            logger.info(f"Found open issue #{number} for current branch")
+                            logger.info(
+                                f"Found open issue #{number} for current branch"
+                            )
                     except Exception as e:
                         logger.debug(f"No open issue found for #{number}: {e}")
 
             # If we found an open PR or issue, process it
             if target_type and target_data and number:
-                click.echo(f"Resuming work on {target_type} #{number} (branch: {current_branch})")
+                click.echo(
+                    f"Resuming work on {target_type} #{number} (branch: {current_branch})"
+                )
                 logger.info(f"Resuming work on {target_type} #{number}")
 
                 # Run single-item processing
@@ -331,7 +360,9 @@ def process_issues(
                     pass
                 return
             else:
-                logger.info(f"No open PR or issue found for branch '{current_branch}', proceeding with normal processing")
+                logger.info(
+                    f"No open PR or issue found for branch '{current_branch}', proceeding with normal processing"
+                )
 
     # If only_target is provided, parse and process a single item
     if only_target:
@@ -428,6 +459,11 @@ def process_issues(
     "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
 )
 @click.option(
+    "--enable-graphrag/--disable-graphrag",
+    default=True,
+    help="Enable GraphRAG integration (default: enabled)",
+)
+@click.option(
     "--force-reindex",
     is_flag=True,
     default=False,
@@ -456,6 +492,7 @@ def create_feature_issues(
     model_qwen: Optional[str],
     model_auggie: Optional[str],
     model_claude: Optional[str],
+    enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
@@ -481,6 +518,7 @@ def create_feature_issues(
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
     check_backend_prerequisites(selected_backends)
+    check_github_sub_issue_or_setup()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
@@ -500,8 +538,9 @@ def create_feature_issues(
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
-    # Initialize GraphRAG (always enabled)
-    initialize_graphrag(force_reindex=force_reindex)
+    # Initialize GraphRAG (conditionally enabled)
+    if enable_graphrag:
+        initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -514,7 +553,7 @@ def create_feature_issues(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=True,  # Always enable GraphRAG
+        enable_graphrag=enable_graphrag,
     )
 
     # Check GraphRAG MCP configuration for selected backends using client
@@ -589,6 +628,11 @@ def create_feature_issues(
     help="Maximum fix attempts before giving up (defaults to engine config)",
 )
 @click.option(
+    "--enable-graphrag/--disable-graphrag",
+    default=True,
+    help="Enable GraphRAG integration (default: enabled)",
+)
+@click.option(
     "--dry-run", is_flag=True, help="Run without making changes (LLM edits simulated)"
 )
 @click.option(
@@ -621,6 +665,7 @@ def fix_to_pass_tests_command(
     model_claude: Optional[str],
     max_attempts: Optional[int],
     dry_run: bool,
+    enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
@@ -649,6 +694,7 @@ def fix_to_pass_tests_command(
 
     # Check backend CLI availability
     check_backend_prerequisites(selected_backends)
+    check_github_sub_issue_or_setup()
 
     backend_list_str = ", ".join(selected_backends)
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
@@ -658,8 +704,9 @@ def fix_to_pass_tests_command(
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
-    # Initialize GraphRAG (always enabled)
-    initialize_graphrag(force_reindex=force_reindex)
+    # Initialize GraphRAG (conditionally enabled)
+    if enable_graphrag:
+        initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize minimal clients (GitHub not used here, but engine expects a client)
     try:
@@ -682,14 +729,16 @@ def fix_to_pass_tests_command(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=True,  # Always enable GraphRAG
+        enable_graphrag=enable_graphrag,
     )
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Initialize message backend manager (use same backends if not specified)
-    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
+    message_backend_list = (
+        normalize_backends(message_backends) if message_backends else selected_backends
+    )
     message_primary_backend = message_backend_list[0]
     message_manager = build_backend_manager(
         message_backend_list,
@@ -705,13 +754,19 @@ def fix_to_pass_tests_command(
 
     if message_backends:
         message_backend_str = ", ".join(message_backend_list)
-        logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-        click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
+        logger.info(
+            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
+        )
+        click.echo(
+            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
+        )
 
     engine = AutomationEngine(github_client, manager, dry_run=dry_run)
 
     try:
-        result = engine.fix_to_pass_tests(max_attempts=max_attempts, message_backend_manager=message_manager)
+        result = engine.fix_to_pass_tests(
+            max_attempts=max_attempts, message_backend_manager=message_manager
+        )
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")
         else:
@@ -727,4 +782,3 @@ def fix_to_pass_tests_command(
             message_manager.close()
         except Exception:
             pass
-

@@ -82,7 +82,21 @@ class TestAutomationEngine:
         test_repo_name,
     ):
         """Test successful automation run."""
-        # Setup
+        # Setup - Mock GitHub client methods needed for _get_candidates
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = [Mock(number=1)]
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1, "title": "Test PR", "body": "", "head": {"ref": "test"}, "labels": [], "mergeable": True
+        }
+        mock_github_client.get_issue_details.return_value = {
+            "number": 1, "title": "Test Issue", "body": "", "labels": [], "state": "open"
+        }
+        mock_github_client.disable_labels = False
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.remove_labels_from_issue.return_value = True
+        
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
         mock_process_issues.return_value = [{"issue": "processed"}]
         mock_process_prs.return_value = [{"pr": "processed"}]
@@ -119,7 +133,21 @@ class TestAutomationEngine:
         test_repo_name,
     ):
         """Test successful run with jules mode."""
-        # Setup
+        # Setup - Mock GitHub client methods needed for _get_candidates
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = [Mock(number=1)]
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1, "title": "Test PR", "body": "", "head": {"ref": "test"}, "labels": [], "mergeable": True
+        }
+        mock_github_client.get_issue_details.return_value = {
+            "number": 1, "title": "Test Issue", "body": "", "labels": [], "state": "open"
+        }
+        mock_github_client.disable_labels = False
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.remove_labels_from_issue.return_value = True
+        
         mock_datetime.now.return_value.isoformat.return_value = "2024-01-01T00:00:00"
         mock_process_issues.return_value = [{"issue": "labeled"}]
         mock_process_prs.return_value = [{"pr": "processed"}]
@@ -155,7 +183,21 @@ class TestAutomationEngine:
         test_repo_name,
     ):
         """Test automation run with error."""
-        # Setup
+        # Setup - Mock GitHub client methods needed for _get_candidates
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = [Mock(number=1)]
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1, "title": "Test PR", "body": "", "head": {"ref": "test"}, "labels": [], "mergeable": True
+        }
+        mock_github_client.get_issue_details.return_value = {
+            "number": 1, "title": "Test Issue", "body": "", "labels": [], "state": "open"
+        }
+        mock_github_client.disable_labels = False
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.remove_labels_from_issue.return_value = True
+        
         mock_process_issues.side_effect = Exception("Test error")
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
@@ -254,12 +296,12 @@ class TestAutomationEngine:
             "head": {"ref": "test-branch"},
             "base": {"ref": "main"},
             "mergeable": True,
-            "draft": False
+            "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
 
         # Mock successful processing - simulate that the PR was processed without errors
-        with patch('src.auto_coder.pr_processor._take_pr_actions') as mock_take_actions:
+        with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
             mock_take_actions.return_value = ["Merged PR successfully", "Applied fixes"]
 
             # Execute
@@ -268,7 +310,9 @@ class TestAutomationEngine:
             # Assert
             assert result["repository"] == "test/repo"
             assert len(result["prs_processed"]) == 1
-            assert "Merged PR successfully" in result["prs_processed"][0]["actions_taken"]
+            assert (
+                "Merged PR successfully" in result["prs_processed"][0]["actions_taken"]
+            )
             assert len(result["errors"]) == 0
             mock_take_actions.assert_called_once()
 
@@ -288,12 +332,12 @@ class TestAutomationEngine:
             "head": {"ref": "test-branch"},
             "base": {"ref": "main"},
             "mergeable": True,
-            "draft": False
+            "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
 
         # Mock failed processing
-        with patch('src.auto_coder.pr_processor._take_pr_actions') as mock_take_actions:
+        with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
             mock_take_actions.side_effect = Exception("Processing failed")
 
             # Execute
@@ -322,20 +366,26 @@ class TestAutomationEngine:
             "head": {"ref": "test-branch"},
             "base": {"ref": "main"},
             "mergeable": False,  # Simulate merge conflicts
-            "draft": False
+            "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
 
         # Mock that GitHub Actions are failing due to conflicts
-        with patch('src.auto_coder.pr_processor._check_github_actions_status') as mock_check:
+        with patch(
+            "src.auto_coder.pr_processor._check_github_actions_status"
+        ) as mock_check:
             mock_check.return_value = {
                 "success": False,
-                "failed_checks": [{"name": "test", "status": "failed"}]
+                "failed_checks": [{"name": "test", "status": "failed"}],
             }
 
             # Mock conflict resolution in _take_pr_actions
-            with patch('src.auto_coder.pr_processor._take_pr_actions') as mock_take_actions:
-                mock_take_actions.return_value = ["Resolved merge conflicts successfully"]
+            with patch(
+                "src.auto_coder.pr_processor._take_pr_actions"
+            ) as mock_take_actions:
+                mock_take_actions.return_value = [
+                    "Resolved merge conflicts successfully"
+                ]
 
                 # Execute
                 result = engine.process_single("test/repo", "pr", 123, jules_mode=False)
@@ -343,7 +393,10 @@ class TestAutomationEngine:
                 # Assert
                 assert result["repository"] == "test/repo"
                 assert len(result["prs_processed"]) == 1
-                assert "Resolved merge conflicts successfully" in result["prs_processed"][0]["actions_taken"]
+                assert (
+                    "Resolved merge conflicts successfully"
+                    in result["prs_processed"][0]["actions_taken"]
+                )
                 assert len(result["errors"]) == 0
                 mock_check.assert_called_once()
                 mock_take_actions.assert_called_once()
@@ -377,13 +430,15 @@ class TestAutomationEngine:
         }
 
         # Mock the underlying function to return expected results
-        with patch('src.auto_coder.issue_processor._apply_issue_actions_directly') as mock_apply:
+        with patch(
+            "src.auto_coder.issue_processor._apply_issue_actions_directly"
+        ) as mock_apply:
             mock_apply.return_value = [
                 "Gemini CLI analyzed and took action on issue: Analyzed the issue and added implementation...",
                 "Added analysis comment to issue #123",
-                "Committed changes: Auto-Coder: Address issue #123"
+                "Committed changes: Auto-Coder: Address issue #123",
             ]
-            
+
             # Execute
             result = engine._apply_issue_actions_directly("test/repo", issue_data)
 
@@ -413,7 +468,7 @@ class TestAutomationEngine:
         mock_github_client.get_pr_details_by_number.return_value = pr_data
 
         # Track the git commands that are called
-        with patch.object(engine.cmd, 'run_command') as mock_run_command:
+        with patch.object(engine.cmd, "run_command") as mock_run_command:
             # Execute
             result = engine._resolve_pr_merge_conflicts("test/repo", 456)
 
@@ -836,10 +891,13 @@ class TestAutomationEngine:
         ]
 
         from src.auto_coder import pr_processor
+
         pr_data = {"number": 123}
 
         # Execute
-        result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
+        result = pr_processor._checkout_pr_branch(
+            "test/repo", pr_data, AutomationConfig()
+        )
 
         # Assert
         assert result is True
@@ -849,23 +907,28 @@ class TestAutomationEngine:
         calls = [call[0][0] for call in mock_run_command.call_args_list]
         assert calls[0] == ["gh", "pr", "checkout", "123"]
 
-    def test_checkout_pr_branch_failure(
-        self, mock_github_client, mock_gemini_client
-    ):
+    def test_checkout_pr_branch_failure(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout failure."""
         # Setup
         from src.auto_coder import pr_processor
+
         pr_data = {"number": 123}
 
         # Mock gh pr checkout failure and manual fallback failure
         with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_cmd:
             mock_cmd.side_effect = [
-                Mock(success=False, stdout="", stderr="Branch not found"),  # gh pr checkout fails
-                Mock(success=False, stdout="", stderr="Fetch failed"),  # git fetch fails
+                Mock(
+                    success=False, stdout="", stderr="Branch not found"
+                ),  # gh pr checkout fails
+                Mock(
+                    success=False, stdout="", stderr="Fetch failed"
+                ),  # git fetch fails
             ]
 
             # Execute
-            result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
+            result = pr_processor._checkout_pr_branch(
+                "test/repo", pr_data, AutomationConfig()
+            )
 
             # Assert
             assert result is False
@@ -1091,9 +1154,11 @@ class TestAutomationEngineExtended:
 
         # Mock successful test after initial fix
         from src.auto_coder import pr_processor
-        with patch.object(
-            pr_processor, "_apply_github_actions_fix"
-        ) as mock_github_fix, patch.object(pr_processor, "run_local_tests") as mock_test:
+
+        with (
+            patch.object(pr_processor, "_apply_github_actions_fix") as mock_github_fix,
+            patch.object(pr_processor, "run_local_tests") as mock_test,
+        ):
             mock_github_fix.return_value = ["Applied GitHub Actions fix"]
             mock_test.return_value = {
                 "success": True,
@@ -1103,8 +1168,14 @@ class TestAutomationEngineExtended:
 
             # Execute
             from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+
             result = _fix_pr_issues_with_testing(
-                "test/repo", pr_data, engine.config, engine.dry_run, github_logs, engine.llm
+                "test/repo",
+                pr_data,
+                engine.config,
+                engine.dry_run,
+                github_logs,
+                engine.llm,
             )
 
             # Assert
@@ -1124,13 +1195,12 @@ class TestAutomationEngineExtended:
 
         # Mock test failure then success
         from src.auto_coder import pr_processor
-        with patch.object(
-            pr_processor, "_apply_github_actions_fix"
-        ) as mock_github_fix, patch.object(
-            pr_processor, "run_local_tests"
-        ) as mock_test, patch.object(
-            pr_processor, "_apply_local_test_fix"
-        ) as mock_local_fix:
+
+        with (
+            patch.object(pr_processor, "_apply_github_actions_fix") as mock_github_fix,
+            patch.object(pr_processor, "run_local_tests") as mock_test,
+            patch.object(pr_processor, "_apply_local_test_fix") as mock_local_fix,
+        ):
             mock_github_fix.return_value = ["Applied GitHub Actions fix"]
             # First test fails, second test passes
             mock_test.side_effect = [
@@ -1141,8 +1211,14 @@ class TestAutomationEngineExtended:
 
             # Execute
             from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+
             result = _fix_pr_issues_with_testing(
-                "test/repo", pr_data, engine.config, engine.dry_run, github_logs, engine.llm
+                "test/repo",
+                pr_data,
+                engine.config,
+                engine.dry_run,
+                github_logs,
+                engine.llm,
             )
 
             # Assert
@@ -1158,6 +1234,7 @@ class TestAutomationEngineExtended:
         """Test PR branch checkout with force cleanup enabled."""
         # Setup
         from src.auto_coder import pr_processor
+
         config = AutomationConfig()
         # Enable force clean before checkout
         config.FORCE_CLEAN_BEFORE_CHECKOUT = True
@@ -1188,6 +1265,7 @@ class TestAutomationEngineExtended:
         """Test PR branch checkout without force clean (default behavior)."""
         # Setup
         from src.auto_coder import pr_processor
+
         config = AutomationConfig()
         # Explicitly set to False (default)
         config.FORCE_CLEAN_BEFORE_CHECKOUT = False
