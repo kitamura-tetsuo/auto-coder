@@ -2,16 +2,19 @@
 Tests for Test Watcher MCP Server.
 """
 
-import pytest
-import subprocess
-import time
 import json
-from pathlib import Path
-import sys
 import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
 
 # Add the test_watcher module to the path
-test_watcher_path = Path(__file__).parent.parent / "src" / "auto_coder" / "mcp_servers" / "test_watcher"
+test_watcher_path = (
+    Path(__file__).parent.parent / "src" / "auto_coder" / "mcp_servers" / "test_watcher"
+)
 sys.path.insert(0, str(test_watcher_path))
 
 from test_watcher_tool import TestWatcherTool
@@ -21,6 +24,7 @@ def _mcp_available() -> bool:
     """Check if MCP package is available."""
     try:
         import mcp.server.fastmcp
+
         return True
     except ImportError:
         return False
@@ -111,15 +115,7 @@ class TestTestWatcherTool:
                         {
                             "file": "tests/example.spec.ts",
                             "title": "Example test",
-                            "tests": [
-                                {
-                                    "results": [
-                                        {
-                                            "status": "passed"
-                                        }
-                                    ]
-                                }
-                            ]
+                            "tests": [{"results": [{"status": "passed"}]}],
                         },
                         {
                             "file": "tests/failing.spec.ts",
@@ -131,12 +127,12 @@ class TestTestWatcherTool:
                                             "status": "failed",
                                             "error": {
                                                 "message": "Expected true to be false"
-                                            }
+                                            },
                                         }
                                     ]
                                 }
-                            ]
-                        }
+                            ],
+                        },
                     ]
                 }
             ]
@@ -183,21 +179,21 @@ class TestTestWatcherTool:
                     "file": "tests/test1.spec.ts",
                     "title": "Test 1",
                     "status": "failed",
-                    "error": "Error message 1"
+                    "error": "Error message 1",
                 },
                 {
                     "file": "tests/test2.spec.ts",
                     "title": "Test 2",
                     "status": "failed",
-                    "error": "Error message 2"
+                    "error": "Error message 2",
                 },
                 {
                     "file": "tests/test3.spec.ts",
                     "title": "Test 3",
                     "status": "flaky",
-                    "error": "Flaky error"
-                }
-            ]
+                    "error": "Flaky error",
+                },
+            ],
         }
 
         result = tool.query_test_results(test_type="e2e")
@@ -239,21 +235,16 @@ class TestTestWatcherTool:
 class TestMCPServer:
     """Test the MCP server interface."""
 
-    @pytest.mark.skipif(
-        not _mcp_available(),
-        reason="MCP package not installed"
-    )
+    @pytest.mark.skipif(not _mcp_available(), reason="MCP package not installed")
     def test_server_imports(self):
         """Test that the server module can be imported."""
         # This will fail if there are syntax errors or missing dependencies
         import server
-        assert hasattr(server, 'mcp')
-        assert hasattr(server, 'test_watcher')
 
-    @pytest.mark.skipif(
-        not _mcp_available(),
-        reason="MCP package not installed"
-    )
+        assert hasattr(server, "mcp")
+        assert hasattr(server, "test_watcher")
+
+    @pytest.mark.skipif(not _mcp_available(), reason="MCP package not installed")
     def test_server_tools_registered(self):
         """Test that all expected tools are registered."""
         import server
@@ -265,4 +256,3 @@ class TestMCPServer:
         # Note: The exact way to check this depends on FastMCP's API
         # This is a basic check that the server object exists
         assert mcp is not None
-

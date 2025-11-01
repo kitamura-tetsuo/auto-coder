@@ -20,7 +20,7 @@ class ClaudeClient(LLMClientBase):
 
     def __init__(self, model_name: str = "sonnet"):
         """Initialize Claude CLI client.
-        
+
         Args:
             model_name: Model to use (e.g., 'sonnet', 'opus', or full model name)
         """
@@ -162,13 +162,17 @@ class ClaudeClient(LLMClientBase):
                 logger.debug(f"MCP server '{server_name}' not found via 'claude mcp'")
                 return False
             else:
-                logger.debug(f"'claude mcp' command failed with return code {result.returncode}")
+                logger.debug(
+                    f"'claude mcp' command failed with return code {result.returncode}"
+                )
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Claude MCP config: {e}")
             return False
 
-    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+    def add_mcp_server_config(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Add MCP server configuration to Claude CLI config.
 
         Args:
@@ -212,4 +216,3 @@ class ClaudeClient(LLMClientBase):
         except Exception as e:
             logger.error(f"Failed to add Claude MCP config: {e}")
             return False
-

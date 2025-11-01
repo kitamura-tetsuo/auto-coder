@@ -192,4 +192,3 @@ class TestGitHubClientSubIssues:
         result = client.get_open_sub_issues("owner/repo", 1)
         # Should return empty list on error
         assert result == []
-

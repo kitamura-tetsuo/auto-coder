@@ -23,7 +23,6 @@ from .update_manager import maybe_run_auto_update, record_startup_options
 load_dotenv()
 
 
-
 @click.group()
 @click.version_option(version=AUTO_CODER_VERSION, package_name="auto-coder")
 def main() -> None:
