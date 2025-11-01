@@ -10,11 +10,20 @@ import os
 import shlex
 import subprocess
 import threading
-from typing import Optional
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, Optional
 
 from .graphrag_docker_manager import GraphRAGDockerManager
 from .graphrag_index_manager import GraphRAGIndexManager
 from .logger_config import get_logger
+
+try:
+    from .mcp_servers.graphrag_mcp.graphrag_mcp.session import GraphRAGMCPSession
+except ImportError:
+    # Fallback if session module is not available
+    GraphRAGMCPSession = None
 
 logger = get_logger(__name__)
 
@@ -44,6 +53,14 @@ class GraphRAGMCPIntegration:
 
         self.mcp_server_path = mcp_server_path
         self.mcp_process: Optional[subprocess.Popen] = None
+
+        # Session management
+        if GraphRAGMCPSession is not None:
+            self.active_sessions: Dict[str, GraphRAGMCPSession] = {}
+            self.session_lock = threading.RLock()
+        else:
+            self.active_sessions = {}
+            self.session_lock = threading.RLock()
 
     def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
         """Ensure GraphRAG environment is ready for use.
@@ -244,9 +261,82 @@ class GraphRAGMCPIntegration:
             finally:
                 self.mcp_process = None
 
+    def create_session(self, repo_path: str) -> str:
+        """Create new session for repository.
+
+        Args:
+            repo_path: Path to repository
+
+        Returns:
+            session_id: Unique session identifier
+
+        Raises:
+            RuntimeError: If GraphRAGMCPSession is not available
+        """
+        if GraphRAGMCPSession is None:
+            raise RuntimeError("Session management not available. GraphRAGMCPSession class not found.")
+
+        repo_path = str(Path(repo_path).resolve())
+
+        with self.session_lock:
+            session_id = str(uuid.uuid4())[:8]
+            session = GraphRAGMCPSession(session_id, repo_path)
+            self.active_sessions[session_id] = session
+            logger.info(f"Created session {session_id} for {repo_path}")
+            return session_id
+
+    def get_session(self, session_id: str) -> Optional[GraphRAGMCPSession]:
+        """Get session by ID with access tracking.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Session object or None if not found
+        """
+        with self.session_lock:
+            session = self.active_sessions.get(session_id)
+            if session:
+                session.update_access()
+            return session
+
+    def cleanup_expired_sessions(self, max_age_hours: int = 24) -> int:
+        """Clean up expired sessions to prevent memory leaks.
+
+        Args:
+            max_age_hours: Maximum age of sessions in hours
+
+        Returns:
+            Number of sessions cleaned up
+        """
+        cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+
+        with self.session_lock:
+            expired_sessions = [
+                sid for sid, session in self.active_sessions.items()
+                if session.last_accessed < cutoff_time
+            ]
+
+            for sid in expired_sessions:
+                del self.active_sessions[sid]
+                logger.info(f"Cleaned up expired session {sid}")
+
+            return len(expired_sessions)
+
+    def list_sessions(self) -> list:
+        """List all active sessions.
+
+        Returns:
+            List of session information dictionaries
+        """
+        with self.session_lock:
+            return [session.to_dict() for session in self.active_sessions.values()]
+
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.stop_mcp_server()
+        # Note: We don't clean up sessions here as they might be used by other instances
+        # Session cleanup is handled by cleanup_expired_sessions
 
     def get_mcp_config_for_llm(self) -> Optional[dict]:
         """Get MCP configuration to pass to LLM client.

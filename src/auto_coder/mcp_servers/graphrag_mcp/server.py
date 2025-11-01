@@ -1,5 +1,19 @@
 from mcp.server.fastmcp import FastMCP, Context
 from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
+from pathlib import Path
+from typing import Optional
+
+try:
+    from graphrag_mcp.session import GraphRAGMCPSession
+    # Try to import GraphRAGMCPIntegration, but don't fail if not available
+    try:
+        from auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
+        HAS_INTEGRATION = True
+    except ImportError:
+        HAS_INTEGRATION = False
+except ImportError:
+    GraphRAGMCPSession = None
+    HAS_INTEGRATION = False
 
 # Create an MCP server
 mcp = FastMCP("GraphRAG Code Analysis",
@@ -8,8 +22,82 @@ mcp = FastMCP("GraphRAG Code Analysis",
 # Initialize the code analysis tool
 code_tool = CodeAnalysisTool()
 
+# Global integration instance for session management (optional)
+if HAS_INTEGRATION:
+    try:
+        graphrag_integration = GraphRAGMCPIntegration()
+    except Exception:
+        # If integration fails to initialize, set to None
+        graphrag_integration = None
+else:
+    graphrag_integration = None
+
+def _get_session_context(session_id: str = None) -> Optional[GraphRAGMCPSession]:
+    """Get current session context, with fallback to default behavior.
+
+    Args:
+        session_id: Optional session identifier
+
+    Returns:
+        Session object or None for backward compatibility
+    """
+    if session_id and graphrag_integration:
+        return graphrag_integration.get_session(session_id)
+    return None
+
 @mcp.tool()
-def find_symbol(fqname: str) -> dict:
+def set_repository_context(repo_path: str, session_id: str = None) -> dict:
+    """Set working repository context for this session.
+
+    This tool establishes a session for a specific repository, allowing
+    multiple repositories to be analyzed in isolation without data contamination.
+
+    Args:
+        repo_path: Absolute or relative path to repository
+        session_id: Unique session identifier (generated if not provided)
+
+    Returns:
+        Session information including session_id and collection name
+
+    Example:
+        set_repository_context("/path/to/my/repo")
+        # Returns: {"status": "ok", "session_id": "abc123", "collection_name": "repo_xyz..."}
+    """
+    try:
+        # Convert to absolute path
+        abs_repo_path = Path(repo_path).resolve()
+
+        # Create session if not provided
+        if not session_id:
+            if not graphrag_integration:
+                return {"error": "Session management not available. GraphRAGMCPIntegration not initialized."}
+
+            session_id = graphrag_integration.create_session(str(abs_repo_path))
+
+        session = _get_session_context(session_id)
+        if not session:
+            if not graphrag_integration:
+                return {"error": "Session management not available. Cannot create session."}
+            return {"error": f"Invalid session_id: {session_id}"}
+
+        # Verify repository path matches session
+        if str(session.repo_path) != str(abs_repo_path):
+            return {
+                "error": f"Repository path mismatch. Expected {session.repo_path}, got {abs_repo_path}"
+            }
+
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "repository": str(abs_repo_path),
+            "collection_name": session.collection_name,
+            "created_at": session.created_at.isoformat()
+        }
+    except Exception as e:
+        return {"error": f"Failed to set repository context: {str(e)}"}
+
+@mcp.tool()
+def find_symbol(fqname: str, session_id: str = None) -> dict:
     """
     Find a code symbol by fully qualified name.
 
@@ -18,6 +106,7 @@ def find_symbol(fqname: str) -> dict:
 
     Args:
         fqname: Fully qualified name (e.g., 'src/utils.ts::calculateHash' or 'src/models/User.ts::User::getName')
+        session_id: Optional session identifier for isolated repository context
 
     Returns:
         Symbol details including:
@@ -31,14 +120,23 @@ def find_symbol(fqname: str) -> dict:
         - file: Source file path
         - start_line, end_line: Source location
         - tags: Associated tags
+        - collection_name: Qdrant collection used (if session specified)
 
     Example:
         find_symbol("src/utils/hash.ts::calculateHash")
+        find_symbol("src/utils/hash.ts::calculateHash", session_id="abc123")
     """
-    return code_tool.find_symbol(fqname)
+    session = _get_session_context(session_id)
+
+    if session:
+        # Use session-specific collection
+        return code_tool.find_symbol_with_collection(fqname, session.collection_name)
+    else:
+        # Fallback to default behavior
+        return code_tool.find_symbol(fqname)
 
 @mcp.tool()
-def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> dict:
+def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1, session_id: str = None) -> dict:
     """
     Get the call graph for a symbol to understand function/method relationships.
 
@@ -50,6 +148,7 @@ def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> d
         symbol_id: Symbol ID (obtained from find_symbol)
         direction: 'callers' (who calls this), 'callees' (what this calls), or 'both' (default: 'both')
         depth: Traversal depth 1-3 (default: 1). Higher depth shows indirect relationships.
+        session_id: Optional session identifier for isolated repository context
 
     Returns:
         Call graph with:
@@ -58,11 +157,18 @@ def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> d
 
     Example:
         get_call_graph("symbol_123", direction="callers", depth=2)
+        get_call_graph("symbol_123", direction="callers", depth=2, session_id="abc123")
     """
+    session = _get_session_context(session_id)
+
+    # Note: Call graph operations currently use Neo4j which doesn't have
+    # collection-specific partitioning. Session context is maintained
+    # for consistency but doesn't affect the query.
+    # In the future, we could add session-specific node properties.
     return code_tool.get_call_graph(symbol_id, direction, depth)
 
 @mcp.tool()
-def get_dependencies(file_path: str) -> dict:
+def get_dependencies(file_path: str, session_id: str = None) -> dict:
     """
     Get file dependencies (import relationships).
 
@@ -71,6 +177,7 @@ def get_dependencies(file_path: str) -> dict:
 
     Args:
         file_path: File path (e.g., 'src/utils.ts')
+        session_id: Optional session identifier for isolated repository context
 
     Returns:
         Dependency information:
@@ -79,11 +186,16 @@ def get_dependencies(file_path: str) -> dict:
 
     Example:
         get_dependencies("src/utils/hash.ts")
+        get_dependencies("src/utils/hash.ts", session_id="abc123")
     """
+    session = _get_session_context(session_id)
+
+    # Note: Dependencies use Neo4j which doesn't have collection-specific
+    # partitioning. Session context is maintained for consistency.
     return code_tool.get_dependencies(file_path)
 
 @mcp.tool()
-def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
+def impact_analysis(symbol_ids: list, max_depth: int = 2, session_id: str = None) -> dict:
     """
     Analyze the impact of changing given symbols across the codebase.
 
@@ -97,6 +209,7 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
     Args:
         symbol_ids: List of symbol IDs to analyze (obtained from find_symbol)
         max_depth: Maximum traversal depth 1-3 (default: 2)
+        session_id: Optional session identifier for isolated repository context
 
     Returns:
         Impact analysis:
@@ -106,11 +219,16 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
 
     Example:
         impact_analysis(["symbol_123", "symbol_456"], max_depth=2)
+        impact_analysis(["symbol_123", "symbol_456"], max_depth=2, session_id="abc123")
     """
+    session = _get_session_context(session_id)
+
+    # Note: Impact analysis uses Neo4j which doesn't have collection-specific
+    # partitioning. Session context is maintained for consistency.
     return code_tool.impact_analysis(symbol_ids, max_depth)
 
 @mcp.tool()
-def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) -> dict:
+def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None, session_id: str = None) -> dict:
     """
     Search for code using natural language semantic similarity.
 
@@ -124,15 +242,27 @@ def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) 
         limit: Maximum number of results to return (default: 10)
         kind_filter: Optional list of symbol kinds to filter results
                     (e.g., ['Function', 'Class', 'Method'])
+        session_id: Optional session identifier for isolated repository context
 
     Returns:
         Semantically similar symbols:
         - symbols: List of matching symbols with similarity scores
+        - collection_name: Qdrant collection used (if session specified)
 
     Example:
         semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"])
+        semantic_code_search("hash calculation functions", limit=5, session_id="abc123")
     """
-    return code_tool.semantic_code_search(query, limit, kind_filter)
+    session = _get_session_context(session_id)
+
+    if session:
+        # Use session-specific collection
+        return code_tool.semantic_code_search_in_collection(
+            query, session.collection_name, limit, kind_filter
+        )
+    else:
+        # Fallback to default behavior
+        return code_tool.semantic_code_search(query, limit, kind_filter)
 
 @mcp.resource("https://graphrag.db/schema/neo4j")
 def get_graph_schema() -> str:

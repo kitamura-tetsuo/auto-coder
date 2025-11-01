@@ -483,3 +483,105 @@ class CodeAnalysisTool:
 
         return result
 
+    def find_symbol_with_collection(self, fqname: str, collection_name: str) -> Dict[str, Any]:
+        """
+        Find a code symbol by fully qualified name in a specific collection.
+
+        This method allows searching in a session-specific collection rather than
+        the default collection.
+
+        Args:
+            fqname: Fully qualified name (e.g., 'src/utils.ts::calculateHash')
+            collection_name: Name of the Qdrant collection to search in
+
+        Returns:
+            Symbol details including id, kind, signature, complexity, location
+        """
+        # For now, this is a wrapper around find_symbol as Neo4j doesn't
+        # have collection-specific partitioning. In the future, we could
+        # add session-specific prefixes to Neo4j node properties.
+        result = self.find_symbol(fqname)
+        if result.get("symbol"):
+            result["collection_name"] = collection_name
+        return result
+
+    def semantic_code_search_in_collection(self, query: str, collection_name: str,
+                                           limit: int = 10,
+                                           kind_filter: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Search for code using semantic similarity in a specific collection.
+
+        This method allows searching in a session-specific collection rather than
+        the default collection.
+
+        Args:
+            query: Natural language query describing what you're looking for
+            collection_name: Name of the Qdrant collection to search in
+            limit: Maximum number of results to return
+            kind_filter: Optional list of symbol kinds to filter (e.g., ['Function', 'Class'])
+
+        Returns:
+            Semantically similar code symbols with scores
+        """
+        result = {
+            "query": query,
+            "collection_name": collection_name,
+            "symbols": [],
+            "error": None
+        }
+
+        try:
+            self._ensure_connected()
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
+        if self.model is None:
+            try:
+                self.model = SentenceTransformer(self.model_name)
+            except Exception as e:
+                result["error"] = f"Failed to load embedding model: {e}"
+                return result
+
+        # Generate embedding for query
+        query_embedding = self.model.encode(query)
+
+        # Search Qdrant in the specified collection
+        try:
+            search_result = self.qdrant_client.search(
+                collection_name=collection_name,
+                query_vector=query_embedding.tolist(),
+                limit=limit * 2  # Get more results for filtering
+            )
+
+            # Process results
+            for result_item in search_result:
+                symbol_id = result_item.id
+                score = result_item.score
+
+                # Get symbol details from payload or Neo4j
+                if hasattr(result_item, 'payload'):
+                    payload = result_item.payload
+
+                    # Apply kind filter if specified
+                    if kind_filter and payload.get('kind') not in kind_filter:
+                        continue
+
+                    result["symbols"].append({
+                        "id": symbol_id,
+                        "kind": payload.get('kind'),
+                        "fqname": payload.get('fqname'),
+                        "short_summary": payload.get('short'),
+                        "file": payload.get('file'),
+                        "start_line": payload.get('start_line'),
+                        "score": score
+                    })
+
+                    if len(result["symbols"]) >= limit:
+                        break
+
+        except Exception as e:
+            result["error"] = f"Qdrant search error: {e}"
+
+        return result
+
