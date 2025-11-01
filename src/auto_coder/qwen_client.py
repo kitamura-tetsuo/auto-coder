@@ -202,10 +202,7 @@ class QwenClient(LLMClientBase):
             cmd.append(escaped_prompt)
 
             cli_name = "codex"
-            display_cmd = (
-                f'codex exec -s workspace-write -c model_provider="{provider.name.lower()}" '
-                f'-c model="{model_to_use}" --dangerously-bypass-approvals-and-sandbox [prompt]'
-            )
+            display_cmd = f'codex exec -s workspace-write -c model_provider="{provider.name.lower()}" -c model="{model_to_use}" --dangerously-bypass-approvals-and-sandbox [prompt]'
         else:
             # Use qwen CLI for OAuth (no provider)
             cmd = ["qwen", "-y"]

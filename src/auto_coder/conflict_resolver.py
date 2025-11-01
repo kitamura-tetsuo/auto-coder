@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 from .automation_config import AutomationConfig
 from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
+
+# Import the helper function from pr_processor
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 

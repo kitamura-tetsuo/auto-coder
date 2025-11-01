@@ -6,10 +6,12 @@ for automatic progress management through method decorators.
 """
 
 import functools
-from typing import Callable, Optional
+import inspect
+from typing import Any, Callable, Optional, Union
 
 from .progress_footer import (
     clear_progress,
+    get_progress_footer,
     pop_progress_stage,
     push_progress_stage,
     set_progress_item,
