@@ -13,9 +13,9 @@ from auto_coder.progress_footer import (
     clear_progress,
     get_progress_footer,
     newline_progress,
-    set_progress_item,
-    push_progress_stage,
     pop_progress_stage,
+    push_progress_stage,
+    set_progress_item,
 )
 
 
@@ -99,7 +99,7 @@ def test_progress_footer_newline():
     # Mock sys.stdout for newline() which writes to stdout
     mock_stdout = io.StringIO()
 
-    with patch('sys.stdout', mock_stdout):
+    with patch("sys.stdout", mock_stdout):
         # Create a new footer instance with mocked stream
         footer = ProgressFooter(stream=mock_stream)
         footer.set_item("PR", 123)
@@ -119,6 +119,7 @@ def test_global_progress_footer():
 
     # Reset global instance
     import auto_coder.progress_footer as ph
+
     ph._global_footer = None
 
     # Create global footer with mocked stream
@@ -144,9 +145,10 @@ def test_progress_context():
     # Mock stdout for newline
     mock_stdout = io.StringIO()
 
-    with patch('sys.stdout', mock_stdout):
+    with patch("sys.stdout", mock_stdout):
         # Reset global instance
         import auto_coder.progress_footer as ph
+
         ph._global_footer = None
 
         # Create global footer with mocked stream
@@ -334,8 +336,8 @@ def test_progress_footer_different_items():
 
     # Should have both in output
     output = mock_stream.getvalue()
-    assert ("PR" in output or "Issue" in output)
-    assert ("123" in output or "456" in output)
+    assert "PR" in output or "Issue" in output
+    assert "123" in output or "456" in output
 
 
 def test_progress_footer_special_characters():
@@ -419,6 +421,7 @@ def test_progress_stage_context_manager():
 
     # Replace global footer with our mock
     import auto_coder.progress_footer as ph
+
     original_footer = ph._global_footer
     ph._global_footer = ProgressFooter(stream=mock_stream)
 
@@ -473,6 +476,7 @@ def test_progress_stage_with_set_and_push():
 
     # Replace global footer with our mock
     import auto_coder.progress_footer as ph
+
     original_footer = ph._global_footer
     ph._global_footer = ProgressFooter(stream=mock_stream)
 
@@ -519,4 +523,3 @@ def test_progress_stage_with_set_and_push():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-

@@ -3,7 +3,7 @@ import subprocess
 import sys
 
 
-def test_get_actions_logs_cli():
+def test_get_actions_logs_cli(_use_real_home):
     sp = importlib.reload(subprocess)
     from playwright.sync_api import sync_playwright
 

@@ -6,6 +6,7 @@ Design: mirror GeminiClient/CodexClient public surface so AutomationEngine can u
 - switch_to_conflict_model() / switch_to_default_model()
 - suggest_features(repo_context)
 """
+
 from __future__ import annotations
 
 import json
@@ -78,7 +79,9 @@ class QwenClient(LLMClientBase):
                 if result.returncode != 0:
                     raise RuntimeError("codex CLI not available or not working")
             except Exception as e:
-                raise RuntimeError(f"codex CLI not available (required for providers): {e}")
+                raise RuntimeError(
+                    f"codex CLI not available (required for providers): {e}"
+                )
 
         if needs_qwen:
             try:
@@ -173,7 +176,13 @@ class QwenClient(LLMClientBase):
 
         if use_codex:
             # Use codex exec with -c options for model_provider and model
-            cmd = ["codex", "exec", "-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox"]
+            cmd = [
+                "codex",
+                "exec",
+                "-s",
+                "workspace-write",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ]
 
             # Set model_provider based on provider name
             if provider.name and provider.name.lower() != "qwen-oauth":
@@ -193,7 +202,7 @@ class QwenClient(LLMClientBase):
             cmd.append(escaped_prompt)
 
             cli_name = "codex"
-            display_cmd = f"codex exec -s workspace-write -c model_provider=\"{provider.name.lower()}\" -c model=\"{model_to_use}\" --dangerously-bypass-approvals-and-sandbox [prompt]"
+            display_cmd = f'codex exec -s workspace-write -c model_provider="{provider.name.lower()}" -c model="{model_to_use}" --dangerously-bypass-approvals-and-sandbox [prompt]'
         else:
             # Use qwen CLI for OAuth (no provider)
             cmd = ["qwen", "-y"]
@@ -222,13 +231,20 @@ class QwenClient(LLMClientBase):
             cmd.extend(["-p", escaped_prompt])
 
             cli_name = "qwen"
-            display_cmd = f"qwen -m {model_to_use} -p [prompt]" if model_to_use else "qwen -p [prompt]"
+            display_cmd = (
+                f"qwen -m {model_to_use} -p [prompt]"
+                if model_to_use
+                else "qwen -p [prompt]"
+            )
 
         logger.warning(
-            "LLM invocation: %s CLI is being called. Keep LLM calls minimized.", cli_name
+            "LLM invocation: %s CLI is being called. Keep LLM calls minimized.",
+            cli_name,
         )
         logger.debug(
-            "Running %s CLI with prompt length: %d characters", cli_name, len(original_prompt)
+            "Running %s CLI with prompt length: %d characters",
+            cli_name,
+            len(original_prompt),
         )
         logger.info(
             "🤖 Running (%s): %s",
@@ -386,16 +402,22 @@ class QwenClient(LLMClientBase):
                 if server_name.lower() in output:
                     logger.info(f"Found MCP server '{server_name}' via 'qwen mcp list'")
                     return True
-                logger.debug(f"MCP server '{server_name}' not found via 'qwen mcp list'")
+                logger.debug(
+                    f"MCP server '{server_name}' not found via 'qwen mcp list'"
+                )
                 return False
             else:
-                logger.debug(f"'qwen mcp list' command failed with return code {result.returncode}")
+                logger.debug(
+                    f"'qwen mcp list' command failed with return code {result.returncode}"
+                )
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Qwen MCP config: {e}")
             return False
 
-    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+    def add_mcp_server_config(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Add MCP server configuration to Qwen Code CLI config.
 
         Args:
@@ -424,8 +446,13 @@ class QwenClient(LLMClientBase):
                 return True
             else:
                 # Check if it's already configured (qwen mcp add may fail if already exists)
-                if "already" in result.stderr.lower() or "exists" in result.stderr.lower():
-                    logger.info(f"MCP server '{server_name}' already configured in Qwen")
+                if (
+                    "already" in result.stderr.lower()
+                    or "exists" in result.stderr.lower()
+                ):
+                    logger.info(
+                        f"MCP server '{server_name}' already configured in Qwen"
+                    )
                     return True
                 logger.error(
                     f"Failed to add MCP server '{server_name}': "

@@ -4,14 +4,15 @@ Main automation engine for Auto-Coder.
 
 import json
 import os
+import subprocess
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
+from .git_utils import git_commit_with_retry
 from .issue_processor import create_feature_issues, process_issues, process_single
-from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
@@ -73,7 +74,13 @@ class AutomationEngine:
 
             # Process issues (with jules_mode parameter)
             issues_result = process_issues(
-                self.github, self.config, self.dry_run, repo_name, jules_mode, self.llm, self.message_backend_manager
+                self.github,
+                self.config,
+                self.dry_run,
+                repo_name,
+                jules_mode,
+                self.llm,
+                self.message_backend_manager,
             )
             results["issues_processed"] = issues_result
 
@@ -265,26 +272,44 @@ class AutomationEngine:
     ) -> List[str]:
         """Take actions on an issue using direct LLM CLI analysis and implementation."""
         from .issue_processor import _take_issue_actions as _take_issue_actions_func
+
         return _take_issue_actions_func(
-            repo_name, issue_data, self.config, self.dry_run, self.github, self.llm, self.message_backend_manager
+            repo_name,
+            issue_data,
+            self.config,
+            self.dry_run,
+            self.github,
+            self.llm,
+            self.message_backend_manager,
         )
 
     def _apply_issue_actions_directly(
         self, repo_name: str, issue_data: Dict[str, Any]
     ) -> List[str]:
         """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
-        from .issue_processor import _apply_issue_actions_directly as _apply_issue_actions_directly_func
+        from .issue_processor import (
+            _apply_issue_actions_directly as _apply_issue_actions_directly_func,
+        )
+
         return _apply_issue_actions_directly_func(
-            repo_name, issue_data, self.config, self.dry_run, self.github, self.llm, self.message_backend_manager
+            repo_name,
+            issue_data,
+            self.config,
+            self.dry_run,
+            self.github,
+            self.llm,
+            self.message_backend_manager,
         )
 
     def _commit_changes(self, fix_suggestion: Dict[str, Any]) -> str:
         """Commit changes made by the automation."""
         try:
             # Use git_commit_with_retry for centralized commit logic
-            commit_message = f"Auto-Coder: {fix_suggestion.get('summary', 'Fix applied')}"
+            commit_message = (
+                f"Auto-Coder: {fix_suggestion.get('summary', 'Fix applied')}"
+            )
             commit_result = git_commit_with_retry(commit_message)
-            
+
             if commit_result.success:
                 return f"Committed changes: {commit_message}"
             else:
@@ -299,71 +324,75 @@ class AutomationEngine:
             # Get PR details to determine the base branch
             pr_data = self.github.get_pr_details_by_number(repo_name, pr_number)
             base_branch = pr_data.get("base", {}).get("ref", "main")
-            
+
             # Clean up any existing conflicts
             self.cmd.run_command(["git", "reset", "--hard", "HEAD"])
             self.cmd.run_command(["git", "clean", "-fd"])
             self.cmd.run_command(["git", "merge", "--abort"])
-            
+
             # Checkout the PR branch
             self.cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
-            
+
             # If base branch is not main, fetch and merge it
             if base_branch != "main":
                 self.cmd.run_command(["git", "fetch", "origin", base_branch])
                 self.cmd.run_command(["git", "merge", f"origin/{base_branch}"])
-            
+
             # Push the resolved conflicts
             self.cmd.run_command(["git", "push"])
-            
+
             return True
         except Exception as e:
             logger.error(f"Failed to resolve merge conflicts for PR #{pr_number}: {e}")
             return False
 
-    def _update_with_base_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
+    def _update_with_base_branch(
+        self, repo_name: str, pr_data: Dict[str, Any]
+    ) -> List[str]:
         """Update PR branch with latest changes from base branch."""
         import subprocess
-        
+
         actions = []
-        
+
         try:
             # Get the base branch from PR data, default to 'main'
             base_branch = pr_data.get("base_branch", "main")
             pr_number = pr_data.get("number", 999)
-            
+
             # Fetch the latest changes from origin
             fetch_result = subprocess.run(
-                ["git", "fetch", "origin"],
-                capture_output=True,
-                text=True
+                ["git", "fetch", "origin"], capture_output=True, text=True
             )
             if fetch_result.returncode != 0:
                 return [f"Failed to fetch from origin: {fetch_result.stderr}"]
-            
+
             # Check how many commits behind the base branch we are
-            rev_list_result = subprocess.run([
-                "git", "rev-list", "--count", f"HEAD..origin/{base_branch}"
-            ], capture_output=True, text=True)
-            
+            rev_list_result = subprocess.run(
+                ["git", "rev-list", "--count", f"HEAD..origin/{base_branch}"],
+                capture_output=True,
+                text=True,
+            )
+
             if rev_list_result.returncode == 0:
                 commits_behind = int(rev_list_result.stdout.strip())
                 if commits_behind > 0:
                     actions.append(f"{commits_behind} commits behind {base_branch}")
-                    
+
                     # Merge the base branch
-                    merge_result = subprocess.run([
-                        "git", "merge", f"origin/{base_branch}", "--no-edit"
-                    ], capture_output=True, text=True)
-                    
+                    merge_result = subprocess.run(
+                        ["git", "merge", f"origin/{base_branch}", "--no-edit"],
+                        capture_output=True,
+                        text=True,
+                    )
+
                     if merge_result.returncode == 0:
-                        actions.append(f"Successfully merged {base_branch} branch into PR #{pr_number}")
-                        
+                        actions.append(
+                            f"Successfully merged {base_branch} branch into PR #{pr_number}"
+                        )
+
                         # Push the updated branch
                         push_result = subprocess.run(
-                            ["git", "push"],
-                            capture_output=True,
-                            text=True
+                            ["git", "push"], capture_output=True, text=True
                         )
                         if push_result.returncode == 0:
                             actions.append("Pushed updated branch")
@@ -371,15 +400,21 @@ class AutomationEngine:
                         else:
                             actions.append(f"Failed to push: {push_result.stderr}")
                     else:
-                        actions.append(f"Failed to merge {base_branch}: {merge_result.stderr}")
+                        actions.append(
+                            f"Failed to merge {base_branch}: {merge_result.stderr}"
+                        )
                 else:
-                    actions.append(f"PR #{pr_number} is up to date with {base_branch} branch")
+                    actions.append(
+                        f"PR #{pr_number} is up to date with {base_branch} branch"
+                    )
             else:
-                actions.append(f"Could not determine commit status: {rev_list_result.stderr}")
-                
+                actions.append(
+                    f"Could not determine commit status: {rev_list_result.stderr}"
+                )
+
         except Exception as e:
             actions.append(f"Error updating with base branch: {e}")
-            
+
         return actions
 
     def _get_repository_context(self, repo_name: str) -> Dict[str, Any]:
@@ -391,7 +426,7 @@ class AutomationEngine:
                 "description": repo.description or "",
                 "language": repo.language or "",
                 "stars": repo.stargazers_count,
-                "forks": repo.forks_count
+                "forks": repo.forks_count,
             }
         except Exception as e:
             logger.error(f"Failed to get repository context for {repo_name}: {e}")
@@ -401,7 +436,7 @@ class AutomationEngine:
                 "description": "Unable to fetch description",
                 "language": "Unknown",
                 "stars": 0,
-                "forks": 0
+                "forks": 0,
             }
 
     def _format_feature_issue_body(self, suggestion: Dict[str, Any]) -> str:
@@ -410,36 +445,38 @@ class AutomationEngine:
         body += f"**Description:**\n{suggestion.get('description', 'No description provided')}\n\n"
         body += f"**Rationale:**\n{suggestion.get('rationale', 'No rationale provided')}\n\n"
         body += f"**Priority:** {suggestion.get('priority', 'medium')}\n\n"
-        
+
         # Add acceptance criteria if present
-        acceptance_criteria = suggestion.get('acceptance_criteria', [])
+        acceptance_criteria = suggestion.get("acceptance_criteria", [])
         if acceptance_criteria:
             body += "**Acceptance Criteria:**\n"
             for criteria in acceptance_criteria:
                 body += f"- [ ] {criteria}\n"
             body += "\n"
-        
+
         body += "*This feature request was generated automatically by Auto-Coder.*"
         return body
 
-    def _should_auto_merge_pr(self, analysis: Dict[str, Any], pr_data: Dict[str, Any]) -> bool:
+    def _should_auto_merge_pr(
+        self, analysis: Dict[str, Any], pr_data: Dict[str, Any]
+    ) -> bool:
         """Determine if PR should be auto-merged."""
         return analysis.get("risk_level") == "low" and not pr_data.get("draft", False)
 
     def _run_pr_tests(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
         """Run tests for PR."""
         import subprocess
-        
+
         test_script_path = self.config.TEST_SCRIPT_PATH
         cwd = None  # Could be extended to use repo-specific working directory
-        
+
         if not os.path.exists(test_script_path):
             return {
                 "success": False,
                 "errors": f"Test script not found: {test_script_path}",
-                "return_code": -1
+                "return_code": -1,
             }
-        
+
         try:
             result = subprocess.run(
                 ["bash", test_script_path],
@@ -448,109 +485,110 @@ class AutomationEngine:
                 timeout=3600,
                 cwd=cwd,
             )
-            
+
             if result.returncode == 0:
-                return {
-                    "success": True,
-                    "output": result.stdout
-                }
+                return {"success": True, "output": result.stdout}
             else:
                 return {
                     "success": False,
                     "output": result.stdout,
                     "errors": result.stderr,
-                    "return_code": result.returncode
+                    "return_code": result.returncode,
                 }
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
                 "errors": "Test execution timed out after 1 hour",
-                "return_code": -1
+                "return_code": -1,
             }
         except Exception as e:
             return {
                 "success": False,
                 "errors": f"Failed to execute tests: {e}",
-                "return_code": -1
+                "return_code": -1,
             }
 
     def _extract_important_errors(self, test_result: Dict[str, Any]) -> str:
         """Extract important errors from test output."""
         import re
-        
+
         important_lines = []
-        
+
         # Extract important error patterns from output
         output = test_result.get("output", "")
         if output:
             # Look for common error patterns
             error_patterns = [
-                r'ERROR:.*',
-                r'FAILED:.*',
-                r'Failures?:.*',
-                r'Error.*',
-                r'Exception.*',
-                r'Traceback.*',
+                r"ERROR:.*",
+                r"FAILED:.*",
+                r"Failures?:.*",
+                r"Error.*",
+                r"Exception.*",
+                r"Traceback.*",
             ]
-            
-            for line in output.split('\n'):
+
+            for line in output.split("\n"):
                 line = line.strip()
-                if any(re.search(pattern, line, re.IGNORECASE) for pattern in error_patterns):
+                if any(
+                    re.search(pattern, line, re.IGNORECASE)
+                    for pattern in error_patterns
+                ):
                     if line and line not in important_lines:
                         important_lines.append(line)
-        
+
         # Include the errors field if present
         errors = test_result.get("errors", "")
         if errors and errors not in important_lines:
             important_lines.append(errors)
-        
-        return '\n'.join(important_lines)
 
-    def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        return "\n".join(important_lines)
+
+    def _check_github_actions_status(
+        self, repo_name: str, pr_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Check GitHub Actions status for PR."""
-        import subprocess
-        
         try:
-            pr_number = pr_data.get("number")
             # Run gh CLI to get GitHub Actions status for the PR
             result = subprocess.run(
                 ["gh", "run", "list", "--limit", "50"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
-            
+
             # Check for no checks reported case
             if result.returncode != 0:
-                if hasattr(result.stderr, 'strip') and "no checks reported" in str(result.stderr):
+                if hasattr(result.stderr, "strip") and "no checks reported" in str(
+                    result.stderr
+                ):
                     return {
                         "success": True,
                         "total_checks": 0,
                         "failed_checks": [],
-                        "checks": []
+                        "checks": [],
                     }
                 # Don't return early here - still try to process stdout even with non-zero return code
-            
+
             # Parse the output to count checks
-            lines = result.stdout.strip().split('\n')
+            lines = result.stdout.strip().split("\n")
             total_checks = 0
             failed_checks = []
             checks = []
-            
+
             for line in lines:
                 if not line.strip():
                     continue
-                    
+
                 # Try to parse tab-separated format first (newer gh CLI)
-                if '\t' in line:
-                    parts = line.split('\t')
+                if "\t" in line:
+                    parts = line.split("\t")
                     if len(parts) >= 3:
                         name = parts[0].strip()
                         conclusion = parts[1].strip().lower()
                         details_url = parts[3] if len(parts) > 3 else ""
-                        
+
                         total_checks += 1
-                        
+
                         # Normalize conclusion to match expected format
                         normalized_conclusion = conclusion
                         if conclusion == "fail":
@@ -559,59 +597,70 @@ class AutomationEngine:
                             normalized_conclusion = "success"
                         elif conclusion in ["in_progress", "pending"]:
                             normalized_conclusion = "pending"
-                        
+
                         check_info = {
                             "name": name,
                             "conclusion": normalized_conclusion,
-                            "details_url": details_url
+                            "details_url": details_url,
                         }
                         checks.append(check_info)
-                        
+
                         # Count as failed if conclusion indicates actual failure OR if pending/in_progress
                         # But exclude "skipping" from failures
-                        if normalized_conclusion in ["failure", "failed", "error", "timed_out", "pending", "in_progress"]:
+                        if normalized_conclusion in [
+                            "failure",
+                            "failed",
+                            "error",
+                            "timed_out",
+                            "pending",
+                            "in_progress",
+                        ]:
                             failed_checks.append(check_info)
                 else:
                     # Parse checkmark format (✓ and ✗)
-                    if line.startswith('✓') or line.startswith('✗') or line.startswith('-'):
+                    if (
+                        line.startswith("✓")
+                        or line.startswith("✗")
+                        or line.startswith("-")
+                    ):
                         total_checks += 1
-                        
-                        if line.startswith('✓'):
+
+                        if line.startswith("✓"):
                             status = "success"
-                        elif line.startswith('✗'):
+                        elif line.startswith("✗"):
                             status = "failure"
                         else:  # line.startswith('-')
                             status = "pending"
-                            
+
                         name = line[1:].strip()
-                        
+
                         check_info = {
                             "name": name,
                             "conclusion": status,
-                            "details_url": ""
+                            "details_url": "",
                         }
                         checks.append(check_info)
-                        
+
                         if status in ["failure", "pending"]:
                             failed_checks.append(check_info)
-            
+
             # Determine overall success
             overall_success = len(failed_checks) == 0
-            
+
             return {
                 "success": overall_success,
                 "total_checks": total_checks,
                 "failed_checks": failed_checks,
-                "checks": checks
+                "checks": checks,
             }
-            
+
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
                 "total_checks": 0,
                 "failed_checks": [],
                 "checks": [],
-                "error": "GitHub Actions status check timed out"
+                "error": "GitHub Actions status check timed out",
             }
         except Exception as e:
             logger.error(f"Failed to check GitHub Actions status: {e}")
@@ -620,143 +669,27 @@ class AutomationEngine:
                 "total_checks": 0,
                 "failed_checks": [],
                 "checks": [],
-                "error": str(e)
+                "error": str(e),
             }
 
-    def parse_commit_history_with_actions(
-        self, repo_name: str, search_depth: int = 10
-    ) -> List[Dict[str, Any]]:
-        """Parse git commit history and identify commits that triggered GitHub Actions.
-
-        Args:
-            repo_name: Repository name in format 'owner/repo'
-            search_depth: Number of recent commits to check (default: 10)
-
-        Returns:
-            List of commits that have GitHub Actions runs with status information.
-            Each dict contains: commit_hash, message, actions_status, actions_url
-        """
-        import subprocess
-
-        try:
-            # Use git log --oneline to retrieve recent commit history
-            result = subprocess.run(
-                ["git", "log", "--oneline", f"-{search_depth}"],
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
-
-            if result.returncode != 0:
-                logger.error(f"Failed to get git log: {result.stderr}")
-                return []
-
-            commits_with_actions = []
-
-            # Parse the output to extract commit hashes and messages
-            lines = result.stdout.strip().split('\n')
-
-            for line in lines:
-                if not line.strip():
-                    continue
-
-                # Parse commit hash and message (format: "hash message")
-                # Strip leading/trailing whitespace from line first
-                line = line.strip()
-                parts = line.split(" ", 1)
-                if len(parts) < 2:
-                    continue
-
-                commit_hash = parts[0]
-                commit_message = parts[1]
-
-                # Skip lines with empty commit hash (e.g., malformed lines)
-                if not commit_hash:
-                    continue
-
-                # Check if this commit has associated GitHub Actions runs
-                # Use gh CLI to list workflow runs for this commit
-                try:
-                    run_result = subprocess.run(
-                        [
-                            "gh", "run", "list",
-                            "--commit", commit_hash,
-                            "--limit", "1"
-                        ],
-                        capture_output=True,
-                        text=True,
-                        timeout=10
-                    )
-
-                    # If no runs found for this commit, skip it
-                    if run_result.returncode != 0 or "no runs found" in run_result.stdout.lower():
-                        logger.debug(f"Commit {commit_hash[:8]}: No GitHub Actions runs found")
-                        continue
-
-                    # Check if there are any runs (success or failure)
-                    # Parse the output to check for completed runs
-                    run_lines = run_result.stdout.strip().split('\n')
-
-                    actions_status = None
-                    actions_url = ""
-
-                    for run_line in run_lines:
-                        if not run_line.strip() or run_line.startswith("STATUS") or run_line.startswith("WORKFLOW"):
-                            continue
-
-                        # Parse tab-separated format
-                        if '\t' in run_line:
-                            parts = run_line.split('\t')
-                            if len(parts) >= 3:
-                                status = parts[1].strip().lower()
-                                url = parts[3] if len(parts) > 3 else ""
-
-                                # Only include commits with completed runs (success or failure)
-                                # Skip queued or in-progress runs
-                                if status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
-                                    actions_status = status
-                                    actions_url = url
-                                    break
-
-                    # Only add commits that have completed Action runs
-                    if actions_status and actions_status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
-                        commits_with_actions.append({
-                            "commit_hash": commit_hash,
-                            "message": commit_message,
-                            "actions_status": actions_status,
-                            "actions_url": actions_url
-                        })
-                        logger.info(f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'")
-
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"Timeout checking Actions for commit {commit_hash[:8]}")
-                    continue
-                except Exception as e:
-                    logger.warning(f"Error checking Actions for commit {commit_hash[:8]}: {e}")
-                    continue
-
-            logger.info(f"Found {len(commits_with_actions)} commits with GitHub Actions runs out of {len(lines)} checked")
-            return commits_with_actions
-
-        except subprocess.TimeoutExpired:
-            logger.error("Git log command timed out")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to parse commit history: {e}")
-            return []
-
-    def _apply_github_actions_fixes_directly(self, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
+    def _apply_github_actions_fixes_directly(
+        self, pr_data: Dict[str, Any], github_logs: str
+    ) -> List[str]:
         """Apply GitHub Actions fixes directly."""
         return ["Gemini CLI applied GitHub Actions fixes", "Committed changes"]
 
-    def _apply_local_test_fixes_directly(self, pr_data: Dict[str, Any], error_summary: str) -> List[str]:
+    def _apply_local_test_fixes_directly(
+        self, pr_data: Dict[str, Any], error_summary: str
+    ) -> List[str]:
         """Apply local test fixes directly."""
         return ["Gemini CLI applied local test fixes", "Committed changes"]
 
-    def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
+    def _apply_github_actions_fix(
+        self, repo_name: str, pr_data: Dict[str, Any], github_logs: str
+    ) -> List[str]:
         """Apply GitHub Actions fix."""
         actions = []
-        
+
         try:
             # Create prompt for fixing GitHub Actions issues (no commit/push instructions)
             prompt = f"""Fix the GitHub Actions issues in this PR.
@@ -769,19 +702,22 @@ PR Details:
 GitHub Actions Logs:
 {github_logs}
 
-Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
+Please fix the issues that are causing the GitHub Actions failures.
+Make the necessary code changes to resolve the errors.
 DO NOT include git commit or push commands in your response."""
 
             # Call the LLM to get the fix
-            if self.llm and hasattr(self.llm, '_run_gemini_cli'):
-                llm_response = self.llm._run_gemini_cli(prompt)
-                actions.append(f"Applied GitHub Actions fix")
-                
+            if self.llm and hasattr(self.llm, "_run_gemini_cli"):
+                self.llm._run_gemini_cli(prompt)
+                actions.append("Applied GitHub Actions fix")
+
                 # Commit the changes using the centralized commit logic
-                commit_result = self._commit_with_message(f"Auto-Coder: Fix GitHub Actions issues for PR #{pr_data.get('number', 'N/A')}")
+                commit_result = self._commit_with_message(
+                    f"Auto-Coder: Fix GitHub Actions issues for PR #{pr_data.get('number', 'N/A')}"
+                )
                 if commit_result.success:
                     actions.append("Committed changes")
-                    
+
                     # Push the changes
                     push_result = self._push_current_branch()
                     if push_result.success:
@@ -792,31 +728,44 @@ DO NOT include git commit or push commands in your response."""
                     actions.append(f"Failed to commit: {commit_result.stderr}")
             else:
                 actions.append("Applied GitHub Actions fix")
-                
+
         except Exception as e:
             actions.append(f"Error applying GitHub Actions fix: {e}")
-            
+
         return actions
 
-    def _format_direct_fix_comment(self, pr_data: Dict[str, Any], github_logs: str, fix_actions: List[str]) -> str:
+    def _format_direct_fix_comment(
+        self, pr_data: Dict[str, Any], github_logs: str, fix_actions: List[str]
+    ) -> str:
         """Format direct fix comment."""
-        return f"Auto-Coder Applied GitHub Actions Fixes\n\n**PR:** #{pr_data['number']} - {pr_data['title']}\n\nError: {github_logs}\n\nFixes applied: {', '.join(fix_actions)}"
+        return (
+            f"Auto-Coder Applied GitHub Actions Fixes\n\n"
+            f"**PR:** #{pr_data['number']} - {pr_data['title']}\n\n"
+            f"Error: {github_logs}\n\n"
+            f"Fixes applied: {', '.join(fix_actions)}"
+        )
 
     def _commit_with_message(self, message: str) -> Any:
         """Commit with specific message."""
         from subprocess import CompletedProcess
+
         return CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
     def _push_current_branch(self) -> Any:
         """Push current branch."""
         from subprocess import CompletedProcess
+
         return CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
-    def _handle_pr_merge(self, repo_name: str, pr_data: Dict[str, Any], analysis: Dict[str, Any]) -> List[str]:
+    def _handle_pr_merge(
+        self, repo_name: str, pr_data: Dict[str, Any], analysis: Dict[str, Any]
+    ) -> List[str]:
         """Handle PR merge process."""
         return ["All GitHub Actions checks passed", "Would merge PR"]
 
-    def _fix_pr_issues_with_testing(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
+    def _fix_pr_issues_with_testing(
+        self, repo_name: str, pr_data: Dict[str, Any], github_logs: str
+    ) -> List[str]:
         """Fix PR issues with testing."""
         return ["Applied fix", "Tests passed"]
 
@@ -824,30 +773,13 @@ DO NOT include git commit or push commands in your response."""
         """Checkout PR branch."""
         return True
 
-    def _get_github_actions_logs(
+    def _poll_pr_mergeable(
         self,
         repo_name: str,
-        pr_data: Dict[str, Any],
-        failed_checks: List[Dict[str, Any]],
-        search_history: Optional[bool] = None,
-    ) -> str:
-        """Get GitHub Actions logs for failed checks.
-
-        This is a compatibility stub for tests.
-
-        Args:
-            repo_name: Repository name
-            pr_data: PR data dictionary (unused in stub)
-            failed_checks: List of failed check dictionaries
-            search_history: Optional parameter (unused in stub)
-
-        Returns:
-            Test log string
-        """
-        return "Test failed: assertion error"
-
-
-    def _poll_pr_mergeable(self, repo_name: str, pr_number: int, timeout_seconds: int = 30, interval: int = 2) -> bool:
+        pr_number: int,
+        timeout_seconds: int = 30,
+        interval: int = 2,
+    ) -> bool:
         """Poll PR mergeable status."""
         return True
 
@@ -855,7 +787,9 @@ DO NOT include git commit or push commands in your response."""
         """Get allowed merge methods for repository."""
         return ["--merge", "--squash", "--rebase"]
 
-    def _merge_pr(self, repo_name: str, pr_number: int, pr_data: Dict[str, Any]) -> bool:
+    def _merge_pr(
+        self, repo_name: str, pr_number: int, pr_data: Dict[str, Any]
+    ) -> bool:
         """Merge PR."""
         return True
 

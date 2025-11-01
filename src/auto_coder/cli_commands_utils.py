@@ -171,4 +171,3 @@ def auth_status() -> None:
             click.echo("📁 Repository: Git repository detected but not GitHub")
         else:
             click.echo("📁 Repository: Not in a Git repository")
-
