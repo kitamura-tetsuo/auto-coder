@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
+from github.Auth import Token
 
 from .logger_config import get_logger
 
@@ -24,7 +25,7 @@ class GitHubClient:
             token: GitHub API token
             disable_labels: If True, all label operations are no-ops
         """
-        self.github = Github(token)
+        self.github = Github(auth=Token(token))
         self.token = token
         self.disable_labels = disable_labels
 
@@ -356,7 +357,11 @@ class GitHubClient:
                 }
               }
             }
-            """ % (owner, repo, issue_number)
+            """ % (
+                owner,
+                repo,
+                issue_number,
+            )
 
             # Execute GraphQL query using gh CLI with sub_issues feature header
             result = subprocess.run(
@@ -438,7 +443,11 @@ class GitHubClient:
                 }
               }
             }
-            """ % (owner, repo, pr_number)
+            """ % (
+                owner,
+                repo,
+                pr_number,
+            )
 
             # Execute GraphQL query using gh CLI
             result = subprocess.run(
@@ -482,9 +491,7 @@ class GitHubClient:
             )
             return []
         except Exception as e:
-            logger.error(
-                f"Failed to get closing issues for PR #{pr_number}: {e}"
-            )
+            logger.error(f"Failed to get closing issues for PR #{pr_number}: {e}")
             return []
 
     def get_parent_issue(self, repo_name: str, issue_number: int) -> Optional[int]:
@@ -519,7 +526,11 @@ class GitHubClient:
                 }
               }
             }
-            """ % (owner, repo, issue_number)
+            """ % (
+                owner,
+                repo,
+                issue_number,
+            )
 
             # Execute GraphQL query using gh CLI with sub_issues feature header
             result = subprocess.run(
@@ -562,9 +573,7 @@ class GitHubClient:
             )
             return None
         except Exception as e:
-            logger.error(
-                f"Failed to get parent issue for issue #{issue_number}: {e}"
-            )
+            logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
 
     def create_issue(
@@ -618,7 +627,9 @@ class GitHubClient:
     ) -> None:
         """Add labels to an existing issue."""
         if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping add labels {labels} to issue #{issue_number}")
+            logger.debug(
+                f"Labels disabled - skipping add labels {labels} to issue #{issue_number}"
+            )
             return
 
         try:
@@ -644,7 +655,9 @@ class GitHubClient:
     ) -> None:
         """Remove labels from an existing issue."""
         if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping remove labels {labels} from issue #{issue_number}")
+            logger.debug(
+                f"Labels disabled - skipping remove labels {labels} from issue #{issue_number}"
+            )
             return
 
         try:
@@ -670,7 +683,9 @@ class GitHubClient:
     def has_label(self, repo_name: str, issue_number: int, label: str) -> bool:
         """Check if an issue has a specific label."""
         if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping check for label '{label}' on issue #{issue_number}")
+            logger.debug(
+                f"Labels disabled - skipping check for label '{label}' on issue #{issue_number}"
+            )
             return False
 
         try:
@@ -695,7 +710,9 @@ class GitHubClient:
         Returns False if the label already exists (issue is being processed by another instance).
         """
         if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping add '{label}' label to issue #{issue_number}")
+            logger.debug(
+                f"Labels disabled - skipping add '{label}' label to issue #{issue_number}"
+            )
             return True  # Return True to allow processing to continue
 
         try:

@@ -50,37 +50,42 @@ class MCPServerManager:
         # Get auto_coder package directory
         try:
             import auto_coder
+
             package_dir = Path(auto_coder.__file__).parent
         except ImportError:
             # Development mode
             package_dir = Path(__file__).parent
 
         # Register graphrag_mcp
-        self.register_server(MCPServerConfig(
-            name="graphrag",
-            bundled_path=package_dir / "mcp_servers" / "graphrag_mcp",
-            install_dir=Path.home() / "graphrag_mcp",
-            requires_uv=True,
-            env_vars={
-                "NEO4J_URI": "bolt://localhost:7687",
-                "NEO4J_USER": "neo4j",
-                "NEO4J_PASSWORD": "password",
-                "QDRANT_HOST": "localhost",
-                "QDRANT_PORT": "6333",
-                "QDRANT_COLLECTION": "document_chunks",
-            }
-        ))
+        self.register_server(
+            MCPServerConfig(
+                name="graphrag",
+                bundled_path=package_dir / "mcp_servers" / "graphrag_mcp",
+                install_dir=Path.home() / "graphrag_mcp",
+                requires_uv=True,
+                env_vars={
+                    "NEO4J_URI": "bolt://localhost:7687",
+                    "NEO4J_USER": "neo4j",
+                    "NEO4J_PASSWORD": "password",
+                    "QDRANT_HOST": "localhost",
+                    "QDRANT_PORT": "6333",
+                    "QDRANT_COLLECTION": "document_chunks",
+                },
+            )
+        )
 
         # Register test_watcher
-        self.register_server(MCPServerConfig(
-            name="test-watcher",
-            bundled_path=package_dir / "mcp_servers" / "test_watcher",
-            install_dir=Path.home() / "mcp_servers" / "test_watcher",
-            requires_uv=True,
-            env_vars={
-                "TEST_WATCHER_PROJECT_ROOT": str(Path.cwd()),
-            }
-        ))
+        self.register_server(
+            MCPServerConfig(
+                name="test-watcher",
+                bundled_path=package_dir / "mcp_servers" / "test_watcher",
+                install_dir=Path.home() / "mcp_servers" / "test_watcher",
+                requires_uv=True,
+                env_vars={
+                    "TEST_WATCHER_PROJECT_ROOT": str(Path.cwd()),
+                },
+            )
+        )
 
     def register_server(self, config: MCPServerConfig):
         """Register an MCP server.
@@ -146,7 +151,7 @@ class MCPServerManager:
         try:
             # Copy all files from bundled location
             for item in config.bundled_path.iterdir():
-                if item.name in ['.venv', '__pycache__', '.git', 'server.log']:
+                if item.name in [".venv", "__pycache__", ".git", "server.log"]:
                     continue
 
                 dest = target_dir / item.name
@@ -272,9 +277,7 @@ class MCPServerManager:
 
             client = CodexClient()
             result = client.add_mcp_server_config(
-                server_name,
-                "uv",
-                ["run", str(install_path / "main.py")]
+                server_name, "uv", ["run", str(install_path / "main.py")]
             )
 
             if result:
@@ -305,17 +308,13 @@ class MCPServerManager:
             # Use run_server.sh if it exists
             run_script = install_path / "run_server.sh"
             if run_script.exists():
-                result = client.add_mcp_server_config(
-                    server_name,
-                    str(run_script),
-                    []
-                )
+                result = client.add_mcp_server_config(server_name, str(run_script), [])
             else:
                 # Fallback to uv
                 result = client.add_mcp_server_config(
                     server_name,
                     "uv",
-                    ["--directory", str(install_path), "run", "main.py"]
+                    ["--directory", str(install_path), "run", "main.py"],
                 )
 
             if result:
@@ -346,17 +345,13 @@ class MCPServerManager:
             # Use run_server.sh if it exists
             run_script = install_path / "run_server.sh"
             if run_script.exists():
-                result = client.add_mcp_server_config(
-                    server_name,
-                    str(run_script),
-                    []
-                )
+                result = client.add_mcp_server_config(server_name, str(run_script), [])
             else:
                 # Fallback to uv
                 result = client.add_mcp_server_config(
                     server_name,
                     "uv",
-                    ["--directory", str(install_path), "run", "main.py"]
+                    ["--directory", str(install_path), "run", "main.py"],
                 )
 
             if result:
@@ -387,17 +382,13 @@ class MCPServerManager:
             # Use run_server.sh if it exists
             run_script = install_path / "run_server.sh"
             if run_script.exists():
-                result = client.add_mcp_server_config(
-                    server_name,
-                    str(run_script),
-                    []
-                )
+                result = client.add_mcp_server_config(server_name, str(run_script), [])
             else:
                 # Fallback to uv
                 result = client.add_mcp_server_config(
                     server_name,
                     "uv",
-                    ["--directory", str(install_path), "run", "main.py"]
+                    ["--directory", str(install_path), "run", "main.py"],
                 )
 
             if result:
@@ -408,6 +399,7 @@ class MCPServerManager:
             return result
         except Exception as e:
             logger.error(f"Failed to add Windsurf/Claude config for {server_name}: {e}")
+
     def _add_claude_config(self, server_name: str, install_path: Path) -> bool:
         """Add MCP server configuration to Claude CLI config.
 
@@ -426,17 +418,13 @@ class MCPServerManager:
             # Use run_server.sh if it exists
             run_script = install_path / "run_server.sh"
             if run_script.exists():
-                result = client.add_mcp_server_config(
-                    server_name,
-                    str(run_script),
-                    []
-                )
+                result = client.add_mcp_server_config(server_name, str(run_script), [])
             else:
                 # Fallback to uv
                 result = client.add_mcp_server_config(
                     server_name,
                     "uv",
-                    ["--directory", str(install_path), "run", "main.py"]
+                    ["--directory", str(install_path), "run", "main.py"],
                 )
 
             if result:
@@ -467,8 +455,10 @@ class MCPServerManager:
             return False
 
         # Check for main.py or server.py
-        if not (config.install_dir / "main.py").exists() and \
-           not (config.install_dir / "server.py").exists():
+        if (
+            not (config.install_dir / "main.py").exists()
+            and not (config.install_dir / "server.py").exists()
+        ):
             return False
 
         return True
@@ -506,4 +496,3 @@ def get_mcp_manager() -> MCPServerManager:
     if _mcp_manager is None:
         _mcp_manager = MCPServerManager()
     return _mcp_manager
-

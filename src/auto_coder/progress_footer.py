@@ -57,18 +57,20 @@ class ProgressFooter:
         """
         # Build the main item display: [Issue #num/PR #num/#branch_name]
         main_display = f"\033[96m[{item_type} #{item_number}"
-        
+
         # Add branch name if available
         if self._branch_name:
             main_display += f"/{self._branch_name}"
-        
+
         main_display += "]\033[0m"
-        
+
         # Add related issues if available
         if self._related_issues:
-            related_issues_str = ", ".join([f"#{issue}" for issue in self._related_issues])
+            related_issues_str = ", ".join(
+                [f"#{issue}" for issue in self._related_issues]
+            )
             main_display += f" \033[95m[Related Issue {related_issues_str}]\033[0m"
-        
+
         # Add stages if available
         if self._stage_stack:
             all_stages = " / ".join(self._stage_stack)
@@ -91,11 +93,11 @@ class ProgressFooter:
             rows = shutil.get_terminal_size((80, 20)).lines
             padded = self._current_footer[:cols].ljust(cols)
             # Save cursor position, move to bottom line, clear line, print footer, restore cursor
-            self._stream.write("\0337")                    # save cursor (alt: \033[s)
-            self._stream.write(f"\033[{rows};1H")          # move to bottom-left
-            self._stream.write("\033[K")                   # clear line
+            self._stream.write("\0337")  # save cursor (alt: \033[s)
+            self._stream.write(f"\033[{rows};1H")  # move to bottom-left
+            self._stream.write("\033[K")  # clear line
             self._stream.write(padded)
-            self._stream.write("\0338")                    # restore cursor (alt: \033[u)
+            self._stream.write("\0338")  # restore cursor (alt: \033[u)
             self._stream.flush()
 
     def set_item(
@@ -149,10 +151,10 @@ class ProgressFooter:
                 # Re-check _current_footer inside the lock to avoid race conditions
                 if self._current_footer:
                     rows = shutil.get_terminal_size((80, 20)).lines
-                    self._stream.write("\0337")                    # save cursor
-                    self._stream.write(f"\033[{rows};1H")          # move to bottom-left
-                    self._stream.write("\033[K")                   # clear line
-                    self._stream.write("\0338")                    # restore cursor
+                    self._stream.write("\0337")  # save cursor
+                    self._stream.write(f"\033[{rows};1H")  # move to bottom-left
+                    self._stream.write("\033[K")  # clear line
+                    self._stream.write("\0338")  # restore cursor
                     self._stream.flush()
 
         # Write log message
@@ -198,10 +200,10 @@ class ProgressFooter:
             if self._is_active and self._supports_overprint:
                 # Clear the bottom line
                 rows = shutil.get_terminal_size((80, 20)).lines
-                self._stream.write("\0337")                    # save cursor
-                self._stream.write(f"\033[{rows};1H")          # move to bottom-left
-                self._stream.write("\033[K")                   # clear line
-                self._stream.write("\0338")                    # restore cursor
+                self._stream.write("\0337")  # save cursor
+                self._stream.write(f"\033[{rows};1H")  # move to bottom-left
+                self._stream.write("\033[K")  # clear line
+                self._stream.write("\0338")  # restore cursor
                 self._stream.flush()
 
             self._current_footer = None
@@ -264,7 +266,7 @@ def set_progress_item(
     item_type: str,
     item_number: int,
     related_issues: Optional[list[int]] = None,
-    branch_name: Optional[str] = None
+    branch_name: Optional[str] = None,
 ) -> None:
     """
     Set the current item being processed in the global progress footer.
@@ -326,7 +328,7 @@ class ProgressContext:
         item_number: int,
         initial_stage: str,
         related_issues: Optional[list[int]] = None,
-        branch_name: Optional[str] = None
+        branch_name: Optional[str] = None,
     ):
         """
         Initialize the progress context.
@@ -346,7 +348,9 @@ class ProgressContext:
 
     def __enter__(self):
         """Enter the context and display the initial footer."""
-        set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
+        set_progress_item(
+            self.item_type, self.item_number, self.related_issues, self.branch_name
+        )
         push_progress_stage(self.initial_stage)
         return self
 
@@ -410,8 +414,8 @@ class ProgressStage:
             self.item_type = args[0]
             self.item_number = args[1]
             self.stage = args[2]
-            self.related_issues = kwargs.get('related_issues')
-            self.branch_name = kwargs.get('branch_name')
+            self.related_issues = kwargs.get("related_issues")
+            self.branch_name = kwargs.get("branch_name")
         else:
             raise ValueError(
                 "ProgressStage requires either 1 argument (stage) or 3 arguments (item_type, item_number, stage)"
@@ -421,7 +425,9 @@ class ProgressStage:
         """Enter the context and push the stage."""
         if self.item_type and self.item_number:
             # Set item info and push stage
-            set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
+            set_progress_item(
+                self.item_type, self.item_number, self.related_issues, self.branch_name
+            )
             push_progress_stage(self.stage)
         else:
             # Just push stage
@@ -438,4 +444,3 @@ class ProgressStage:
             # Just pop stage
             pop_progress_stage()
         return False
-
