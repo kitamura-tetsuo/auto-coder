@@ -8,7 +8,7 @@ from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from ...backward_compatibility_layer import (
+from auto_coder.backward_compatibility_layer import (
     BackwardCompatibilityLayer,
     get_compatibility_layer,
 )

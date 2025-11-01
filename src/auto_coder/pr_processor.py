@@ -843,7 +843,9 @@ def _handle_pr_merge(
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
-                github_logs = _get_github_actions_logs(repo_name, config, failed_checks)
+                github_logs = _get_github_actions_logs(
+                    repo_name, config, failed_checks, pr_data
+                )
                 fix_actions = _fix_pr_issues_with_testing(
                     repo_name, pr_data, config, dry_run, github_logs, llm_client
                 )
@@ -881,7 +883,7 @@ def _handle_pr_merge(
                 if failed_checks:
                     # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
                     github_logs = _get_github_actions_logs(
-                        repo_name, config, failed_checks
+                        repo_name, config, failed_checks, pr_data
                     )
                     fix_actions = _fix_pr_issues_with_testing(
                         repo_name, pr_data, config, dry_run, github_logs, llm_client
@@ -2537,12 +2539,16 @@ def _get_github_actions_logs(repo_name: str, config: AutomationConfig, *args) ->
 
     呼び出し互換:
     - _get_github_actions_logs(repo, config, failed_checks)
+    - _get_github_actions_logs(repo, config, failed_checks, pr_data)
     """
     # 引数パターンを解決
     failed_checks: List[Dict[str, Any]] = []
-    if len(args) == 1 and isinstance(args[0], list):
+    pr_data: Optional[Dict[str, Any]] = None
+    if len(args) >= 1 and isinstance(args[0], list):
         failed_checks = args[0]
-    else:
+    if len(args) >= 2 and isinstance(args[1], dict):
+        pr_data = args[1]
+    if not failed_checks:
         # 不明な呼び出し
         return "No detailed logs available"
 
@@ -2570,22 +2576,31 @@ def _get_github_actions_logs(repo_name: str, config: AutomationConfig, *args) ->
                 unified = get_github_actions_logs_from_url(url)
                 logs.append(unified)
         else:
-            # 3) details_url が使えない場合は、従来の方法（最新の失敗した run を取得）
+            # 3) details_url が使えない場合は、従来の方法（PR ブランチの失敗した run を取得）
             logger.debug(
                 "No valid details_url found in failed_checks, falling back to gh run list"
             )
-            run_list = cmd.run_command(
-                [
-                    "gh",
-                    "run",
-                    "list",
-                    "--limit",
-                    "50",
-                    "--json",
-                    "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url",
-                ],
-                timeout=60,
-            )
+            # PR ブランチを取得して、そのブランチの run のみを取得する（コミット履歴を検索）
+            branch_name = None
+            if pr_data:
+                head = pr_data.get("head", {})
+                branch_name = head.get("ref")
+                if branch_name:
+                    logger.debug(f"Using PR branch: {branch_name}")
+
+            run_list_cmd = [
+                "gh",
+                "run",
+                "list",
+                "--limit",
+                "50",
+                "--json",
+                "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url",
+            ]
+            # ブランチが特定できた場合は、そのブランチの run のみを取得
+            if branch_name:
+                run_list_cmd.extend(["--branch", branch_name])
+            run_list = cmd.run_command(run_list_cmd, timeout=60)
 
             run_id: Optional[str] = None
             if run_list.returncode == 0 and run_list.stdout.strip():
