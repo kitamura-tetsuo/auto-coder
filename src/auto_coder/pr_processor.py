@@ -2478,7 +2478,7 @@ def _search_github_actions_logs_from_history(
         )
 
         # Sort runs by creation time (newest first) and search through them
-        runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+        runs.sort(key=lambda r: r.get("createdAt") or "", reverse=True)
 
         for run in runs:
             run_id = run.get("databaseId")
