@@ -338,3 +338,74 @@ def test_is_index_up_to_date_path_and_hash_match(index_manager, temp_repo):
     result = index_manager.is_index_up_to_date()
     assert result is True
 
+
+def test_get_repository_collection_name_different_paths(tmp_path):
+    """Test that different repository paths generate different collection names."""
+    # Create two different directories
+    dir1 = tmp_path / "repo1"
+    dir1.mkdir()
+    dir2 = tmp_path / "repo2"
+    dir2.mkdir()
+
+    # Create managers for each directory
+    manager1 = GraphRAGIndexManager(repo_path=str(dir1))
+    manager2 = GraphRAGIndexManager(repo_path=str(dir2))
+
+    # Get collection names
+    coll_name1 = manager1._get_repository_collection_name()
+    coll_name2 = manager2._get_repository_collection_name()
+
+    # Verify they are different
+    assert coll_name1 != coll_name2
+    assert coll_name1.startswith("repo_")
+    assert coll_name2.startswith("repo_")
+
+
+def test_get_repository_collection_name_deterministic(index_manager, temp_repo):
+    """Test that same repository path generates same collection name (deterministic)."""
+    # Create two managers with same path
+    manager1 = GraphRAGIndexManager(repo_path=str(temp_repo))
+    manager2 = GraphRAGIndexManager(repo_path=str(temp_repo))
+
+    # Get collection names
+    coll_name1 = manager1._get_repository_collection_name()
+    coll_name2 = manager2._get_repository_collection_name()
+
+    # Verify they are the same
+    assert coll_name1 == coll_name2
+    assert coll_name1.startswith("repo_")
+
+
+def test_get_repository_collection_name_format(index_manager):
+    """Test that collection name follows expected format."""
+    coll_name = index_manager._get_repository_collection_name()
+
+    # Verify format: repo_ followed by 16 hexadecimal characters
+    assert coll_name.startswith("repo_")
+    assert len(coll_name) == 5 + 16  # "repo_" + 16 chars
+    assert all(c in "0123456789abcdef" for c in coll_name[5:])
+
+
+def test_get_repository_collection_name_absolute_path(tmp_path):
+    """Test that collection name uses absolute path for consistent hashing."""
+    # Create a directory
+    dir1 = tmp_path / "repo"
+    dir1.mkdir()
+
+    # Create manager with relative path
+    import os
+    old_cwd = os.getcwd()
+    try:
+        os.chdir(str(tmp_path))
+        manager1 = GraphRAGIndexManager(repo_path="repo")
+        coll_name1 = manager1._get_repository_collection_name()
+    finally:
+        os.chdir(old_cwd)
+
+    # Create manager with absolute path
+    manager2 = GraphRAGIndexManager(repo_path=str(dir1.resolve()))
+    coll_name2 = manager2._get_repository_collection_name()
+
+    # Both should generate the same name since they resolve to same absolute path
+    assert coll_name1 == coll_name2
+

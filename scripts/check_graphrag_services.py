@@ -373,15 +373,25 @@ def check_qdrant_direct(test_mode: bool = False):
             except Exception as e:
                 logger.warning(f"     コレクション情報取得エラー: {e}")
 
-        # 既存のcode_embeddingsコレクションがあれば、それを使用してテスト
+        # 既存のcode_embeddingsコレクションまたはrepo_*コレクションがあれば、それを使用してテスト
+        test_collection = None
         if "code_embeddings" in existing_collections:
-            logger.info("\n--- 既存データ検索テスト (code_embeddings) ---")
+            test_collection = "code_embeddings"
+        else:
+            # Find any repo_* collection
+            for col in collections.collections:
+                if col.name.startswith("repo_"):
+                    test_collection = col.name
+                    break
+
+        if test_collection:
+            logger.info(f"\n--- 既存データ検索テスト ({test_collection}) ---")
             try:
-                col_info = client.get_collection("code_embeddings")
+                col_info = client.get_collection(test_collection)
                 if col_info.points_count > 0:
                     # サンプルポイントを取得
                     sample_points = client.scroll(
-                        collection_name="code_embeddings",
+                        collection_name=test_collection,
                         limit=3,
                         with_payload=True,
                         with_vectors=False
@@ -392,9 +402,12 @@ def check_qdrant_direct(test_mode: bool = False):
                         logger.info(f"  ID={point.id}")
                         logger.info(f"  Payload: {point.payload}")
                 else:
-                    logger.info("code_embeddingsコレクションは空です")
+                    logger.info(f"{test_collection}コレクションは空です")
             except Exception as e:
                 logger.warning(f"既存データ検索エラー: {e}")
+        else:
+            logger.info("\n--- 既存データ検索テスト ---")
+            logger.info("code_embeddings または repo_* コレクションが見つかりません")
 
         # 3. テストコレクション作成（接続テスト用）- test_modeの場合のみ
         if test_mode:

@@ -87,6 +87,29 @@ class GraphRAGIndexManager:
 
         return hasher.hexdigest()
 
+    def _get_repository_collection_name(self) -> str:
+        """Generate unique collection name for repository using SHA256 hash.
+
+        Returns:
+            Collection name in format 'repo_{hash_prefix}' where hash_prefix is first 16 chars of SHA256
+        """
+        # Get the absolute path of the repository
+        repo_path_str = str(self.repo_path.resolve())
+
+        # Hash the repository path
+        hasher = hashlib.sha256()
+        hasher.update(repo_path_str.encode())
+        hash_hex = hasher.hexdigest()
+
+        # Use first 16 characters of hash for reasonable collection name length
+        hash_prefix = hash_hex[:16]
+
+        # Format: repo_{hash_prefix}
+        collection_name = f"repo_{hash_prefix}"
+
+        logger.debug(f"Generated collection name for {repo_path_str}: {collection_name}")
+        return collection_name
+
     def _load_index_state(self) -> dict:
         """Load index state from file.
 
@@ -530,8 +553,8 @@ class GraphRAGIndexManager:
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
 
-        # Collection name
-        collection_name = "code_embeddings"
+        # Collection name - use repository-specific collection name
+        collection_name = self._get_repository_collection_name()
 
         # Load embedding model
         logger.info("Loading embedding model...")
