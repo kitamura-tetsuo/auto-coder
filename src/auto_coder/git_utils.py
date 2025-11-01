@@ -678,36 +678,13 @@ def ensure_pushed_with_fallback(
     if is_non_fast_forward:
         logger.info("Detected non-fast-forward error, attempting to pull and retry push...")
         
-        # Get current branch and pull from the specific remote branch
-        branch_result = cmd.run_command(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=cwd
-        )
-        if not branch_result.success:
-            logger.warning(f"Failed to get current branch: {branch_result.stderr}")
-            return push_result
-            
-        current_branch = branch_result.stdout.strip()
-        logger.info(f"Pulling latest changes from {remote}/{current_branch}...")
-        pull_result = cmd.run_command(["git", "pull", remote, current_branch], cwd=cwd)
+        # Use the centralized git_pull function
+        pull_result = git_pull(remote=remote, branch=None, cwd=cwd)
         
         if not pull_result.success:
             logger.warning(f"Pull failed: {pull_result.stderr}")
-            # Check if it's a conflict that can be resolved
-            if "conflict" in pull_result.stderr.lower() or "merge conflict" in pull_result.stderr.lower():
-                logger.info("Detected merge conflicts during pull, attempting to resolve...")
-                # Try to resolve pull conflicts
-                conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
-                if not conflict_result.success:
-                    logger.error(f"Failed to resolve pull conflicts: {conflict_result.stderr}")
-                    # Don't return here - still attempt LLM fallback
-                else:
-                    # If conflict resolution succeeded, continue with retry push
-                    logger.info("Successfully resolved pull conflicts")
-            else:
-                # Pull failed for non-conflict reasons
-                logger.error(f"Pull failed for non-conflict reasons: {pull_result.stderr}")
-                # Don't return here - still attempt LLM fallback
+            # Note: git_pull function already handles conflict resolution internally
+            # Don't return here - still attempt LLM fallback
         
         # Retry the push after pull
         logger.info("Retrying push after pull...")
@@ -881,47 +858,17 @@ def switch_to_branch(
     
     # Pull the latest changes from remote
     logger.info(f"Pulling latest changes for branch '{branch_name}'...")
-    pull_result = cmd.run_command(["git", "pull", "origin", branch_name], cwd=cwd)
+    pull_result = git_pull(remote="origin", branch=branch_name, cwd=cwd)
     
     if not pull_result.success:
-        # Check if it's a "no tracking information" error (new branch)
-        if "no tracking information" in pull_result.stderr or "fatal: No such ref was fetched" in pull_result.stderr:
-            logger.warning(f"No remote tracking information for branch '{branch_name}', skipping pull")
-            # This is not a critical error for new branches
-            return checkout_result
-        # Check if it's a "diverging branches" error (case insensitive)
-        elif "diverging branches" in pull_result.stderr.lower() or "not possible to fast-forward" in pull_result.stderr.lower():
-            logger.info(f"Detected diverging branches for branch '{branch_name}', attempting to resolve...")
-            
-            # Try to resolve pull conflicts using our conflict resolution function
-            conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
-            
-            if conflict_result.success:
-                logger.info(f"Successfully resolved pull conflicts for branch '{branch_name}'")
-                return CommandResult(
-                    success=True,
-                    stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}\nConflict Resolution: {conflict_result.stdout}",
-                    stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}\nConflict Resolution: {conflict_result.stderr}",
-                    returncode=0
-                )
-            else:
-                logger.warning(f"Failed to resolve pull conflicts for branch '{branch_name}': {conflict_result.stderr}")
-                # Return a combined result showing both the original pull failure and conflict resolution attempt
-                return CommandResult(
-                    success=False,
-                    stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}\nConflict Resolution: {conflict_result.stdout}",
-                    stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}\nConflict Resolution: {conflict_result.stderr}",
-                    returncode=pull_result.returncode
-                )
-        else:
-            logger.error(f"Failed to pull latest changes for branch '{branch_name}': {pull_result.stderr}")
-            # Return a combined result
-            return CommandResult(
-                success=False,
-                stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
-                stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
-                returncode=pull_result.returncode
-            )
+        logger.error(f"Failed to pull latest changes for branch '{branch_name}': {pull_result.stderr}")
+        # Return a combined result showing both the checkout and pull results
+        return CommandResult(
+            success=False,
+            stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
+            stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
+            returncode=pull_result.returncode
+        )
     
     logger.info(f"Successfully switched to branch '{branch_name}' and pulled latest changes")
     return CommandResult(
@@ -1003,6 +950,110 @@ def resolve_pull_conflicts(
             stderr=f"Error resolving pull conflicts: {e}",
             returncode=1
         )
+
+
+def git_pull(
+    remote: str = "origin",
+    branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+) -> CommandResult:
+    """
+    Perform git pull with comprehensive error handling and conflict resolution.
+    
+    This function centralizes git pull operations and handles various scenarios:
+    - Standard pull operations
+    - Merge conflicts
+    - Diverging branches
+    - No tracking information (new branches)
+    
+    Args:
+        remote: Remote name (default: 'origin')
+        branch: Optional branch name. If None, uses current branch
+        cwd: Optional working directory for the git command
+    
+    Returns:
+        CommandResult with the result of the pull operation
+    """
+    cmd = CommandExecutor()
+    
+    # Determine which branch to pull
+    target_branch = branch
+    if not target_branch:
+        branch_result = cmd.run_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd
+        )
+        if not branch_result.success:
+            logger.warning(f"Failed to get current branch: {branch_result.stderr}")
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=f"Failed to get current branch: {branch_result.stderr}",
+                returncode=branch_result.returncode
+            )
+        target_branch = branch_result.stdout.strip()
+    
+    logger.info(f"Pulling latest changes from {remote}/{target_branch}...")
+    pull_result = cmd.run_command(["git", "pull", remote, target_branch], cwd=cwd)
+    
+    if pull_result.success:
+        logger.info(f"Successfully pulled latest changes from {remote}/{target_branch}")
+        return pull_result
+    
+    # Handle various error cases
+    error_msg = pull_result.stderr.lower()
+    
+    # Check if it's a "no tracking information" error (new branch)
+    if "no tracking information" in error_msg or "fatal: no such ref was fetched" in error_msg:
+        logger.warning(f"No remote tracking information for branch '{target_branch}', skipping pull")
+        # This is not a critical error for new branches
+        return CommandResult(
+            success=True,  # Treat as success for new branches
+            stdout=f"No remote tracking information for branch '{target_branch}'",
+            stderr=pull_result.stderr,
+            returncode=0
+        )
+    
+    # Check if it's a "diverging branches" error
+    if "diverging branches" in error_msg or "not possible to fast-forward" in error_msg:
+        logger.info(f"Detected diverging branches for branch '{target_branch}', attempting to resolve...")
+        
+        # Try to resolve pull conflicts using our conflict resolution function
+        conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+        
+        if conflict_result.success:
+            logger.info(f"Successfully resolved pull conflicts for branch '{target_branch}'")
+            return CommandResult(
+                success=True,
+                stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
+                stderr=conflict_result.stderr,
+                returncode=0
+            )
+        else:
+            logger.warning(f"Failed to resolve pull conflicts for branch '{target_branch}': {conflict_result.stderr}")
+            # Return the conflict resolution result
+            return conflict_result
+    
+    # Check for merge conflicts during pull
+    if "conflict" in error_msg or "merge conflict" in error_msg:
+        logger.info(f"Detected merge conflicts during pull, attempting to resolve...")
+        conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+        
+        if conflict_result.success:
+            logger.info(f"Successfully resolved pull conflicts")
+            return CommandResult(
+                success=True,
+                stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
+                stderr=conflict_result.stderr,
+                returncode=0
+            )
+        else:
+            logger.warning(f"Failed to resolve pull conflicts: {conflict_result.stderr}")
+            return conflict_result
+    
+    # Other errors
+    logger.error(f"Failed to pull latest changes: {pull_result.stderr}")
+    return pull_result
 
 
 def try_llm_commit_push(
