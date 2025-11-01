@@ -661,12 +661,18 @@ class AutomationEngine:
                     continue
 
                 # Parse commit hash and message (format: "hash message")
+                # Strip leading/trailing whitespace from line first
+                line = line.strip()
                 parts = line.split(" ", 1)
                 if len(parts) < 2:
                     continue
 
                 commit_hash = parts[0]
                 commit_message = parts[1]
+
+                # Skip lines with empty commit hash (e.g., malformed lines)
+                if not commit_hash:
+                    continue
 
                 # Check if this commit has associated GitHub Actions runs
                 # Use gh CLI to list workflow runs for this commit
@@ -707,13 +713,13 @@ class AutomationEngine:
 
                                 # Only include commits with completed runs (success or failure)
                                 # Skip queued or in-progress runs
-                                if status in ["success", "completed", "failure", "failed", "cancelled"]:
+                                if status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
                                     actions_status = status
                                     actions_url = url
                                     break
 
                     # Only add commits that have completed Action runs
-                    if actions_status and actions_status in ["success", "completed", "failure", "failed", "cancelled"]:
+                    if actions_status and actions_status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
                         commits_with_actions.append({
                             "commit_hash": commit_hash,
                             "message": commit_message,
