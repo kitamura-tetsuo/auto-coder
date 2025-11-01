@@ -1211,3 +1211,219 @@ class TestAutomationEngineExtended:
             assert ["git", "reset", "--hard", "HEAD"] not in calls
             assert ["git", "clean", "-fd"] not in calls
             mock_cmd.assert_called_once_with(["gh", "pr", "checkout", "123"])
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_with_successful_runs(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test parsing commit history with commits that have successful GitHub Actions runs."""
+        # Setup
+        # First call: git log --oneline
+        git_log_output = "abc1234 Fix bug in user authentication\nabc1235 Update documentation\nabc1236 Add new feature"
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
+            Mock(returncode=0, stdout="test\tsuccess\t2m\thttps://github.com/test/repo/actions/runs/1", stderr=""),  # commit 1
+            Mock(returncode=0, stdout="docs\tcompleted\t1m\thttps://github.com/test/repo/actions/runs/2", stderr=""),  # commit 2
+            Mock(returncode=0, stdout="feature\tpass\t5m\thttps://github.com/test/repo/actions/runs/3", stderr=""),  # commit 3
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=3)
+
+        # Assert
+        assert len(result) == 3
+        assert result[0]["commit_hash"] == "abc1234"
+        assert result[0]["message"] == "Fix bug in user authentication"
+        assert result[0]["actions_status"] == "success"
+        assert result[0]["actions_url"] == "https://github.com/test/repo/actions/runs/1"
+
+        assert result[1]["commit_hash"] == "abc1235"
+        assert result[1]["message"] == "Update documentation"
+        assert result[1]["actions_status"] == "completed"
+        assert result[1]["actions_url"] == "https://github.com/test/repo/actions/runs/2"
+
+        assert result[2]["commit_hash"] == "abc1236"
+        assert result[2]["message"] == "Add new feature"
+        assert result[2]["actions_status"] == "pass"
+        assert result[2]["actions_url"] == "https://github.com/test/repo/actions/runs/3"
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_with_failed_runs(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test parsing commit history with commits that have failed GitHub Actions runs."""
+        # Setup
+        git_log_output = "def5678 Fix test failure\nghi9012 Refactor code"
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
+            Mock(returncode=0, stdout="test\tfailure\t3m\thttps://github.com/test/repo/actions/runs/10", stderr=""),  # commit 1
+            Mock(returncode=0, stdout="ci\tfailed\t4m\thttps://github.com/test/repo/actions/runs/11", stderr=""),  # commit 2
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=2)
+
+        # Assert
+        assert len(result) == 2
+        assert result[0]["commit_hash"] == "def5678"
+        assert result[0]["message"] == "Fix test failure"
+        assert result[0]["actions_status"] == "failure"
+        assert result[0]["actions_url"] == "https://github.com/test/repo/actions/runs/10"
+
+        assert result[1]["commit_hash"] == "ghi9012"
+        assert result[1]["message"] == "Refactor code"
+        assert result[1]["actions_status"] == "failed"
+        assert result[1]["actions_url"] == "https://github.com/test/repo/actions/runs/11"
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_skips_no_runs(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test that commits without GitHub Actions runs are skipped."""
+        # Setup
+        git_log_output = "jkl3456 Update README\nmno7890 Fix typo"
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
+            Mock(returncode=1, stdout="", stderr="no runs found"),  # commit 1 - no runs
+            Mock(returncode=1, stdout="", stderr="no runs found"),  # commit 2 - no runs
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=2)
+
+        # Assert
+        assert len(result) == 0  # No commits should be returned
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_skips_in_progress(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test that commits with queued/in-progress Actions runs are skipped."""
+        # Setup
+        git_log_output = "pqr1234 Initial commit"
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
+            Mock(returncode=0, stdout="test\tin_progress\t1m\t", stderr=""),  # commit 1 - in progress
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=1)
+
+        # Assert
+        assert len(result) == 0  # Should skip in-progress runs
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_custom_depth(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test parsing commit history with custom search depth."""
+        # Setup
+        git_log_output = "stu1234 Commit 1\nvwx5678 Commit 2\nyza9012 Commit 3"
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
+            Mock(returncode=0, stdout="test\tpass\t1m\thttps://github.com/test/repo/actions/runs/20", stderr=""),  # commit 1
+            Mock(returncode=0, stdout="ci\tsuccess\t2m\thttps://github.com/test/repo/actions/runs/21", stderr=""),  # commit 2
+            Mock(returncode=0, stdout="build\tcompleted\t3m\thttps://github.com/test/repo/actions/runs/22", stderr=""),  # commit 3
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute with custom depth of 3
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=3)
+
+        # Assert
+        assert len(result) == 3
+        # Verify git log was called with -3
+        mock_run.assert_any_call(
+            ["git", "log", "--oneline", "-3"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_mixed_results(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test parsing commit history with a mix of commits: some with runs, some without."""
+        # Setup
+        git_log_output = "bcd1234 Fix critical bug\n efg5678 Update CHANGELOG\n hij9012 Add feature"
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
+            Mock(returncode=0, stdout="test\tfailure\t2m\thttps://github.com/test/repo/actions/runs/30", stderr=""),  # commit 1 - has failed run
+            Mock(returncode=1, stdout="", stderr="no runs found"),  # commit 2 - no runs
+            Mock(returncode=0, stdout="feature\tsuccess\t5m\thttps://github.com/test/repo/actions/runs/31", stderr=""),  # commit 3 - has success
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=3)
+
+        # Assert - should only return commits with Action runs (2 out of 3)
+        assert len(result) == 2
+        assert result[0]["commit_hash"] == "bcd1234"
+        assert result[0]["actions_status"] == "failure"
+        assert result[1]["commit_hash"] == "hij9012"
+        assert result[1]["actions_status"] == "success"
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_empty_log(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test parsing commit history when git log returns empty."""
+        # Setup
+        mock_run.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),  # git log - empty
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=10)
+
+        # Assert
+        assert len(result) == 0
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_git_error(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test handling git log errors."""
+        # Setup
+        mock_run.side_effect = [
+            Mock(returncode=1, stdout="", stderr="fatal: not a git repository"),  # git log fails
+        ]
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=10)
+
+        # Assert
+        assert len(result) == 0  # Should return empty list on error
+
+    @patch("subprocess.run")
+    def test_parse_commit_history_with_actions_timeout(
+        self, mock_run, mock_github_client, mock_gemini_client
+    ):
+        """Test handling timeout during commit history parsing."""
+        # Setup
+        import subprocess
+        mock_run.side_effect = subprocess.TimeoutExpired(["git", "log", "--oneline", "-10"], 30)
+
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Execute
+        result = engine.parse_commit_history_with_actions("test/repo", search_depth=10)
+
+        # Assert
+        assert len(result) == 0  # Should return empty list on timeout
