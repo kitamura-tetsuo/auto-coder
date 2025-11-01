@@ -2413,146 +2413,149 @@ def _search_github_actions_logs_from_history(
     repo_name: str,
     config: AutomationConfig,
     failed_checks: List[Dict[str, Any]],
-    max_commits: int = 10,
+    max_runs: int = 10,
 ) -> Optional[str]:
-    """Search for GitHub Actions logs from commit history.
+    """Search for GitHub Actions logs from recent runs.
 
-    This function iterates through commits from oldest to newest to find
-    Action logs for the failed checks.
+    This function retrieves recent GitHub Actions runs (not git commit history) and
+    attempts to get logs from them. It searches through failed jobs from the most
+    recent runs backwards, returning the first set of detailed logs found.
 
     Args:
         repo_name: Repository name in format 'owner/repo'
         config: AutomationConfig instance
         failed_checks: List of failed check dictionaries with details_url
-        max_commits: Maximum number of commits to search (default: 10)
+        max_runs: Maximum number of recent runs to search (default: 10)
 
     Returns:
-        String containing the first successful logs found, or None if not found
+        String containing the first successful logs found from historical runs,
+        or None if not found. The returned logs include metadata about which run
+        they came from.
+
+    Note:
+        This searches through recent GitHub Actions runs, not git commit history.
+        This is more practical since GitHub Actions runs are directly queryable
+        via the GitHub API, while matching commits to Action runs requires
+        additional metadata that may not always be available.
     """
     try:
         logger.info(
-            f"Starting historical search for GitHub Actions logs (max {max_commits} commits)"
+            f"Starting historical search for GitHub Actions logs (searching through {max_runs} recent runs)"
         )
 
-        # Get commit history (oldest to newest)
-        result = cmd.run_command(
-            ["git", "log", "--oneline", f"-{max_commits}"],
-            timeout=30,
+        # Get recent GitHub Actions runs
+        run_list = cmd.run_command(
+            [
+                "gh",
+                "run",
+                "list",
+                "--limit",
+                str(max_runs),
+                "--json",
+                "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha",
+            ],
+            timeout=60,
         )
 
-        if not result.success:
+        if not run_list.success or not run_list.stdout.strip():
             logger.warning(
-                f"Failed to get git history: {result.stderr}"
+                f"Failed to get run list or empty result: {run_list.stderr}"
             )
             return None
 
-        commits = result.stdout.strip().split("\n")
+        try:
+            runs = json.loads(run_list.stdout)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse run list JSON: {e}")
+            return None
+
+        if not runs:
+            logger.info("No runs found in repository")
+            return None
+
         logger.info(
-            f"Searching through {len(commits)} commits for GitHub Actions logs"
+            f"Searching through {len(runs)} recent GitHub Actions runs for logs"
         )
 
-        # Iterate through commits (oldest to newest)
-        for commit in reversed(commits):
-            if not commit.strip():
+        # Sort runs by creation time (newest first) and search through them
+        runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+
+        for run in runs:
+            run_id = run.get("databaseId")
+            run_branch = run.get("headBranch", "unknown")
+            run_commit = run.get("headSha", "unknown")[:8]
+            run_conclusion = run.get("conclusion", "unknown")
+            run_status = run.get("status", "unknown")
+
+            if not run_id:
                 continue
 
-            commit_hash = commit.split()[0]
-            commit_msg = " ".join(commit.split()[1:])
-
             logger.debug(
-                f"Checking commit {commit_hash}: {commit_msg[:80]}"
+                f"Checking run {run_id} on branch {run_branch} (commit {run_commit}): {run_conclusion}/{run_status}"
             )
 
             try:
-                # Check out this commit temporarily
-                checkout_result = cmd.run_command(
-                    ["git", "checkout", commit_hash, "--detach"],
-                    timeout=30,
+                # Get jobs for this run
+                jobs_res = cmd.run_command(
+                    ["gh", "run", "view", str(run_id), "--json", "jobs"],
+                    timeout=60,
                 )
 
-                if not checkout_result.success:
+                if jobs_res.returncode != 0 or not jobs_res.stdout.strip():
                     logger.debug(
-                        f"Failed to checkout commit {commit_hash}, skipping"
+                        f"Failed to get jobs for run {run_id}, skipping"
                     )
                     continue
 
-                # Get the failed checks for this commit
                 try:
-                    # Use gh to get check status for this commit
-                    checks_result = cmd.run_command(
-                        ["gh", "pr", "checks", "--json", "name,conclusion,detailsUrl"],
-                        timeout=30,
-                    )
+                    jobs_json = json.loads(jobs_res.stdout)
+                    jobs = jobs_json.get("jobs", [])
 
-                    if checks_result.returncode == 0 and checks_result.stdout.strip():
-                        try:
-                            checks_data = json.loads(checks_result.stdout)
-                            # Filter for failed checks
-                            commit_failed_checks = [
-                                check
-                                for check in checks_data
-                                if check.get("conclusion", "").lower()
-                                in ["failure", "failed", "error"]
-                            ]
+                    # Get logs from failed jobs in this run
+                    logs = []
+                    for job in jobs:
+                        job_conclusion = job.get("conclusion", "")
+                        job_id = job.get("databaseId")
 
-                            if commit_failed_checks:
-                                logger.info(
-                                    f"Found {len(commit_failed_checks)} failed checks in commit {commit_hash}"
+                        # Only attempt to get logs from failed or error jobs
+                        if job_conclusion and job_conclusion.lower() in ["failure", "failed", "error"]:
+                            if job_id:
+                                logger.debug(
+                                    f"Found failed job {job_id} in run {run_id}, attempting to get logs"
                                 )
 
-                                # Try to get logs for these checks
-                                commit_logs = _get_github_actions_logs(
-                                    repo_name,
-                                    config,
-                                    commit_failed_checks,
-                                    search_history=False,  # Prevent recursion
-                                )
+                                # Construct URL for this job
+                                url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
 
-                                if commit_logs and commit_logs != "No detailed logs available":
-                                    logger.info(
-                                        f"Successfully retrieved logs from commit {commit_hash}"
+                                # Try to get logs for this job
+                                job_logs = get_github_actions_logs_from_url(url)
+
+                                if job_logs and job_logs != "No detailed logs available":
+                                    # Add metadata about which run this came from
+                                    logs.append(
+                                        f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}"
                                     )
 
-                                    # Restore to original state before returning
-                                    cmd.run_command(
-                                        ["git", "checkout", "-"],
-                                        timeout=30,
-                                    )
+                    if logs:
+                        logger.info(
+                            f"Successfully retrieved {len(logs)} log(s) from run {run_id}"
+                        )
+                        return "\n\n".join(logs)
 
-                                    return (
-                                        f"[From historical commit {commit_hash}: {commit_msg[:80]}]\n"
-                                        + commit_logs
-                                    )
-                        except Exception as e:
-                            logger.debug(
-                                f"Error parsing checks for commit {commit_hash}: {e}"
-                            )
-                except Exception as e:
+                except json.JSONDecodeError as e:
                     logger.debug(
-                        f"Error checking commit {commit_hash}: {e}"
+                        f"Failed to parse jobs JSON for run {run_id}: {e}"
                     )
-
-                # Return to previous branch/commit
-                cmd.run_command(
-                    ["git", "checkout", "-"],
-                    timeout=30,
-                )
+                    continue
 
             except Exception as e:
                 logger.debug(
-                    f"Error processing commit {commit_hash}: {e}"
+                    f"Error processing run {run_id}: {e}"
                 )
-                # Try to return to previous state
-                try:
-                    cmd.run_command(
-                        ["git", "checkout", "-"],
-                        timeout=30,
-                    )
-                except Exception:
-                    pass
+                continue
 
         logger.info(
-            "No historical logs found after searching commit history"
+            "No historical logs found after searching recent runs"
         )
         return None
 
@@ -2609,7 +2612,7 @@ def _get_github_actions_logs(
 
         # Try historical search first
         historical_logs = _search_github_actions_logs_from_history(
-            repo_name, config, failed_checks, max_commits=10
+            repo_name, config, failed_checks, max_runs=10
         )
 
         if historical_logs:
