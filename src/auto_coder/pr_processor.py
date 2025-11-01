@@ -858,7 +858,7 @@ def _handle_pr_merge(
                 f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)"
             )
             update_actions = _update_with_base_branch(
-                repo_name, pr_data, config, dry_run
+                repo_name, pr_data, config, dry_run, llm_client
             )
             actions.extend(update_actions)
 
@@ -1002,7 +1002,11 @@ def _force_checkout_pr_manually(
 
 
 def _update_with_base_branch(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    dry_run: bool,
+    llm_client=None,
 ) -> List[str]:
     """Update PR branch with latest base branch commits.
 
@@ -1111,19 +1115,6 @@ def _update_with_base_branch(
         actions.append(f"Error updating with base branch for PR #{pr_number}: {e}")
 
     return actions
-
-
-def _get_merge_conflict_info() -> str:
-    """Get information about merge conflicts."""
-    try:
-        result = cmd.run_command(["git", "status", "--porcelain"])
-        return (
-            result.stdout
-            if result.success
-            else "Could not get merge conflict information"
-        )
-    except Exception as e:
-        return f"Error getting conflict info: {e}"
 
 
 def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
@@ -1412,7 +1403,7 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
 
 
 def _resolve_pr_merge_conflicts(
-    repo_name: str, pr_number: int, config: AutomationConfig
+    repo_name: str, pr_number: int, config: AutomationConfig, llm_client=None
 ) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
     try:
@@ -1502,10 +1493,8 @@ def _resolve_pr_merge_conflicts(
                     logger.error(
                         f"Failed to push updated branch after retry: {retry_push_result.stderr}"
                     )
-                    actions.append(
-                        "Failed to push updated branch after merge conflict resolution"
-                    )
-                    return actions
+                    logger.error("Failed to push after merge conflict resolution")
+                    return False
         else:
             # Merge conflicts detected, use LLM to resolve them
             logger.info(
@@ -2533,7 +2522,9 @@ def get_github_actions_logs_from_url(url: str) -> str:
         return f"Error getting logs: {e}"
 
 
-def _get_github_actions_logs(repo_name: str, config: AutomationConfig, *args, **kwargs) -> str:
+def _get_github_actions_logs(
+    repo_name: str, config: AutomationConfig, *args, **kwargs
+) -> str:
     """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
 
     呼び出し互換:
@@ -2635,13 +2626,17 @@ def _get_github_actions_logs(repo_name: str, config: AutomationConfig, *args, **
                                 ["gh", "run", "view", test_run_id, "--json", "jobs"],
                                 timeout=30,
                             )
-                            if test_jobs_res.returncode == 0 and test_jobs_res.stdout.strip():
+                            if (
+                                test_jobs_res.returncode == 0
+                                and test_jobs_res.stdout.strip()
+                            ):
                                 try:
                                     test_jobs_json = json.loads(test_jobs_res.stdout)
                                     test_jobs = test_jobs_json.get("jobs", [])
                                     # Check if any job has a conclusion that's not "success"
                                     has_failed_jobs = any(
-                                        job.get("conclusion", "").lower() not in ["success", ""]
+                                        job.get("conclusion", "").lower()
+                                        not in ["success", ""]
                                         for job in test_jobs
                                     )
                                     if has_failed_jobs:
