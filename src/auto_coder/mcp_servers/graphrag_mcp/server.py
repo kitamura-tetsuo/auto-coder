@@ -1,12 +1,15 @@
-from mcp.server.fastmcp import FastMCP, Context
 from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
+from mcp.server.fastmcp import FastMCP
 
 # Create an MCP server
-mcp = FastMCP("GraphRAG Code Analysis",
-               dependencies=["neo4j", "qdrant-client", "sentence-transformers"])
+mcp = FastMCP(
+    "GraphRAG Code Analysis",
+    dependencies=["neo4j", "qdrant-client", "sentence-transformers"],
+)
 
 # Initialize the code analysis tool
 code_tool = CodeAnalysisTool()
+
 
 @mcp.tool()
 def find_symbol(fqname: str) -> dict:
@@ -37,8 +40,9 @@ def find_symbol(fqname: str) -> dict:
     """
     return code_tool.find_symbol(fqname)
 
+
 @mcp.tool()
-def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> dict:
+def get_call_graph(symbol_id: str, direction: str = "both", depth: int = 1) -> dict:
     """
     Get the call graph for a symbol to understand function/method relationships.
 
@@ -61,6 +65,7 @@ def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> d
     """
     return code_tool.get_call_graph(symbol_id, direction, depth)
 
+
 @mcp.tool()
 def get_dependencies(file_path: str) -> dict:
     """
@@ -81,6 +86,7 @@ def get_dependencies(file_path: str) -> dict:
         get_dependencies("src/utils/hash.ts")
     """
     return code_tool.get_dependencies(file_path)
+
 
 @mcp.tool()
 def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
@@ -109,6 +115,7 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
     """
     return code_tool.impact_analysis(symbol_ids, max_depth)
 
+
 @mcp.tool()
 def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) -> dict:
     """
@@ -133,6 +140,7 @@ def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) 
         semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"])
     """
     return code_tool.semantic_code_search(query, limit, kind_filter)
+
 
 @mcp.resource("https://graphrag.db/schema/neo4j")
 def get_graph_schema() -> str:
@@ -178,26 +186,32 @@ def get_graph_schema() -> str:
         schema = []
         with code_tool.neo4j_driver.session() as session:
             # Get node labels
-            result = session.run("""
+            result = session.run(
+                """
             CALL db.labels() YIELD label
             RETURN collect(label) as labels
-            """)
+            """
+            )
             labels = result.single()["labels"]
             schema.append("Node Labels: " + ", ".join(labels))
 
             # Get relationship types
-            result = session.run("""
+            result = session.run(
+                """
             CALL db.relationshipTypes() YIELD relationshipType
             RETURN collect(relationshipType) as types
-            """)
+            """
+            )
             rel_types = result.single()["types"]
             schema.append("Relationship Types: " + ", ".join(rel_types))
 
             # Get property keys
-            result = session.run("""
+            result = session.run(
+                """
             CALL db.propertyKeys() YIELD propertyKey
             RETURN collect(propertyKey) as keys
-            """)
+            """
+            )
             prop_keys = result.single()["keys"]
             schema.append("Property Keys: " + ", ".join(prop_keys))
 
@@ -211,6 +225,7 @@ def get_graph_schema() -> str:
         return "\n".join(schema)
     except Exception as e:
         return f"Error retrieving graph schema: {str(e)}"
+
 
 @mcp.resource("https://graphrag.db/collection/qdrant")
 def get_vector_collection_info() -> str:
@@ -236,13 +251,15 @@ def get_vector_collection_info() -> str:
     """
     try:
         info = []
-        collection_info = code_tool.qdrant_client.get_collection(code_tool.qdrant_collection)
+        collection_info = code_tool.qdrant_client.get_collection(
+            code_tool.qdrant_collection
+        )
 
         # Try to extract vectors count based on client version
         vectors_count = 0
-        if hasattr(collection_info, 'vectors_count'):
+        if hasattr(collection_info, "vectors_count"):
             vectors_count = collection_info.vectors_count
-        elif hasattr(collection_info, 'points_count'):
+        elif hasattr(collection_info, "points_count"):
             vectors_count = collection_info.points_count
 
         info.append(f"Collection: {code_tool.qdrant_collection}")
@@ -251,19 +268,24 @@ def get_vector_collection_info() -> str:
 
         # Add vector configuration
         try:
-            if hasattr(collection_info, 'config'):
-                if hasattr(collection_info.config, 'params'):
-                    vector_size = getattr(collection_info.config.params, 'vector_size', 'unknown')
+            if hasattr(collection_info, "config"):
+                if hasattr(collection_info.config, "params"):
+                    vector_size = getattr(
+                        collection_info.config.params, "vector_size", "unknown"
+                    )
                     info.append(f"Vector Size: {vector_size}")
 
-                    distance = getattr(collection_info.config.params, 'distance', 'unknown')
+                    distance = getattr(
+                        collection_info.config.params, "distance", "unknown"
+                    )
                     info.append(f"Distance Function: {distance}")
-        except:
+        except Exception:
             info.append("Could not retrieve detailed vector configuration")
 
         return "\n".join(info)
     except Exception as e:
         return f"Error retrieving vector collection info: {str(e)}"
 
+
 if __name__ == "__main__":
-    mcp.run() 
+    mcp.run()

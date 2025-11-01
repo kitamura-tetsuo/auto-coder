@@ -16,12 +16,11 @@ from .cli_commands_main import (
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
 from .cli_commands_utils import auth_status, get_actions_logs
-from .cli_helpers import qwen_help_has_flags  # Re-export for tests
+from .cli_helpers import qwen_help_has_flags  # Re-export for tests  # noqa: F401
 from .update_manager import maybe_run_auto_update, record_startup_options
 
 # Load environment variables
 load_dotenv()
-
 
 
 @click.group()

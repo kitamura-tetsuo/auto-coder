@@ -1,8 +1,9 @@
 """Tests for MCP Manager."""
 
-import pytest
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
 
 from src.auto_coder.mcp_manager import (
     MCPServerConfig,
@@ -91,7 +92,7 @@ class TestMCPServerManager:
         manager = MCPServerManager()
 
         # Mock config with non-existent directory
-        with patch.object(manager, 'get_server_config') as mock_get:
+        with patch.object(manager, "get_server_config") as mock_get:
             mock_config = MCPServerConfig(
                 name="test-server",
                 bundled_path=Path("/path/to/bundled"),
@@ -112,7 +113,7 @@ class TestMCPServerManager:
         manager = MCPServerManager()
 
         # Mock config with non-existent directory
-        with patch.object(manager, 'get_server_config') as mock_get:
+        with patch.object(manager, "get_server_config") as mock_get:
             mock_config = MCPServerConfig(
                 name="test-server",
                 bundled_path=Path("/path/to/bundled"),
@@ -128,9 +129,9 @@ class TestMCPServerManager:
 
         assert manager.get_server_path("non-existent") is None
 
-    @patch('subprocess.run')
-    @patch('shutil.copytree')
-    @patch('shutil.copy2')
+    @patch("subprocess.run")
+    @patch("shutil.copytree")
+    @patch("shutil.copy2")
     def test_setup_server_basic(self, mock_copy2, mock_copytree, mock_run, tmp_path):
         """Test basic server setup."""
         manager = MCPServerManager()
@@ -158,7 +159,7 @@ class TestMCPServerManager:
         mock_run.return_value = Mock(returncode=0)
 
         # Mock backend config methods
-        with patch.object(manager, '_add_codex_config', return_value=True):
+        with patch.object(manager, "_add_codex_config", return_value=True):
             # Setup server
             result = manager.setup_server(
                 "test-server",
@@ -182,7 +183,7 @@ class TestMCPServerManager:
 
         assert result is False
 
-    @patch('subprocess.run')
+    @patch("subprocess.run")
     def test_setup_server_uv_failure(self, mock_run, tmp_path):
         """Test server setup with uv failure."""
         manager = MCPServerManager()
@@ -248,8 +249,6 @@ class TestGetMCPManager:
         assert "test-watcher" in manager.servers
 
 
-
-
 class TestMCPServerManagerClaude:
     """Tests for MCPServerManager with Claude backend."""
 
@@ -262,7 +261,9 @@ class TestMCPServerManagerClaude:
 
     def test_add_backend_config_claude_failure(self, tmp_path):
         manager = MCPServerManager()
-        with patch.object(manager, "_add_claude_config", return_value=False) as mock_add:
+        with patch.object(
+            manager, "_add_claude_config", return_value=False
+        ) as mock_add:
             ok = manager.add_backend_config("graphrag", "claude", tmp_path)
             assert ok is False
             mock_add.assert_called_once()
