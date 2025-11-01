@@ -88,7 +88,7 @@ class AutomationEngine:
                         "data": pr_data,
                         "priority": priority,
                         "branch_name": pr_data.get("head", {}).get("ref"),
-                        "related_issues": self._extract_linked_issues_from_pr_body(
+                        "related_issues": _extract_linked_issues_from_pr_body(
                             pr_data.get("body", "")
                         )
                     })
