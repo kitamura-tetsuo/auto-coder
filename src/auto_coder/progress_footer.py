@@ -177,7 +177,8 @@ class ProgressFooter:
             # Log for file logging
             if self._current_item_type and self._current_item_number:
                 logger.debug(
-                    f"Progress: {self._current_item_type} #{self._current_item_number} - {' / '.join(self._stage_stack)}"
+                    f"Progress: {self._current_item_type} #{self._current_item_number} - "
+                    f"{' / '.join(self._stage_stack)}"
                 )
             self._render_footer()
 

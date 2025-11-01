@@ -793,5 +793,22 @@ DO NOT include git commit or push commands in your response."""
         """Merge PR."""
         return True
 
+    def parse_commit_history_with_actions(
+        self, repo_name: str, search_depth: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Parse git commit history and identify commits that triggered GitHub Actions.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            search_depth: Number of recent commits to check (default: 10)
+
+        Returns:
+            List of commits that have GitHub Actions runs with status information.
+            Each dict contains: commit_hash, message, actions_status, actions_url
+        """
+        from .pr_processor import parse_git_commit_history_for_actions
+
+        return parse_git_commit_history_for_actions(max_depth=search_depth)
+
     # Constants
     FLAG_SKIP_ANALYSIS = "[SKIP_LLM_ANALYSIS]"

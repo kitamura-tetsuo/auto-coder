@@ -1,8 +1,12 @@
+import importlib
 import subprocess
 import sys
 
 
-def test_cli_get_actions_logs_strips_prelude_and_is_compact():
+def test_cli_get_actions_logs_strips_prelude_and_is_compact(
+    _use_real_home, _use_real_commands
+):
+    importlib.reload(subprocess)
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/17006383413/job/48216559181?pr=502"
     # Run CLI and capture output; pass dummy token to avoid auth prompt
     # Use a wrapper script that checks PYTHONPATH before running the CLI
