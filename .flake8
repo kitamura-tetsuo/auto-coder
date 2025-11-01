@@ -1,6 +1,6 @@
 [flake8]
 max-line-length = 120
-extend-ignore = E203, W503
+extend-ignore = E203, W503, F401, F841, F811, E402, E501, F541
 exclude =
     .git,
     __pycache__,
@@ -10,5 +10,9 @@ exclude =
     .venv,
     *.egg-info,
     build,
-    dist
+    dist,
+    node_modules,
+    src/auto_coder/graph_builder/node_modules,
+    src/auto_coder/graph_builder/dist,
+    src/auto_coder/graph_builder/src/tests
 

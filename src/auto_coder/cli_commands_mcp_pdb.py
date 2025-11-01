@@ -101,4 +101,3 @@ def mcp_pdb_status() -> None:
     click.echo(
         "  - Claude Code: 'claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb'"
     )
-

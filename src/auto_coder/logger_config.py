@@ -123,9 +123,17 @@ def setup_logger(
 
     # Add console handler (to specified stream or progress footer sink)
     if progress_footer is not None:
-        logger.add(progress_footer.sink_wrapper, format=format_string, level=level, colorize=True, enqueue=True)
+        logger.add(
+            progress_footer.sink_wrapper,
+            format=format_string,
+            level=level,
+            colorize=True,
+            enqueue=True,
+        )
     else:
-        logger.add(stream, format=format_string, level=level, colorize=True, enqueue=True)
+        logger.add(
+            stream, format=format_string, level=level, colorize=True, enqueue=True
+        )
 
     # Add file handler if specified
     if log_file:
