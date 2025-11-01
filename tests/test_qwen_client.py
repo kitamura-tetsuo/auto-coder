@@ -1,6 +1,7 @@
 """
 Tests for Qwen client functionality.
 """
+
 from unittest.mock import patch
 
 import pytest

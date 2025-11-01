@@ -3,6 +3,7 @@
 import os
 import shlex
 import subprocess
+from pathlib import Path
 from typing import Any, Optional
 
 import click
@@ -102,7 +103,9 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
             click.echo("Troubleshooting tips:")
             click.echo("   1. Start containers manually: auto-coder graphrag start")
             click.echo("   2. Check container status: auto-coder graphrag status")
-            click.echo("   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs")
+            click.echo(
+                "   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs"
+            )
             raise click.ClickException(
                 "Failed to initialize GraphRAG environment. "
                 "Run 'auto-coder graphrag start' to start containers."
@@ -177,8 +180,12 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
             manager = get_mcp_manager()
             success = True
             for backend in backends:
-                if not manager.add_backend_config(server_name, backend, default_mcp_dir):
-                    logger.warning(f"Failed to configure {backend} backend for {server_name}")
+                if not manager.add_backend_config(
+                    server_name, backend, default_mcp_dir
+                ):
+                    logger.warning(
+                        f"Failed to configure {backend} backend for {server_name}"
+                    )
                     success = False
 
             if success:
@@ -209,14 +216,24 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
                 from .mcp_manager import get_mcp_manager
 
                 manager = get_mcp_manager()
-                success = manager.add_backend_config(server_name, backend, default_mcp_dir)
+                success = manager.add_backend_config(
+                    server_name, backend, default_mcp_dir
+                )
 
                 if success:
-                    logger.info(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
-                    click.echo(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
+                    logger.info(
+                        f"✅ GraphRAG MCP server configuration added successfully for {backend}"
+                    )
+                    click.echo(
+                        f"✅ GraphRAG MCP server configuration added successfully for {backend}"
+                    )
                 else:
-                    logger.error(f"❌ GraphRAG MCP server configuration failed for {backend}")
-                    click.echo(f"❌ GraphRAG MCP server configuration failed for {backend}")
+                    logger.error(
+                        f"❌ GraphRAG MCP server configuration failed for {backend}"
+                    )
+                    click.echo(
+                        f"❌ GraphRAG MCP server configuration failed for {backend}"
+                    )
                     click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
             else:
                 logger.info(f"✅ GraphRAG MCP server already configured for {backend}")
@@ -340,8 +357,7 @@ def check_claude_cli_or_fail() -> None:
     except Exception:
         pass
     raise click.ClickException(
-        "Claude CLI is required. Please install it from:\n"
-        "https://claude.ai/download"
+        "Claude CLI is required. Please install it from:\n" "https://claude.ai/download"
     )
 
 
@@ -477,6 +493,73 @@ def build_backend_manager(
     )
 
 
+def check_github_sub_issue_or_setup() -> None:
+    """Check if github-sub-issue tool is available, auto-setup if missing.
+
+    This function checks if the github-sub-issue CLI tool is installed and working.
+    If not available, it automatically installs the tool from utils/github-sub-issue.
+    """
+    try:
+        result = subprocess.run(
+            ["github-sub-issue", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            click.echo("Using github-sub-issue CLI")
+            return
+    except Exception:
+        pass
+
+    # Try alternative version check
+    try:
+        result = subprocess.run(
+            ["github-sub-issue", "list", "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            click.echo("Using github-sub-issue CLI")
+            return
+    except Exception:
+        pass
+
+    # Auto-setup github-sub-issue tool
+    click.echo()
+    click.echo("⚠️  github-sub-issue tool not found")
+    click.echo("   Automatically installing github-sub-issue tool...")
+    click.echo()
+
+    utils_dir = Path(__file__).parent.parent.parent / "utils" / "github-sub-issue"
+    if not utils_dir.exists():
+        raise click.ClickException(
+            f"github-sub-issue source directory not found at {utils_dir}. "
+            "Cannot auto-install."
+        )
+
+    try:
+        # Install the tool in editable mode
+        result = subprocess.run(
+            ["pip", "install", "-e", str(utils_dir)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            click.echo("✅ github-sub-issue tool installed successfully")
+            return
+        else:
+            click.echo(f"❌ Installation failed: {result.stderr}")
+            raise click.ClickException(
+                f"Failed to install github-sub-issue tool: {result.stderr}"
+            )
+    except Exception as e:
+        click.echo(f"❌ Installation error: {e}")
+        raise click.ClickException(f"Failed to install github-sub-issue tool: {e}")
+
+
 def qwen_help_has_flags(required_flags: list[str]) -> bool:
     """Lightweight probe for qwen --help to verify presence of required flags.
 
@@ -514,4 +597,3 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
         return all(flag_present(f) for f in required_flags)
     except Exception:
         return False
-

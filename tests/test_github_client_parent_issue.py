@@ -121,4 +121,3 @@ class TestGitHubClientParentIssue:
         result = client.get_parent_issue("owner/repo", 100)
         # Should still return parent issue number even if closed
         assert result == 1
-
