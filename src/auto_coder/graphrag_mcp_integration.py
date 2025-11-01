@@ -5,11 +5,13 @@ Integrates graphrag_mcp server with LLM clients to provide
 Neo4j and Qdrant context during LLM invocations.
 """
 
+import hashlib
 import json
 import os
 import shlex
 import subprocess
 import threading
+from pathlib import Path
 from typing import Optional
 
 from .graphrag_docker_manager import GraphRAGDockerManager
@@ -44,6 +46,23 @@ class GraphRAGMCPIntegration:
 
         self.mcp_server_path = mcp_server_path
         self.mcp_process: Optional[subprocess.Popen] = None
+
+    def get_repository_label(self, repo_path: Optional[str] = None) -> str:
+        """Get repository-specific label for Neo4j nodes.
+
+        Args:
+            repo_path: Optional path to repository. If None, uses index manager's repo_path.
+
+        Returns:
+            Repository-specific label in the format 'Repo_XXXXXXXX'
+        """
+        if repo_path is None:
+            repo_path = self.index_manager.repo_path
+        else:
+            repo_path = Path(repo_path)
+
+        repo_hash = hashlib.sha256(str(repo_path.resolve()).encode()).hexdigest()[:8].upper()
+        return f"Repo_{repo_hash}"
 
     def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
         """Ensure GraphRAG environment is ready for use.
