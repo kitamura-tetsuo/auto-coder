@@ -2,11 +2,12 @@
 BackendManager: 複数バックエンドを循環的に管理し、使用料制限や
 apply_workspace_test_fix での同一 current_test_file 3連続時の自動切替を行う。
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from auto_coder.progress_footer import ProgressStage
+from .progress_footer import ProgressStage
 
 from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMBackendManagerBase
@@ -236,7 +237,9 @@ class BackendManager(LLMBackendManagerBase):
         cli = self._get_or_create_client(self._current_backend_name())
         return cli.check_mcp_server_configured(server_name)
 
-    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+    def add_mcp_server_config(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Add MCP server configuration for the current backend.
 
         Args:
@@ -276,7 +279,9 @@ class BackendManager(LLMBackendManagerBase):
                     all_success = False
 
             except Exception as e:
-                logger.error(f"Error configuring MCP server '{server_name}' for backend '{backend_name}': {e}")
+                logger.error(
+                    f"Error configuring MCP server '{server_name}' for backend '{backend_name}': {e}"
+                )
                 all_success = False
 
         return all_success

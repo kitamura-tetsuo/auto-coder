@@ -4,7 +4,11 @@ import os
 import sys
 
 import click
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = lambda: None  # Fallback if python-dotenv is not installed
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_graphrag import graphrag_group
@@ -21,7 +25,6 @@ from .update_manager import maybe_run_auto_update, record_startup_options
 
 # Load environment variables
 load_dotenv()
-
 
 
 @click.group()

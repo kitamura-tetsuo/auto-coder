@@ -206,8 +206,11 @@ class TestGitHubClient:
         client = GitHubClient(mock_github_token)
 
         # Mock get_pr_details to return a simple dict
-        with patch.object(client, 'get_pr_details') as mock_get_details:
-            mock_get_details.return_value = {"number": 123, "head_branch": "feature-branch"}
+        with patch.object(client, "get_pr_details") as mock_get_details:
+            mock_get_details.return_value = {
+                "number": 123,
+                "head_branch": "feature-branch",
+            }
 
             # Execute
             result = client.find_pr_by_head_branch("test/repo", "feature-branch")
@@ -218,7 +221,9 @@ class TestGitHubClient:
             mock_get_details.assert_called_once_with(mock_pr1)
 
     @patch("src.auto_coder.github_client.Github")
-    def test_find_pr_by_head_branch_not_found(self, mock_github_class, mock_github_token):
+    def test_find_pr_by_head_branch_not_found(
+        self, mock_github_class, mock_github_token
+    ):
         """Test finding PR by head branch when PR does not exist."""
         # Setup
         mock_github = Mock()
@@ -833,7 +838,11 @@ class TestGitHubClient:
                         "closingIssuesReferences": {
                             "nodes": [
                                 {"number": 123, "title": "Bug report", "state": "OPEN"},
-                                {"number": 124, "title": "Another bug", "state": "OPEN"},
+                                {
+                                    "number": 124,
+                                    "title": "Another bug",
+                                    "state": "OPEN",
+                                },
                             ]
                         },
                     }
