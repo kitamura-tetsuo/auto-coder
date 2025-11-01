@@ -5,7 +5,6 @@ This module provides a unified interface for managing multiple MCP servers
 (graphrag_mcp, test_watcher, etc.) with automatic setup and configuration.
 """
 
-import os
 import shutil
 import subprocess
 from dataclasses import dataclass

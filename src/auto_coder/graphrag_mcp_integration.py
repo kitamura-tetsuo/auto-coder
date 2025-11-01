@@ -5,7 +5,6 @@ Integrates graphrag_mcp server with LLM clients to provide
 Neo4j and Qdrant context during LLM invocations.
 """
 
-import json
 import os
 import shlex
 import subprocess

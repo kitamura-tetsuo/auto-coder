@@ -1,4 +1,4 @@
-# gh-sub-issue
+# github-sub-issue
 
 GitHub の sub-issues 機能を操作するための Python ユーティリティーです。
 
@@ -20,7 +20,7 @@ GitHub の sub-issues 機能を操作するための Python ユーティリテ�
 
 ```bash
 # リポジトリのルートから
-cd utils/gh-sub-issue
+cd utils/github-sub-issue
 pip install -e .
 ```
 
@@ -30,30 +30,30 @@ pip install -e .
 
 ```bash
 # issue 番号を使用 (親 issue 123 に既存 issue 456 を追加)
-gh-sub-issue add 123 456
+github-sub-issue add 123 456
 
 # URL を使用
-gh-sub-issue add https://github.com/owner/repo/issues/123 456
+github-sub-issue add https://github.com/owner/repo/issues/123 456
 
 # リポジトリを指定
-gh-sub-issue add 123 456 --repo owner/repo
+github-sub-issue add 123 456 --repo owner/repo
 ```
 
 ### 新しい sub-issue を作成
 
 ```bash
 # 基本的な使い方
-gh-sub-issue create --parent 123 --title "ユーザー認証の実装"
+github-sub-issue create --parent 123 --title "ユーザー認証の実装"
 
 # 説明とラベルを追加
-gh-sub-issue create --parent 123 \
+github-sub-issue create --parent 123 \
   --title "ログインエンドポイントの追加" \
   --body "POST /api/login エンドポイントを実装" \
   --label "backend,api" \
   --assignee "@me"
 
 # 親 issue の URL を使用
-gh-sub-issue create \
+github-sub-issue create \
   --parent https://github.com/owner/repo/issues/123 \
   --title "API テストを書く"
 ```
@@ -62,32 +62,32 @@ gh-sub-issue create \
 
 ```bash
 # 基本的な一覧表示
-gh-sub-issue list 123
+github-sub-issue list 123
 
 # すべての状態を表示 (open, closed)
-gh-sub-issue list 123 --state all
+github-sub-issue list 123 --state all
 
 # JSON 出力
-gh-sub-issue list 123 --json
+github-sub-issue list 123 --json
 
 # URL を使用
-gh-sub-issue list https://github.com/owner/repo/issues/123
+github-sub-issue list https://github.com/owner/repo/issues/123
 ```
 
 ### sub-issue の削除
 
 ```bash
 # 単一の sub-issue を削除
-gh-sub-issue remove 123 456
+github-sub-issue remove 123 456
 
 # 複数の sub-issue を削除
-gh-sub-issue remove 123 456 457 458
+github-sub-issue remove 123 456 457 458
 
 # 確認をスキップ
-gh-sub-issue remove 123 456 --force
+github-sub-issue remove 123 456 --force
 
 # URL を使用
-gh-sub-issue remove https://github.com/owner/repo/issues/123 456
+github-sub-issue remove https://github.com/owner/repo/issues/123 456
 ```
 
 ## 開発

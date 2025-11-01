@@ -1003,8 +1003,17 @@ def process_single(
                         repo_name, number
                     )
 
-                    # For single issue processing, we don't check for @auto-coder label
-                    # since users may want to manually process specific issues regardless of label presence
+                    # Check if issue already has @auto-coder label (being processed by another instance)
+                    push_progress_stage("Checking status")
+                    if not dry_run and not github_client.disable_labels:
+                        current_labels = issue_data.get("labels", [])
+                        if "@auto-coder" in current_labels:
+                            msg = f"Skipping issue #{number} - already has @auto-coder label"
+                            logger.info(msg)
+                            result["errors"].append(msg)
+                            newline_progress()
+                            return result
+
                     # Add @auto-coder label now that we're actually going to process this issue
                     if not dry_run:
                         if not github_client.try_add_work_in_progress_label(
