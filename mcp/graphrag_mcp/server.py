@@ -1,3 +1,8 @@
+import hashlib
+import threading
+from pathlib import Path
+from typing import Dict, Optional
+
 from mcp.server.fastmcp import FastMCP, Context
 from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
 
@@ -8,8 +13,159 @@ mcp = FastMCP("GraphRAG Code Analysis",
 # Initialize the code analysis tool
 code_tool = CodeAnalysisTool()
 
+# Session registry for tracking active sessions
+_session_registry_lock = threading.Lock()
+_session_registry: Dict[str, dict] = {}
+
+
+def _register_session(session_id: str, repo_path: str, collection_name: str) -> None:
+    """Register a session in the registry.
+
+    Args:
+        session_id: Unique session identifier
+        repo_path: Repository path
+        collection_name: Collection name for this session
+    """
+    with _session_registry_lock:
+        _session_registry[session_id] = {
+            "session_id": session_id,
+            "repo_path": repo_path,
+            "collection_name": collection_name,
+        }
+
+
+def _get_session(session_id: str) -> Optional[dict]:
+    """Get session information from registry.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Session information dict or None if not found
+    """
+    with _session_registry_lock:
+        return _session_registry.get(session_id)
+
+
+def _generate_collection_name(repo_path: str) -> str:
+    """Generate repository-specific collection name.
+
+    Args:
+        repo_path: Repository path
+
+    Returns:
+        Collection name prefixed with 'repo_' followed by hash
+    """
+    repo_hash = hashlib.sha256(str(repo_path).encode()).hexdigest()[:16]
+    return f"repo_{repo_hash}"
+
+
+def _get_collection_for_session(session_id: Optional[str] = None, repo_path: Optional[str] = None) -> str:
+    """Get collection name for a session.
+
+    Args:
+        session_id: Session identifier (optional)
+        repo_path: Repository path (optional, used if session_id not provided)
+
+    Returns:
+        Collection name to use for queries
+    """
+    if session_id:
+        session = _get_session(session_id)
+        if session:
+            return session["collection_name"]
+
+    # Fallback to default collection
+    if repo_path:
+        return _generate_collection_name(repo_path)
+
+    return code_tool.qdrant_collection
+
+
 @mcp.tool()
-def find_symbol(fqname: str) -> dict:
+def set_repository_context(repo_path: str, session_id: str = None) -> dict:
+    """Set working repository context for this session.
+
+    This tool establishes the repository context for subsequent queries,
+    enabling data isolation between multiple repositories.
+
+    Args:
+        repo_path: Absolute or relative path to repository
+        session_id: Unique session identifier (optional, will generate if not provided)
+
+    Returns:
+        Session information including session_id, repository path, and collection name
+    """
+    try:
+        # Convert to absolute path
+        abs_repo_path = str(Path(repo_path).resolve())
+
+        # Generate session ID if not provided
+        if not session_id:
+            import uuid
+            session_id = str(uuid.uuid4())[:8]
+
+        # Generate collection name
+        collection_name = _generate_collection_name(abs_repo_path)
+
+        # Register session
+        _register_session(session_id, abs_repo_path, collection_name)
+
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "repository": abs_repo_path,
+            "collection_name": collection_name,
+            "message": "Repository context set successfully"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": f"Failed to set repository context: {str(e)}"
+        }
+
+
+@mcp.tool()
+def get_session_info(session_id: str) -> dict:
+    """Get information about a session.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Session information if found, error message otherwise
+    """
+    session = _get_session(session_id)
+    if session:
+        return {
+            "status": "ok",
+            "session": session
+        }
+    else:
+        return {
+            "status": "error",
+            "error": f"Session '{session_id}' not found"
+        }
+
+
+@mcp.tool()
+def list_sessions() -> dict:
+    """List all active sessions.
+
+    Returns:
+        List of active sessions with their information
+    """
+    with _session_registry_lock:
+        sessions = list(_session_registry.values())
+
+    return {
+        "status": "ok",
+        "sessions": sessions,
+        "count": len(sessions)
+    }
+
+@mcp.tool()
+def find_symbol(fqname: str, session_id: str = None) -> dict:
     """
     Find a code symbol by fully qualified name.
 
@@ -18,6 +174,7 @@ def find_symbol(fqname: str) -> dict:
 
     Args:
         fqname: Fully qualified name (e.g., 'src/utils.ts::calculateHash' or 'src/models/User.ts::User::getName')
+        session_id: Optional session identifier for repository-specific search
 
     Returns:
         Symbol details including:
@@ -33,12 +190,12 @@ def find_symbol(fqname: str) -> dict:
         - tags: Associated tags
 
     Example:
-        find_symbol("src/utils/hash.ts::calculateHash")
+        find_symbol("src/utils/hash.ts::calculateHash", session_id="abc123")
     """
     return code_tool.find_symbol(fqname)
 
 @mcp.tool()
-def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> dict:
+def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1, session_id: str = None) -> dict:
     """
     Get the call graph for a symbol to understand function/method relationships.
 
@@ -50,6 +207,7 @@ def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> d
         symbol_id: Symbol ID (obtained from find_symbol)
         direction: 'callers' (who calls this), 'callees' (what this calls), or 'both' (default: 'both')
         depth: Traversal depth 1-3 (default: 1). Higher depth shows indirect relationships.
+        session_id: Optional session identifier for repository-specific search
 
     Returns:
         Call graph with:
@@ -57,12 +215,12 @@ def get_call_graph(symbol_id: str, direction: str = 'both', depth: int = 1) -> d
         - edges: List of call relationships with call counts
 
     Example:
-        get_call_graph("symbol_123", direction="callers", depth=2)
+        get_call_graph("symbol_123", direction="callers", depth=2, session_id="abc123")
     """
     return code_tool.get_call_graph(symbol_id, direction, depth)
 
 @mcp.tool()
-def get_dependencies(file_path: str) -> dict:
+def get_dependencies(file_path: str, session_id: str = None) -> dict:
     """
     Get file dependencies (import relationships).
 
@@ -71,6 +229,7 @@ def get_dependencies(file_path: str) -> dict:
 
     Args:
         file_path: File path (e.g., 'src/utils.ts')
+        session_id: Optional session identifier for repository-specific search
 
     Returns:
         Dependency information:
@@ -78,12 +237,12 @@ def get_dependencies(file_path: str) -> dict:
         - imported_by: List of files that import this file (with import counts)
 
     Example:
-        get_dependencies("src/utils/hash.ts")
+        get_dependencies("src/utils/hash.ts", session_id="abc123")
     """
     return code_tool.get_dependencies(file_path)
 
 @mcp.tool()
-def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
+def impact_analysis(symbol_ids: list, max_depth: int = 2, session_id: str = None) -> dict:
     """
     Analyze the impact of changing given symbols across the codebase.
 
@@ -97,6 +256,7 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
     Args:
         symbol_ids: List of symbol IDs to analyze (obtained from find_symbol)
         max_depth: Maximum traversal depth 1-3 (default: 2)
+        session_id: Optional session identifier for repository-specific search
 
     Returns:
         Impact analysis:
@@ -105,12 +265,12 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
         - impact_summary: Summary statistics (total counts, breakdown by kind)
 
     Example:
-        impact_analysis(["symbol_123", "symbol_456"], max_depth=2)
+        impact_analysis(["symbol_123", "symbol_456"], max_depth=2, session_id="abc123")
     """
     return code_tool.impact_analysis(symbol_ids, max_depth)
 
 @mcp.tool()
-def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) -> dict:
+def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None, session_id: str = None) -> dict:
     """
     Search for code using natural language semantic similarity.
 
@@ -124,15 +284,17 @@ def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) 
         limit: Maximum number of results to return (default: 10)
         kind_filter: Optional list of symbol kinds to filter results
                     (e.g., ['Function', 'Class', 'Method'])
+        session_id: Optional session identifier for repository-specific search
 
     Returns:
         Semantically similar symbols:
         - symbols: List of matching symbols with similarity scores
 
     Example:
-        semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"])
+        semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"], session_id="abc123")
     """
-    return code_tool.semantic_code_search(query, limit, kind_filter)
+    collection_name = _get_collection_for_session(session_id)
+    return code_tool.semantic_code_search(query, limit, kind_filter, collection_name)
 
 @mcp.resource("https://graphrag.db/schema/neo4j")
 def get_graph_schema() -> str:
