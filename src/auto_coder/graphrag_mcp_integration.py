@@ -248,6 +248,14 @@ class GraphRAGMCPIntegration:
         """Cleanup resources."""
         self.stop_mcp_server()
 
+    def get_repository_collection_name(self) -> str:
+        """Get the repository-specific collection name for the current repository.
+
+        Returns:
+            Collection name in format 'repo_{hash[:16]}'
+        """
+        return self.index_manager._get_repository_collection_name()
+
     def get_mcp_config_for_llm(self) -> Optional[dict]:
         """Get MCP configuration to pass to LLM client.
 
@@ -257,6 +265,9 @@ class GraphRAGMCPIntegration:
         if not self.is_mcp_server_running():
             return None
 
+        # Get the repository-specific collection name
+        collection_name = self.get_repository_collection_name()
+
         # MCP server provides tool definitions dynamically
         # LLM client will discover tools via MCP protocol
         return {
@@ -265,5 +276,6 @@ class GraphRAGMCPIntegration:
                 "https://graphrag.db/schema/neo4j",
                 "https://graphrag.db/collection/qdrant",
             ],
+            "qdrant_collection": collection_name,
         }
 

@@ -338,3 +338,62 @@ def test_is_index_up_to_date_path_and_hash_match(index_manager, temp_repo):
     result = index_manager.is_index_up_to_date()
     assert result is True
 
+
+def test_get_repository_collection_name(index_manager, temp_repo):
+    """Test repository collection name generation."""
+    collection_name = index_manager._get_repository_collection_name()
+
+    # Should follow format 'repo_{hash[:16]}'
+    assert collection_name.startswith("repo_")
+    assert len(collection_name) == len("repo_") + 16
+    assert collection_name == f"repo_{hashlib.sha256(str(temp_repo.resolve()).encode()).hexdigest()[:16]}"
+
+
+def test_get_repository_collection_name_consistent(index_manager, temp_repo):
+    """Test that collection name is consistent for the same repository."""
+    name1 = index_manager._get_repository_collection_name()
+    name2 = index_manager._get_repository_collection_name()
+
+    assert name1 == name2
+
+
+def test_get_repository_collection_name_different_repos(tmp_path):
+    """Test that different repositories get different collection names."""
+    repo1_path = tmp_path / "repo1"
+    repo1_path.mkdir()
+    (repo1_path / "file1.py").write_text("print('repo1')")
+
+    repo2_path = tmp_path / "repo2"
+    repo2_path.mkdir()
+    (repo2_path / "file2.py").write_text("print('repo2')")
+
+    manager1 = GraphRAGIndexManager(repo_path=str(repo1_path))
+    manager2 = GraphRAGIndexManager(repo_path=str(repo2_path))
+
+    name1 = manager1._get_repository_collection_name()
+    name2 = manager2._get_repository_collection_name()
+
+    # Different repos should have different collection names
+    assert name1 != name2
+    assert name1.startswith("repo_")
+    assert name2.startswith("repo_")
+
+
+def test_get_repository_collection_name_with_symlink(tmp_path):
+    """Test collection name generation with symlinked repositories."""
+    real_repo = tmp_path / "real_repo"
+    real_repo.mkdir()
+    (real_repo / "file.py").write_text("print('real')")
+
+    symlink_repo = tmp_path / "symlink_repo"
+    symlink_repo.symlink_to(real_repo)
+
+    manager_real = GraphRAGIndexManager(repo_path=str(real_repo))
+    manager_symlink = GraphRAGIndexManager(repo_path=str(symlink_repo))
+
+    name_real = manager_real._get_repository_collection_name()
+    name_symlink = manager_symlink._get_repository_collection_name()
+
+    # Symlink should resolve to the same real path, so same collection name
+    assert name_real == name_symlink
+

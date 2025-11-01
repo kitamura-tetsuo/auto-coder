@@ -17,7 +17,7 @@ logger = logging.getLogger('graphrag')
 class CodeAnalysisTool:
     """MCP Tool for querying TypeScript/JavaScript code structure using GraphRAG."""
 
-    def __init__(self):
+    def __init__(self, collection_name: Optional[str] = None):
         # Neo4j connection
         self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
         self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
@@ -27,7 +27,8 @@ class CodeAnalysisTool:
         # Qdrant connection
         self.qdrant_host = os.getenv("QDRANT_HOST", "localhost")
         self.qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
-        self.qdrant_collection = os.getenv("QDRANT_COLLECTION", "code_chunks")
+        # Use provided collection_name or environment variable or default
+        self.qdrant_collection = collection_name or os.getenv("QDRANT_COLLECTION", "code_chunks")
         self.qdrant_client = None
 
         # Embedding model
@@ -410,7 +411,8 @@ class CodeAnalysisTool:
         return result
 
     def semantic_code_search(self, query: str, limit: int = 10,
-                            kind_filter: Optional[List[str]] = None) -> Dict[str, Any]:
+                            kind_filter: Optional[List[str]] = None,
+                            collection_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Search for code using semantic similarity.
 
@@ -418,6 +420,8 @@ class CodeAnalysisTool:
             query: Natural language query describing what you're looking for
             limit: Maximum number of results to return
             kind_filter: Optional list of symbol kinds to filter (e.g., ['Function', 'Class'])
+            collection_name: Optional collection name to search in. If not specified,
+                           uses the default collection set during initialization.
 
         Returns:
             Semantically similar code symbols with scores
@@ -441,13 +445,16 @@ class CodeAnalysisTool:
                 result["error"] = f"Failed to load embedding model: {e}"
                 return result
 
+        # Use provided collection_name or fall back to instance default
+        collection_to_search = collection_name or self.qdrant_collection
+
         # Generate embedding for query
         query_embedding = self.model.encode(query)
 
         # Search Qdrant
         try:
             search_result = self.qdrant_client.search(
-                collection_name=self.qdrant_collection,
+                collection_name=collection_to_search,
                 query_vector=query_embedding.tolist(),
                 limit=limit * 2  # Get more results for filtering
             )
