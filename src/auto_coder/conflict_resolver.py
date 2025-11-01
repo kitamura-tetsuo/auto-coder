@@ -314,16 +314,23 @@ def resolve_pr_merge_conflicts(
         # Get PR details to determine the target base branch
         pr_data = None
         base_branch = config.MAIN_BRANCH
-        
+
         # Try multiple approaches to get PR details
         approaches = [
             ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
             ["gh", "pr", "view", str(pr_number), "--json", "baseRefName,headRefName"],
-            ["gh", "pr", "view", str(pr_number), "--json", "number,baseRefName,headRefName,title"],
+            [
+                "gh",
+                "pr",
+                "view",
+                str(pr_number),
+                "--json",
+                "number,baseRefName,headRefName,title",
+            ],
             ["gh", "pr", "view", str(pr_number), "--json", "base,head"],
             ["gh", "pr", "view", str(pr_number), "--json", "number,base,head,title"],
         ]
-        
+
         for cmd_args in approaches:
             pr_details_result = cmd.run_command(cmd_args)
             if pr_details_result.success:
@@ -332,19 +339,31 @@ def resolve_pr_merge_conflicts(
                     # Try baseRefName first (newer GitHub CLI versions)
                     if "baseRefName" in pr_data:
                         base_branch = pr_data["baseRefName"]
-                        logger.info(f"Successfully got base branch '{base_branch}' for PR #{pr_number}")
+                        logger.info(
+                            f"Successfully got base branch '{base_branch}' for PR #{pr_number}"
+                        )
                         break
                     # Fallback to base.ref format (older versions)
-                    elif "base" in pr_data and isinstance(pr_data["base"], dict) and "ref" in pr_data["base"]:
+                    elif (
+                        "base" in pr_data
+                        and isinstance(pr_data["base"], dict)
+                        and "ref" in pr_data["base"]
+                    ):
                         base_branch = pr_data["base"]["ref"]
-                        logger.info(f"Successfully got base branch '{base_branch}' for PR #{pr_number}")
+                        logger.info(
+                            f"Successfully got base branch '{base_branch}' for PR #{pr_number}"
+                        )
                         break
                     else:
-                        logger.warning(f"Base branch info not available in response for PR #{pr_number}")
+                        logger.warning(
+                            f"Base branch info not available in response for PR #{pr_number}"
+                        )
                 except Exception as e:
-                    logger.warning(f"Failed to parse JSON response for PR #{pr_number}: {e}")
+                    logger.warning(
+                        f"Failed to parse JSON response for PR #{pr_number}: {e}"
+                    )
                     continue
-        
+
         if pr_data is None:
             logger.warning(
                 f"Could not get PR #{pr_number} details through any method, using default base branch: {config.MAIN_BRANCH}"

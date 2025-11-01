@@ -343,11 +343,13 @@ def git_checkout_branch(
 
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
-    
+
     if create_new:
         # Check if the branch already exists
         if branch_exists(branch_name, cwd=cwd):
-            logger.info(f"Branch '{branch_name}' already exists, checking out existing branch")
+            logger.info(
+                f"Branch '{branch_name}' already exists, checking out existing branch"
+            )
             # Checkout existing branch instead of creating new one
             checkout_cmd = ["git", "checkout", branch_name]
         else:
@@ -425,7 +427,9 @@ def git_checkout_branch(
     logger.info(f"Successfully checked out branch '{branch_name}'")
 
     # If creating a new branch and it was actually created (not just checked out), push to remote and set up tracking
-    if create_new and not branch_exists(branch_name + "_backup", cwd=cwd):  # Check if this was a new branch by using a temp check
+    if create_new and not branch_exists(
+        branch_name + "_backup", cwd=cwd
+    ):  # Check if this was a new branch by using a temp check
         # Actually, we need a better way to detect if this was a new branch
         # Let's check if the branch existed before our operation by checking if it has remote tracking
         if not branch_exists(f"origin/{branch_name}", cwd=cwd):
@@ -434,12 +438,16 @@ def git_checkout_branch(
                 ["git", "push", "-u", "origin", branch_name], cwd=cwd
             )
             if not push_result.success:
-                logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
+                logger.warning(
+                    f"Failed to push new branch to remote: {push_result.stderr}"
+                )
                 # Don't exit on push failure - the branch is still created locally
             else:
                 logger.info(f"Successfully published branch '{branch_name}' to remote")
         else:
-            logger.info(f"Branch '{branch_name}' already exists on remote, skipping publish")
+            logger.info(
+                f"Branch '{branch_name}' already exists on remote, skipping publish"
+            )
 
     return result
 
