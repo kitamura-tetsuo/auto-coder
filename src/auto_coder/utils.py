@@ -441,7 +441,9 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         # Playwright の失敗パターン
         if re.search(r"^\s*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›", text, re.MULTILINE):
             return "playwright"
-        if re.search(r"^\s*\d+\)\s+\[[^\]]+\]\s+›\s+[^\s:]+\.spec\.ts", text, re.MULTILINE):
+        if re.search(
+            r"^\s*\d+\)\s+\[[^\]]+\]\s+›\s+[^\s:]+\.spec\.ts", text, re.MULTILINE
+        ):
             return "playwright"
         if re.search(r"\d+ failed.*playwright", text, re.IGNORECASE):
             return "playwright"

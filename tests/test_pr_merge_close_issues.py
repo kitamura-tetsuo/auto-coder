@@ -119,7 +119,16 @@ class TestCloseLinkedIssues:
         # Verify gh pr view was called
         assert mock_cmd.run_command.call_count == 2
         pr_view_call = mock_cmd.run_command.call_args_list[0][0][0]
-        assert pr_view_call == ["gh", "pr", "view", "456", "--repo", "test/repo", "--json", "body"]
+        assert pr_view_call == [
+            "gh",
+            "pr",
+            "view",
+            "456",
+            "--repo",
+            "test/repo",
+            "--json",
+            "body",
+        ]
 
         # Verify gh issue close was called
         issue_close_call = mock_cmd.run_command.call_args_list[1][0][0]
@@ -157,8 +166,26 @@ class TestCloseLinkedIssues:
             mock_cmd.run_command.call_args_list[1][0][0],
             mock_cmd.run_command.call_args_list[2][0][0],
         ]
-        assert ["gh", "issue", "close", "123", "--repo", "test/repo", "--comment", "Closed by PR #789"] in issue_close_calls
-        assert ["gh", "issue", "close", "456", "--repo", "test/repo", "--comment", "Closed by PR #789"] in issue_close_calls
+        assert [
+            "gh",
+            "issue",
+            "close",
+            "123",
+            "--repo",
+            "test/repo",
+            "--comment",
+            "Closed by PR #789",
+        ] in issue_close_calls
+        assert [
+            "gh",
+            "issue",
+            "close",
+            "456",
+            "--repo",
+            "test/repo",
+            "--comment",
+            "Closed by PR #789",
+        ] in issue_close_calls
 
     @patch("src.auto_coder.pr_processor.cmd")
     def test_no_linked_issues(self, mock_cmd):
@@ -242,7 +269,9 @@ class TestMergePRWithIssueClosing:
 
     @patch("src.auto_coder.pr_processor._close_linked_issues")
     @patch("src.auto_coder.pr_processor.cmd")
-    def test_merge_pr_does_not_close_issues_on_failure(self, mock_cmd, mock_close_issues):
+    def test_merge_pr_does_not_close_issues_on_failure(
+        self, mock_cmd, mock_close_issues
+    ):
         """Test that failed merge does not trigger issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = False
@@ -275,4 +304,3 @@ class TestMergePRWithIssueClosing:
 
         assert result is True
         mock_close_issues.assert_called_once_with("test/repo", 123)
-

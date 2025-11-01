@@ -104,4 +104,3 @@ def test_qwen_client_default_env_mode(mock_run_command, mock_run):
     # Values should be set via env vars
     assert env.get("OPENAI_API_KEY") == "sk-test-123"
     assert env.get("OPENAI_BASE_URL") == "https://api.example.com"
-

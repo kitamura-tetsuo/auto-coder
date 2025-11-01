@@ -102,7 +102,9 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
             click.echo("Troubleshooting tips:")
             click.echo("   1. Start containers manually: auto-coder graphrag start")
             click.echo("   2. Check container status: auto-coder graphrag status")
-            click.echo("   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs")
+            click.echo(
+                "   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs"
+            )
             raise click.ClickException(
                 "Failed to initialize GraphRAG environment. "
                 "Run 'auto-coder graphrag start' to start containers."
@@ -160,11 +162,11 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
     # If client is provided, check if already configured
     if client is not None:
-        logger.info(f"Checking GraphRAG MCP configuration for client...")
+        logger.info("Checking GraphRAG MCP configuration for client...")
         if not client.check_mcp_server_configured(server_name):
             logger.info(
-                f"GraphRAG MCP server not configured for client. "
-                f"Adding configuration..."
+                "GraphRAG MCP server not configured for client. "
+                "Adding configuration..."
             )
             click.echo()
             click.echo("⚠️  GraphRAG MCP server not configured for client")
@@ -177,8 +179,12 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
             manager = get_mcp_manager()
             success = True
             for backend in backends:
-                if not manager.add_backend_config(server_name, backend, default_mcp_dir):
-                    logger.warning(f"Failed to configure {backend} backend for {server_name}")
+                if not manager.add_backend_config(
+                    server_name, backend, default_mcp_dir
+                ):
+                    logger.warning(
+                        f"Failed to configure {backend} backend for {server_name}"
+                    )
                     success = False
 
             if success:
@@ -189,7 +195,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
                 click.echo("❌ GraphRAG MCP server configuration failed")
                 click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
         else:
-            logger.info(f"✅ GraphRAG MCP server configured for client")
+            logger.info("✅ GraphRAG MCP server configured for client")
     else:
         # Fallback to file-based configuration for each backend
         from .mcp_checker import ensure_graphrag_mcp_configured
@@ -209,14 +215,24 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
                 from .mcp_manager import get_mcp_manager
 
                 manager = get_mcp_manager()
-                success = manager.add_backend_config(server_name, backend, default_mcp_dir)
+                success = manager.add_backend_config(
+                    server_name, backend, default_mcp_dir
+                )
 
                 if success:
-                    logger.info(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
-                    click.echo(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
+                    logger.info(
+                        f"✅ GraphRAG MCP server configuration added successfully for {backend}"
+                    )
+                    click.echo(
+                        f"✅ GraphRAG MCP server configuration added successfully for {backend}"
+                    )
                 else:
-                    logger.error(f"❌ GraphRAG MCP server configuration failed for {backend}")
-                    click.echo(f"❌ GraphRAG MCP server configuration failed for {backend}")
+                    logger.error(
+                        f"❌ GraphRAG MCP server configuration failed for {backend}"
+                    )
+                    click.echo(
+                        f"❌ GraphRAG MCP server configuration failed for {backend}"
+                    )
                     click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
             else:
                 logger.info(f"✅ GraphRAG MCP server already configured for {backend}")
@@ -340,8 +356,7 @@ def check_claude_cli_or_fail() -> None:
     except Exception:
         pass
     raise click.ClickException(
-        "Claude CLI is required. Please install it from:\n"
-        "https://claude.ai/download"
+        "Claude CLI is required. Please install it from:\n" "https://claude.ai/download"
     )
 
 
@@ -514,4 +529,3 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
         return all(flag_present(f) for f in required_flags)
     except Exception:
         return False
-
