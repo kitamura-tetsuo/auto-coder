@@ -33,7 +33,9 @@ class GraphRAGIndexManager:
         self.repo_path = Path(repo_path) if repo_path else Path.cwd()
         if index_state_file is None:
             # Default to .auto-coder/graphrag_index_state.json in repository
-            index_state_file = str(self.repo_path / ".auto-coder" / "graphrag_index_state.json")
+            index_state_file = str(
+                self.repo_path / ".auto-coder" / "graphrag_index_state.json"
+            )
         self.index_state_file = Path(index_state_file)
 
     def _get_codebase_hash(self) -> str:
@@ -145,7 +147,11 @@ class GraphRAGIndexManager:
         Returns:
             Repository-specific label in the format 'Repo_XXXXXXXX'
         """
-        repo_hash = hashlib.sha256(str(self.repo_path.resolve()).encode()).hexdigest()[:8].upper()
+        repo_hash = (
+            hashlib.sha256(str(self.repo_path.resolve()).encode())
+            .hexdigest()[:8]
+            .upper()
+        )
         return f"Repo_{repo_hash}"
 
     def is_index_up_to_date(self) -> bool:
@@ -226,16 +232,19 @@ class GraphRAGIndexManager:
         4. Creates embeddings and stores in Qdrant
         """
         try:
-            from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, VectorParams, PointStruct
-            from sentence_transformers import SentenceTransformer
             from neo4j import GraphDatabase
+            from qdrant_client import QdrantClient
+            from qdrant_client.models import Distance, PointStruct, VectorParams
+            from sentence_transformers import SentenceTransformer
         except ImportError as e:
             import sys
+
             logger.error(f"Required packages not installed: {e}")
             logger.error(f"Python executable: {sys.executable}")
             logger.error(f"Python path: {sys.path}")
-            logger.info("Install with: pip install qdrant-client sentence-transformers neo4j")
+            logger.info(
+                "Install with: pip install qdrant-client sentence-transformers neo4j"
+            )
             raise
 
         # Determine if running in container
@@ -249,11 +258,15 @@ class GraphRAGIndexManager:
         logger.info("Running graph-builder to analyze codebase...")
         graph_data = self._run_graph_builder()
 
-        if not graph_data or (not graph_data.get("nodes") and not graph_data.get("edges")):
+        if not graph_data or (
+            not graph_data.get("nodes") and not graph_data.get("edges")
+        ):
             logger.warning("No graph data extracted from codebase")
             return
 
-        logger.info(f"Extracted {len(graph_data.get('nodes', []))} nodes and {len(graph_data.get('edges', []))} edges")
+        logger.info(
+            f"Extracted {len(graph_data.get('nodes', []))} nodes and {len(graph_data.get('edges', []))} edges"
+        )
 
         # Step 2: Store graph data in Neo4j
         logger.info("Storing graph data in Neo4j...")
@@ -276,7 +289,9 @@ class GraphRAGIndexManager:
         if not graph_builder_path:
             auto_coder_pkg_dir = Path(__file__).parent
             logger.warning("graph-builder not found in common locations")
-            logger.info(f"Searched locations: {auto_coder_pkg_dir}/graph_builder, {self.repo_path}/graph-builder, {Path.cwd()}/graph-builder, {Path.home()}/graph-builder")
+            logger.info(
+                f"Searched locations: {auto_coder_pkg_dir}/graph_builder, {self.repo_path}/graph-builder, {Path.cwd()}/graph-builder, {Path.home()}/graph-builder"
+            )
             logger.info("Falling back to simple Python indexing")
             return self._fallback_python_indexing()
 
@@ -284,6 +299,7 @@ class GraphRAGIndexManager:
 
         # Create temporary output directory
         import tempfile
+
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "graph-data.json"
 
@@ -299,9 +315,12 @@ class GraphRAGIndexManager:
                         "node",
                         str(ts_cli_bundle),
                         "scan",
-                        "--project", str(self.repo_path),
-                        "--out", str(temp_dir),
-                        "--languages", "typescript,javascript,python"
+                        "--project",
+                        str(self.repo_path),
+                        "--out",
+                        str(temp_dir),
+                        "--languages",
+                        "typescript,javascript,python",
                     ]
                 elif ts_cli.exists():
                     logger.info("Using TypeScript version of graph-builder")
@@ -309,15 +328,20 @@ class GraphRAGIndexManager:
                         "node",
                         str(ts_cli),
                         "scan",
-                        "--project", str(self.repo_path),
-                        "--out", str(temp_dir),
-                        "--languages", "typescript,javascript,python"
+                        "--project",
+                        str(self.repo_path),
+                        "--out",
+                        str(temp_dir),
+                        "--languages",
+                        "typescript,javascript,python",
                     ]
                 else:
                     # Use Python version
                     py_cli = graph_builder_path / "src" / "cli_python.py"
                     if not py_cli.exists():
-                        logger.warning(f"graph-builder CLI not found at {ts_cli_bundle}, {ts_cli} or {py_cli}")
+                        logger.warning(
+                            f"graph-builder CLI not found at {ts_cli_bundle}, {ts_cli} or {py_cli}"
+                        )
                         return self._fallback_python_indexing()
 
                     logger.info("Using Python version of graph-builder")
@@ -325,9 +349,12 @@ class GraphRAGIndexManager:
                         "python3",
                         str(py_cli),
                         "scan",
-                        "--project", str(self.repo_path),
-                        "--out", str(temp_dir),
-                        "--languages", "typescript,javascript,python"
+                        "--project",
+                        str(self.repo_path),
+                        "--out",
+                        str(temp_dir),
+                        "--languages",
+                        "typescript,javascript,python",
                     ]
 
                 logger.info(f"Running: {' '.join(cmd)}")
@@ -343,7 +370,9 @@ class GraphRAGIndexManager:
                     logger.debug(f"graph-builder stdout:\n{result.stdout}")
 
                 if result.returncode != 0:
-                    logger.warning(f"graph-builder failed with return code {result.returncode}")
+                    logger.warning(
+                        f"graph-builder failed with return code {result.returncode}"
+                    )
                     logger.warning(f"stderr: {result.stderr}")
                     if result.stdout:
                         logger.warning(f"stdout: {result.stdout}")
@@ -353,11 +382,17 @@ class GraphRAGIndexManager:
                 if output_path.exists():
                     with open(output_path, "r") as f:
                         data = json.load(f)
-                        logger.info(f"Successfully loaded graph data: {len(data.get('nodes', []))} nodes, {len(data.get('edges', []))} edges")
+                        logger.info(
+                            f"Successfully loaded graph data: {len(data.get('nodes', []))} nodes, {len(data.get('edges', []))} edges"
+                        )
                         return data
                 else:
-                    logger.warning(f"graph-builder did not produce output at {output_path}")
-                    logger.warning(f"Output directory contents: {list(Path(temp_dir).iterdir())}")
+                    logger.warning(
+                        f"graph-builder did not produce output at {output_path}"
+                    )
+                    logger.warning(
+                        f"Output directory contents: {list(Path(temp_dir).iterdir())}"
+                    )
                     return self._fallback_python_indexing()
 
             except subprocess.TimeoutExpired:
@@ -366,6 +401,7 @@ class GraphRAGIndexManager:
             except Exception as e:
                 logger.warning(f"Failed to run graph-builder: {e}")
                 import traceback
+
                 logger.debug(f"Traceback: {traceback.format_exc()}")
                 return self._fallback_python_indexing()
 
@@ -381,10 +417,11 @@ class GraphRAGIndexManager:
         # Check common local directory locations
         # Priority: パッケージ内 > 対象リポジトリ内 > カレントディレクトリ > ホームディレクトリ
         candidates = [
-            auto_coder_pkg_dir / "graph_builder",      # パッケージ内（開発時・pipxインストール時共通）
-            self.repo_path / "graph-builder",          # 対象リポジトリ内
-            Path.cwd() / "graph-builder",              # カレントディレクトリ
-            Path.home() / "graph-builder",             # ホームディレクトリ
+            auto_coder_pkg_dir
+            / "graph_builder",  # パッケージ内（開発時・pipxインストール時共通）
+            self.repo_path / "graph-builder",  # 対象リポジトリ内
+            Path.cwd() / "graph-builder",  # カレントディレクトリ
+            Path.home() / "graph-builder",  # ホームディレクトリ
         ]
 
         logger.debug(f"Searching for graph-builder in: {[str(c) for c in candidates]}")
@@ -400,7 +437,9 @@ class GraphRAGIndexManager:
                     has_ts_cli_bundle = (candidate / "dist" / "cli.bundle.js").exists()
                     has_ts_cli = (candidate / "dist" / "cli.js").exists()
                     has_py_cli = (candidate / "src" / "cli_python.py").exists()
-                    logger.debug(f"  TypeScript bundled CLI exists: {has_ts_cli_bundle}")
+                    logger.debug(
+                        f"  TypeScript bundled CLI exists: {has_ts_cli_bundle}"
+                    )
                     logger.debug(f"  TypeScript CLI exists: {has_ts_cli}")
                     logger.debug(f"  Python CLI exists: {has_py_cli}")
                     if has_ts_cli_bundle or has_ts_cli or has_py_cli:
@@ -431,13 +470,15 @@ class GraphRAGIndexManager:
                 if not content.strip():
                     continue
 
-                nodes.append({
-                    "id": f"file_{idx}",
-                    "kind": "File",
-                    "fqname": str(file_path.relative_to(self.repo_path)),
-                    "file": str(file_path.relative_to(self.repo_path)),
-                    "content": content,
-                })
+                nodes.append(
+                    {
+                        "id": f"file_{idx}",
+                        "kind": "File",
+                        "fqname": str(file_path.relative_to(self.repo_path)),
+                        "file": str(file_path.relative_to(self.repo_path)),
+                        "content": content,
+                    }
+                )
             except Exception as e:
                 logger.warning(f"Failed to read {file_path}: {e}")
 
@@ -454,6 +495,7 @@ class GraphRAGIndexManager:
             from neo4j import GraphDatabase
         except ImportError as e:
             import sys
+
             logger.warning(f"neo4j package not installed, skipping Neo4j indexing: {e}")
             logger.debug(f"Python executable: {sys.executable}")
             logger.debug(f"Python path: {sys.path}")
@@ -461,7 +503,9 @@ class GraphRAGIndexManager:
 
         # Connect to Neo4j
         # Use container name if in container and connected to same network, otherwise localhost
-        neo4j_uri = "bolt://auto-coder-neo4j:7687" if in_container else "bolt://localhost:7687"
+        neo4j_uri = (
+            "bolt://auto-coder-neo4j:7687" if in_container else "bolt://localhost:7687"
+        )
         neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
         neo4j_password = os.environ.get("NEO4J_PASSWORD", "password")
 
@@ -493,10 +537,12 @@ class GraphRAGIndexManager:
                         CREATE (n:{repo_label}:CodeNode)
                         SET n = $props
                         """,
-                        props=node_data
+                        props=node_data,
                     )
 
-                logger.info(f"Inserted {len(nodes)} nodes with label '{repo_label}' into Neo4j")
+                logger.info(
+                    f"Inserted {len(nodes)} nodes with label '{repo_label}' into Neo4j"
+                )
 
                 # Insert edges
                 edges = graph_data.get("edges", [])
@@ -531,23 +577,45 @@ class GraphRAGIndexManager:
         """
         try:
             from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, VectorParams, PointStruct
+            from qdrant_client.models import Distance, PointStruct, VectorParams
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
             import sys
-            logger.warning(f"Required packages not installed, skipping Qdrant indexing: {e}")
+
+            logger.warning(
+                f"Required packages not installed, skipping Qdrant indexing: {e}"
+            )
             logger.debug(f"Python executable: {sys.executable}")
             logger.debug(f"Python path: {sys.path}")
             return
 
         # Connect to Qdrant
         # Use container name if in container and connected to same network, otherwise localhost
-        qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
+        qdrant_url = (
+            "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
+        )
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
 
-        # Collection name
-        collection_name = "code_embeddings"
+        # Collection name - use environment variable or generate repository-specific name
+        # This implements Qdrant Collection Separation to avoid conflicts between repositories
+        import hashlib
+
+        collection_name = os.getenv(
+            "QDRANT_COLLECTION"
+        )  # Allow override via environment variable
+        if not collection_name:
+            # Generate repository-specific collection name based on resolved path
+            # This ensures each repository gets its own collection
+            repo_hash = hashlib.md5(str(self.repo_path.resolve()).encode()).hexdigest()[
+                :8
+            ]
+            collection_name = f"code_embeddings_{repo_hash}"
+            logger.info(
+                f"Generated repository-specific collection name: {collection_name}"
+            )
+        else:
+            logger.info(f"Using configured collection name: {collection_name}")
 
         # Load embedding model
         logger.info("Loading embedding model...")
@@ -596,7 +664,11 @@ class GraphRAGIndexManager:
                 # Create embedding
                 embedding_result = model.encode(text)
                 # Handle both numpy arrays and lists
-                embedding = embedding_result.tolist() if hasattr(embedding_result, 'tolist') else embedding_result
+                embedding = (
+                    embedding_result.tolist()
+                    if hasattr(embedding_result, "tolist")
+                    else embedding_result
+                )
 
                 # Create point
                 point = PointStruct(
@@ -608,7 +680,7 @@ class GraphRAGIndexManager:
                         "fqname": node.get("fqname", ""),
                         "file": node.get("file", ""),
                         "repo_path": str(self.repo_path.resolve()),
-                    }
+                    },
                 )
                 points.append(point)
 
@@ -637,4 +709,3 @@ class GraphRAGIndexManager:
             return True
 
         return self.update_index()
-
