@@ -1,6 +1,7 @@
-import os
 import logging
-from typing import Dict, List, Optional, Any, Union
+import os
+from typing import Any, Dict, List, Optional
+
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
@@ -8,39 +9,40 @@ from sentence_transformers import SentenceTransformer
 # Configure logging to write to a file instead of stdout
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='graphrag.log',
-    filemode='a'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    filename="graphrag.log",
+    filemode="a",
 )
-logger = logging.getLogger('graphrag')
+logger = logging.getLogger("graphrag")
+
 
 class CodeAnalysisTool:
     """MCP Tool for querying TypeScript/JavaScript code structure using GraphRAG."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Neo4j connection
-        self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
-        self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
-        self.neo4j_driver = None
+        self.neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        self.neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
+        self.neo4j_password: str = os.getenv("NEO4J_PASSWORD", "password")
+        self.neo4j_driver: Any = None
 
         # Qdrant connection
-        self.qdrant_host = os.getenv("QDRANT_HOST", "localhost")
-        self.qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
-        self.qdrant_collection = os.getenv("QDRANT_COLLECTION", "code_chunks")
-        self.qdrant_client = None
+        self.qdrant_host: str = os.getenv("QDRANT_HOST", "localhost")
+        self.qdrant_port: int = int(os.getenv("QDRANT_PORT", "6333"))
+        self.qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "code_chunks")
+        self.qdrant_client: Any = None
 
         # Embedding model
-        self.model_name = "all-MiniLM-L6-v2"
-        self.model = None
+        self.model_name: str = "all-MiniLM-L6-v2"
+        self.model: Any = None
 
         # Connection state
-        self._connected = False
+        self._connected: bool = False
 
         # Don't connect immediately - wait until first use
         # This allows the MCP server to start even if Neo4j/Qdrant are not running
 
-    def _ensure_connected(self):
+    def _ensure_connected(self) -> None:
         """Ensure connections are established (lazy initialization)."""
         if self._connected:
             return
@@ -48,48 +50,63 @@ class CodeAnalysisTool:
         self._connect()
         self._connected = True
 
-    def _connect(self):
+    def _connect(self) -> None:
         """Establish connections to Neo4j and Qdrant."""
         # Connect to Neo4j
         try:
-            self.neo4j_driver = GraphDatabase.driver(
+            self.neo4j_driver = GraphDatabase.driver(  # type: ignore[assignment]
                 self.neo4j_uri,
-                auth=(self.neo4j_user, self.neo4j_password)
+                auth=(self.neo4j_user, self.neo4j_password),
             )
             # Test connection
-            with self.neo4j_driver.session() as session:
+            with self.neo4j_driver.session() as session:  # type: ignore[union-attr]
                 result = session.run("MATCH (f:File) RETURN count(f) AS count")
                 record = result.single()
                 logger.info(f"Connected to Neo4j with {record['count']} files")
         except Exception as e:
             logger.error(f"Neo4j connection error: {e}")
-            raise RuntimeError(f"Failed to connect to Neo4j at {self.neo4j_uri}. Please ensure Neo4j is running. Error: {e}")
+            raise RuntimeError(
+                f"Failed to connect to Neo4j at {self.neo4j_uri}. "
+                f"Please ensure Neo4j is running. Error: {e}"
+            )
 
         # Connect to Qdrant
         try:
-            self.qdrant_client = QdrantClient(host=self.qdrant_host, port=self.qdrant_port)
-            collection_info = self.qdrant_client.get_collection(self.qdrant_collection)
+            self.qdrant_client = QdrantClient(  # type: ignore[assignment]
+                host=self.qdrant_host, port=self.qdrant_port
+            )
+            collection_info = self.qdrant_client.get_collection(  # type: ignore[union-attr]
+                self.qdrant_collection
+            )
 
             # Check for vectors count based on client version
             vectors_count = 0
-            if hasattr(collection_info, 'vectors_count'):
+            if hasattr(collection_info, "vectors_count"):
                 vectors_count = collection_info.vectors_count
-            elif hasattr(collection_info, 'points_count'):
+            elif hasattr(collection_info, "points_count"):
                 vectors_count = collection_info.points_count
 
-            logger.info(f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors")
+            logger.info(
+                f"Connected to Qdrant collection '{self.qdrant_collection}' "
+                f"with {vectors_count} vectors"
+            )
         except Exception as e:
             logger.error(f"Qdrant connection error: {e}")
-            raise RuntimeError(f"Failed to connect to Qdrant at {self.qdrant_host}:{self.qdrant_port}. Please ensure Qdrant is running. Error: {e}")
+            raise RuntimeError(
+                f"Failed to connect to Qdrant at {self.qdrant_host}:"
+                f"{self.qdrant_port}. Please ensure Qdrant is running. Error: {e}"
+            )
 
         # Load the embedding model
         try:
-            self.model = SentenceTransformer(self.model_name)
+            self.model = SentenceTransformer(self.model_name)  # type: ignore[assignment]
             logger.info(f"Loaded embedding model: {self.model_name}")
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
-            raise RuntimeError(f"Failed to load embedding model '{self.model_name}'. Error: {e}")
-    
+            raise RuntimeError(
+                f"Failed to load embedding model '{self.model_name}'. Error: {e}"
+            )
+
     def find_symbol(self, fqname: str) -> Dict[str, Any]:
         """
         Find a code symbol by fully qualified name.
@@ -100,10 +117,10 @@ class CodeAnalysisTool:
         Returns:
             Symbol details including id, kind, signature, complexity, location
         """
-        result = {
+        result: Dict[str, Any] = {
             "fqname": fqname,
             "symbol": None,
-            "error": None
+            "error": None,
         }
 
         try:
@@ -115,22 +132,22 @@ class CodeAnalysisTool:
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
             return result
-        
+
         try:
             with self.neo4j_driver.session() as session:
                 cypher_query = """
                 MATCH (s)
                 WHERE s.fqname = $fqname AND s.kind IN ['Function', 'Method', 'Class', 'Interface', 'Type']
-                RETURN s.id as id, s.kind as kind, s.fqname as fqname, 
+                RETURN s.id as id, s.kind as kind, s.fqname as fqname,
                        s.sig as signature, s.short as short_summary,
                        s.complexity as complexity, s.tokens_est as tokens_est,
                        s.file as file, s.start_line as start_line, s.end_line as end_line,
                        s.tags as tags
                 """
-                
+
                 query_result = session.run(cypher_query, fqname=fqname)
                 record = query_result.single()
-                
+
                 if record:
                     result["symbol"] = {
                         "id": record["id"],
@@ -143,17 +160,19 @@ class CodeAnalysisTool:
                         "file": record["file"],
                         "start_line": record["start_line"],
                         "end_line": record["end_line"],
-                        "tags": record["tags"] or []
+                        "tags": record["tags"] or [],
                     }
                 else:
                     result["error"] = f"Symbol '{fqname}' not found"
-                    
+
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
-        
+
         return result
-    
-    def get_call_graph(self, symbol_id: str, direction: str = 'both', depth: int = 1) -> Dict[str, Any]:
+
+    def get_call_graph(
+        self, symbol_id: str, direction: str = "both", depth: int = 1
+    ) -> Dict[str, Any]:
         """
         Get call graph for a symbol.
 
@@ -171,7 +190,7 @@ class CodeAnalysisTool:
             "depth": depth,
             "nodes": [],
             "edges": [],
-            "error": None
+            "error": None,
         }
 
         try:
@@ -187,11 +206,11 @@ class CodeAnalysisTool:
         if depth < 1 or depth > 3:
             result["error"] = "Depth must be between 1 and 3"
             return result
-        
+
         try:
             with self.neo4j_driver.session() as session:
                 # Build Cypher query based on direction
-                if direction == 'callers':
+                if direction == "callers":
                     cypher_query = f"""
                     MATCH (s {{id: $symbol_id}})
                     MATCH path = (caller)-[:CALLS*1..{depth}]->(s)
@@ -200,7 +219,7 @@ class CodeAnalysisTool:
                            caller.file as file, caller.start_line as start_line,
                            [r IN rels | {{from: startNode(r).id, to: endNode(r).id, count: r.count}}] as edges
                     """
-                elif direction == 'callees':
+                elif direction == "callees":
                     cypher_query = f"""
                     MATCH (s {{id: $symbol_id}})
                     MATCH path = (s)-[:CALLS*1..{depth}]->(callee)
@@ -217,35 +236,44 @@ class CodeAnalysisTool:
                     WITH s, caller, callee, relationships(path1) + relationships(path2) as rels
                     WHERE caller IS NOT NULL OR callee IS NOT NULL
                     WITH COALESCE(caller, callee) as related, rels
-                    RETURN DISTINCT related.id as id, related.kind as kind, related.fqname as fqname,
-                           related.file as file, related.start_line as start_line,
-                           [r IN rels WHERE r IS NOT NULL | {{from: startNode(r).id, to: endNode(r).id, count: r.count}}] as edges
+                    RETURN DISTINCT related.id as id, related.kind as kind,
+                           related.fqname as fqname, related.file as file,
+                           related.start_line as start_line,
+                           [r IN rels WHERE r IS NOT NULL | {{from: startNode(r).id,
+                           to: endNode(r).id, count: r.count}}] as edges
                     """
-                
+
                 query_result = session.run(cypher_query, symbol_id=symbol_id)
-                
+
                 for record in query_result:
-                    result["nodes"].append({
-                        "id": record["id"],
-                        "kind": record["kind"],
-                        "fqname": record["fqname"],
-                        "file": record["file"],
-                        "start_line": record["start_line"]
-                    })
-                    
+                    nodes_list = result["nodes"]
+                    if isinstance(nodes_list, list):
+                        nodes_list.append(
+                            {
+                                "id": record["id"],
+                                "kind": record["kind"],
+                                "fqname": record["fqname"],
+                                "file": record["file"],
+                                "start_line": record["start_line"],
+                            }
+                        )
+
                     # Add edges
-                    for edge in record["edges"]:
-                        if edge and edge not in result["edges"]:
-                            result["edges"].append(edge)
-                
+                    edges_list = record["edges"]  # type: ignore[assignment]
+                    if isinstance(edges_list, list):
+                        # type: ignore[operator,attr-defined]
+                        for edge in edges_list:
+                            if edge and edge not in result["edges"]:
+                                result["edges"].append(edge)
+
                 if not result["nodes"]:
                     result["error"] = f"No {direction} found for symbol '{symbol_id}'"
-                    
+
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
-        
+
         return result
-    
+
     def get_dependencies(self, file_path: str) -> Dict[str, Any]:
         """
         Get file dependencies (imports).
@@ -256,11 +284,11 @@ class CodeAnalysisTool:
         Returns:
             List of imported files and symbols
         """
-        result = {
+        result: Dict[str, Any] = {
             "file": file_path,
             "imports": [],
             "imported_by": [],
-            "error": None
+            "error": None,
         }
 
         try:
@@ -272,7 +300,7 @@ class CodeAnalysisTool:
         if not self.neo4j_driver:
             result["error"] = "Neo4j connection not available"
             return result
-        
+
         try:
             with self.neo4j_driver.session() as session:
                 # Get imports (what this file imports)
@@ -281,34 +309,44 @@ class CodeAnalysisTool:
                 RETURN imported.file as file, r.count as count
                 ORDER BY count DESC
                 """
-                
+
                 query_result = session.run(cypher_query, file_path=file_path)
-                for record in query_result:
-                    result["imports"].append({
-                        "file": record["file"],
-                        "count": record["count"]
-                    })
-                
+                imports_list = result["imports"]
+                if isinstance(imports_list, list):
+                    for record in query_result:
+                        imports_list.append(
+                            {
+                                "file": record["file"],
+                                "count": record["count"],
+                            }
+                        )
+
                 # Get imported_by (what files import this)
                 cypher_query = """
                 MATCH (importer:File)-[r:IMPORTS]->(f:File {file: $file_path})
                 RETURN importer.file as file, r.count as count
                 ORDER BY count DESC
                 """
-                
+
                 query_result = session.run(cypher_query, file_path=file_path)
-                for record in query_result:
-                    result["imported_by"].append({
-                        "file": record["file"],
-                        "count": record["count"]
-                    })
+                imported_by_list = result["imported_by"]
+                if isinstance(imported_by_list, list):
+                    for record in query_result:
+                        imported_by_list.append(
+                            {
+                                "file": record["file"],
+                                "count": record["count"],
+                            }
+                        )
 
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
 
-    def impact_analysis(self, symbol_ids: List[str], max_depth: int = 2) -> Dict[str, Any]:
+    def impact_analysis(
+        self, symbol_ids: List[str], max_depth: int = 2
+    ) -> Dict[str, Any]:
         """
         Analyze the impact of changing given symbols.
 
@@ -319,13 +357,13 @@ class CodeAnalysisTool:
         Returns:
             Impact analysis including affected symbols, files, and relationships
         """
-        result = {
+        result: Dict[str, Any] = {
             "analyzed_symbols": symbol_ids,
             "max_depth": max_depth,
             "affected_symbols": [],
-            "affected_files": set(),
+            "affected_files": [],
             "impact_summary": {},
-            "error": None
+            "error": None,
         }
 
         try:
@@ -375,6 +413,7 @@ class CodeAnalysisTool:
                 """
 
                 query_result = session.run(cypher_query, symbol_ids=symbol_ids)
+                affected_files_set: set[str] = set()
 
                 for record in query_result:
                     affected_symbol = {
@@ -383,34 +422,39 @@ class CodeAnalysisTool:
                         "fqname": record["fqname"],
                         "file": record["file"],
                         "start_line": record["start_line"],
-                        "end_line": record["end_line"]
+                        "end_line": record["end_line"],
                     }
                     result["affected_symbols"].append(affected_symbol)
-                    result["affected_files"].add(record["file"])
+                    affected_files_set.add(record["file"])
 
                 # Convert set to list for JSON serialization
-                result["affected_files"] = sorted(list(result["affected_files"]))
+                result["affected_files"] = sorted(list(affected_files_set))
 
                 # Generate summary
                 result["impact_summary"] = {
                     "total_affected_symbols": len(result["affected_symbols"]),
                     "total_affected_files": len(result["affected_files"]),
-                    "by_kind": {}
+                    "by_kind": {},
                 }
 
                 # Count by kind
                 for symbol in result["affected_symbols"]:
                     kind = symbol["kind"]
-                    result["impact_summary"]["by_kind"][kind] = \
-                        result["impact_summary"]["by_kind"].get(kind, 0) + 1
+                    if kind not in result["impact_summary"]["by_kind"]:
+                        result["impact_summary"]["by_kind"][kind] = 0
+                    result["impact_summary"]["by_kind"][kind] += 1
 
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
 
-    def semantic_code_search(self, query: str, limit: int = 10,
-                            kind_filter: Optional[List[str]] = None) -> Dict[str, Any]:
+    def semantic_code_search(
+        self,
+        query: str,
+        limit: int = 10,
+        kind_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         """
         Search for code using semantic similarity.
 
@@ -422,10 +466,10 @@ class CodeAnalysisTool:
         Returns:
             Semantically similar code symbols with scores
         """
-        result = {
+        result: Dict[str, Any] = {
             "query": query,
             "symbols": [],
-            "error": None
+            "error": None,
         }
 
         try:
@@ -436,20 +480,20 @@ class CodeAnalysisTool:
 
         if self.model is None:
             try:
-                self.model = SentenceTransformer(self.model_name)
+                self.model = SentenceTransformer(self.model_name)  # type: ignore[assignment]
             except Exception as e:
                 result["error"] = f"Failed to load embedding model: {e}"
                 return result
 
         # Generate embedding for query
-        query_embedding = self.model.encode(query)
+        query_embedding = self.model.encode(query)  # type: ignore[union-attr]
 
         # Search Qdrant
         try:
-            search_result = self.qdrant_client.search(
+            search_result = self.qdrant_client.search(  # type: ignore[union-attr]
                 collection_name=self.qdrant_collection,
                 query_vector=query_embedding.tolist(),
-                limit=limit * 2  # Get more results for filtering
+                limit=limit * 2,  # Get more results for filtering
             )
 
             # Process results
@@ -458,28 +502,31 @@ class CodeAnalysisTool:
                 score = result_item.score
 
                 # Get symbol details from payload or Neo4j
-                if hasattr(result_item, 'payload'):
+                if hasattr(result_item, "payload"):
                     payload = result_item.payload
 
                     # Apply kind filter if specified
-                    if kind_filter and payload.get('kind') not in kind_filter:
+                    if kind_filter and payload.get("kind") not in kind_filter:
                         continue
 
-                    result["symbols"].append({
-                        "id": symbol_id,
-                        "kind": payload.get('kind'),
-                        "fqname": payload.get('fqname'),
-                        "short_summary": payload.get('short'),
-                        "file": payload.get('file'),
-                        "start_line": payload.get('start_line'),
-                        "score": score
-                    })
+                    symbols_list = result["symbols"]
+                    if isinstance(symbols_list, list):
+                        symbols_list.append(
+                            {
+                                "id": symbol_id,
+                                "kind": payload.get("kind"),
+                                "fqname": payload.get("fqname"),
+                                "short_summary": payload.get("short"),
+                                "file": payload.get("file"),
+                                "start_line": payload.get("start_line"),
+                                "score": score,
+                            }
+                        )
 
-                    if len(result["symbols"]) >= limit:
+                    if len(symbols_list) >= limit:
                         break
 
         except Exception as e:
             result["error"] = f"Qdrant search error: {e}"
 
         return result
-
