@@ -38,6 +38,11 @@ def _safe_log(message: str) -> None:
         # Check if logger handlers are still valid
         if not logger._core.handlers:
             return
+        
+        # Skip logging of Mock/MagicMock objects to avoid spam
+        if "MagicMock" in str(message) or "Mock" in str(message):
+            return
+            
         logger.debug(message)
     except Exception:
         # Silently ignore any logging errors during cleanup

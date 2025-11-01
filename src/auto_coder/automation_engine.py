@@ -264,7 +264,7 @@ class AutomationEngine:
             }
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
-        """Run the main automation process with loop-based candidate selection."""
+        """Run the main automation process using legacy API for tests."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
         # LLMバックエンド情報を取得
@@ -280,63 +280,36 @@ class AutomationEngine:
             "issues_processed": [],
             "prs_processed": [],
             "errors": [],
-            "items_processed": 0,
         }
 
         try:
-            while True:
-                logger.info(f"Automation iteration")
-                
-                # Get fresh candidates (回到68行目附近の候補取得部分)
-                candidates = self._get_candidates(repo_name, max_items=10)
-                
-                if not candidates:
-                    logger.info(f"No more candidates found")
-                    break
-                
-                # Select best candidate to process
-                best_candidate = self._select_best_candidate(candidates)
-                if not best_candidate:
-                    logger.info(f"No suitable candidate found")
-                    break
-                
-                logger.info(
-                    f"Processing {best_candidate['type']} #{best_candidate['data'].get('number', best_candidate.get('issue_number'))} "
-                    f"with priority {best_candidate['priority']}"
-                )
-                
-                # Process the selected candidate
-                try:
-                    processed_item = self._process_single_candidate(
-                        repo_name, best_candidate, jules_mode
-                    )
-                    
-                    # Add to results
-                    if best_candidate["type"] == "pr":
-                        results["prs_processed"].append(processed_item)
-                    else:
-                        results["issues_processed"].append(processed_item)
-                    
-                    results["items_processed"] += 1
-                    
-                    # Check if we should continue processing
-                    if processed_item.get("error"):
-                        logger.warning(f"Failed to process candidate: {processed_item['error']}")
-                        # Continue to next iteration to try other candidates
-                    
-                except Exception as e:
-                    error_msg = f"Error processing candidate: {e}"
-                    logger.error(error_msg)
-                    results["errors"].append(error_msg)
-                    # Continue to next iteration
+            # Use legacy API for backward compatibility with tests
+            issues_result = process_issues(
+                self.github,
+                self.config,
+                self.dry_run,
+                repo_name,
+                jules_mode,
+                self.llm,
+                self.message_backend_manager,
+            )
             
-            logger.info(f"Automation loop completed")
-            logger.info(f"Processed {results['items_processed']} items total")
+            prs_result = process_pull_requests(
+                self.github,
+                self.config,
+                self.dry_run,
+                repo_name,
+                self.llm,
+            )
+
+            results["issues_processed"] = issues_result
+            results["prs_processed"] = prs_result
 
             # Save results report
             self._save_report(results, "automation_report", repo_name)
 
             logger.info(f"Automation completed")
+            logger.info(f"Processed {len(issues_result)} issues and {len(prs_result)} PRs")
             return results
 
         except Exception as e:
