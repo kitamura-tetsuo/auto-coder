@@ -120,9 +120,7 @@ def parse_git_commit_history_for_actions(
             commit_sha = parts[0]
             commit_message = parts[1]
 
-            logger.debug(
-                f"Checking commit {commit_sha[:8]}: {commit_message[:50]}..."
-            )
+            logger.debug(f"Checking commit {commit_sha[:8]}: {commit_message[:50]}...")
 
             try:
                 # Check if this commit triggered GitHub Actions
@@ -144,9 +142,7 @@ def parse_git_commit_history_for_actions(
                         f"✓ Commit {commit_sha[:8]} has {len(action_runs)} Action run(s)"
                     )
                 else:
-                    logger.debug(
-                        f"✗ Commit {commit_sha[:8]} has no GitHub Actions"
-                    )
+                    logger.debug(f"✗ Commit {commit_sha[:8]} has no GitHub Actions")
 
             except Exception as e:
                 logger.warning(
@@ -159,9 +155,7 @@ def parse_git_commit_history_for_actions(
                 f"Found {len(commits_with_actions)} commit(s) with GitHub Actions out of {len(commit_lines)} checked"
             )
         else:
-            logger.info(
-                "No commits with GitHub Actions found in the specified depth"
-            )
+            logger.info("No commits with GitHub Actions found in the specified depth")
 
         return commits_with_actions
 
@@ -232,9 +226,9 @@ def _check_commit_for_github_actions(
                     "created_at": run.get("createdAt"),
                     "display_title": run.get("displayTitle"),
                     "head_branch": run.get("headBranch"),
-                    "head_sha": run.get("headSha", "")[:8]
-                    if run.get("headSha")
-                    else "",
+                    "head_sha": (
+                        run.get("headSha", "")[:8] if run.get("headSha") else ""
+                    ),
                 }
             )
 
@@ -244,9 +238,7 @@ def _check_commit_for_github_actions(
         return action_runs
 
     except Exception as e:
-        logger.debug(
-            f"Error checking Actions for commit {commit_sha[:8]}: {e}"
-        )
+        logger.debug(f"Error checking Actions for commit {commit_sha[:8]}: {e}")
         return []
 
 
