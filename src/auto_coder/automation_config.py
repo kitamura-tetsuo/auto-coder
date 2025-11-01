@@ -59,6 +59,10 @@ class AutomationConfig:
     # Default: False (labels enabled)
     DISABLE_LABELS: bool = False
 
+    # Search through commit history for GitHub Actions logs when latest commit doesn't trigger Actions
+    # Default: True (search history enabled)
+    SEARCH_GITHUB_ACTIONS_HISTORY: bool = True
+
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True

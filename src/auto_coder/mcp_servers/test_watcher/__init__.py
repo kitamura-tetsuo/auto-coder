@@ -3,4 +3,3 @@ Test Watcher MCP - A Model Context Protocol server for continuous test monitorin
 """
 
 __version__ = "0.1.0"
-

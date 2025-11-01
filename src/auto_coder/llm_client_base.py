@@ -1,6 +1,7 @@
 """
 Base class for LLM clients.
 """
+
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -36,7 +37,9 @@ class LLMClientBase(ABC):
         pass
 
     @abstractmethod
-    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+    def add_mcp_server_config(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Add MCP server configuration for this LLM client.
 
         Args:
