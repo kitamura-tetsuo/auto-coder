@@ -7,9 +7,23 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .git_utils import ensure_pushed, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, switch_to_branch, try_llm_commit_push, commit_and_push_changes
+from .git_utils import (
+    commit_and_push_changes,
+    ensure_pushed,
+    git_checkout_branch,
+    git_commit_with_retry,
+    git_push,
+    save_commit_failure_history,
+    switch_to_branch,
+    try_llm_commit_push,
+)
 from .logger_config import get_logger
-from .progress_footer import ProgressStage, newline_progress, set_progress_item, push_progress_stage
+from .progress_footer import (
+    ProgressStage,
+    newline_progress,
+    push_progress_stage,
+    set_progress_item,
+)
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
@@ -31,7 +45,12 @@ def process_issues(
         return _process_issues_jules_mode(github_client, config, dry_run, repo_name)
     else:
         return _process_issues_normal(
-            github_client, config, dry_run, repo_name, llm_client, message_backend_manager
+            github_client,
+            config,
+            dry_run,
+            repo_name,
+            llm_client,
+            message_backend_manager,
         )
 
 
@@ -78,7 +97,9 @@ def _process_issues_normal(
 
                 # Skip if issue has open sub-issues
                 with ProgressStage("Checking sub-issues"):
-                    open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
+                    open_sub_issues = github_client.get_open_sub_issues(
+                        repo_name, issue_number
+                    )
                     if open_sub_issues:
                         logger.info(
                             f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
@@ -137,7 +158,13 @@ def _process_issues_normal(
                     # 単回実行での直接アクション（CLI）
                     with ProgressStage("Processing"):
                         actions = _take_issue_actions(
-                            repo_name, issue_data, config, dry_run, github_client, llm_client, message_backend_manager
+                            repo_name,
+                            issue_data,
+                            config,
+                            dry_run,
+                            github_client,
+                            llm_client,
+                            message_backend_manager,
                         )
                         processed_issue["actions_taken"] = actions
                 finally:
@@ -210,7 +237,9 @@ def _process_issues_jules_mode(
                         continue
 
                 # Skip if issue has open sub-issues
-                open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
+                open_sub_issues = github_client.get_open_sub_issues(
+                    repo_name, issue_number
+                )
                 if open_sub_issues:
                     logger.info(
                         f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
@@ -326,7 +355,13 @@ def _take_issue_actions(
         else:
             # Ask LLM CLI to analyze the issue and take appropriate actions
             action_results = _apply_issue_actions_directly(
-                repo_name, issue_data, config, dry_run, github_client, llm_client, message_backend_manager
+                repo_name,
+                issue_data,
+                config,
+                dry_run,
+                github_client,
+                llm_client,
+                message_backend_manager,
             )
             actions.extend(action_results)
 
@@ -381,7 +416,9 @@ def _create_pr_for_issue(
                     issue_body=issue_body[:500],
                     changes_summary=llm_response[:500],
                 )
-                pr_message_response = message_backend_manager._run_llm_cli(pr_message_prompt)
+                pr_message_response = message_backend_manager._run_llm_cli(
+                    pr_message_prompt
+                )
 
                 if pr_message_response and len(pr_message_response.strip()) > 0:
                     # Parse the response (first line is title, rest is body)
@@ -389,9 +426,13 @@ def _create_pr_for_issue(
                     pr_title = lines[0].strip()
                     if len(lines) > 2:
                         pr_body = "\n".join(lines[2:]).strip()
-                    logger.info(f"Generated PR message using message backend: {pr_title}")
+                    logger.info(
+                        f"Generated PR message using message backend: {pr_title}"
+                    )
             except Exception as e:
-                logger.warning(f"Failed to generate PR message using message backend: {e}")
+                logger.warning(
+                    f"Failed to generate PR message using message backend: {e}"
+                )
 
         # Fallback to default PR message if generation failed
         if not pr_title:
@@ -410,11 +451,17 @@ def _create_pr_for_issue(
         # Create PR using gh CLI
         create_pr_result = cmd.run_command(
             [
-                "gh", "pr", "create",
-                "--base", base_branch,
-                "--head", work_branch,
-                "--title", pr_title,
-                "--body", pr_body,
+                "gh",
+                "pr",
+                "create",
+                "--base",
+                base_branch,
+                "--head",
+                work_branch,
+                "--title",
+                pr_title,
+                "--body",
+                pr_body,
             ]
         )
 
@@ -430,15 +477,20 @@ def _create_pr_for_issue(
                     pr_number = int(pr_url.split("/")[-1])
                     logger.info(f"Extracted PR number: {pr_number}")
                 except (ValueError, IndexError) as e:
-                    logger.warning(f"Failed to extract PR number from URL '{pr_url}': {e}")
+                    logger.warning(
+                        f"Failed to extract PR number from URL '{pr_url}': {e}"
+                    )
 
             # Verify that the PR is linked to the issue
             if pr_number:
                 import time
+
                 # Wait a moment for GitHub to process the PR body and create the link
                 time.sleep(2)
 
-                closing_issues = github_client.get_pr_closing_issues(repo_name, pr_number)
+                closing_issues = github_client.get_pr_closing_issues(
+                    repo_name, pr_number
+                )
 
                 if issue_number not in closing_issues:
                     error_msg = (
@@ -448,11 +500,15 @@ def _create_pr_for_issue(
                     )
                     logger.error(error_msg)
                 else:
-                    logger.info(f"Verified: PR #{pr_number} is correctly linked to issue #{issue_number}")
+                    logger.info(
+                        f"Verified: PR #{pr_number} is correctly linked to issue #{issue_number}"
+                    )
 
             return f"Successfully created PR for issue #{issue_number}: {pr_title}"
         else:
-            logger.error(f"Failed to create PR for issue #{issue_number}: {create_pr_result.stderr}")
+            logger.error(
+                f"Failed to create PR for issue #{issue_number}: {create_pr_result.stderr}"
+            )
             return f"Failed to create PR for issue #{issue_number}: {create_pr_result.stderr}"
 
     except Exception as e:
@@ -486,11 +542,15 @@ def _apply_issue_actions_directly(
                 logger.info("Successfully pushed unpushed commits")
             elif not push_result.success:
                 logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
-                actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
+                actions.append(
+                    f"Warning: Failed to push unpushed commits: {push_result.stderr}"
+                )
 
         # ブランチ切り替え: PRで指定されているブランチがあればそこへ、なければ作業用ブランチを作成
         target_branch = None
-        pr_base_branch = config.MAIN_BRANCH  # PRのマージ先ブランチ（親issueがある場合は親issueブランチ）
+        pr_base_branch = (
+            config.MAIN_BRANCH
+        )  # PRのマージ先ブランチ（親issueがある場合は親issueブランチ）
         if "head_branch" in issue_data:
             # PRの場合はhead_branchに切り替え
             target_branch = issue_data.get("head_branch")
@@ -513,13 +573,17 @@ def _apply_issue_actions_directly(
             logger.info(f"Creating work branch for issue: {work_branch}")
 
             # 親issueを確認
-            parent_issue_number = github_client.get_parent_issue(repo_name, issue_number)
+            parent_issue_number = github_client.get_parent_issue(
+                repo_name, issue_number
+            )
 
             base_branch = config.MAIN_BRANCH
             if parent_issue_number:
                 # 親issueが存在する場合、親issueのブランチを基準にする
                 parent_branch = f"issue-{parent_issue_number}"
-                logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
+                logger.info(
+                    f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base"
+                )
 
                 # 親issueのブランチが存在するか確認
                 check_parent_branch = cmd.run_command(
@@ -529,19 +593,31 @@ def _apply_issue_actions_directly(
                 if check_parent_branch.returncode == 0:
                     # 親issueのブランチが存在する場合はそれを使用
                     base_branch = parent_branch
-                    pr_base_branch = parent_branch  # PRのマージ先も親issueブランチに設定
-                    logger.info(f"Parent branch {parent_branch} exists, using it as base")
-                    
+                    pr_base_branch = (
+                        parent_branch  # PRのマージ先も親issueブランチに設定
+                    )
+                    logger.info(
+                        f"Parent branch {parent_branch} exists, using it as base"
+                    )
+
                     # ブランチを最新状態へ更新
-                    switch_result = switch_to_branch(parent_branch, pull_after_switch=True)
+                    switch_result = switch_to_branch(
+                        parent_branch, pull_after_switch=True
+                    )
                     if not switch_result.success:
-                        logger.warning(f"Failed to pull latest changes from {parent_branch}: {switch_result.stderr}")
+                        logger.warning(
+                            f"Failed to pull latest changes from {parent_branch}: {switch_result.stderr}"
+                        )
                 else:
                     # 親issueのブランチが存在しない場合は作成
-                    logger.info(f"Parent branch {parent_branch} does not exist, creating it")
+                    logger.info(
+                        f"Parent branch {parent_branch} does not exist, creating it"
+                    )
 
                     # まずデフォルトブランチに切り替え
-                    switch_main_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
+                    switch_main_result = switch_to_branch(
+                        config.MAIN_BRANCH, pull_after_switch=True
+                    )
                     if not switch_main_result.success:
                         error_msg = f"Failed to switch to main branch {config.MAIN_BRANCH}: {switch_main_result.stderr}"
                         actions.append(error_msg)
@@ -549,15 +625,25 @@ def _apply_issue_actions_directly(
                         return actions
 
                     # 親issueのブランチを作成（自動的にリモートにプッシュされる）
-                    create_parent_result = git_checkout_branch(parent_branch, create_new=True)
+                    create_parent_result = git_checkout_branch(
+                        parent_branch, create_new=True
+                    )
                     if create_parent_result.success:
-                        actions.append(f"Created and published parent branch: {parent_branch}")
-                        logger.info(f"Successfully created and published parent branch: {parent_branch}")
+                        actions.append(
+                            f"Created and published parent branch: {parent_branch}"
+                        )
+                        logger.info(
+                            f"Successfully created and published parent branch: {parent_branch}"
+                        )
 
                         base_branch = parent_branch
-                        pr_base_branch = parent_branch  # PRのマージ先も親issueブランチに設定
+                        pr_base_branch = (
+                            parent_branch  # PRのマージ先も親issueブランチに設定
+                        )
                     else:
-                        logger.warning(f"Failed to create parent branch {parent_branch}: {create_parent_result.stderr}")
+                        logger.warning(
+                            f"Failed to create parent branch {parent_branch}: {create_parent_result.stderr}"
+                        )
                         # 親ブランチの作成に失敗した場合はデフォルトブランチを使用
                         base_branch = config.MAIN_BRANCH
 
@@ -568,7 +654,9 @@ def _apply_issue_actions_directly(
 
             if check_work_branch.returncode == 0:
                 # 作業用ブランチが既に存在する場合は、それに切り替え
-                logger.info(f"Work branch {work_branch} already exists, switching to it")
+                logger.info(
+                    f"Work branch {work_branch} already exists, switching to it"
+                )
                 checkout_existing_result = git_checkout_branch(work_branch)
                 if checkout_existing_result.success:
                     actions.append(f"Switched to existing work branch: {work_branch}")
@@ -581,10 +669,14 @@ def _apply_issue_actions_directly(
                     return actions
             else:
                 # 作業用ブランチが存在しない場合は、ベースブランチから新規作成
-                logger.info(f"Work branch {work_branch} does not exist, creating from {base_branch}")
+                logger.info(
+                    f"Work branch {work_branch} does not exist, creating from {base_branch}"
+                )
 
                 # ベースブランチに切り替え
-                switch_base_result = switch_to_branch(base_branch, pull_after_switch=True)
+                switch_base_result = switch_to_branch(
+                    base_branch, pull_after_switch=True
+                )
                 if not switch_base_result.success:
                     error_msg = f"Failed to switch to base branch {base_branch}: {switch_base_result.stderr}"
                     actions.append(error_msg)
@@ -594,8 +686,12 @@ def _apply_issue_actions_directly(
                 # 作業用ブランチを作成して切り替え
                 checkout_new_result = git_checkout_branch(work_branch, create_new=True)
                 if checkout_new_result.success:
-                    actions.append(f"Created and switched to work branch: {work_branch} from {base_branch}")
-                    logger.info(f"Successfully created work branch: {work_branch} from {base_branch}")
+                    actions.append(
+                        f"Created and switched to work branch: {work_branch} from {base_branch}"
+                    )
+                    logger.info(
+                        f"Successfully created work branch: {work_branch} from {base_branch}"
+                    )
                     target_branch = work_branch
                 else:
                     error_msg = f"Failed to create work branch {work_branch}: {checkout_new_result.stderr}"
@@ -657,7 +753,7 @@ def _apply_issue_actions_directly(
             commit_action = commit_and_push_changes(
                 {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
                 repo_name=repo_name,
-                issue_number=issue_data['number'],
+                issue_number=issue_data["number"],
                 llm_client=llm_client,
                 message_backend_manager=message_backend_manager,
             )
@@ -792,6 +888,7 @@ def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
     body += "\n*This feature request was generated automatically by Auto-Coder.*"
     return body
 
+
 def process_single(
     github_client,
     config: AutomationConfig,
@@ -832,10 +929,14 @@ def process_single(
                     resolved_type = "issue"
             if resolved_type == "pr":
                 try:
-                    from .pr_processor import _take_pr_actions, _check_github_actions_status, _extract_linked_issues_from_pr_body
-                    
+                    from .pr_processor import (
+                        _check_github_actions_status,
+                        _extract_linked_issues_from_pr_body,
+                        _take_pr_actions,
+                    )
+
                     pr_data = github_client.get_pr_details_by_number(repo_name, number)
-                    
+
                     # Extract branch name and related issues from PR data
                     branch_name = pr_data.get("head", {}).get("ref")
                     pr_body = pr_data.get("body", "")
@@ -843,26 +944,40 @@ def process_single(
                     if pr_body:
                         # Extract linked issues from PR body
                         related_issues = _extract_linked_issues_from_pr_body(pr_body)
-                    
+
                     set_progress_item("PR", number, related_issues, branch_name)
 
                     # Check GitHub Actions status before processing
-                    github_checks = _check_github_actions_status(repo_name, pr_data, config)
+                    github_checks = _check_github_actions_status(
+                        repo_name, pr_data, config
+                    )
 
                     # If GitHub Actions are still in progress, switch to main and exit
                     if github_checks.get("in_progress", False):
-                        logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
+                        logger.info(
+                            f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch"
+                        )
 
                         # Switch to main branch with pull
-                        switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
+                        switch_result = switch_to_branch(
+                            config.MAIN_BRANCH, pull_after_switch=True
+                        )
                         if switch_result.success:
-                            logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
+                            logger.info(
+                                f"Successfully switched to {config.MAIN_BRANCH} branch"
+                            )
                             # Exit the program
-                            logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
+                            logger.info(
+                                f"Exiting due to GitHub Actions in progress for PR #{number}"
+                            )
                             sys.exit(0)
                         else:
-                            logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
-                            result["errors"].append(f"Failed to switch to main branch: {switch_result.stderr}")
+                            logger.error(
+                                f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}"
+                            )
+                            result["errors"].append(
+                                f"Failed to switch to main branch: {switch_result.stderr}"
+                            )
                             return result
 
                     actions = _take_pr_actions(
@@ -895,9 +1010,7 @@ def process_single(
                         if not github_client.try_add_work_in_progress_label(
                             repo_name, number
                         ):
-                            msg = (
-                                f"Skipping issue #{number} - @auto-coder label was just added by another instance"
-                            )
+                            msg = f"Skipping issue #{number} - @auto-coder label was just added by another instance"
                             logger.info(msg)
                             result["errors"].append(msg)
                             newline_progress()
@@ -934,7 +1047,13 @@ def process_single(
                         else:
                             push_progress_stage("Processing")
                             actions = _take_issue_actions(
-                                repo_name, issue_data, config, dry_run, github_client, llm_client, message_backend_manager
+                                repo_name,
+                                issue_data,
+                                config,
+                                dry_run,
+                                github_client,
+                                llm_client,
+                                message_backend_manager,
                             )
                             processed_issue["actions_taken"] = actions
                     finally:
@@ -995,22 +1114,36 @@ def process_single(
                     # Check the current state of the item
                     with ProgressStage("Checking final status"):
                         if item_type == "issue":
-                            current_item = github_client.get_issue_details_by_number(repo_name, item_number)
+                            current_item = github_client.get_issue_details_by_number(
+                                repo_name, item_number
+                            )
                         else:
-                            current_item = github_client.get_pr_details_by_number(repo_name, item_number)
+                            current_item = github_client.get_pr_details_by_number(
+                                repo_name, item_number
+                            )
 
                         if current_item.get("state") == "closed":
-                            logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
+                            logger.info(
+                                f"{item_type.capitalize()} #{item_number} is closed, switching to main branch"
+                            )
 
                             # Switch to main branch with pull
-                            switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
+                            switch_result = switch_to_branch(
+                                config.MAIN_BRANCH, pull_after_switch=True
+                            )
                             if switch_result.success:
-                                logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
+                                logger.info(
+                                    f"Successfully switched to {config.MAIN_BRANCH} branch"
+                                )
                                 # Exit the program
-                                logger.info(f"Exiting after closing {item_type} #{item_number}")
+                                logger.info(
+                                    f"Exiting after closing {item_type} #{item_number}"
+                                )
                                 sys.exit(0)
                             else:
-                                logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
+                                logger.error(
+                                    f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}"
+                                )
         except Exception as e:
             logger.warning(f"Failed to check/handle closed item state: {e}")
 

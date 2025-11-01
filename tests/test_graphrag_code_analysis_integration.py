@@ -8,7 +8,7 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
@@ -44,13 +44,16 @@ class TestGraphRAGCodeAnalysisIntegration:
         (graph_builder_dir / "src" / "cli_python.py").touch()
 
         # Create a fake graphrag_index_manager.py file
-        fake_manager_file = fake_auto_coder_dir / "auto_coder" / "graphrag_index_manager.py"
+        fake_manager_file = (
+            fake_auto_coder_dir / "auto_coder" / "graphrag_index_manager.py"
+        )
         fake_manager_file.touch()
 
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
 
         # Mock __file__ to point to our fake manager file
         with patch("pathlib.Path.__new__") as mock_path:
+
             def path_new(cls, *args, **kwargs):
                 if args and args[0] == "__file__":
                     return Path(fake_manager_file)
@@ -79,6 +82,7 @@ class TestGraphRAGCodeAnalysisIntegration:
             with patch("pathlib.Path.cwd", return_value=isolated_dir):
                 # Mock __file__ to point to isolated directory
                 with patch.object(Path, "__new__") as mock_path:
+
                     def path_new(cls, *args, **kwargs):
                         if args and str(args[0]).endswith("graphrag_index_manager.py"):
                             return isolated_dir / "graphrag_index_manager.py"
@@ -135,27 +139,25 @@ class TestGraphRAGCodeAnalysisIntegration:
 
         # Mock subprocess result
         graph_data = {
-            "nodes": [
-                {"id": "node1", "kind": "Function", "fqname": "test.ts:myFunc"}
-            ],
-            "edges": [
-                {"from": "node1", "to": "node2", "type": "CALLS"}
-            ]
+            "nodes": [{"id": "node1", "kind": "Function", "fqname": "test.ts:myFunc"}],
+            "edges": [{"from": "node1", "to": "node2", "type": "CALLS"}],
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_file = Path(temp_dir) / "graph-data.json"
-            
+
             def write_output(*args, **kwargs):
                 output_file.write_text(json.dumps(graph_data))
                 return MagicMock(returncode=0, stderr="")
-            
+
             mock_run.side_effect = write_output
 
             manager = GraphRAGIndexManager(repo_path=str(tmp_path))
-            
+
             # Patch _find_graph_builder to return our test directory
-            with patch.object(manager, "_find_graph_builder", return_value=graph_builder_dir):
+            with patch.object(
+                manager, "_find_graph_builder", return_value=graph_builder_dir
+            ):
                 # Patch tempfile to use our controlled directory
                 with patch("tempfile.TemporaryDirectory") as mock_temp:
                     mock_temp.return_value.__enter__.return_value = temp_dir
@@ -183,21 +185,23 @@ class TestGraphRAGCodeAnalysisIntegration:
 
         graph_data = {
             "nodes": [{"id": "node1", "kind": "Class", "fqname": "test.py:MyClass"}],
-            "edges": []
+            "edges": [],
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_file = Path(temp_dir) / "graph-data.json"
-            
+
             def write_output(*args, **kwargs):
                 output_file.write_text(json.dumps(graph_data))
                 return MagicMock(returncode=0, stderr="")
-            
+
             mock_run.side_effect = write_output
 
             manager = GraphRAGIndexManager(repo_path=str(tmp_path))
-            
-            with patch.object(manager, "_find_graph_builder", return_value=graph_builder_dir):
+
+            with patch.object(
+                manager, "_find_graph_builder", return_value=graph_builder_dir
+            ):
                 with patch("tempfile.TemporaryDirectory") as mock_temp:
                     mock_temp.return_value.__enter__.return_value = temp_dir
                     result = manager._run_graph_builder()
@@ -223,11 +227,15 @@ class TestGraphRAGCodeAnalysisIntegration:
         (tmp_path / "test.py").write_text("def test(): pass")
 
         # Mock subprocess to fail
-        mock_run.return_value = MagicMock(returncode=1, stderr="Error running graph-builder")
+        mock_run.return_value = MagicMock(
+            returncode=1, stderr="Error running graph-builder"
+        )
 
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
 
-        with patch.object(manager, "_find_graph_builder", return_value=graph_builder_dir):
+        with patch.object(
+            manager, "_find_graph_builder", return_value=graph_builder_dir
+        ):
             result = manager._run_graph_builder()
 
         # Should fall back to simple Python indexing
@@ -240,11 +248,9 @@ class TestGraphRAGCodeAnalysisIntegration:
         graph_data = {
             "nodes": [
                 {"id": "n1", "kind": "Function", "fqname": "test.py:func1"},
-                {"id": "n2", "kind": "Class", "fqname": "test.py:MyClass"}
+                {"id": "n2", "kind": "Class", "fqname": "test.py:MyClass"},
             ],
-            "edges": [
-                {"from": "n1", "to": "n2", "type": "CALLS", "count": 3}
-            ]
+            "edges": [{"from": "n1", "to": "n2", "type": "CALLS", "count": 3}],
         }
 
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
@@ -275,10 +281,10 @@ class TestGraphRAGCodeAnalysisIntegration:
                     "kind": "Function",
                     "fqname": "test.py:func1",
                     "sig": "(int) -> str",
-                    "short": "Test function"
+                    "short": "Test function",
                 }
             ],
-            "edges": []
+            "edges": [],
         }
 
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
@@ -333,6 +339,7 @@ class TestGraphRAGCodeAnalysisIntegration:
         # If TypeScript CLI exists, verify it supports all languages
         if ts_cli.exists():
             import subprocess
+
             result = subprocess.run(
                 ["node", str(ts_cli), "scan", "--help"],
                 capture_output=True,
@@ -344,6 +351,7 @@ class TestGraphRAGCodeAnalysisIntegration:
         # If Python CLI exists, verify it supports languages option
         if py_cli.exists():
             import subprocess
+
             result = subprocess.run(
                 ["python3", str(py_cli), "scan", "--help"],
                 capture_output=True,
@@ -352,14 +360,22 @@ class TestGraphRAGCodeAnalysisIntegration:
             assert result.returncode == 0
             assert "--languages" in result.stdout
 
-    @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._run_graph_builder")
-    @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_graph_in_neo4j")
-    @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_embeddings_in_qdrant")
-    def test_index_codebase_integration(self, mock_qdrant, mock_neo4j, mock_builder, tmp_path):
+    @patch(
+        "src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._run_graph_builder"
+    )
+    @patch(
+        "src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_graph_in_neo4j"
+    )
+    @patch(
+        "src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_embeddings_in_qdrant"
+    )
+    def test_index_codebase_integration(
+        self, mock_qdrant, mock_neo4j, mock_builder, tmp_path
+    ):
         """Test full _index_codebase integration."""
         graph_data = {
             "nodes": [{"id": "n1", "kind": "Function"}],
-            "edges": [{"from": "n1", "to": "n2", "type": "CALLS"}]
+            "edges": [{"from": "n1", "to": "n2", "type": "CALLS"}],
         }
         mock_builder.return_value = graph_data
 
@@ -405,12 +421,15 @@ class TestGraphRAGCodeAnalysisIntegration:
         assert "File" in node_kinds
 
         # If TypeScript files were scanned, should have TypeScript-specific types
-        ts_files = [n for n in result["nodes"] if n.get("file", "").endswith((".ts", ".tsx"))]
-        js_files = [n for n in result["nodes"] if n.get("file", "").endswith((".js", ".jsx"))]
+        ts_files = [
+            n for n in result["nodes"] if n.get("file", "").endswith((".ts", ".tsx"))
+        ]
+        js_files = [
+            n for n in result["nodes"] if n.get("file", "").endswith((".js", ".jsx"))
+        ]
         py_files = [n for n in result["nodes"] if n.get("file", "").endswith(".py")]
 
         # Should have scanned files from multiple languages
         # Note: Depending on the test environment, some languages might not be scanned
         # but at least Python should be scanned
         assert len(py_files) > 0 or len(ts_files) > 0 or len(js_files) > 0
-

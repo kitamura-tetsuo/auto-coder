@@ -8,8 +8,8 @@ continuous test monitoring during LLM invocations.
 import os
 import subprocess
 import threading
-from typing import Optional
 from pathlib import Path
+from typing import Optional
 
 from .logger_config import get_logger
 
@@ -33,13 +33,13 @@ class TestWatcherIntegration:
         # Get MCP server path from environment or use default
         if mcp_server_path is None:
             mcp_server_path = os.environ.get("TEST_WATCHER_MCP_SERVER_PATH")
-        
+
         # If still None, try to find it in default location
         if mcp_server_path is None:
             default_path = Path.home() / "mcp_servers" / "test_watcher"
             if default_path.exists():
                 mcp_server_path = str(default_path)
-        
+
         self.mcp_server_path = mcp_server_path
         self.project_root = project_root or str(Path.cwd())
         self.mcp_process: Optional[subprocess.Popen] = None
@@ -86,8 +86,10 @@ class TestWatcherIntegration:
             return False
 
         # Check for main.py or server.py
-        if not (server_path / "main.py").exists() and \
-           not (server_path / "server.py").exists():
+        if (
+            not (server_path / "main.py").exists()
+            and not (server_path / "server.py").exists()
+        ):
             return False
 
         return True
@@ -126,7 +128,7 @@ class TestWatcherIntegration:
             # Use run_server.sh if it exists, otherwise use uv
             server_path = Path(self.mcp_server_path)
             run_script = server_path / "run_server.sh"
-            
+
             if run_script.exists():
                 cmd = [str(run_script)]
             else:
@@ -142,7 +144,9 @@ class TestWatcherIntegration:
                 env=env,
             )
 
-            logger.info(f"Started Test Watcher MCP server with PID {self.mcp_process.pid}")
+            logger.info(
+                f"Started Test Watcher MCP server with PID {self.mcp_process.pid}"
+            )
 
             # Start stderr pump for diagnostics
             if self.mcp_process.stderr:
@@ -212,4 +216,3 @@ class TestWatcherIntegration:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.cleanup()
-

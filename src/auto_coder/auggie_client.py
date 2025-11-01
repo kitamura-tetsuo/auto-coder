@@ -7,6 +7,7 @@ swap backends transparently. The Auggie CLI is assumed to be installed via
 using `--print` together with `--model` and the prompt as a positional
 argument.
 """
+
 from __future__ import annotations
 
 import json
@@ -223,18 +224,26 @@ class AuggieClient(LLMClientBase):
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if server_name.lower() in output:
-                    logger.info(f"Found MCP server '{server_name}' via 'auggie mcp list'")
+                    logger.info(
+                        f"Found MCP server '{server_name}' via 'auggie mcp list'"
+                    )
                     return True
-                logger.debug(f"MCP server '{server_name}' not found via 'auggie mcp list'")
+                logger.debug(
+                    f"MCP server '{server_name}' not found via 'auggie mcp list'"
+                )
                 return False
             else:
-                logger.debug(f"'auggie mcp list' command failed with return code {result.returncode}")
+                logger.debug(
+                    f"'auggie mcp list' command failed with return code {result.returncode}"
+                )
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Auggie MCP config: {e}")
             return False
 
-    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+    def add_mcp_server_config(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Add MCP server configuration to Auggie CLI config (Windsurf).
 
         Args:
@@ -250,10 +259,15 @@ class AuggieClient(LLMClientBase):
             # Format: auggie mcp add <name> --command <command> --args "<args>"
             args_str = " ".join(args)
             cmd = [
-                "auggie", "mcp", "add", server_name,
-                "--command", command,
-                "--args", args_str,
-                "--replace"  # Overwrite existing entry without prompt
+                "auggie",
+                "mcp",
+                "add",
+                server_name,
+                "--command",
+                command,
+                "--args",
+                args_str,
+                "--replace",  # Overwrite existing entry without prompt
             ]
 
             result = subprocess.run(
