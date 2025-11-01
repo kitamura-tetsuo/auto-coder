@@ -81,7 +81,7 @@
                 "--qwen-use-cli-options",
                 "--disable-graphrag",
                 "--only",
-                "41",
+                "https://github.com/kitamura-tetsuo/auto-coder/pull/47",
                 "--backend",
                 "claude",
                 "--model-claude",
