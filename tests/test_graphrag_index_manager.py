@@ -139,7 +139,9 @@ def test_save_index_state(index_manager, temp_index_state_file):
 def test_save_index_state_creates_directory(temp_repo):
     """Test that save_index_state creates directory if it doesn't exist."""
     state_file = temp_repo / "nested" / "dir" / "state.json"
-    manager = GraphRAGIndexManager(repo_path=str(temp_repo), index_state_file=str(state_file))
+    manager = GraphRAGIndexManager(
+        repo_path=str(temp_repo), index_state_file=str(state_file)
+    )
 
     test_state = {"codebase_hash": "test_hash"}
     manager._save_index_state(test_state)
@@ -160,10 +162,12 @@ def test_is_index_up_to_date_matching_hash(index_manager, temp_repo):
     """Test is_index_up_to_date when hash matches."""
     # Save current hash and path
     current_hash = index_manager._get_codebase_hash()
-    index_manager._save_index_state({
-        "codebase_hash": current_hash,
-        "indexed_at": str(temp_repo.resolve()),
-    })
+    index_manager._save_index_state(
+        {
+            "codebase_hash": current_hash,
+            "indexed_at": str(temp_repo.resolve()),
+        }
+    )
 
     result = index_manager.is_index_up_to_date()
     assert result is True
@@ -172,10 +176,12 @@ def test_is_index_up_to_date_matching_hash(index_manager, temp_repo):
 def test_is_index_up_to_date_different_hash(index_manager, temp_repo):
     """Test is_index_up_to_date when hash differs."""
     # Save old hash with current path
-    index_manager._save_index_state({
-        "codebase_hash": "old_hash",
-        "indexed_at": str(temp_repo.resolve()),
-    })
+    index_manager._save_index_state(
+        {
+            "codebase_hash": "old_hash",
+            "indexed_at": str(temp_repo.resolve()),
+        }
+    )
 
     result = index_manager.is_index_up_to_date()
     assert result is False
@@ -185,10 +191,12 @@ def test_update_index_when_up_to_date(index_manager, temp_repo):
     """Test update_index when index is already up to date."""
     # Save current hash and path
     current_hash = index_manager._get_codebase_hash()
-    index_manager._save_index_state({
-        "codebase_hash": current_hash,
-        "indexed_at": str(temp_repo.resolve()),
-    })
+    index_manager._save_index_state(
+        {
+            "codebase_hash": current_hash,
+            "indexed_at": str(temp_repo.resolve()),
+        }
+    )
 
     result = index_manager.update_index(force=False)
     assert result is True
@@ -197,10 +205,12 @@ def test_update_index_when_up_to_date(index_manager, temp_repo):
 def test_update_index_when_outdated(index_manager, temp_repo):
     """Test update_index when index is outdated."""
     # Save old hash with current path
-    index_manager._save_index_state({
-        "codebase_hash": "old_hash",
-        "indexed_at": str(temp_repo.resolve()),
-    })
+    index_manager._save_index_state(
+        {
+            "codebase_hash": "old_hash",
+            "indexed_at": str(temp_repo.resolve()),
+        }
+    )
 
     result = index_manager.update_index(force=False)
     assert result is True
@@ -214,10 +224,12 @@ def test_update_index_force(index_manager, temp_repo):
     """Test update_index with force=True."""
     # Save current hash and path
     current_hash = index_manager._get_codebase_hash()
-    index_manager._save_index_state({
-        "codebase_hash": current_hash,
-        "indexed_at": str(temp_repo.resolve()),
-    })
+    index_manager._save_index_state(
+        {
+            "codebase_hash": current_hash,
+            "indexed_at": str(temp_repo.resolve()),
+        }
+    )
 
     result = index_manager.update_index(force=True)
     assert result is True
@@ -231,10 +243,12 @@ def test_ensure_index_up_to_date_when_up_to_date(index_manager, temp_repo):
     """Test ensure_index_up_to_date when index is up to date."""
     # Save current hash and path
     current_hash = index_manager._get_codebase_hash()
-    index_manager._save_index_state({
-        "codebase_hash": current_hash,
-        "indexed_at": str(temp_repo.resolve()),
-    })
+    index_manager._save_index_state(
+        {
+            "codebase_hash": current_hash,
+            "indexed_at": str(temp_repo.resolve()),
+        }
+    )
 
     result = index_manager.ensure_index_up_to_date()
     assert result is True
@@ -243,10 +257,12 @@ def test_ensure_index_up_to_date_when_up_to_date(index_manager, temp_repo):
 def test_ensure_index_up_to_date_when_outdated(index_manager, temp_repo):
     """Test ensure_index_up_to_date when index is outdated."""
     # Save old hash with current path
-    index_manager._save_index_state({
-        "codebase_hash": "old_hash",
-        "indexed_at": str(temp_repo.resolve()),
-    })
+    index_manager._save_index_state(
+        {
+            "codebase_hash": "old_hash",
+            "indexed_at": str(temp_repo.resolve()),
+        }
+    )
 
     result = index_manager.ensure_index_up_to_date()
     assert result is True
@@ -337,4 +353,3 @@ def test_is_index_up_to_date_path_and_hash_match(index_manager, temp_repo):
 
     result = index_manager.is_index_up_to_date()
     assert result is True
-

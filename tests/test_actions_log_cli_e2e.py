@@ -1,9 +1,10 @@
 import importlib
+import os
 import subprocess
 import sys
 
 
-def test_get_actions_logs_cli():
+def test_get_actions_logs_cli(_use_real_home):
     sp = importlib.reload(subprocess)
     from playwright.sync_api import sync_playwright
 
@@ -16,6 +17,9 @@ def test_get_actions_logs_cli():
         page = browser.new_page()
         page.goto(url)
         assert "GitHub" in page.title()
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "/home/node/.local/lib/python3.11/site-packages:/home/node/1/auto-coder/src"
 
     result = sp.run(
         [
@@ -31,5 +35,6 @@ def test_get_actions_logs_cli():
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
     assert result.returncode == 0

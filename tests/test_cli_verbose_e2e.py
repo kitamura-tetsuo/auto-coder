@@ -34,6 +34,7 @@ def test_verbose_logging_emits_command_trace():
 
     env_verbose = os.environ.copy()
     env_verbose["AUTOCODER_VERBOSE"] = "1"
+    env_verbose["PYTHONPATH"] = "/home/node/.local/lib/python3.11/site-packages:/home/node/1/auto-coder/src"
 
     result_verbose = subprocess.run(
         [sys.executable, "-c", python_snippet],
@@ -48,6 +49,7 @@ def test_verbose_logging_emits_command_trace():
 
     env_quiet = os.environ.copy()
     env_quiet.pop("AUTOCODER_VERBOSE", None)
+    env_quiet["PYTHONPATH"] = "/home/node/.local/lib/python3.11/site-packages:/home/node/1/auto-coder/src"
 
     result_quiet = subprocess.run(
         [sys.executable, "-c", python_snippet],

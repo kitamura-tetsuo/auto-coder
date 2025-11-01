@@ -142,7 +142,6 @@ class CodexMCPClient(LLMClientBase):
             self._initialized = True
             logger.info("MCP JSON-RPC initialized successfully")
 
-
         except Exception as e:
             logger.warning(
                 f"MCP initialize failed or not supported; will fallback to 'codex exec' for actions: {e}"
@@ -311,7 +310,9 @@ class CodexMCPClient(LLMClientBase):
         if self.graphrag_integration:
             try:
                 if not self.graphrag_integration.ensure_ready():
-                    logger.warning("GraphRAG environment not ready, continuing without it")
+                    logger.warning(
+                        "GraphRAG environment not ready, continuing without it"
+                    )
             except Exception as e:
                 logger.warning(f"Failed to ensure GraphRAG environment: {e}")
 
@@ -445,18 +446,26 @@ class CodexMCPClient(LLMClientBase):
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if server_name.lower() in output:
-                    logger.info(f"Found MCP server '{server_name}' via 'codex mcp list'")
+                    logger.info(
+                        f"Found MCP server '{server_name}' via 'codex mcp list'"
+                    )
                     return True
-                logger.debug(f"MCP server '{server_name}' not found via 'codex mcp list'")
+                logger.debug(
+                    f"MCP server '{server_name}' not found via 'codex mcp list'"
+                )
                 return False
             else:
-                logger.debug(f"'codex mcp list' command failed with return code {result.returncode}")
+                logger.debug(
+                    f"'codex mcp list' command failed with return code {result.returncode}"
+                )
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Codex MCP config: {e}")
             return False
 
-    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+    def add_mcp_server_config(
+        self, server_name: str, command: str, args: list[str]
+    ) -> bool:
         """Add MCP server configuration to Codex CLI config.
 
         Args:

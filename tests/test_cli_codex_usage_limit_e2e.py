@@ -68,6 +68,7 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
 
     env = os.environ.copy()
     env["PATH"] = f"{bin_dir}:{original_path}"
+    env["PYTHONPATH"] = "/home/node/.local/lib/python3.11/site-packages:/home/node/1/auto-coder/src"
 
     result = subprocess.run(
         [sys.executable, "-c", python_code],
