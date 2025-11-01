@@ -46,6 +46,22 @@ def get_current_branch(cwd: Optional[str] = None) -> Optional[str]:
         return None
 
 
+def branch_exists(branch_name: str, cwd: Optional[str] = None) -> bool:
+    """
+    Check if a branch with the given name exists.
+
+    Args:
+        branch_name: Name of the branch to check
+        cwd: Optional working directory for the git command
+
+    Returns:
+        True if the branch exists, False otherwise
+    """
+    cmd = CommandExecutor()
+    result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
+    return result.success and result.stdout.strip()
+
+
 def extract_number_from_branch(branch_name: str) -> Optional[int]:
     """
     Extract issue or PR number from branch name.
