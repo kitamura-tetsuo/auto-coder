@@ -12,10 +12,10 @@ logger = get_logger(__name__)
 
 @click.group(name="mcp-pdb")
 def mcp_pdb_group() -> None:
-    """MCP-PDB のセットアップ支援ユーティリティ。
+    """MCP-PDB setup assistance utility.
 
-    - print-config: Windsurf/Claude 用の設定スニペットを出力
-    - status: 必要な前提コマンドの存在を確認
+    - print-config: Print configuration snippet for Windsurf/Claude
+    - status: Check existence of required prerequisite commands
     """
     pass
 
@@ -41,20 +41,20 @@ def _windsurf_mcp_config_snippet() -> str:
     "--target",
     type=click.Choice(["windsurf", "claude"], case_sensitive=False),
     default="windsurf",
-    help="出力先ツールの種類 (windsurf|claude)",
+    help="Output target tool type (windsurf|claude)",
 )
 @click.option(
     "--write-to",
     type=click.Path(dir_okay=False, resolve_path=True),
-    help="出力内容をファイルにも保存するパス (任意)",
+    help="Path to also save output content to file (optional)",
 )
 def mcp_pdb_print_config(target: str, write_to: Optional[str]) -> None:
-    """mcp-pdb の設定を出力（必要に応じてファイル保存）。"""
-    setup_logger()  # 標準設定
+    """Output mcp-pdb configuration (save to file if needed)."""
+    setup_logger()  # Default setup
     if target.lower() == "windsurf":
         content = _windsurf_mcp_config_snippet()
     else:
-        # Claude Code 用はコマンドラインをそのまま提示
+        # For Claude Code, present the command line as-is
         content = (
             "# Install the MCP server\n"
             "claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb\n\n"
@@ -75,11 +75,11 @@ def mcp_pdb_print_config(target: str, write_to: Optional[str]) -> None:
 
 @mcp_pdb_group.command("status")
 def mcp_pdb_status() -> None:
-    """mcp-pdb 利用に必要な前提コマンドの存在確認を行う。"""
+    """Check existence of prerequisite commands required for mcp-pdb."""
     setup_logger()
     click.echo("Checking MCP-PDB prerequisites...\n")
 
-    # uv の存在確認
+    # Check for uv existence
     try:
         import subprocess as _sp
 
@@ -97,7 +97,7 @@ def mcp_pdb_status() -> None:
 
     click.echo()
     click.echo("Setup tips:")
-    click.echo("  - Windsurf: settings.json に mcpServers を追加")
+    click.echo("  - Windsurf: add mcpServers to settings.json")
     click.echo(
         "  - Claude Code: 'claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb'"
     )

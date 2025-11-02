@@ -21,17 +21,17 @@ def run_graphrag_setup_mcp_programmatically(
     backends: Optional[list] = None,
     silent: bool = False,
 ) -> bool:
-    """GraphRAG MCP サーバーをプログラム的にセットアップします。
+    """Set up GraphRAG MCP server programmatically.
 
     Args:
-        install_dir: インストール先ディレクトリ（デフォルト: ~/graphrag_mcp）
-        neo4j_uri: Neo4j 接続URI
-        neo4j_user: Neo4j ユーザー名
-        neo4j_password: Neo4j パスワード
-        qdrant_url: Qdrant 接続URL
-        skip_clone: 既存のディレクトリを使用（コピーをスキップ）
-        backends: 設定するバックエンドのリスト（デフォルト: 全て）
-        silent: True の場合、ユーザー確認をスキップして自動実行
+        install_dir: Installation directory (default: ~/graphrag_mcp)
+        neo4j_uri: Neo4j connection URI
+        neo4j_user: Neo4j username
+        neo4j_password: Neo4j password
+        qdrant_url: Qdrant connection URL
+        skip_clone: Use existing directory (skip copying)
+        backends: List of backends to configure (default: all)
+        silent: If True, skip user confirmation and run automatically
 
     Returns:
         True if setup was successful, False otherwise
@@ -45,8 +45,8 @@ def run_graphrag_setup_mcp_programmatically(
         install_path = Path(install_dir)
 
         if not silent:
-            logger.info("GraphRAG MCP サーバーのセットアップを開始します...")
-            logger.info(f"インストール先: {install_path}")
+            logger.info("Starting GraphRAG MCP server setup...")
+            logger.info(f"Install directory: {install_path}")
 
         # Check if uv is available, install if not found
         uv_available = False
@@ -60,17 +60,17 @@ def run_graphrag_setup_mcp_programmatically(
             if result.returncode == 0:
                 uv_available = True
                 if not silent:
-                    logger.info(f"✅ uv が利用可能です: {result.stdout.strip()}")
+                    logger.info(f"✅ uv is available: {result.stdout.strip()}")
         except FileNotFoundError:
             pass
         except subprocess.TimeoutExpired:
-            logger.error("uv コマンドがタイムアウトしました")
+            logger.error("uv command timed out")
             return False
 
         # Auto-install uv if not available
         if not uv_available:
             if not silent:
-                logger.warning("uv が見つかりません。自動インストールを試みます...")
+                logger.warning("uv not found. Attempting automatic installation...")
 
             try:
                 # Install uv using the official installer
@@ -84,10 +84,10 @@ def run_graphrag_setup_mcp_programmatically(
                 )
 
                 if result.returncode != 0:
-                    logger.error("uv の自動インストールに失敗しました。")
-                    logger.error(f"エラー: {result.stderr}")
+                    logger.error("Automatic uv installation failed.")
+                    logger.error(f"Error: {result.stderr}")
                     logger.error(
-                        "手動でインストールしてください: https://docs.astral.sh/uv/"
+                        "Please install manually: https://docs.astral.sh/uv/"
                     )
                     return False
 
@@ -113,31 +113,31 @@ def run_graphrag_setup_mcp_programmatically(
                     if result.returncode == 0:
                         if not silent:
                             logger.info(
-                                f"✅ uv を自動インストールしました: {result.stdout.strip()}"
+                                f"✅ Automatically installed uv: {result.stdout.strip()}"
                             )
                     else:
                         logger.error(
-                            "uv のインストールは完了しましたが、実行できません。"
+                            "uv installation completed but cannot execute."
                         )
-                        logger.error("シェルを再起動してから再度お試しください。")
+                        logger.error("Please restart your shell and try again.")
                         return False
                 except FileNotFoundError:
                     logger.error(
-                        "uv のインストールは完了しましたが、PATH に見つかりません。"
+                        "uv installation completed but not found in PATH."
                     )
-                    logger.error("シェルを再起動してから再度お試しください。")
+                    logger.error("Please restart your shell and try again.")
                     logger.error(
-                        f"または、以下のパスを PATH に追加してください: {':'.join(uv_bin_paths)}"
+                        f"Or add the following path to PATH: {':'.join(uv_bin_paths)}"
                     )
                     return False
 
             except subprocess.TimeoutExpired:
-                logger.error("uv のインストールがタイムアウトしました")
+                logger.error("uv installation timed out")
                 return False
             except Exception as e:
-                logger.error(f"uv のインストール中にエラーが発生しました: {e}")
+                logger.error(f"Error during uv installation: {e}")
                 logger.error(
-                    "手動でインストールしてください: https://docs.astral.sh/uv/"
+                    "Please install manually: https://docs.astral.sh/uv/"
                 )
                 return False
 
@@ -145,12 +145,12 @@ def run_graphrag_setup_mcp_programmatically(
         if not skip_clone:
             if install_path.exists():
                 if not silent:
-                    logger.warning(f"ディレクトリ {install_path} は既に存在します。")
-                    logger.info("既存のディレクトリを使用します（--skip-clone）")
+                    logger.warning(f"Directory {install_path} already exists.")
+                    logger.info("Using existing directory (--skip-clone)")
                 skip_clone = True
             else:
                 if not silent:
-                    logger.info("バンドルされたMCPサーバーをコピーしています...")
+                    logger.info("Copying bundled MCP server...")
                 try:
                     # Find the bundled MCP server in the package
                     import auto_coder
@@ -160,10 +160,10 @@ def run_graphrag_setup_mcp_programmatically(
 
                     if not bundled_mcp.exists():
                         logger.error(
-                            f"バンドルされたMCPサーバーが見つかりません: {bundled_mcp}"
+                            f"Bundled MCP server not found: {bundled_mcp}"
                         )
                         logger.error(
-                            "パッケージが正しくインストールされていない可能性があります。"
+                            "The package may not be installed correctly."
                         )
                         return False
 
@@ -178,25 +178,25 @@ def run_graphrag_setup_mcp_programmatically(
                     )
 
                     if not silent:
-                        logger.info("✅ MCPサーバーをコピーしました")
-                        logger.info(f"   ソース: {bundled_mcp}")
-                        logger.info(f"   コピー先: {install_path}")
+                        logger.info("✅ Copied MCP server")
+                        logger.info(f"   Source: {bundled_mcp}")
+                        logger.info(f"   Destination: {install_path}")
                 except Exception as e:
-                    logger.error(f"MCPサーバーのコピーに失敗しました: {e}")
+                    logger.error(f"Failed to copy MCP server: {e}")
                     return False
         else:
             if not install_path.exists():
                 logger.error(
-                    f"ディレクトリ {install_path} が存在しません。--skip-clone を使用する場合は、"
-                    "事前にMCPサーバーをセットアップしてください。"
+                    f"Directory {install_path} does not exist. If using --skip-clone, "
+                    "please set up the MCP server first."
                 )
                 return False
             if not silent:
-                logger.info(f"既存のディレクトリを使用します: {install_path}")
+                logger.info(f"Using existing directory: {install_path}")
 
         # Install dependencies with uv
         if not silent:
-            logger.info("依存関係をインストールしています...")
+            logger.info("Installing dependencies...")
         try:
             result = subprocess.run(
                 ["uv", "sync"],
@@ -206,12 +206,12 @@ def run_graphrag_setup_mcp_programmatically(
                 timeout=300,
             )
             if result.returncode != 0:
-                logger.error(f"依存関係のインストールに失敗しました:\n{result.stderr}")
+                logger.error(f"Failed to install dependencies:\n{result.stderr}")
                 return False
             if not silent:
-                logger.info("✅ 依存関係をインストールしました")
+                logger.info("✅ Installed dependencies")
         except subprocess.TimeoutExpired:
-            logger.error("uv sync がタイムアウトしました")
+            logger.error("uv sync timed out")
             return False
 
         # Create .env file
@@ -235,9 +235,9 @@ QDRANT_URL={qdrant_url}
             with open(env_path, "w", encoding="utf-8") as f:
                 f.write(env_content)
             if not silent:
-                logger.info(f"✅ .env ファイルを作成しました: {env_path}")
+                logger.info(f"✅ Created .env file: {env_path}")
         except Exception as e:
-            logger.error(f".env ファイルの作成に失敗しました: {e}")
+            logger.error(f"Failed to create .env file: {e}")
             return False
 
         # Create run_server.sh script
@@ -312,10 +312,10 @@ exec "$UV_CMD" run main.py
             os.chmod(run_script_path, 0o755)
             if not silent:
                 logger.info(
-                    f"✅ run_server.sh スクリプトを作成しました: {run_script_path}"
+                    f"✅ Created run_server.sh script: {run_script_path}"
                 )
         except Exception as e:
-            logger.error(f"run_server.sh スクリプトの作成に失敗しました: {e}")
+            logger.error(f"Failed to create run_server.sh script: {e}")
             return False
 
         # Patch main.py to load .env from script directory
@@ -346,14 +346,14 @@ if __name__ == "__main__":
             with open(main_py_path, "w", encoding="utf-8") as f:
                 f.write(main_py_content)
             if not silent:
-                logger.info(f"✅ main.py を修正しました（.envパスを明示的に指定）")
+                logger.info(f"✅ Modified main.py (explicitly specified .env path)")
         except Exception as e:
-            logger.error(f"main.py の修正に失敗しました: {e}")
+            logger.error(f"Failed to modify main.py: {e}")
             return False
 
         if not silent:
             logger.info("=" * 60)
-            logger.info("✅ GraphRAG MCP サーバーのセットアップが完了しました！")
+            logger.info("✅ GraphRAG MCP server setup completed!")
             logger.info("=" * 60)
 
         # Automatically configure backends
@@ -364,7 +364,7 @@ if __name__ == "__main__":
             backends_to_configure = list(backends)
 
         if not silent:
-            logger.info("各バックエンドの設定ファイルを自動更新しています...")
+            logger.info("Automatically updating configuration files for each backend...")
 
         success_count = 0
         total_count = len(backends_to_configure)
@@ -385,19 +385,19 @@ if __name__ == "__main__":
                     success_count += 1
 
         if not silent:
-            logger.info(f"設定完了: {success_count}/{total_count} バックエンド")
+            logger.info(f"Configuration completed: {success_count}/{total_count} backends")
             logger.info("")
-            logger.info("次のステップ:")
-            logger.info("1. Neo4j と Qdrant を起動:")
+            logger.info("Next steps:")
+            logger.info("1. Start Neo4j and Qdrant:")
             logger.info("   auto-coder graphrag start")
             logger.info("")
-            logger.info("2. GraphRAG を使用してコードを処理:")
+            logger.info("2. Process code with GraphRAG:")
             logger.info("   auto-coder process-issues --repo owner/repo")
 
         return success_count > 0
 
     except Exception as e:
-        logger.error(f"セットアップ中にエラーが発生しました: {e}")
+        logger.error(f"Error during setup: {e}")
         return False
 
 
@@ -419,9 +419,9 @@ def _add_codex_config(install_path: Path) -> bool:
         )
 
         if result:
-            logger.info("✅ Codex設定を更新しました")
+            logger.info("✅ Updated Codex configuration")
         else:
-            logger.error("Codex設定の更新に失敗しました")
+            logger.error("Failed to update Codex configuration")
 
         return result
     except Exception as e:
@@ -451,9 +451,9 @@ def _add_gemini_config(install_path: Path) -> bool:
         )
 
         if result:
-            logger.info("✅ Gemini設定を更新しました")
+            logger.info("✅ Updated Gemini configuration")
         else:
-            logger.error("Gemini設定の更新に失敗しました")
+            logger.error("Failed to update Gemini configuration")
 
         return result
     except Exception as e:
@@ -487,9 +487,9 @@ def _add_qwen_config(install_path: Path) -> bool:
             )
 
         if result:
-            logger.info("✅ Qwen設定を更新しました")
+            logger.info("✅ Updated Qwen configuration")
         else:
-            logger.error("Qwen設定の更新に失敗しました")
+            logger.error("Failed to update Qwen configuration")
 
         return result
     except Exception as e:
@@ -523,9 +523,9 @@ def _add_windsurf_claude_config(install_path: Path) -> bool:
             )
 
         if result:
-            logger.info("✅ Windsurf/Claude設定を更新しました")
+            logger.info("✅ Updated Windsurf/Claude configuration")
         else:
-            logger.error("Windsurf/Claude設定の更新に失敗しました")
+            logger.error("Failed to update Windsurf/Claude configuration")
 
         return result
     except Exception as e:
@@ -535,13 +535,13 @@ def _add_windsurf_claude_config(install_path: Path) -> bool:
 
 @click.group(name="graphrag")
 def graphrag_group() -> None:
-    """GraphRAG (Neo4j + Qdrant) 管理コマンド。
+    """GraphRAG (Neo4j + Qdrant) management commands.
 
-    - start: Docker コンテナを起動
-    - stop: Docker コンテナを停止
-    - status: コンテナの状態を確認
-    - update-index: コードベースのインデックスを更新
-    - setup-mcp: GraphRAG MCP サーバーを自動セットアップ
+    - start: Start Docker containers
+    - stop: Stop Docker containers
+    - status: Check container status
+    - update-index: Update codebase index
+    - setup-mcp: Automatically set up GraphRAG MCP server
     """
     pass
 
@@ -550,16 +550,16 @@ def graphrag_group() -> None:
 @click.option(
     "--wait/--no-wait",
     default=True,
-    help="コンテナがヘルシーになるまで待機するか",
+    help="Wait for containers to be healthy",
 )
 @click.option(
     "--timeout",
     type=int,
     default=120,
-    help="ヘルスチェックのタイムアウト（秒）",
+    help="Health check timeout in seconds",
 )
 def graphrag_start(wait: bool, timeout: int) -> None:
-    """Neo4j と Qdrant の Docker コンテナを起動します。"""
+    """Start Neo4j and Qdrant Docker containers."""
     from .graphrag_docker_manager import GraphRAGDockerManager
 
     setup_logger()
@@ -639,10 +639,10 @@ def graphrag_start(wait: bool, timeout: int) -> None:
     "--timeout",
     type=int,
     default=60,
-    help="コマンドのタイムアウト（秒）",
+    help="Command timeout in seconds",
 )
 def graphrag_stop(timeout: int) -> None:
-    """Neo4j と Qdrant の Docker コンテナを停止します。"""
+    """Stop Neo4j and Qdrant Docker containers."""
     from .graphrag_docker_manager import GraphRAGDockerManager
 
     setup_logger()
@@ -662,7 +662,7 @@ def graphrag_stop(timeout: int) -> None:
 
 @graphrag_group.command("status")
 def graphrag_status() -> None:
-    """Neo4j と Qdrant の Docker コンテナの状態を確認します。"""
+    """Check Neo4j and Qdrant Docker containers status."""
     from .graphrag_docker_manager import GraphRAGDockerManager
 
     setup_logger()
@@ -693,15 +693,15 @@ def graphrag_status() -> None:
 @click.option(
     "--force",
     is_flag=True,
-    help="インデックスが最新でも強制的に更新",
+    help="Force update even if index is up to date",
 )
 @click.option(
     "--repo-path",
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
-    help="インデックス対象のリポジトリパス（デフォルト: カレントディレクトリ）",
+    help="Repository path to index (default: current directory)",
 )
 def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
-    """コードベースのインデックスを Neo4j と Qdrant に更新します。"""
+    """Update codebase index to Neo4j and Qdrant."""
     from .graphrag_docker_manager import GraphRAGDockerManager
     from .graphrag_index_manager import GraphRAGIndexManager
 
@@ -738,14 +738,14 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
         path_matches, indexed_path = index_manager.check_indexed_path()
         if indexed_path is not None and not path_matches:
             click.echo()
-            click.echo("⚠️  インデックス対象ディレクトリが異なります:")
-            click.echo(f"   インデックス済み: {indexed_path}")
-            click.echo(f"   現在のディレクトリ: {index_manager.repo_path.resolve()}")
+            click.echo("⚠️  Indexed directory is different:")
+            click.echo(f"   Indexed: {indexed_path}")
+            click.echo(f"   Current: {index_manager.repo_path.resolve()}")
             click.echo()
             if not force and not click.confirm(
-                "現在のディレクトリでインデックスを更新しますか?"
+                "Update index in current directory?"
             ):
-                click.echo("インデックス更新をキャンセルしました")
+                click.echo("Cancelled index update")
                 return
             force = True  # Force update when path changes
     except Exception as e:
@@ -801,38 +801,38 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
     "--install-dir",
     type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
     default=None,
-    help="GraphRAG MCP サーバーのインストール先ディレクトリ（デフォルト: ~/graphrag_mcp）",
+    help="GraphRAG MCP server installation directory (default: ~/graphrag_mcp)",
 )
 @click.option(
     "--neo4j-uri",
     default="bolt://localhost:7687",
-    help="Neo4j 接続URI（デフォルト: bolt://localhost:7687）",
+    help="Neo4j connection URI (default: bolt://localhost:7687)",
 )
 @click.option(
     "--neo4j-user",
     default="neo4j",
-    help="Neo4j ユーザー名（デフォルト: neo4j）",
+    help="Neo4j username (default: neo4j)",
 )
 @click.option(
     "--neo4j-password",
     default="password",
-    help="Neo4j パスワード（デフォルト: password）",
+    help="Neo4j password (default: password)",
 )
 @click.option(
     "--qdrant-url",
     default="http://localhost:6333",
-    help="Qdrant 接続URL（デフォルト: http://localhost:6333）",
+    help="Qdrant connection URL (default: http://localhost:6333)",
 )
 @click.option(
     "--skip-clone",
     is_flag=True,
-    help="既存のディレクトリを使用（クローンをスキップ）",
+    help="Use existing directory (skip cloning)",
 )
 @click.option(
     "--backends",
     multiple=True,
     type=click.Choice(["codex", "gemini", "qwen", "windsurf"], case_sensitive=False),
-    help="設定するバックエンドを指定（デフォルト: 全て）",
+    help="Specify backends to configure (default: all)",
 )
 def graphrag_setup_mcp(
     install_dir: Optional[str],
@@ -843,16 +843,16 @@ def graphrag_setup_mcp(
     skip_clone: bool,
     backends: tuple,
 ) -> None:
-    """GraphRAG MCP サーバーを自動セットアップします。
+    """Automatically set up GraphRAG MCP server.
 
-    このコマンドは以下を実行します：
-    1. バンドルされたカスタムMCPサーバー（コード分析専用フォーク）をコピー
-    2. uv を使用して依存関係をインストール
-    3. .env ファイルを作成して接続情報を設定
-    4. 各バックエンド（Codex, Gemini, Qwen, Windsurf/Claude）の設定ファイルを自動更新
+    This command performs the following:
+    1. Copies bundled custom MCP server (code analysis专用 fork)
+    2. Installs dependencies using uv
+    3. Creates .env file with connection information
+    4. Automatically updates configuration files for each backend (Codex, Gemini, Qwen, Windsurf/Claude)
 
-    注: このMCPサーバーは rileylemm/graphrag_mcp のカスタムフォークで、
-    TypeScript/JavaScriptコード分析に特化しています。
+    Note: This MCP server is a custom fork of rileylemm/graphrag_mcp,
+    specialized for TypeScript/JavaScript code analysis.
     """
     setup_logger()
 
@@ -865,9 +865,9 @@ def graphrag_setup_mcp(
     # Interactive confirmation if directory exists and not skip_clone
     if not skip_clone and install_path.exists():
         if not click.confirm(
-            f"ディレクトリ {install_path} は既に存在します。削除して再クローンしますか？"
+            f"Directory {install_path} already exists. Delete and re-clone?"
         ):
-            click.echo("セットアップをキャンセルしました")
+            click.echo("Setup cancelled")
             return
 
         # Remove existing directory
@@ -875,9 +875,9 @@ def graphrag_setup_mcp(
 
         try:
             shutil.rmtree(install_path)
-            click.echo(f"既存のディレクトリを削除しました: {install_path}")
+            click.echo(f"Removed existing directory: {install_path}")
         except Exception as e:
-            raise click.ClickException(f"ディレクトリの削除に失敗しました: {e}")
+            raise click.ClickException(f"Failed to remove directory: {e}")
 
     # Call the programmatic setup function
     success = run_graphrag_setup_mcp_programmatically(
@@ -892,4 +892,4 @@ def graphrag_setup_mcp(
     )
 
     if not success:
-        raise click.ClickException("セットアップに失敗しました")
+        raise click.ClickException("Setup failed")
