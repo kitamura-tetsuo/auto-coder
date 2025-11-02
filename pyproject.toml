@@ -18,7 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "requests>=2.31.0",
     "pydantic>=2.0.0,<3.0.0",
@@ -106,7 +106,7 @@ auto_coder = [
 
 [tool.black]
 line-length = 88
-target-version = ['py311', 'py312']
+target-version = ['py311']
 
 [tool.isort]
 profile = "black"
