@@ -141,6 +141,19 @@ class GraphRAGIndexManager:
         matches = indexed_path == current_path
         return matches, str(indexed_path)
 
+    def _generate_repo_label(self) -> str:
+        """Generate repository-specific label for Neo4j nodes.
+
+        Returns:
+            Repository-specific label in the format 'Repo_XXXXXXXX'
+        """
+        repo_hash = (
+            hashlib.sha256(str(self.repo_path.resolve()).encode())
+            .hexdigest()[:8]
+            .upper()
+        )
+        return f"Repo_{repo_hash}"
+
     def is_index_up_to_date(self) -> bool:
         """Check if index is up to date with codebase.
 
@@ -498,46 +511,67 @@ class GraphRAGIndexManager:
 
         logger.info(f"Connecting to Neo4j at {neo4j_uri}")
 
+        # Calculate repository hash for labels
+        repo_path_str = str(self.repo_path.resolve())
+        repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
+        repo_label = f"Repo_{repo_hash}"
+
+        logger.info(f"Using repository label: {repo_label}")
+
         try:
             driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
 
+            # Generate repository-specific label
+            repo_label = self._generate_repo_label()
+            repo_path = str(self.repo_path.resolve())
+
             with driver.session() as session:
-                # Clear existing data for this repository
+                # Clear existing data for this repository (both labeled and unlabeled)
+                # Delete nodes with repo label
+                session.run(f"MATCH (n:{repo_label}:CodeNode) DETACH DELETE n")
+
+                # Also delete unlabeled nodes matching this repo_path for cleanup
                 session.run(
-                    "MATCH (n) WHERE n.repo_path = $repo_path DETACH DELETE n",
-                    repo_path=str(self.repo_path.resolve()),
+                    "MATCH (n:CodeNode) WHERE n.repo_path = $repo_path DETACH DELETE n",
+                    repo_path=repo_path,
                 )
 
-                # Insert nodes
+                # Insert nodes with repository-specific label
                 nodes = graph_data.get("nodes", [])
                 for node in nodes:
                     node_data = dict(node)
-                    node_data["repo_path"] = str(self.repo_path.resolve())
+                    node_data["repo_path"] = repo_path
+                    node_data["repo_hash"] = repo_hash
+                    node_data["repo_label"] = repo_label
 
+                    # Create node with repository-specific label
                     session.run(
-                        """
-                        CREATE (n:CodeNode)
+                        f"""
+                        CREATE (n:{repo_label}:CodeNode)
                         SET n = $props
                         """,
                         props=node_data,
                     )
 
-                logger.info(f"Inserted {len(nodes)} nodes into Neo4j")
+                logger.info(
+                    f"Inserted {len(nodes)} nodes with label {repo_label} into Neo4j"
+                )
 
                 # Insert edges
                 edges = graph_data.get("edges", [])
                 for edge in edges:
                     session.run(
-                        """
-                        MATCH (from:CodeNode {id: $from_id, repo_path: $repo_path})
-                        MATCH (to:CodeNode {id: $to_id, repo_path: $repo_path})
-                        CREATE (from)-[r:RELATES {type: $type, count: $count}]->(to)
+                        f"""
+                        MATCH (from:{repo_label}:CodeNode {{id: $from_id, repo_path: $repo_path}})
+                        MATCH (to:{repo_label}:CodeNode {{id: $to_id, repo_path: $repo_path}})
+                        CREATE (from)-[r:RELATES {{type: $type, count: $count, repo_hash: $repo_hash}}]->(to)
                         """,
                         from_id=edge.get("from"),
                         to_id=edge.get("to"),
                         type=edge.get("type", "UNKNOWN"),
                         count=edge.get("count", 1),
-                        repo_path=str(self.repo_path.resolve()),
+                        repo_path=repo_path,
+                        repo_hash=repo_hash,
                     )
 
                 logger.info(f"Inserted {len(edges)} edges into Neo4j")
@@ -577,8 +611,27 @@ class GraphRAGIndexManager:
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
 
-        # Collection name
-        collection_name = "code_embeddings"
+        # Collection name - use environment variable or generate repository-specific name
+        # This implements Qdrant Collection Separation to avoid conflicts between repositories
+        collection_name = os.getenv(
+            "QDRANT_COLLECTION"
+        )  # Allow override via environment variable
+        if not collection_name:
+            # Generate repository-specific collection name based on resolved path
+            # This ensures each repository gets its own collection
+            repo_path_str = str(self.repo_path.resolve())
+            repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:12]
+            collection_name = f"code_embeddings_{repo_hash}"
+            logger.info(
+                f"Generated repository-specific collection name: {collection_name} for repository: {repo_path_str}"
+            )
+        else:
+            logger.info(f"Using configured collection name: {collection_name}")
+
+        # Calculate repository hash for labels
+        repo_path_str = str(self.repo_path.resolve())
+        repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
+        repo_label = f"Repo_{repo_hash}"
 
         # Load embedding model
         logger.info("Loading embedding model...")
@@ -642,7 +695,9 @@ class GraphRAGIndexManager:
                         "kind": node.get("kind", "Unknown"),
                         "fqname": node.get("fqname", ""),
                         "file": node.get("file", ""),
-                        "repo_path": str(self.repo_path.resolve()),
+                        "repo_path": repo_path_str,
+                        "repo_hash": repo_hash,
+                        "repo_label": repo_label,
                     },
                 )
                 points.append(point)
