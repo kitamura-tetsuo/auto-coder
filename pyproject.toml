@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.11.2+g2e0eba6"
+version = "2025.11.2.10+g76f3b10"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -41,6 +41,7 @@ dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
+    "pytest-timeout>=2.1.0",
     "black>=23.0.0",
     "isort>=5.12.0",
     "flake8>=6.0.0",
@@ -121,7 +122,72 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=src/auto_coder --cov-report=html --cov-report=term-missing"
+addopts = "-x --tb=short -q --strict-markers --disable-warnings --maxfail=1 -m 'not e2e and not integration and not slow'"
+timeout = 30
+timeout_method = "thread"
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "e2e: marks tests as end-to-end tests",
+    "headless: marks tests that run in headless mode",
+    "playwright: marks tests that use Playwright",
+    "github: marks tests that use GitHub API",
+    "docker: marks tests that use Docker",
+    "mcp: marks tests that use MCP servers",
+    "graphrag: marks tests that use GraphRAG",
+]
+minversion = "6.0"
+norecursedirs = [
+    ".git",
+    ".pytest_cache",
+    ".coverage*",
+    "htmlcov",
+    "build",
+    "dist",
+    "*.egg",
+    "node_modules",
+    "test-output*",
+    "__pycache__",
+    "*.pyc",
+    "graph_builder/dist",
+    "graph_builder/src/tests",
+    "mcp_servers/*/tests",
+    "htmlcov*",
+    "graph_builder/node_modules",
+    "graph_builder/test-output*",
+    "src/auto_coder/graph_builder/node_modules",
+    "src/auto_coder/graph_builder/test-output*",
+    ".mypy_cache",
+    ".tox",
+]
+filterwarnings = [
+    "ignore::UserWarning",
+    "ignore::DeprecationWarning",
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+    "ignore::pytest.PytestCollectionWarning",
+]
+junit_family = "xunit2"
+# Memory and performance optimization
+cache_dir = ".pytest_cache"
+log_cli = false
+log_cli_level = "INFO"
+log_cli_format = "%(levelname)s [%(name)s] %(message)s"
+log_cli_date_format = "%Y-%m-%d %H:%M:%S"
+# Test collection optimization - aggressive exclusion
+collect_ignore = [
+    "graph_builder/node_modules",
+    "graph_builder/test-output",
+    "graph_builder/dist",
+    "src/auto_coder/graph_builder/node_modules",
+    "src/auto_coder/graph_builder/test-output",
+    "src/auto_coder/graph_builder/dist",
+    "mcp_servers/*/node_modules",
+    "mcp_servers/*/tests",
+]
+# Reduce memory usage
+tb_short = true
+# Disable expensive features by default
 
 [dependency-groups]
 dev = [
