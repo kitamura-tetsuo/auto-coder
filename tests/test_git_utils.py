@@ -704,9 +704,12 @@ class TestGitCheckoutBranch:
 
     def test_successful_checkout_create_new_branch(self):
         """Test successful checkout with creating a new branch."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, \
+             patch("src.auto_coder.git_utils.branch_exists") as mock_branch_exists:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
+            # branch_exists returns False (branch doesn't exist)
+            mock_branch_exists.return_value = False
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (no changes)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
@@ -752,9 +755,12 @@ class TestGitCheckoutBranch:
 
     def test_successful_checkout_create_from_base_branch(self):
         """Test successful checkout with creating a new branch from base branch."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, \
+             patch("src.auto_coder.git_utils.branch_exists") as mock_branch_exists:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
+            # branch_exists returns False (branch doesn't exist)
+            mock_branch_exists.return_value = False
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (no changes)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
@@ -912,9 +918,12 @@ class TestGitCheckoutBranch:
 
     def test_create_new_branch_push_failure(self):
         """Test creating a new branch when push fails (should still succeed)."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, \
+             patch("src.auto_coder.git_utils.branch_exists") as mock_branch_exists:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
+            # branch_exists returns False (branch doesn't exist)
+            mock_branch_exists.return_value = False
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (no changes)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
@@ -946,9 +955,12 @@ class TestGitCheckoutBranch:
 
     def test_create_new_branch_without_publish(self):
         """Test creating a new branch without publishing to remote."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, \
+             patch("src.auto_coder.git_utils.branch_exists") as mock_branch_exists:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
+            # branch_exists returns False (branch doesn't exist)
+            mock_branch_exists.return_value = False
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (no changes)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),

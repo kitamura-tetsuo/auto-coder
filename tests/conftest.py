@@ -472,3 +472,48 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+
+# GraphRAG Session Management Test Fixtures
+@pytest.fixture
+def isolated_graphrag_session():
+    """Create isolated session for testing."""
+    from pathlib import Path
+    from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
+
+    graphrag_integration = GraphRAGMCPIntegration()
+    session_id = graphrag_integration.create_session(str(Path.cwd().resolve()))
+    yield session_id
+    # Cleanup handled by integration test teardown
+
+
+@pytest.fixture
+def compatibility_graphrag_setup():
+    """Setup for backward compatibility testing."""
+    from src.auto_coder.graphrag_mcp_integration import (
+        GraphRAGMCPIntegration,
+        BackwardCompatibilityLayer,
+    )
+
+    # Setup existing behavior for compatibility tests
+    graphrag_integration = GraphRAGMCPIntegration()
+    compat_layer = BackwardCompatibilityLayer(graphrag_integration)
+    return compat_layer
+
+
+@pytest.fixture
+def mock_code_tool():
+    """Mock CodeAnalysisTool for testing."""
+    from unittest.mock import Mock
+    from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
+
+    mock_tool = Mock(spec=CodeAnalysisTool)
+    mock_tool.find_symbol = Mock(return_value={"symbol": {"id": "test"}})
+    mock_tool.get_call_graph = Mock(return_value={"nodes": [], "edges": []})
+    mock_tool.get_dependencies = Mock(return_value={"imports": [], "imported_by": []})
+    mock_tool.impact_analysis = Mock(
+        return_value={"affected_symbols": [], "affected_files": []}
+    )
+    mock_tool.semantic_code_search = Mock(return_value={"symbols": []})
+    mock_tool.semantic_code_search_in_collection = Mock(return_value={"symbols": []})
+    return mock_tool
