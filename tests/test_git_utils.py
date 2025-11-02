@@ -767,14 +767,10 @@ class TestGitCheckoutBranch:
                 ),
                 # Seventh call: git branch --list new-feature_backup
                 # (check if was new branch)
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Eighth call: git branch --list origin/new-feature
                 # (check if remote exists)
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Ninth call: git push -u origin new-feature
                 CommandResult(
                     success=True,
@@ -830,14 +826,10 @@ class TestGitCheckoutBranch:
                 ),
                 # Fifth call: git branch --list new-feature_backup (check if was new
                 # branch)
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Sixth call: git branch --list origin/new-feature
                 # (check if remote exists)
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Seventh call: git push -u origin new-feature
                 CommandResult(
                     success=True,
@@ -1008,14 +1000,10 @@ class TestGitCheckoutBranch:
                 ),
                 # Fifth call: git branch --list new-feature_backup (check if was new
                 # branch)
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Sixth call: git branch --list origin/new-feature
                 # (check if remote exists)
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Seventh call: git push fails
                 CommandResult(
                     success=False,

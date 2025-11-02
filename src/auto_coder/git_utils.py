@@ -271,7 +271,9 @@ def git_commit_with_retry(
     return result
 
 
-def branch_exists(branch_name: str, cwd: Optional[str] = None, cmd: Optional[CommandExecutor] = None) -> bool:
+def branch_exists(
+    branch_name: str, cwd: Optional[str] = None, cmd: Optional[CommandExecutor] = None
+) -> bool:
     """
     Check if a branch with the given name exists.
 
@@ -429,8 +431,10 @@ def git_checkout_branch(
     logger.info(f"Successfully checked out branch '{branch_name}'")
 
     # If creating a new branch and it was actually created (not just checked out), push to remote and set up tracking
-    if create_new and publish and not branch_exists(
-        branch_name + "_backup", cwd=cwd, cmd=cmd
+    if (
+        create_new
+        and publish
+        and not branch_exists(branch_name + "_backup", cwd=cwd, cmd=cmd)
     ):  # Check if this was a new branch by using a temp check
         # Actually, we need a better way to detect if this was a new branch
         # Let's check if the branch existed before our operation by checking if it has remote tracking
