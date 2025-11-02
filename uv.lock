@@ -31,7 +31,7 @@ wheels = [
 
 [[package]]
 name = "auto-coder"
-version = "2025.11.2.26+g67286d4"
+version = "2025.11.2.30+g90a185b"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
