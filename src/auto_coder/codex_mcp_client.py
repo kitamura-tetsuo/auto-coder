@@ -19,7 +19,6 @@ import os
 import select
 import shlex
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -33,26 +32,16 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
-def _safe_debug(msg):
-    """Safely call logger.debug, ignoring errors during shutdown."""
+def _safe_log(message: str) -> None:
+    """Safe logging wrapper that handles closed streams."""
     try:
         # Check if logger handlers are still valid
         if not logger._core.handlers:
             return
-
-        # Skip logging of Mock/MagicMock objects to avoid spam
-        if "MagicMock" in str(msg) or "Mock" in str(msg):
-            return
-
-        logger.debug(msg)
+        logger.debug(message)
     except Exception:
         # Silently ignore any logging errors during cleanup
         pass
-
-
-def _is_running_under_pytest():
-    """Check if we're running under pytest."""
-    return "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
 
 
 def _pump_bytes(stream, log_fn) -> None:
@@ -60,11 +49,7 @@ def _pump_bytes(stream, log_fn) -> None:
         for line in iter(stream.readline, b""):
             try:
                 log_fn(line.decode(errors="ignore").rstrip("\n"))
-            except (ValueError, BrokenPipeError):
-                # Ignore "I/O operation on closed file" errors during shutdown
-                pass
             except Exception:
-                # Ignore other logging errors
                 pass
     finally:
         try:
@@ -131,11 +116,10 @@ class CodexMCPClient(LLMClientBase):
             logger.info(f"spawned MCP process pid={self.proc.pid}; cmd={' '.join(cmd)}")
 
             # Keep only stderr pump for diagnostics; stdout is used for JSON-RPC
-            # Skip this during tests to avoid shutdown race conditions with loguru's enqueue=True
-            if self.proc.stderr is not None and not _is_running_under_pytest():
+            if self.proc.stderr is not None:
                 threading.Thread(
                     target=_pump_bytes,
-                    args=(self.proc.stderr, _safe_debug),
+                    args=(self.proc.stderr, _safe_log),
                     daemon=True,
                 ).start()
         except Exception as e:

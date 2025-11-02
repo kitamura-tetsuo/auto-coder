@@ -1,4 +1,5 @@
 import importlib
+import os
 import subprocess
 import sys
 
@@ -29,6 +30,9 @@ def test_get_actions_logs_cli(_use_real_home, _use_real_commands):
         page.goto(url)
         assert "GitHub" in page.title()
 
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "/home/node/.local/lib/python3.11/site-packages:/home/node/1/auto-coder/src"
+
     result = sp.run(
         [
             sys.executable,
@@ -43,5 +47,6 @@ def test_get_actions_logs_cli(_use_real_home, _use_real_commands):
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
     assert result.returncode == 0

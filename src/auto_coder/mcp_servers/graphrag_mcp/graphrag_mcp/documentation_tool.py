@@ -79,11 +79,7 @@ class DocumentationGPTTool:
                                 vectors_count = (
                                     collection_info.config.params.vectors.size
                                 )
-<<<<<<< HEAD
-                    except Exception:
-=======
                     except:
->>>>>>> origin/issue-27
                         pass
 
                 logger.info(
@@ -172,23 +168,23 @@ class DocumentationGPTTool:
                     chunk_ids = [chunk["chunk_id"] for chunk in results["chunks"]]
 
                     cypher_query = """
-                    MATCH (c:Chunk)
+                    MATCH (c:Chunk) 
                     WHERE c.id IN $chunk_ids
                     MATCH (c)-[:PART_OF]->(d:Document)
                     OPTIONAL MATCH (d)-[:RELATED_TO]->(related:Document)
                     WITH DISTINCT d, related
-                    RETURN d.id as doc_id, d.title as title,
+                    RETURN d.id as doc_id, d.title as title, 
                            collect(DISTINCT {doc_id: related.id, title: related.title}) as related_docs
                     """
 
                     if category:
                         cypher_query = """
-                        MATCH (c:Chunk)
+                        MATCH (c:Chunk) 
                         WHERE c.id IN $chunk_ids
                         MATCH (c)-[:PART_OF]->(d:Document)-[:HAS_CATEGORY]->(cat:Category {name: $category})
                         OPTIONAL MATCH (d)-[:RELATED_TO]->(related:Document)
                         WITH DISTINCT d, related
-                        RETURN d.id as doc_id, d.title as title,
+                        RETURN d.id as doc_id, d.title as title, 
                                collect(DISTINCT {doc_id: related.id, title: related.title}) as related_docs
                         """
 

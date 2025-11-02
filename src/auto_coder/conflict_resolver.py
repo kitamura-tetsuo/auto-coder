@@ -8,8 +8,6 @@ from typing import Any, Dict, List, Optional
 from .automation_config import AutomationConfig
 from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
-
-# Import the helper function from pr_processor
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
@@ -272,8 +270,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             )
 
             # Get conflict information
-            conflict_files = scan_conflict_markers()
-            conflict_info = "\n".join(conflict_files)
+            conflict_info = scan_conflict_markers()
 
             # Use LLM to resolve conflicts
             if pr_data is None:

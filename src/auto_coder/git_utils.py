@@ -424,7 +424,6 @@ def git_checkout_branch(
 
     logger.info(f"Successfully checked out branch '{branch_name}'")
 
-<<<<<<< HEAD
     # If creating a new branch, push to remote and set up tracking
     if create_new and publish:
         logger.info(f"Publishing new branch '{branch_name}' to remote...")
@@ -434,25 +433,10 @@ def git_checkout_branch(
         if not push_result.success:
             logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
             # Don't exit on push failure - the branch is still created locally
-=======
-    # If creating a new branch and it was actually created (not just checked out), push to remote and set up tracking
-    if create_new and not branch_exists(branch_name + "_backup", cwd=cwd):  # Check if this was a new branch by using a temp check
-        # Actually, we need a better way to detect if this was a new branch
-        # Let's check if the branch existed before our operation by checking if it has remote tracking
-        if not branch_exists(f"origin/{branch_name}", cwd=cwd):
-            logger.info(f"Publishing new branch '{branch_name}' to remote...")
-            push_result = cmd.run_command(
-                ["git", "push", "-u", "origin", branch_name], cwd=cwd
-            )
-            if not push_result.success:
-                logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
-                # Don't exit on push failure - the branch is still created locally
-            else:
-                logger.info(f"Successfully published branch '{branch_name}' to remote")
->>>>>>> origin/issue-27
         else:
-            logger.info(f"Branch '{branch_name}' already exists on remote, skipping publish")
+            logger.info(f"Successfully published branch '{branch_name}' to remote")
 
+    # Return the checkout result (not the push result)
     return result
 
 

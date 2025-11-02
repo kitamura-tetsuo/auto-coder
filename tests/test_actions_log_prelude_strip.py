@@ -7,6 +7,8 @@ def test_cli_get_actions_logs_strips_prelude_and_is_compact(_use_real_home, _use
     importlib.reload(subprocess)
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/17006383413/job/48216559181?pr=502"
     # Run CLI and capture output; pass dummy token to avoid auth prompt
+    env = os.environ.copy()
+    env["PYTHONPATH"] = "/home/node/.local/lib/python3.11/site-packages:/home/node/1/auto-coder/src"
     result = subprocess.run(
         [
             sys.executable,
@@ -21,6 +23,7 @@ def test_cli_get_actions_logs_strips_prelude_and_is_compact(_use_real_home, _use
         capture_output=True,
         text=True,
         timeout=300,
+        env=env,
     )
     assert result.returncode == 0
     # Standard output should start with Job header (no logger prelude)

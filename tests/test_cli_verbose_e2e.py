@@ -9,8 +9,8 @@ def _build_python_snippet() -> str:
         """
         import os
         import sys
-        from src.auto_coder.logger_config import setup_logger
-        from src.auto_coder.utils import CommandExecutor
+        from auto_coder.logger_config import setup_logger
+        from auto_coder.utils import CommandExecutor
 
 
         def main() -> int:
@@ -32,18 +32,18 @@ def _build_python_snippet() -> str:
 def test_verbose_logging_emits_command_trace():
     python_snippet = _build_python_snippet()
 
-    # Ensure PYTHONPATH includes both src directory and site-packages for dependencies
-    python_path = os.environ.get("PYTHONPATH", "")
-    src_path = "/home/node/2/auto-coder/src"
-    site_packages = "/home/node/.local/lib/python3.11/site-packages"
-    paths = [src_path, site_packages]
-    if python_path:
-        paths.append(python_path)
-    python_path_value = ":".join(paths)
-
     env_verbose = os.environ.copy()
     env_verbose["AUTOCODER_VERBOSE"] = "1"
-    env_verbose["PYTHONPATH"] = python_path_value
+    # Add src directory and current sys.path to PYTHONPATH so subprocess can find all modules
+    src_path = os.path.join(os.path.dirname(__file__), "..", "src")
+    current_pythonpath = env_verbose.get("PYTHONPATH", "")
+    # Include key paths from current sys.path that are needed
+    sys_paths = [
+        src_path,
+        "/home/node/.local/lib/python3.11/site-packages",
+        "/usr/local/lib/python3.11/dist-packages",
+    ]
+    env_verbose["PYTHONPATH"] = os.pathsep.join(sys_paths) + (os.pathsep + current_pythonpath if current_pythonpath else "")
 
     result_verbose = subprocess.run(
         [sys.executable, "-c", python_snippet],
@@ -58,7 +58,9 @@ def test_verbose_logging_emits_command_trace():
 
     env_quiet = os.environ.copy()
     env_quiet.pop("AUTOCODER_VERBOSE", None)
-    env_quiet["PYTHONPATH"] = python_path_value
+    # Add src directory and current sys.path to PYTHONPATH so subprocess can find all modules
+    current_pythonpath = env_quiet.get("PYTHONPATH", "")
+    env_quiet["PYTHONPATH"] = os.pathsep.join(sys_paths) + (os.pathsep + current_pythonpath if current_pythonpath else "")
 
     result_quiet = subprocess.run(
         [sys.executable, "-c", python_snippet],
