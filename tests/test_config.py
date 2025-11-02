@@ -113,7 +113,7 @@ class TestSettings:
         assert settings.github_token != original_token
 
     def test_config_class_attributes(self):
-        """Test Config class attributes."""
+        """Test model_config attributes."""
         settings = Settings()
 
         # Check that model_config is properly set

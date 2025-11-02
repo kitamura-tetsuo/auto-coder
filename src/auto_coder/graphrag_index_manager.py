@@ -519,7 +519,7 @@ class GraphRAGIndexManager:
                     repo_path=repo_path_str,
                 )
 
-                # Insert nodes with repository-specific label
+                # Insert nodes
                 nodes = graph_data.get("nodes", [])
                 for node in nodes:
                     node_data = dict(node)
@@ -528,8 +528,8 @@ class GraphRAGIndexManager:
                     node_data["repo_label"] = repo_label
 
                     session.run(
-                        f"""
-                        CREATE (n:{repo_label}:CodeNode)
+                        """
+                        CREATE (n:CodeNode)
                         SET n = $props
                         """,
                         props=node_data,
