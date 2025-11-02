@@ -71,7 +71,11 @@ def test_extract_error_context_with_multiple_errors():
 2025-10-27T03:25:54.0000000Z     Error: Test 1 failed
 2025-10-27T03:25:55.0000000Z     Expected: true
 2025-10-27T03:25:56.0000000Z     Received: false
+<<<<<<< HEAD
 2025-10-27T03:25:57.0000000Z
+=======
+2025-10-27T03:25:57.0000000Z 
+>>>>>>> origin/issue-27
 """
         + "\n".join(
             [
@@ -80,7 +84,11 @@ def test_extract_error_context_with_multiple_errors():
             ]
         )
         + """
+<<<<<<< HEAD
 2025-10-27T03:28:00.0000000Z
+=======
+2025-10-27T03:28:00.0000000Z 
+>>>>>>> origin/issue-27
 2025-10-27T03:28:01.0000000Z   2) [core] › e2e/core/test2.spec.ts:20:5 › Test 2
 2025-10-27T03:28:02.0000000Z
 2025-10-27T03:28:03.0000000Z     Error: Test 2 failed

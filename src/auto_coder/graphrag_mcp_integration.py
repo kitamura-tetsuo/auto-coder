@@ -5,18 +5,79 @@ Integrates graphrag_mcp server with LLM clients to provide
 Neo4j and Qdrant context during LLM invocations.
 """
 
+import hashlib
 import json
 import os
 import shlex
 import subprocess
 import threading
-from typing import Optional
+import time
+import uuid
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict, Optional
 
 from .graphrag_docker_manager import GraphRAGDockerManager
 from .graphrag_index_manager import GraphRAGIndexManager
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class GraphRAGMCPSession:
+    """Represents an isolated session for a specific repository context."""
+
+    def __init__(self, session_id: str, repo_path: str):
+        """Initialize a GraphRAG session.
+
+        Args:
+            session_id: Unique session identifier
+            repo_path: Path to the repository for this session
+        """
+        self.session_id = session_id
+        self.repo_path = Path(repo_path).resolve()
+        self.collection_name = self._generate_collection_name()
+        self.created_at = datetime.now()
+        self.last_accessed = datetime.now()
+
+    def _generate_collection_name(self) -> str:
+        """Generate repository-specific collection name.
+
+        Returns:
+            Collection name prefixed with 'repo_' followed by hash
+        """
+        repo_hash = hashlib.sha256(str(self.repo_path).encode()).hexdigest()[:16]
+        return f"repo_{repo_hash}"
+
+    def update_access_time(self) -> None:
+        """Update the last accessed time to current time."""
+        self.last_accessed = datetime.now()
+
+    def is_expired(self, max_age_hours: int = 24) -> bool:
+        """Check if session has expired based on last access time.
+
+        Args:
+            max_age_hours: Maximum age in hours before session expires
+
+        Returns:
+            True if session is expired, False otherwise
+        """
+        cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+        return self.last_accessed < cutoff_time
+
+    def to_dict(self) -> dict:
+        """Convert session to dictionary representation.
+
+        Returns:
+            Dictionary containing session information
+        """
+        return {
+            "session_id": self.session_id,
+            "repository": str(self.repo_path),
+            "collection_name": self.collection_name,
+            "created_at": self.created_at.isoformat(),
+            "last_accessed": self.last_accessed.isoformat(),
+        }
 
 
 class GraphRAGMCPIntegration:
@@ -44,6 +105,10 @@ class GraphRAGMCPIntegration:
 
         self.mcp_server_path = mcp_server_path
         self.mcp_process: Optional[subprocess.Popen] = None
+
+        # Session management
+        self.active_sessions: Dict[str, GraphRAGMCPSession] = {}
+        self.session_lock = threading.Lock()
 
     def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
         """Ensure GraphRAG environment is ready for use.
@@ -78,8 +143,6 @@ class GraphRAGMCPIntegration:
                             logger.info("Retrying after cleanup...")
                             # Try to stop containers before retry
                             self.docker_manager.stop()
-                            import time
-
                             time.sleep(2)
                 except Exception as e:
                     logger.error(
@@ -244,6 +307,117 @@ class GraphRAGMCPIntegration:
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.stop_mcp_server()
+
+    def create_session(self, repo_path: str) -> str:
+        """Create a new session for a repository.
+
+        Args:
+            repo_path: Path to the repository for this session
+
+        Returns:
+            Unique session ID for the created session
+        """
+        with self.session_lock:
+            # Generate unique session ID
+            session_id = str(uuid.uuid4())[:8]
+
+            # Create and store session
+            session = GraphRAGMCPSession(session_id, repo_path)
+            self.active_sessions[session_id] = session
+
+            logger.info(f"Created session {session_id} for repository: {repo_path}")
+            return session_id
+
+    def get_session(self, session_id: str) -> Optional[GraphRAGMCPSession]:
+        """Get a session by its ID.
+
+        Args:
+            session_id: Session ID to retrieve
+
+        Returns:
+            GraphRAGMCP session if found, None otherwise
+        """
+        with self.session_lock:
+            session = self.active_sessions.get(session_id)
+            if session:
+                # Update access time
+                session.update_access_time()
+                logger.debug(f"Retrieved session {session_id}")
+            else:
+                logger.warning(f"Session {session_id} not found")
+            return session
+
+    def cleanup_expired_sessions(self, max_age_hours: int = 24) -> int:
+        """Clean up expired sessions to prevent memory leaks.
+
+        Args:
+            max_age_hours: Maximum age in hours before a session is considered expired
+
+        Returns:
+            Number of sessions cleaned up
+        """
+        with self.session_lock:
+            expired_sessions = [
+                sid
+                for sid, session in self.active_sessions.items()
+                if session.is_expired(max_age_hours)
+            ]
+
+            for sid in expired_sessions:
+                del self.active_sessions[sid]
+                logger.info(f"Cleaned up expired session: {sid}")
+
+            if expired_sessions:
+                logger.info(f"Cleaned up {len(expired_sessions)} expired sessions")
+            return len(expired_sessions)
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a specific session.
+
+        Args:
+            session_id: Session ID to delete
+
+        Returns:
+            True if session was deleted, False if not found
+        """
+        with self.session_lock:
+            if session_id in self.active_sessions:
+                del self.active_sessions[session_id]
+                logger.info(f"Deleted session: {session_id}")
+                return True
+            else:
+                logger.warning(f"Session {session_id} not found for deletion")
+                return False
+
+    def list_sessions(self) -> Dict[str, dict]:
+        """List all active sessions.
+
+        Returns:
+            Dictionary mapping session IDs to session information
+        """
+        with self.session_lock:
+            return {
+                session_id: session.to_dict()
+                for session_id, session in self.active_sessions.items()
+            }
+
+    def get_session_by_repo_path(self, repo_path: str) -> Optional[GraphRAGMCPSession]:
+        """Find a session by repository path.
+
+        Args:
+            repo_path: Repository path to search for
+
+        Returns:
+            GraphRAGMCP session if found, None otherwise
+        """
+        repo_path = str(Path(repo_path).resolve())
+
+        with self.session_lock:
+            for session in self.active_sessions.values():
+                if str(session.repo_path) == repo_path:
+                    session.update_access_time()
+                    return session
+            return None
 
     def get_mcp_config_for_llm(self) -> Optional[dict]:
         """Get MCP configuration to pass to LLM client.

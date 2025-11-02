@@ -79,7 +79,11 @@ class DocumentationGPTTool:
                                 vectors_count = (
                                     collection_info.config.params.vectors.size
                                 )
+<<<<<<< HEAD
                     except Exception:
+=======
+                    except:
+>>>>>>> origin/issue-27
                         pass
 
                 logger.info(

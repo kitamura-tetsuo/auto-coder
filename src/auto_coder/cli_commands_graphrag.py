@@ -171,8 +171,11 @@ def run_graphrag_setup_mcp_programmatically(
                         return False
 
                     # Copy the bundled MCP server to install directory
+<<<<<<< HEAD
                     import shutil
 
+=======
+>>>>>>> origin/issue-27
                     shutil.copytree(
                         bundled_mcp,
                         install_path,
@@ -874,11 +877,14 @@ def graphrag_setup_mcp(
             return
 
         # Remove existing directory
+<<<<<<< HEAD
         import shutil
 
+=======
+>>>>>>> origin/issue-27
         try:
             shutil.rmtree(install_path)
-            click.echo(f"既存のディレクトリを削除しました: {install_path}")
+            click.echo(f"既存のディレクトリ削除しました: {install_path}")
         except Exception as e:
             raise click.ClickException(f"ディレクトリの削除に失敗しました: {e}")
 

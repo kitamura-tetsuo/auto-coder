@@ -18,6 +18,7 @@ from auto_coder.progress_decorators import progress_stage
 
 from .automation_config import AutomationConfig
 from .conflict_resolver import (
+    _get_merge_conflict_info,
     resolve_merge_conflicts_with_llm,
     resolve_pr_merge_conflicts,
 )
@@ -45,6 +46,208 @@ from .utils import CommandExecutor, log_action, slice_relevant_error_window
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+def parse_git_commit_history_for_actions(
+    max_depth: int = 10,
+    cwd: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Parse git commit history and identify commits that triggered GitHub Actions.
+
+    This function retrieves recent commit history using git log --oneline and checks
+    each commit to see if it has associated GitHub Actions runs. It skips commits
+    that don't trigger Actions (e.g., documentation-only changes) and returns a list
+    of commits that have Action logs available.
+
+    Args:
+        max_depth: Maximum number of commits to search (default: 10)
+        cwd: Optional working directory for git command
+
+    Returns:
+        List of dictionaries, each containing:
+        - 'sha': Full commit SHA
+        - 'sha_short': Short commit SHA (first 8 chars)
+        - 'message': Commit message
+        - 'action_runs': List of GitHub Actions runs for this commit
+          Each run dict contains: 'run_id', 'url', 'status', 'conclusion', 'created_at'
+        - 'has_logs': Boolean indicating if Action logs are available
+
+    Example:
+        >>> commits = parse_git_commit_history_for_actions(max_depth=5)
+        >>> for commit in commits:
+        ...     print(f"Commit {commit['sha_short']}: {commit['message']}")
+        ...     if commit['has_logs']:
+        ...         print(f"  Has {len(commit['action_runs'])} Action run(s)")
+    """
+    commits_with_actions = []
+
+    try:
+        logger.info(
+            f"Parsing git commit history to identify commits with GitHub Actions (depth: {max_depth})"
+        )
+
+        # Get recent commit history using git log --oneline
+        log_result = cmd.run_command(
+            ["git", "log", "--oneline", f"-n {max_depth}"],
+            cwd=cwd,
+            timeout=30,
+        )
+
+        if not log_result.success:
+            logger.error(f"Failed to get git log: {log_result.stderr}")
+            return []
+
+        # Parse commit log output
+        # Format: "abc1234 Commit message"
+        commit_lines = log_result.stdout.strip().split("\n")
+        if not commit_lines or not commit_lines[0]:
+            logger.info("No commits found in repository")
+            return []
+
+        logger.info(f"Found {len(commit_lines)} commit(s) to check")
+
+        for line in commit_lines:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Parse commit SHA and message
+            parts = line.split(" ", 1)
+            if len(parts) < 2:
+                logger.warning(f"Skipping malformed commit line: {line}")
+                continue
+
+            commit_sha = parts[0]
+            commit_message = parts[1]
+
+            logger.debug(
+                f"Checking commit {commit_sha[:8]}: {commit_message[:50]}..."
+            )
+
+            try:
+                # Check if this commit triggered GitHub Actions
+                action_runs = _check_commit_for_github_actions(
+                    commit_sha, cwd=cwd, timeout=60
+                )
+
+                if action_runs:
+                    # Commit has Action runs
+                    commit_info = {
+                        "sha": commit_sha,
+                        "sha_short": commit_sha[:8],
+                        "message": commit_message,
+                        "action_runs": action_runs,
+                        "has_logs": len(action_runs) > 0,
+                    }
+                    commits_with_actions.append(commit_info)
+                    logger.info(
+                        f"✓ Commit {commit_sha[:8]} has {len(action_runs)} Action run(s)"
+                    )
+                else:
+                    logger.debug(
+                        f"✗ Commit {commit_sha[:8]} has no GitHub Actions"
+                    )
+
+            except Exception as e:
+                logger.warning(
+                    f"Error checking Actions for commit {commit_sha[:8]}: {e}"
+                )
+                continue
+
+        if commits_with_actions:
+            logger.info(
+                f"Found {len(commits_with_actions)} commit(s) with GitHub Actions out of {len(commit_lines)} checked"
+            )
+        else:
+            logger.info(
+                "No commits with GitHub Actions found in the specified depth"
+            )
+
+        return commits_with_actions
+
+    except Exception as e:
+        logger.error(f"Error parsing git commit history: {e}")
+        return []
+
+
+def _check_commit_for_github_actions(
+    commit_sha: str, cwd: Optional[str] = None, timeout: int = 60
+) -> List[Dict[str, Any]]:
+    """Check if a specific commit triggered GitHub Actions.
+
+    Args:
+        commit_sha: Full or partial commit SHA to check
+        cwd: Optional working directory for git command
+        timeout: Timeout for GitHub Actions API calls
+
+    Returns:
+        List of Action run dictionaries with run metadata
+    """
+    action_runs = []
+
+    try:
+        # Use gh run list to find runs for this commit
+        run_list_result = cmd.run_command(
+            [
+                "gh",
+                "run",
+                "list",
+                "--commit",
+                commit_sha,
+                "--json",
+                "databaseId,url,status,conclusion,createdAt,displayTitle,headBranch,headSha",
+            ],
+            cwd=cwd,
+            timeout=timeout,
+        )
+
+        if run_list_result.returncode != 0:
+            # No runs found for this commit or API error
+            logger.debug(f"No Action runs found for commit {commit_sha[:8]}")
+            return []
+
+        if not run_list_result.stdout.strip():
+            return []
+
+        # Parse the JSON response
+        try:
+            runs = json.loads(run_list_result.stdout)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                f"Failed to parse run list JSON for commit {commit_sha[:8]}: {e}"
+            )
+            return []
+
+        if not runs:
+            return []
+
+        # Convert to our format
+        for run in runs:
+            action_runs.append(
+                {
+                    "run_id": run.get("databaseId"),
+                    "url": run.get("url"),
+                    "status": run.get("status"),
+                    "conclusion": run.get("conclusion"),
+                    "created_at": run.get("createdAt"),
+                    "display_title": run.get("displayTitle"),
+                    "head_branch": run.get("headBranch"),
+                    "head_sha": run.get("headSha", "")[:8]
+                    if run.get("headSha")
+                    else "",
+                }
+            )
+
+        logger.debug(
+            f"Found {len(action_runs)} Action run(s) for commit {commit_sha[:8]}"
+        )
+        return action_runs
+
+    except Exception as e:
+        logger.debug(
+            f"Error checking Actions for commit {commit_sha[:8]}: {e}"
+        )
+        return []
 
 
 def process_pull_requests(
@@ -102,6 +305,7 @@ def process_pull_requests(
                 if pr_body:
                     # Extract linked issues from PR body
                     related_issues = _extract_linked_issues_from_pr_body(pr_body)
+<<<<<<< HEAD
 
                 with ProgressStage(
                     "PR",
@@ -132,7 +336,16 @@ def process_pull_requests(
                             continue
                         # Track that we added the label
                         labeled_pr_numbers.add(pr_number)
+=======
+>>>>>>> origin/issue-27
 
+                with ProgressStage(
+                    "PR",
+                    pr_number,
+                    "First pass",
+                    related_issues=related_issues,
+                    branch_name=branch_name,
+                ):
                     try:
                         github_checks = _check_github_actions_status(
                             repo_name, pr_data, config
@@ -141,6 +354,28 @@ def process_pull_requests(
                         # Check both GitHub Actions success AND mergeable status (default True if unknown)
                         mergeable = pr_data.get("mergeable", True)
                         if github_checks["success"] and mergeable:
+                            # Add @auto-coder label only for PRs that will be handled in first pass
+                            if not dry_run and not github_client.disable_labels:
+                                if not github_client.try_add_work_in_progress_label(
+                                    repo_name, pr_number
+                                ):
+                                    logger.info(
+                                        f"Skipping PR #{pr_number} - already has @auto-coder label"
+                                    )
+                                    processed_prs.append(
+                                        {
+                                            "pr_data": pr_data,
+                                            "actions_taken": [
+                                                "Skipped - already being processed (@auto-coder label present)"
+                                            ],
+                                        }
+                                    )
+                                    # Track that we skipped this PR
+                                    skipped_pr_numbers.add(pr_number)
+                                    newline_progress()
+                                    continue
+                                # Track that we added the label
+                                labeled_pr_numbers.add(pr_number)
                             # If tests explicitly mock the merge path, honor it; otherwise analyze and take actions
                             try:
                                 from unittest.mock import Mock as _Mock
@@ -265,8 +500,22 @@ def process_pull_requests(
                     related_issues=related_issues,
                     branch_name=branch_name,
                 ):
+<<<<<<< HEAD
                     # Label should already be present from first pass
                     # No need to add it again
+=======
+                    # Add @auto-coder label for second pass processing (deferred PRs won't have it from first pass)
+                    if not dry_run and not github_client.disable_labels:
+                        try:
+                            github_client.try_add_work_in_progress_label(
+                                repo_name, pr_number
+                            )
+                            labeled_pr_numbers.add(pr_number)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to add @auto-coder label to PR #{pr_number}: {e}"
+                            )
+>>>>>>> origin/issue-27
 
                     try:
                         logger.info(f"PR #{pr_number}: Processing for issue resolution")
@@ -277,7 +526,11 @@ def process_pull_requests(
                         processed_pr["priority"] = "fix"
                         processed_prs.append(processed_pr)
                     finally:
+<<<<<<< HEAD
                         # Remove @auto-coder label after processing (added in first pass)
+=======
+                        # Remove @auto-coder label after processing (added in this pass)
+>>>>>>> origin/issue-27
                         if (
                             not dry_run
                             and not github_client.disable_labels
@@ -1096,7 +1349,11 @@ def _update_with_base_branch(
                 pr_number,
                 target_branch,
                 config,
+<<<<<<< HEAD
                 llm_client,
+=======
+                None,
+>>>>>>> origin/issue-27
                 repo_name,
                 pr_data,
                 dry_run,
@@ -1116,6 +1373,7 @@ def _update_with_base_branch(
     return actions
 
 
+<<<<<<< HEAD
 def _get_merge_conflict_info() -> str:
     """Get information about merge conflicts."""
     try:
@@ -1129,6 +1387,8 @@ def _get_merge_conflict_info() -> str:
         return f"Error getting conflict info: {e}"
 
 
+=======
+>>>>>>> origin/issue-27
 def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
     """Extract issue numbers from PR body using GitHub's linking keywords.
 
@@ -1506,7 +1766,10 @@ def _resolve_pr_merge_conflicts(
                     logger.error(
                         f"Failed to push updated branch after retry: {retry_push_result.stderr}"
                     )
+<<<<<<< HEAD
                     logger.error("Failed to resolve merge conflicts")
+=======
+>>>>>>> origin/issue-27
                     return False
         else:
             # Merge conflicts detected, use LLM to resolve them
@@ -1523,7 +1786,11 @@ def _resolve_pr_merge_conflicts(
                 conflict_info,
                 config,
                 False,
+<<<<<<< HEAD
                 llm_client,
+=======
+                None,
+>>>>>>> origin/issue-27
             )
 
             # Log the resolution actions

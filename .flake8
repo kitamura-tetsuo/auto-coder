@@ -1,6 +1,11 @@
 [flake8]
+<<<<<<< HEAD
 max-line-length = 120
 extend-ignore = E203, W503, F401, F841, F811, E402, E501, F541
+=======
+max-line-length = 300
+extend-ignore = E203, W503, E722, F401, W291, F841, E402, E731, F541
+>>>>>>> origin/issue-27
 exclude =
     .git,
     __pycache__,
@@ -12,7 +17,17 @@ exclude =
     build,
     dist,
     node_modules,
+<<<<<<< HEAD
     src/auto_coder/graph_builder/node_modules,
     src/auto_coder/graph_builder/dist,
     src/auto_coder/graph_builder/src/tests
+=======
+    graph_builder/node_modules,
+    graph_builder/dist,
+    src/auto_coder/mcp_servers,
+    src/auto_coder/graph_builder
+per-file-ignores =
+    __init__.py:F401
+    tests/*:F401,F811,F841
+>>>>>>> origin/issue-27
 

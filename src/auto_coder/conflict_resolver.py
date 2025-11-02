@@ -2,18 +2,32 @@
 
 import json
 import os
-import sys
 import time
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
 from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
+
+# Import the helper function from pr_processor
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor, CommandResult
+from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+def _get_merge_conflict_info() -> str:
+    """Get information about merge conflicts."""
+    try:
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        return (
+            result.stdout
+            if result.success
+            else "Could not get merge conflict information"
+        )
+    except Exception as e:
+        return f"Error getting conflict info: {e}"
 
 
 def scan_conflict_markers() -> List[str]:
@@ -123,7 +137,8 @@ def resolve_merge_conflicts_with_llm(
             flagged = scan_conflict_markers()
             if flagged:
                 actions.append(
-                    f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing"
+                    f"Conflict markers still present in {len(flagged)} "
+                    f"file(s): {', '.join(sorted(set(flagged)))}; not committing"
                 )
                 return actions
 
@@ -540,7 +555,8 @@ def resolve_package_json_dependency_conflicts(
     Rules:
     - For dependencies/devDependencies/peerDependencies/optionalDependencies:
       - Union of packages
-      - When versions differ: pick newer semver if determinable; otherwise prefer the side that has more deps in that section overall
+      - When versions differ: pick newer semver if determinable;
+        otherwise prefer the side that has more deps in that section overall
     - Non-dependency sections follow 'ours' (since they are identical by detection)
 
     When eligible_paths is provided, only those package.json files are processed.
@@ -619,7 +635,8 @@ def resolve_package_json_dependency_conflicts(
 
         # commit = cmd.run_command([
         #     'git', 'commit',
-        #     '-m', f"Resolve package.json dependency-only conflicts for PR #{pr_number} by preferring newer versions and union"
+        #     '-m', f"Resolve package.json dependency-only conflicts for PR #{pr_number} "
+        #           "by preferring newer versions and union"
         # ])
         # if not commit.success:
         #     actions.append(f"Failed to commit merged package.json: {commit.stderr}")

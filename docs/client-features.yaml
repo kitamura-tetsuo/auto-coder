@@ -4,7 +4,15 @@
 
 application:
   name: "Auto-Coder"
+<<<<<<< HEAD
   version: "2025.11.2+g3cee7bc"
+=======
+<<<<<<< HEAD
+  version: "2025.11.2+g3f727d0"
+=======
+  version: "2025.11.1.3+g66ca7ba"
+>>>>>>> origin/issue-27
+>>>>>>> origin/issue-27
   description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
 features:
@@ -771,7 +779,7 @@ features:
             parameters: ["graph_data", "in_container"]
             behavior:
               - "Connects to Qdrant (http://localhost:6333 or container URL)"
-              - "Recreates code_embeddings collection"
+              - "Recreates repository-specific collection using hash of repo path"
               - "Creates text representation from node metadata (fqname, sig, short)"
               - "Generates embeddings using sentence-transformers (all-MiniLM-L6-v2)"
               - "Stores embeddings with node metadata as payload"
