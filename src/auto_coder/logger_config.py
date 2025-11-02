@@ -12,6 +12,7 @@ environment specific prefixes and report file paths relative to the
 ``auto_coder`` package root instead.
 """
 
+import os
 import sys
 from functools import wraps
 from inspect import iscoroutinefunction, signature
