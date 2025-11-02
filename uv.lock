@@ -31,7 +31,11 @@ wheels = [
 
 [[package]]
 name = "auto-coder"
+<<<<<<< HEAD
 version = "2025.11.3+gaf961f7"
+=======
+version = "2025.11.2.2+g2994c76"
+>>>>>>> 2e42217 (chore: auto-update version to 2025.11.2.2+g2994c76)
 source = { editable = "." }
 dependencies = [
     { name = "click" },
