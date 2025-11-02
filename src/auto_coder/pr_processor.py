@@ -297,7 +297,7 @@ def process_pull_requests(
                                 )
                                 with ProgressStage("Attempting merge"):
                                     processed_pr = _process_pr_for_merge(
-                                        repo_name, pr_data, config, dry_run
+                                        repo_name, pr_data, config, dry_run, llm_client
                                     )
                                 processed_prs.append(processed_pr)
                                 handled_pr_numbers.add(pr_number)
@@ -480,7 +480,7 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
 
 
 def _process_pr_for_merge(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool
+    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool, llm_client=None
 ) -> Dict[str, Any]:
     """Process a PR for quick merging when GitHub Actions are passing."""
     processed_pr = {
@@ -499,7 +499,7 @@ def _process_pr_for_merge(
             return processed_pr
         else:
             # Since Actions are passing, attempt direct merge
-            merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
+            merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, llm_client)
             if merge_result:
                 processed_pr["actions_taken"].append(
                     f"Successfully merged PR #{pr_data['number']}"
@@ -956,7 +956,7 @@ def _handle_pr_merge(
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
             if not dry_run:
-                merge_result = _merge_pr(repo_name, pr_number, analysis, config)
+                merge_result = _merge_pr(repo_name, pr_number, analysis, config, llm_client)
                 if merge_result:
                     actions.append(f"Successfully merged PR #{pr_number}")
                 else:
@@ -1000,7 +1000,7 @@ def _handle_pr_merge(
                 f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)"
             )
             update_actions = _update_with_base_branch(
-                repo_name, pr_data, config, dry_run
+                repo_name, pr_data, config, dry_run, llm_client
             )
             actions.extend(update_actions)
 
@@ -1144,7 +1144,7 @@ def _force_checkout_pr_manually(
 
 
 def _update_with_base_branch(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool
+    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool, llm_client=None
 ) -> List[str]:
     """Update PR branch with latest base branch commits.
 
@@ -1366,7 +1366,7 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
 
 
 def _merge_pr(
-    repo_name: str, pr_number: int, analysis: Dict[str, Any], config: AutomationConfig
+    repo_name: str, pr_number: int, analysis: Dict[str, Any], config: AutomationConfig, llm_client=None
 ) -> bool:
     """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
 
@@ -1421,8 +1421,8 @@ def _merge_pr(
 
                 # Try to resolve merge conflicts using the new function from conflict_resolver
                 if resolve_pr_merge_conflicts(
-                    repo_name, pr_number, config, None
-                ):  # llm_client not available in this context
+                    repo_name, pr_number, config, llm_client
+                ):
                     # Retry merge after conflict resolution
                     retry_result = cmd.run_command(direct_cmd)
                     if retry_result.success:

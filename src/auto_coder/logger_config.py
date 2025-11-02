@@ -65,16 +65,6 @@ def _patch_record(record) -> None:
     record["extra"]["short_path"] = format_path_for_log(record["file"].path)
 
 
-def _safe_sink(message):
-    """Safe sink wrapper that handles closed file errors during shutdown."""
-    try:
-        sys.stderr.write(message)
-        sys.stderr.flush()
-    except (ValueError, BrokenPipeError):
-        # Ignore errors during shutdown when streams are closed
-        pass
-
-
 def setup_logger(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
@@ -132,6 +122,9 @@ def setup_logger(
             "<level>{message}</level>"
         )
 
+    # Use non-enqueue mode during pytest to avoid background queue growth
+    use_enqueue = False if os.environ.get("PYTEST_CURRENT_TEST") else True
+
     # Add console handler (to specified stream or progress footer sink)
     if progress_footer is not None:
         logger.add(
@@ -139,25 +132,12 @@ def setup_logger(
             format=format_string,
             level=level,
             colorize=True,
-            enqueue=True,
+            enqueue=use_enqueue,
             catch=True,  # Catch exceptions during logging to prevent shutdown crashes
         )
     else:
-        # Use a wrapper that safely handles closed files for the given stream
-        def safe_write(message):
-            try:
-                stream.write(message)
-                stream.flush()
-            except (ValueError, BrokenPipeError):
-                pass
-
         logger.add(
-            safe_write,
-            format=format_string,
-            level=level,
-            colorize=True,
-            enqueue=True,
-            catch=True,  # Catch exceptions during logging to prevent shutdown crashes
+            stream, format=format_string, level=level, colorize=True, enqueue=use_enqueue
         )
 
     # Add file handler if specified
@@ -189,7 +169,7 @@ def setup_logger(
             rotation="10 MB",
             retention="7 days",
             compression="zip",
-            enqueue=True,
+            enqueue=use_enqueue,
         )
 
 
