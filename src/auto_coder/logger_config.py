@@ -12,6 +12,7 @@ environment specific prefixes and report file paths relative to the
 ``auto_coder`` package root instead.
 """
 
+import os
 import sys
 from functools import wraps
 from inspect import iscoroutinefunction, signature
@@ -121,6 +122,9 @@ def setup_logger(
             "<level>{message}</level>"
         )
 
+    # Use non-enqueue mode during pytest to avoid background queue growth
+    use_enqueue = False if os.environ.get("PYTEST_CURRENT_TEST") else True
+
     # Add console handler (to specified stream or progress footer sink)
     if progress_footer is not None:
         logger.add(
@@ -128,11 +132,12 @@ def setup_logger(
             format=format_string,
             level=level,
             colorize=True,
-            enqueue=True,
+            enqueue=use_enqueue,
+            catch=True,  # Catch exceptions during logging to prevent shutdown crashes
         )
     else:
         logger.add(
-            stream, format=format_string, level=level, colorize=True, enqueue=True
+            stream, format=format_string, level=level, colorize=True, enqueue=use_enqueue
         )
 
     # Add file handler if specified
@@ -164,7 +169,7 @@ def setup_logger(
             rotation="10 MB",
             retention="7 days",
             compression="zip",
-            enqueue=True,
+            enqueue=use_enqueue,
         )
 
 
