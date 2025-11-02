@@ -62,13 +62,10 @@ class TestEnsurePushedWithFallback:
         mock_check_unpushed.return_value = True
 
         # First push fails with non-fast-forward error
-        # Retry push still fails
-        mock_git_push.side_effect = [
-            CommandResult(
-                success=False, stdout="", stderr="non-fast-forward", returncode=1
-            ),
-            CommandResult(success=False, stdout="", stderr="Push failed", returncode=1),
-        ]
+        # Retry push is not attempted when pull fails
+        mock_git_push.return_value = CommandResult(
+            success=False, stdout="", stderr="non-fast-forward", returncode=1
+        )
 
         # Mock pull with conflicts (conflict resolution handled by git_pull internally)
         mock_git_pull.return_value = CommandResult(
@@ -82,7 +79,7 @@ class TestEnsurePushedWithFallback:
 
         # Assert
         assert result.success is False
-        assert mock_git_push.call_count == 2  # Initial push + retry push
+        assert mock_git_push.call_count == 1  # Only initial push (retry skipped when pull fails)
         mock_git_pull.assert_called_once_with(remote="origin", branch=None, cwd=None)
 
     @patch("src.auto_coder.git_utils.check_unpushed_commits")
@@ -112,7 +109,7 @@ class TestEnsurePushedWithFallback:
         # Assert
         assert result.success is False
         assert "non-fast-forward" in result.stderr
-        assert mock_git_push.call_count == 2  # Initial push + retry push
+        assert mock_git_push.call_count == 1  # Only initial push (retry skipped when pull fails)
         mock_git_pull.assert_called_once_with(remote="origin", branch=None, cwd=None)
 
     @patch("src.auto_coder.git_utils.check_unpushed_commits")
