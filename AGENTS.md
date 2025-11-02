@@ -26,6 +26,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 
 * Maintain a standard Python project structure.
 * Document all features in `docs/client-features.yaml`.
+* Read `docs/client-features.yaml` to comply with specifications.
 * Do not create duplicate functions in multiple locations.
 
 ### GitHub Operations
