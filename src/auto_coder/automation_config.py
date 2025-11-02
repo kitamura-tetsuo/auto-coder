@@ -21,10 +21,10 @@ class AutomationConfig:
         Returns:
             Path to the reports directory: ~/.auto-coder/{repository}/
         """
-        # リポジトリ名から安全なディレクトリ名を生成
+        # Generate safe directory name from repository name
         safe_repo_name = repo_name.replace("/", "_")
 
-        # ホームディレクトリ配下の .auto-coder/{repository}/ を返す
+        # Return ~/.auto-coder/{repository}/
         reports_path = Path.home() / ".auto-coder" / safe_repo_name
         return str(reports_path)
 

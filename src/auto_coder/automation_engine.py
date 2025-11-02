@@ -42,14 +42,14 @@ class AutomationEngine:
         self.message_backend_manager = message_backend_manager
         self.cmd = CommandExecutor()
 
-        # Note: レポートディレクトリはリポジトリごとに作成されるため、
-        # ここでは作成しない（_save_reportで作成）
+        # Note: Report directories are created per repository,
+        # so don't create here (_save_report will create them)
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
-        # LLMバックエンド情報を取得
+        # Get LLM backend information
         llm_backend_info = self._get_llm_backend_info()
 
         results = {
@@ -160,16 +160,16 @@ class AutomationEngine:
         if self.llm is None:
             return {"backend": None, "model": None}
 
-        # BackendManagerの場合
+        # BackendManager case
         if hasattr(self.llm, "get_last_backend_and_model"):
             backend, model = self.llm.get_last_backend_and_model()
             return {"backend": backend, "model": model}
 
-        # 個別クライアントの場合
+        # Individual client case
         backend = None
         model = getattr(self.llm, "model_name", None)
 
-        # クラス名からバックエンド名を推測
+        # Infer backend name from class name
         class_name = self.llm.__class__.__name__
         if "Gemini" in class_name:
             backend = "gemini"
@@ -197,13 +197,13 @@ class AutomationEngine:
                       ~/.auto-coder/{repository}/ instead of the default reports/ directory.
         """
         try:
-            # リポジトリ名が指定されている場合は、リポジトリごとのディレクトリを使用
+            # Use repository-specific directory if repository name is specified
             if repo_name:
                 reports_dir = self.config.get_reports_dir(repo_name)
             else:
                 reports_dir = self.config.REPORTS_DIR
 
-            # レポートディレクトリが存在しない場合は作成
+            # Create report directory if it doesn't exist
             os.makedirs(reports_dir, exist_ok=True)
 
             filepath = os.path.join(
