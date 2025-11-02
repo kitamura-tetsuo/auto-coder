@@ -11,12 +11,6 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     """Application settings."""
 
-    model_config = ConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore",  # 予期しない環境変数を無視
-    )
-
     # GitHub settings
     github_token: Optional[str] = Field(
         default=None, json_schema_extra={"env": "GITHUB_TOKEN"}
@@ -47,6 +41,12 @@ class Settings(BaseSettings):
     log_format: str = Field(
         default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         json_schema_extra={"env": "LOG_FORMAT"},
+    )
+
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",  # 予期しない環境変数を無視
     )
 
 
