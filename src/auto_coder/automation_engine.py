@@ -11,12 +11,16 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry
+<<<<<<< HEAD
+from .issue_processor import create_feature_issues, process_issues, process_single
+=======
 from .issue_processor import (
     _take_issue_actions,
     create_feature_issues,
     process_issues,
     process_single,
 )
+>>>>>>> origin/issue-27
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
 from .pr_processor import _check_github_actions_status
@@ -767,7 +771,6 @@ class AutomationEngine:
         import subprocess
 
         try:
-            pr_number = pr_data.get("number")
             # Run gh CLI to get GitHub Actions status for the PR
             result = subprocess.run(
                 ["gh", "run", "list", "--limit", "50"],
@@ -922,13 +925,19 @@ PR Details:
 GitHub Actions Logs:
 {github_logs}
 
-Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
+Please fix the issues that are causing the GitHub Actions failures. Make the necessary code
+changes to resolve the errors.
 DO NOT include git commit or push commands in your response."""
 
             # Call the LLM to get the fix
             if self.llm and hasattr(self.llm, "_run_gemini_cli"):
+<<<<<<< HEAD
+                self.llm._run_gemini_cli(prompt)
+                actions.append("Applied GitHub Actions fix")
+=======
                 llm_response = self.llm._run_gemini_cli(prompt)
                 actions.append(f"Applied GitHub Actions fix")
+>>>>>>> origin/issue-27
 
                 # Commit the changes using the centralized commit logic
                 commit_result = self._commit_with_message(
@@ -957,7 +966,10 @@ DO NOT include git commit or push commands in your response."""
         self, pr_data: Dict[str, Any], github_logs: str, fix_actions: List[str]
     ) -> str:
         """Format direct fix comment."""
-        return f"Auto-Coder Applied GitHub Actions Fixes\n\n**PR:** #{pr_data['number']} - {pr_data['title']}\n\nError: {github_logs}\n\nFixes applied: {', '.join(fix_actions)}"
+        return (
+            f"Auto-Coder Applied GitHub Actions Fixes\n\n**PR:** #{pr_data['number']} - "
+            f"{pr_data['title']}\n\nError: {github_logs}\n\nFixes applied: {', '.join(fix_actions)}"
+        )
 
     def _commit_with_message(self, message: str) -> Any:
         """Commit with specific message."""

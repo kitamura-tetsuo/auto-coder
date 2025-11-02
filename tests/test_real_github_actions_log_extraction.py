@@ -54,27 +54,27 @@ def test_extract_error_context_with_realistic_playwright_log():
 2025-10-27T03:26:05.0000000Z ##[group]Run npm test
 2025-10-27T03:26:06.0000000Z npm test
 2025-10-27T03:26:07.0000000Z ##[endgroup]
-2025-10-27T03:26:08.0000000Z 
+2025-10-27T03:26:08.0000000Z
 2025-10-27T03:26:09.0000000Z > outliner@1.0.0 test
 2025-10-27T03:26:10.0000000Z > playwright test
-2025-10-27T03:26:11.0000000Z 
+2025-10-27T03:26:11.0000000Z
 2025-10-27T03:26:12.0000000Z Running 300 tests using 4 workers
-2025-10-27T03:26:13.0000000Z 
+2025-10-27T03:26:13.0000000Z
 2025-10-27T03:26:14.0000000Z   ✓  1 [chromium] › e2e/basic/test-001.spec.ts:10:5 › Basic test 1 (1.2s)
 2025-10-27T03:26:15.0000000Z   ✓  2 [chromium] › e2e/basic/test-002.spec.ts:15:5 › Basic test 2 (0.8s)
 2025-10-27T03:26:16.0000000Z   ✓  3 [chromium] › e2e/basic/test-003.spec.ts:20:5 › Basic test 3 (1.5s)
 2025-10-27T03:26:17.0000000Z   ✓  4 [chromium] › e2e/basic/test-004.spec.ts:25:5 › Basic test 4 (0.9s)
 2025-10-27T03:26:18.0000000Z   ✓  5 [chromium] › e2e/basic/test-005.spec.ts:30:5 › Basic test 5 (1.1s)
-2025-10-27T03:26:19.0000000Z 
+2025-10-27T03:26:19.0000000Z
 2025-10-27T03:26:20.0000000Z   1) [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
-2025-10-27T03:26:21.0000000Z 
+2025-10-27T03:26:21.0000000Z
 2025-10-27T03:26:22.0000000Z     Retry #1 ───────────────────────────────────────────────────────────────────────────────────
-2025-10-27T03:26:23.0000000Z 
+2025-10-27T03:26:23.0000000Z
 2025-10-27T03:26:24.0000000Z     Error: expect(received).toContain(expected) // indexOf
-2025-10-27T03:26:25.0000000Z 
+2025-10-27T03:26:25.0000000Z
 2025-10-27T03:26:26.0000000Z     Expected substring: "<a href=\\"https://example.com\\""
 2025-10-27T03:26:27.0000000Z     Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"
-2025-10-27T03:26:28.0000000Z 
+2025-10-27T03:26:28.0000000Z
 2025-10-27T03:26:29.0000000Z       45 |         // Wait for the link to be rendered
 2025-10-27T03:26:30.0000000Z       46 |         await page.waitForTimeout(500);
 2025-10-27T03:26:31.0000000Z       47 |
@@ -84,19 +84,19 @@ def test_extract_error_context_with_realistic_playwright_log():
 2025-10-27T03:26:35.0000000Z       50 |         expect(firstItemHtml).toContain(">https://example.com</a>");
 2025-10-27T03:26:36.0000000Z       51 |     });
 2025-10-27T03:26:37.0000000Z       52 | });
-2025-10-27T03:26:38.0000000Z 
+2025-10-27T03:26:38.0000000Z
 2025-10-27T03:26:39.0000000Z     at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31
-2025-10-27T03:26:40.0000000Z 
+2025-10-27T03:26:40.0000000Z
 2025-10-27T03:26:41.0000000Z   ✓  6 [chromium] › e2e/basic/test-006.spec.ts:35:5 › Basic test 6 (1.3s)
 2025-10-27T03:26:42.0000000Z   ✓  7 [chromium] › e2e/basic/test-007.spec.ts:40:5 › Basic test 7 (0.7s)
 2025-10-27T03:26:43.0000000Z   ✓  8 [chromium] › e2e/basic/test-008.spec.ts:45:5 › Basic test 8 (1.4s)
-2025-10-27T03:26:44.0000000Z 
+2025-10-27T03:26:44.0000000Z
 2025-10-27T03:26:45.0000000Z   1 failed
 2025-10-27T03:26:46.0000000Z     [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
 2025-10-27T03:26:47.0000000Z   147 passed (2.5m)
 2025-10-27T03:26:48.0000000Z   1 skipped
 2025-10-27T03:26:49.0000000Z   151 did not run
-2025-10-27T03:26:50.0000000Z 
+2025-10-27T03:26:50.0000000Z
 2025-10-27T03:26:51.0000000Z ##[error]Process completed with exit code 1.
 """
 
@@ -146,22 +146,22 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/18828609259/job/53715705095"
 
     # 実際のログに近いZIPファイルを作成
-    realistic_step_log = """2025-10-27T03:26:08.0000000Z 
+    realistic_step_log = """2025-10-27T03:26:08.0000000Z
 2025-10-27T03:26:09.0000000Z > outliner@1.0.0 test
 2025-10-27T03:26:10.0000000Z > playwright test
-2025-10-27T03:26:11.0000000Z 
+2025-10-27T03:26:11.0000000Z
 2025-10-27T03:26:12.0000000Z Running 300 tests using 4 workers
-2025-10-27T03:26:13.0000000Z 
+2025-10-27T03:26:13.0000000Z
 2025-10-27T03:26:14.0000000Z   ✓  1 [chromium] › e2e/basic/test-001.spec.ts:10:5 › Basic test 1 (1.2s)
 2025-10-27T03:26:15.0000000Z   ✓  2 [chromium] › e2e/basic/test-002.spec.ts:15:5 › Basic test 2 (0.8s)
-2025-10-27T03:26:16.0000000Z 
+2025-10-27T03:26:16.0000000Z
 2025-10-27T03:26:17.0000000Z   1) [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
-2025-10-27T03:26:18.0000000Z 
+2025-10-27T03:26:18.0000000Z
 2025-10-27T03:26:19.0000000Z     Error: expect(received).toContain(expected) // indexOf
-2025-10-27T03:26:20.0000000Z 
+2025-10-27T03:26:20.0000000Z
 2025-10-27T03:26:21.0000000Z     Expected substring: "<a href=\\"https://example.com\\""
 2025-10-27T03:26:22.0000000Z     Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"
-2025-10-27T03:26:23.0000000Z 
+2025-10-27T03:26:23.0000000Z
 2025-10-27T03:26:24.0000000Z       47 |
 2025-10-27T03:26:25.0000000Z       48 |         const firstItemHtml = await page.locator(".outliner-item").first().locator(".item-text").innerHTML();
 2025-10-27T03:26:26.0000000Z     > 49 |         expect(firstItemHtml).toContain('<a href="https://example.com"');
@@ -169,9 +169,9 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 2025-10-27T03:26:28.0000000Z       50 |         expect(firstItemHtml).toContain(">https://example.com</a>");
 2025-10-27T03:26:29.0000000Z       51 |     });
 2025-10-27T03:26:30.0000000Z       52 | });
-2025-10-27T03:26:31.0000000Z 
+2025-10-27T03:26:31.0000000Z
 2025-10-27T03:26:32.0000000Z     at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31
-2025-10-27T03:26:33.0000000Z 
+2025-10-27T03:26:33.0000000Z
 2025-10-27T03:26:34.0000000Z   1 failed
 2025-10-27T03:26:35.0000000Z     [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
 2025-10-27T03:26:36.0000000Z   147 passed (2.5m)

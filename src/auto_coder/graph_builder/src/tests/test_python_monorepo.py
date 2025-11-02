@@ -48,7 +48,7 @@ def hello():
 
 class Service1:
     '''Service class'''
-    
+
     def greet(self, name):
         '''Greet someone'''
         return f'Hello, {name}!'
@@ -75,7 +75,7 @@ def world():
 
 class Service2:
     '''Service class'''
-    
+
     def farewell(self, name):
         '''Say goodbye'''
         return f'Goodbye, {name}!'

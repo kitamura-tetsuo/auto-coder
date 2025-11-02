@@ -521,9 +521,18 @@ class GraphRAGIndexManager:
         try:
             driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
 
+<<<<<<< HEAD
+            with driver.session() as session:
+                # Clear existing data for this repository
+                session.run(
+                    "MATCH (n) WHERE n.repo_path = $repo_path DETACH DELETE n",
+                    repo_path=str(self.repo_path.resolve()),
+                )
+=======
             # Generate repository-specific label
             repo_label = self._generate_repo_label()
             repo_path = str(self.repo_path.resolve())
+>>>>>>> origin/issue-27
 
             with driver.session() as session:
                 # Clear existing data for this repository (both labeled and unlabeled)
@@ -570,8 +579,12 @@ class GraphRAGIndexManager:
                         to_id=edge.get("to"),
                         type=edge.get("type", "UNKNOWN"),
                         count=edge.get("count", 1),
+<<<<<<< HEAD
+                        repo_path=str(self.repo_path.resolve()),
+=======
                         repo_path=repo_path,
                         repo_hash=repo_hash,
+>>>>>>> origin/issue-27
                     )
 
                 logger.info(f"Inserted {len(edges)} edges into Neo4j")
@@ -695,9 +708,13 @@ class GraphRAGIndexManager:
                         "kind": node.get("kind", "Unknown"),
                         "fqname": node.get("fqname", ""),
                         "file": node.get("file", ""),
+<<<<<<< HEAD
+                        "repo_path": str(self.repo_path.resolve()),
+=======
                         "repo_path": repo_path_str,
                         "repo_hash": repo_hash,
                         "repo_label": repo_label,
+>>>>>>> origin/issue-27
                     },
                 )
                 points.append(point)

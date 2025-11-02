@@ -5,9 +5,13 @@
 application:
   name: "Auto-Coder"
 <<<<<<< HEAD
+  version: "2025.11.2+g3cee7bc"
+=======
+<<<<<<< HEAD
   version: "2025.11.2+g3f727d0"
 =======
   version: "2025.11.1.3+g66ca7ba"
+>>>>>>> origin/issue-27
 >>>>>>> origin/issue-27
   description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 

@@ -140,6 +140,12 @@ def setup_logger(
             level=level,
             colorize=True,
             enqueue=True,
+<<<<<<< HEAD
+        )
+    else:
+        logger.add(
+            stream, format=format_string, level=level, colorize=True, enqueue=True
+=======
             catch=True,  # Catch exceptions during logging to prevent shutdown crashes
         )
     else:
@@ -158,6 +164,7 @@ def setup_logger(
             colorize=True,
             enqueue=True,
             catch=True,  # Catch exceptions during logging to prevent shutdown crashes
+>>>>>>> origin/issue-27
         )
 
     # Add file handler if specified

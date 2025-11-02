@@ -305,6 +305,39 @@ def process_pull_requests(
                 if pr_body:
                     # Extract linked issues from PR body
                     related_issues = _extract_linked_issues_from_pr_body(pr_body)
+<<<<<<< HEAD
+
+                with ProgressStage(
+                    "PR",
+                    pr_number,
+                    "First pass",
+                    related_issues=related_issues,
+                    branch_name=branch_name,
+                ):
+                    # Skip if PR already has @auto-coder label (being processed by another instance)
+                    if not dry_run and not github_client.disable_labels:
+                        if not github_client.try_add_work_in_progress_label(
+                            repo_name, pr_number
+                        ):
+                            logger.info(
+                                f"Skipping PR #{pr_number} - already has @auto-coder label"
+                            )
+                            processed_prs.append(
+                                {
+                                    "pr_data": pr_data,
+                                    "actions_taken": [
+                                        "Skipped - already being processed (@auto-coder label present)"
+                                    ],
+                                }
+                            )
+                            # Track that we skipped this PR
+                            skipped_pr_numbers.add(pr_number)
+                            newline_progress()
+                            continue
+                        # Track that we added the label
+                        labeled_pr_numbers.add(pr_number)
+=======
+>>>>>>> origin/issue-27
 
                 with ProgressStage(
                     "PR",
@@ -467,6 +500,10 @@ def process_pull_requests(
                     related_issues=related_issues,
                     branch_name=branch_name,
                 ):
+<<<<<<< HEAD
+                    # Label should already be present from first pass
+                    # No need to add it again
+=======
                     # Add @auto-coder label for second pass processing (deferred PRs won't have it from first pass)
                     if not dry_run and not github_client.disable_labels:
                         try:
@@ -478,6 +515,7 @@ def process_pull_requests(
                             logger.warning(
                                 f"Failed to add @auto-coder label to PR #{pr_number}: {e}"
                             )
+>>>>>>> origin/issue-27
 
                     try:
                         logger.info(f"PR #{pr_number}: Processing for issue resolution")
@@ -488,7 +526,11 @@ def process_pull_requests(
                         processed_pr["priority"] = "fix"
                         processed_prs.append(processed_pr)
                     finally:
+<<<<<<< HEAD
+                        # Remove @auto-coder label after processing (added in first pass)
+=======
                         # Remove @auto-coder label after processing (added in this pass)
+>>>>>>> origin/issue-27
                         if (
                             not dry_run
                             and not github_client.disable_labels
@@ -1068,7 +1110,7 @@ def _handle_pr_merge(
                 f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)"
             )
             update_actions = _update_with_base_branch(
-                repo_name, pr_data, config, dry_run
+                repo_name, pr_data, config, dry_run, llm_client
             )
             actions.extend(update_actions)
 
@@ -1212,7 +1254,11 @@ def _force_checkout_pr_manually(
 
 
 def _update_with_base_branch(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    dry_run: bool,
+    llm_client: Any = None,
 ) -> List[str]:
     """Update PR branch with latest base branch commits.
 
@@ -1303,7 +1349,11 @@ def _update_with_base_branch(
                 pr_number,
                 target_branch,
                 config,
+<<<<<<< HEAD
+                llm_client,
+=======
                 None,
+>>>>>>> origin/issue-27
                 repo_name,
                 pr_data,
                 dry_run,
@@ -1323,6 +1373,22 @@ def _update_with_base_branch(
     return actions
 
 
+<<<<<<< HEAD
+def _get_merge_conflict_info() -> str:
+    """Get information about merge conflicts."""
+    try:
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        return (
+            result.stdout
+            if result.success
+            else "Could not get merge conflict information"
+        )
+    except Exception as e:
+        return f"Error getting conflict info: {e}"
+
+
+=======
+>>>>>>> origin/issue-27
 def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
     """Extract issue numbers from PR body using GitHub's linking keywords.
 
@@ -1609,10 +1675,11 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
 
 
 def _resolve_pr_merge_conflicts(
-    repo_name: str, pr_number: int, config: AutomationConfig
+    repo_name: str, pr_number: int, config: AutomationConfig, llm_client: Any = None
 ) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
     try:
+        actions = []
         # Step 0: Clean up any existing git state
         logger.info(
             f"Cleaning up git state before resolving conflicts for PR #{pr_number}"
@@ -1699,6 +1766,10 @@ def _resolve_pr_merge_conflicts(
                     logger.error(
                         f"Failed to push updated branch after retry: {retry_push_result.stderr}"
                     )
+<<<<<<< HEAD
+                    logger.error("Failed to resolve merge conflicts")
+=======
+>>>>>>> origin/issue-27
                     return False
         else:
             # Merge conflicts detected, use LLM to resolve them
@@ -1715,7 +1786,11 @@ def _resolve_pr_merge_conflicts(
                 conflict_info,
                 config,
                 False,
+<<<<<<< HEAD
+                llm_client,
+=======
                 None,
+>>>>>>> origin/issue-27
             )
 
             # Log the resolution actions
