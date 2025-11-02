@@ -271,6 +271,22 @@ def git_commit_with_retry(
     return result
 
 
+def branch_exists(branch_name: str, cwd: Optional[str] = None) -> bool:
+    """
+    Check if a branch with the given name exists.
+
+    Args:
+        branch_name: Name of the branch to check
+        cwd: Optional working directory for the git command
+
+    Returns:
+        True if the branch exists, False otherwise
+    """
+    cmd = CommandExecutor()
+    result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
+    return result.success and result.stdout.strip()
+
+
 def git_checkout_branch(
     branch_name: str,
     create_new: bool = False,
@@ -283,11 +299,13 @@ def git_checkout_branch(
 
     This function centralizes git checkout operations and ensures that after
     switching branches, the current branch matches the expected branch.
+    If create_new is True, it will first check if a branch with the same name exists.
+    If it exists, it will checkout the existing branch instead of creating a new one.
     If creating a new branch, it will automatically push to remote and set up tracking.
 
     Args:
         branch_name: Name of the branch to checkout
-        create_new: If True, creates a new branch with -b flag
+        create_new: If True, creates a new branch with -b flag (if it doesn't exist)
         base_branch: If create_new is True and base_branch is specified, creates
                      the new branch from base_branch (using -B flag)
         cwd: Optional working directory for the git command
@@ -325,14 +343,23 @@ def git_checkout_branch(
 
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
+
     if create_new:
-        if base_branch:
-            # Create new branch from base_branch (or reset if exists)
-            checkout_cmd.append("-B")
+        # Check if the branch already exists
+        if branch_exists(branch_name, cwd=cwd):
+            logger.info(f"Branch '{branch_name}' already exists, checking out existing branch")
+            # Checkout existing branch instead of creating new one
+            checkout_cmd = ["git", "checkout", branch_name]
         else:
-            # Create new branch
-            checkout_cmd.append("-b")
-    checkout_cmd.append(branch_name)
+            # Create new branch from base_branch (or reset if exists)
+            if base_branch:
+                checkout_cmd.append("-B")
+            else:
+                checkout_cmd.append("-b")
+            checkout_cmd.append(branch_name)
+    else:
+        # Regular checkout (not creating new branch)
+        checkout_cmd.append(branch_name)
 
     # Execute checkout
     result = cmd.run_command(checkout_cmd, cwd=cwd)
@@ -409,6 +436,7 @@ def git_checkout_branch(
         else:
             logger.info(f"Successfully published branch '{branch_name}' to remote")
 
+    # Return the checkout result (not the push result)
     return result
 
 

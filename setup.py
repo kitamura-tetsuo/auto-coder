@@ -39,9 +39,27 @@ class BuildGraphBuilder:
             )
             return
 
+        # Check if we're in CI environment - skip build if CI is detected
+        if os.environ.get("CI") == "true" or os.environ.get("GITHUB_ACTIONS") == "true":
+            print(
+                "CI environment detected. Skipping TypeScript build. "
+                "Assuming pre-built dist/ directory is available.",
+                file=sys.stderr,
+            )
+            return
+
         print("=" * 70)
         print("Building TypeScript graph-builder...")
         print("=" * 70)
+
+        # Check if dist directory exists and has recent builds
+        dist_dir = graph_builder_dir / "dist"
+        cli_file = dist_dir / "cli.js"
+        bundle_file = dist_dir / "cli.bundle.js"
+
+        if dist_dir.exists() and cli_file.exists() and bundle_file.exists():
+            print("TypeScript build artifacts already exist. Skipping build.")
+            return
 
         # Check if npm is available
         try:
