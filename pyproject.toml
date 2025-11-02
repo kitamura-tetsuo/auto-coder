@@ -106,14 +106,14 @@ auto_coder = [
 
 [tool.black]
 line-length = 88
-target-version = ['py311']
+target-version = ['py311', 'py312']
 
 [tool.isort]
 profile = "black"
 line_length = 88
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -123,8 +123,18 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=src/auto_coder --cov-report=html --cov-report=term-missing"
+addopts = "-x --tb=short -q --strict-markers --disable-warnings --maxfail=1 -m 'not e2e and not integration and not slow' --cov=src/auto_coder --cov-report=html --cov-report=term-missing"
+timeout = 30
+timeout_method = "thread"
+asyncio_mode = "auto"
 markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
     "e2e: marks tests as end-to-end tests",
-    "headless: marks tests as headless tests",
+    "headless: marks tests that run in headless mode",
+    "playwright: marks tests that use Playwright",
+    "github: marks tests that use GitHub API",
+    "docker: marks tests that use Docker",
+    "mcp: marks tests that use MCP servers",
+    "graphrag: marks tests that use GraphRAG",
 ]

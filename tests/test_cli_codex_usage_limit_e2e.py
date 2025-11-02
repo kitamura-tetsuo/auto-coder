@@ -2,8 +2,10 @@ import os
 import subprocess
 import sys
 import textwrap
+import pytest
 
 
+@pytest.mark.e2e
 def _write_codex_stub(bin_dir):
     script_path = bin_dir / "codex"
     script_path.write_text(

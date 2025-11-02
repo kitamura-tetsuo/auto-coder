@@ -330,14 +330,16 @@ class AutomationEngine:
         """Check if an issue candidate has open sub-issues."""
         if candidate["type"] != "issue":
             return False
-        
+
         try:
             issue_data = candidate["data"]
             issue_number = issue_data["number"]
             open_sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
             return len(open_sub_issues) > 0
         except Exception as e:
-            logger.warning(f"Failed to check sub-issues for issue #{candidate.get('data', {}).get('number', 'N/A')}: {e}")
+            logger.warning(
+                f"Failed to check sub-issues for issue #{candidate.get('data', {}).get('number', 'N/A')}: {e}"
+            )
             return True  # Assume has sub-issues on error to be safe
 
     def process_single(

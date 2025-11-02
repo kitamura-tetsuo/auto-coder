@@ -225,6 +225,45 @@ def stub_git_and_gh_commands(monkeypatch, request):
             elif isinstance(cmd, str):
                 program = cmd.split()[0]
 
+            # Commands that should pass through to real subprocess with modified env
+            # This ensures PYTHONPATH is set correctly for source-based imports
+            pass_through_programs = ("python", "python3", "/usr/bin/python3")
+            if program in pass_through_programs:
+                # Ensure PYTHONPATH includes user site-packages and current directory
+                import os
+                import site
+
+                # Get user site-packages path
+                user_site = site.getusersitepackages()
+
+                # Build environment with proper PYTHONPATH
+                if env is None:
+                    env = os.environ.copy()
+                else:
+                    env = env.copy()
+
+                # Add user site-packages and current directory to PYTHONPATH
+                pythonpath = env.get("PYTHONPATH", "")
+                paths_to_add = [user_site, os.getcwd()]
+                for path in paths_to_add:
+                    if path and path not in pythonpath.split(os.pathsep):
+                        env["PYTHONPATH"] = (
+                            f"{path}:{pythonpath}" if pythonpath else path
+                        )
+                        pythonpath = env["PYTHONPATH"]
+
+                result = orig_run(
+                    cmd,
+                    capture_output=capture_output,
+                    text=text,
+                    timeout=timeout,
+                    cwd=cwd,
+                    check=check,
+                    input=input,
+                    env=env,
+                )
+                return result
+
             if program not in ("git", "gh", "gemini", "codex", "uv"):
                 return orig_run(
                     cmd,
@@ -387,3 +426,42 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+
+@pytest.fixture
+def free_udp_port():
+    """Find a free UDP port for testing."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def free_udp_port_factory():
+    """Factory for creating free UDP ports."""
+    import socket
+    import threading
+    lock = threading.Lock()
+
+    def _free_udp_port():
+        with lock:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.bind(('', 0))
+                return s.getsockname()[1]
+
+    return _free_udp_port
+
+
+@pytest.fixture
+def compatibility_graphrag_setup():
+    """Setup for backward compatibility testing."""
+    from src.auto_coder.graphrag_mcp_integration import (
+        GraphRAGMCPIntegration,
+        BackwardCompatibilityLayer,
+    )
+
+    # Setup existing behavior for compatibility tests
+    graphrag_integration = GraphRAGMCPIntegration()
+    compat_layer = BackwardCompatibilityLayer(graphrag_integration)
+    return compat_layer

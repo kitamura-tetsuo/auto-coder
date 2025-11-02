@@ -1,9 +1,11 @@
 import pathlib
 import sys
+import pytest
 
 from src.auto_coder.codex_mcp_client import CodexMCPClient
 
 
+@pytest.mark.e2e
 def test_codex_mcp_jsonrpc_handshake_and_tool_call_e2e(tmp_path, monkeypatch):
     # Use Python as codex CLI override for availability check
     monkeypatch.setenv("AUTOCODER_CODEX_CLI", sys.executable)

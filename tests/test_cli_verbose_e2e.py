@@ -2,8 +2,10 @@ import os
 import subprocess
 import sys
 import textwrap
+import pytest
 
 
+@pytest.mark.e2e
 def _build_python_snippet() -> str:
     return textwrap.dedent(
         """

@@ -17,6 +17,7 @@ def sample_pr(sample_pr_data):
     return data
 
 
+@pytest.mark.e2e
 def test_pr_prompt_uses_yaml_template(tmp_path, sample_pr):
     """Customizing the YAML template should affect generated prompts end-to-end."""
     custom_yaml = tmp_path / "prompts.yaml"

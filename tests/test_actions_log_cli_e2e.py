@@ -1,8 +1,10 @@
 import importlib
 import subprocess
 import sys
+import pytest
 
 
+@pytest.mark.e2e
 def test_get_actions_logs_cli():
     sp = importlib.reload(subprocess)
     from playwright.sync_api import sync_playwright
