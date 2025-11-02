@@ -290,6 +290,24 @@ def process_pull_requests(
                 pr_data = github_client.get_pr_details(pr)
                 pr_number = pr_data["number"]
 
+                # Skip immediately if PR already has @auto-coder label
+                pr_labels = pr_data.get("labels", [])
+                if "@auto-coder" in pr_labels:
+                    logger.info(
+                        f"Skipping PR #{pr_number} - already has @auto-coder label"
+                    )
+                    processed_prs.append(
+                        {
+                            "pr_data": pr_data,
+                            "actions_taken": [
+                                "Skipped - already being processed (@auto-coder label present)"
+                            ],
+                        }
+                    )
+                    skipped_pr_numbers.add(pr_number)
+                    newline_progress()
+                    continue
+
                 # First pass: check if PR can be merged
                 branch_name = pr_data.get("head", {}).get("ref")
                 pr_body = pr_data.get("body", "")
@@ -418,8 +436,6 @@ def process_pull_requests(
                         labeled_pr_numbers.discard(pr.number)
                     except Exception:
                         pass
-                # Clear progress header on error
-                newline_progress()
 
         # Second loop: Process remaining PRs (fix issues)
         logger.info("Second pass: Processing remaining PRs for issue resolution...")
@@ -451,6 +467,23 @@ def process_pull_requests(
                 if pr_body:
                     # Extract linked issues from PR body
                     related_issues = _extract_linked_issues_from_pr_body(pr_body)
+
+                # Skip immediately if PR already has @auto-coder label
+                pr_labels = pr_data.get("labels", [])
+                if "@auto-coder" in pr_labels:
+                    logger.info(
+                        f"Skipping PR #{pr_number} - already has @auto-coder label"
+                    )
+                    processed_prs.append(
+                        {
+                            "pr_data": pr_data,
+                            "actions_taken": [
+                                "Skipped - already being processed (@auto-coder label present)"
+                            ],
+                        }
+                    )
+                    newline_progress()
+                    continue
 
                 with ProgressStage(
                     "PR",
