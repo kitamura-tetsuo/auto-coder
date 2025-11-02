@@ -132,6 +132,9 @@ def setup_logger(
             "<level>{message}</level>"
         )
 
+    # Use non-enqueue mode during pytest to avoid background queue growth
+    use_enqueue = False if os.environ.get("PYTEST_CURRENT_TEST") else True
+
     # Add console handler (to specified stream or progress footer sink)
     if progress_footer is not None:
         logger.add(
@@ -139,7 +142,7 @@ def setup_logger(
             format=format_string,
             level=level,
             colorize=True,
-            enqueue=True,
+            enqueue=use_enqueue,
             catch=True,  # Catch exceptions during logging to prevent shutdown crashes
         )
     else:
@@ -156,7 +159,7 @@ def setup_logger(
             format=format_string,
             level=level,
             colorize=True,
-            enqueue=True,
+            enqueue=use_enqueue,
             catch=True,  # Catch exceptions during logging to prevent shutdown crashes
         )
 
@@ -189,7 +192,7 @@ def setup_logger(
             rotation="10 MB",
             retention="7 days",
             compression="zip",
-            enqueue=True,
+            enqueue=use_enqueue,
         )
 
 
