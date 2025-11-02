@@ -10,5 +10,6 @@ exclude =
     .venv,
     *.egg-info,
     build,
-    dist
+    dist,
+    graph_builder/node_modules
 

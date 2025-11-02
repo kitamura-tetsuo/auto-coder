@@ -112,7 +112,9 @@ class TestCLICreateFeatureIssues:
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
-    def test_create_feature_issues_missing_codex_cli(self, mock_check_cli, mock_initialize_graphrag):
+    def test_create_feature_issues_missing_codex_cli(
+        self, mock_check_cli, mock_initialize_graphrag
+    ):
         """Default backend codex missing should error."""
         mock_check_cli.side_effect = click.ClickException("Codex CLI missing")
         runner = CliRunner()
@@ -280,4 +282,3 @@ class TestCLICreateFeatureIssues:
         assert "Force reindex: False" in result.output
         # Verify initialize_graphrag was called with force_reindex=False
         mock_initialize_graphrag.assert_called_once_with(force_reindex=False)
-
