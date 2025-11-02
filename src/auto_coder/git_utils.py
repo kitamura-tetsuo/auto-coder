@@ -288,7 +288,7 @@ def branch_exists(
     # Create a local executor if none provided (for backward compatibility)
     local_cmd = cmd if cmd is not None else CommandExecutor()
     result = local_cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
-    return result.success and result.stdout.strip()
+    return bool(result.success and result.stdout.strip())
 
 
 def git_checkout_branch(
@@ -664,8 +664,8 @@ def git_push(
 def ensure_pushed_with_fallback(
     cwd: Optional[str] = None,
     remote: str = "origin",
-    llm_client=None,
-    message_backend_manager=None,
+    llm_client: Optional[Any] = None,
+    message_backend_manager: Optional[Any] = None,
     commit_message: Optional[str] = None,
     issue_number: Optional[int] = None,
     repo_name: Optional[str] = None,
@@ -1124,8 +1124,8 @@ def git_pull(
 def try_llm_commit_push(
     commit_message: str,
     error_message: str,
-    llm_client=None,
-    message_backend_manager=None,
+    llm_client: Optional[Any] = None,
+    message_backend_manager: Optional[Any] = None,
 ) -> bool:
     """
     Try to use LLM to resolve commit/push failures.
@@ -1207,8 +1207,8 @@ def commit_and_push_changes(
     result_data: Dict[str, Any],
     repo_name: Optional[str] = None,
     issue_number: Optional[int] = None,
-    llm_client=None,
-    message_backend_manager=None,
+    llm_client: Optional[Any] = None,
+    message_backend_manager: Optional[Any] = None,
 ) -> str:
     """
     Commit changes and push them to remote using centralized git helper.
@@ -1226,7 +1226,6 @@ def commit_and_push_changes(
     Returns:
         Action message describing the commit result
     """
-    global cmd  # Use the existing CommandExecutor instance
     cmd = CommandExecutor()
 
     summary = result_data.get("summary", "Auto-Coder: Automated changes")
