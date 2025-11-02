@@ -2,32 +2,18 @@
 
 import json
 import os
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
 from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
-
-# Import the helper function from pr_processor
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor
+from .utils import CommandExecutor, CommandResult
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
-
-
-def _get_merge_conflict_info() -> str:
-    """Get information about merge conflicts."""
-    try:
-        result = cmd.run_command(["git", "status", "--porcelain"])
-        return (
-            result.stdout
-            if result.success
-            else "Could not get merge conflict information"
-        )
-    except Exception as e:
-        return f"Error getting conflict info: {e}"
 
 
 def scan_conflict_markers() -> List[str]:
@@ -137,8 +123,7 @@ def resolve_merge_conflicts_with_llm(
             flagged = scan_conflict_markers()
             if flagged:
                 actions.append(
-                    f"Conflict markers still present in {len(flagged)} "
-                    f"file(s): {', '.join(sorted(set(flagged)))}; not committing"
+                    f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing"
                 )
                 return actions
 
@@ -312,62 +297,20 @@ def resolve_pr_merge_conflicts(
     """
     try:
         # Get PR details to determine the target base branch
-        pr_data = None
-        base_branch = config.MAIN_BRANCH
-
-        # Try multiple approaches to get PR details
-        approaches = [
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName,headRefName"],
-            [
-                "gh",
-                "pr",
-                "view",
-                str(pr_number),
-                "--json",
-                "number,baseRefName,headRefName,title",
-            ],
-            ["gh", "pr", "view", str(pr_number), "--json", "base,head"],
-            ["gh", "pr", "view", str(pr_number), "--json", "number,base,head,title"],
-        ]
-
-        for cmd_args in approaches:
-            pr_details_result = cmd.run_command(cmd_args)
-            if pr_details_result.success:
-                try:
-                    pr_data = json.loads(pr_details_result.stdout)
-                    # Try baseRefName first (newer GitHub CLI versions)
-                    if "baseRefName" in pr_data:
-                        base_branch = pr_data["baseRefName"]
-                        logger.info(
-                            f"Successfully got base branch '{base_branch}' for PR #{pr_number}"
-                        )
-                        break
-                    # Fallback to base.ref format (older versions)
-                    elif (
-                        "base" in pr_data
-                        and isinstance(pr_data["base"], dict)
-                        and "ref" in pr_data["base"]
-                    ):
-                        base_branch = pr_data["base"]["ref"]
-                        logger.info(
-                            f"Successfully got base branch '{base_branch}' for PR #{pr_number}"
-                        )
-                        break
-                    else:
-                        logger.warning(
-                            f"Base branch info not available in response for PR #{pr_number}"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to parse JSON response for PR #{pr_number}: {e}"
-                    )
-                    continue
-
-        if pr_data is None:
-            logger.warning(
-                f"Could not get PR #{pr_number} details through any method, using default base branch: {config.MAIN_BRANCH}"
+        pr_details_result = cmd.run_command(
+            ["gh", "pr", "view", str(pr_number), "--json", "base"]
+        )
+        if not pr_details_result.success:
+            logger.error(
+                f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}"
             )
+            return False
+
+        try:
+            pr_data = json.loads(pr_details_result.stdout)
+            base_branch = pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
+        except Exception:
+            base_branch = config.MAIN_BRANCH
 
         # Use the common subroutine
         return _perform_base_branch_merge_and_conflict_resolution(
@@ -596,8 +539,7 @@ def resolve_package_json_dependency_conflicts(
     Rules:
     - For dependencies/devDependencies/peerDependencies/optionalDependencies:
       - Union of packages
-      - When versions differ: pick newer semver if determinable;
-        otherwise prefer the side that has more deps in that section overall
+      - When versions differ: pick newer semver if determinable; otherwise prefer the side that has more deps in that section overall
     - Non-dependency sections follow 'ours' (since they are identical by detection)
 
     When eligible_paths is provided, only those package.json files are processed.
@@ -676,8 +618,7 @@ def resolve_package_json_dependency_conflicts(
 
         # commit = cmd.run_command([
         #     'git', 'commit',
-        #     '-m', f"Resolve package.json dependency-only conflicts for PR #{pr_number} "
-        #           "by preferring newer versions and union"
+        #     '-m', f"Resolve package.json dependency-only conflicts for PR #{pr_number} by preferring newer versions and union"
         # ])
         # if not commit.success:
         #     actions.append(f"Failed to commit merged package.json: {commit.stderr}")

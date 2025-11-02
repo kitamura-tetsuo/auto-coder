@@ -1,0 +1,1 @@
+Task: Analyze current PR labeling logic in First Pass to understand when @auto-coder labels should be added. Review lines 113-135 and 141-192 in src/auto_coder/pr_processor.py. Document the decision tree for PR handling and identify where label logic needs modification. Expected: Detailed analysis of code flow and identification of specific modification points.
