@@ -2,8 +2,13 @@
 Base class for LLM clients.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Optional
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional
+import os
+import inspect
 
 
 class LLMClientBase(ABC):
@@ -124,3 +129,151 @@ class LLMBackendManagerBase(LLMClientBase):
         Default implementation does nothing.
         """
         pass
+
+
+class LLMBackendManager:
+    """
+    Singleton manager for message-specific LLM backend.
+
+    This manager is dedicated to commit messages and uses lightweight models
+    to reduce costs while maintaining quality for message generation.
+
+    Thread-safe singleton implementation using double-checked locking.
+    """
+
+    _instance: Optional[LLMBackendManager] = None
+    _lock: Lock = Lock()
+
+    def __new__(cls) -> LLMBackendManager:
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+
+    def __init__(self) -> None:
+        """Initialize the singleton message backend manager.
+
+        Only initializes once due to singleton pattern.
+        Uses environment variables or defaults to lightweight models.
+        """
+        # Prevent re-initialization in singleton
+        if hasattr(self, '_initialized'):
+            return
+
+        self._initialized = True
+        self._backend_manager: Optional[Any] = None
+        self._config_lock = Lock()
+
+    @classmethod
+    def get_llm_for_message_instance(cls) -> Any:
+        """
+        Get or create the singleton message backend manager instance.
+
+        This is a class method that returns the singleton instance of the
+        message backend manager, which is dedicated to generating commit messages
+        and uses lightweight models for cost efficiency.
+
+        The returned backend manager can be used directly to generate commit messages
+        without needing to pass it around as a parameter.
+
+        Returns:
+            BackendManager instance configured for commit messages
+
+        Raises:
+            RuntimeError: If the backend manager is not initialized
+        """
+        instance = cls()
+        with instance._config_lock:
+            if instance._backend_manager is None:
+                # Import here to avoid circular dependency
+                from .backend_manager import BackendManager
+
+                # Create message backend manager with lightweight model
+                # This uses environment variables for configuration
+                instance._backend_manager = cls._create_message_backend_manager()
+
+        return instance._backend_manager
+
+    @classmethod
+    def _create_message_backend_manager(cls) -> Any:
+        """
+        Create a backend manager instance configured for commit messages.
+
+        Uses lightweight models appropriate for commit message generation.
+        Configuration is read from environment variables or uses sensible defaults.
+
+        Returns:
+            BackendManager instance configured for message generation
+        """
+        from .backend_manager import BackendManager
+
+        # Determine the lightweight model to use for messages
+        # Priority: explicit env var, then auto-detect from main config, then default
+        message_model = os.environ.get("AUTO_CODER_MESSAGE_MODEL")
+        message_backend = os.environ.get("AUTO_CODER_MESSAGE_BACKEND", "qwen")
+
+        # Factory function to create message client
+        def create_message_client() -> Any:
+            """Create a lightweight LLM client for message generation."""
+            # Import the appropriate client factory
+            # This will be determined by the backend type
+            try:
+                if message_backend == "qwen":
+                    from .llm_client_qwen import QwenClient
+                    return QwenClient(
+                        model=message_model or "qwen-turbo",
+                        system_prompt="",
+                        api_key_env="QWEN_API_KEY",
+                    )
+                elif message_backend == "gemini":
+                    from .llm_client_gemini import GeminiClient
+                    return GeminiClient(
+                        model=message_model or "gemini-1.5-flash",
+                        api_key_env="GEMINI_API_KEY",
+                    )
+                else:
+                    # Default to qwen-turbo for lightweight operation
+                    from .llm_client_qwen import QwenClient
+                    return QwenClient(
+                        model=message_model or "qwen-turbo",
+                        system_prompt="",
+                        api_key_env="QWEN_API_KEY",
+                    )
+            except Exception:
+                # If specific backend fails, try to create a generic client
+                # This is a fallback to ensure the system can still work
+                return None
+
+        # Create the backend manager with message-specific configuration
+        try:
+            message_client = create_message_client()
+            if message_client is None:
+                raise RuntimeError("Failed to create message client")
+
+            # Create and return the backend manager
+            return BackendManager(
+                default_backend=message_backend,
+                default_client=message_client,
+                factories={message_backend: create_message_client},
+                order=[message_backend],
+            )
+        except Exception as e:
+            # Log error and raise with context
+            raise RuntimeError(
+                f"Failed to initialize message backend manager: {e}"
+            ) from e
+
+    def close(self) -> None:
+        """Close the message backend manager and clean up resources."""
+        if self._backend_manager is not None:
+            try:
+                self._backend_manager.close()
+            except Exception:
+                pass
+
+        with self._config_lock:
+            self._backend_manager = None
+
+    def is_initialized(self) -> bool:
+        """Check if the singleton instance is initialized."""
+        return hasattr(self, '_initialized') and self._backend_manager is not None

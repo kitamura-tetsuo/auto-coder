@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .exceptions import AutoCoderUsageLimitError
-from .llm_client_base import LLMBackendManagerBase
+from .llm_client_base import LLMBackendManager, LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 

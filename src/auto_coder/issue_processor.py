@@ -38,7 +38,6 @@ def process_issues(
     repo_name: str,
     jules_mode: bool = False,
     llm_client=None,
-    message_backend_manager=None,
 ) -> List[Dict[str, Any]]:
     """Process open issues in the repository."""
     if jules_mode:
@@ -50,7 +49,6 @@ def process_issues(
             dry_run,
             repo_name,
             llm_client,
-            message_backend_manager,
         )
 
 
@@ -60,7 +58,6 @@ def _process_issues_normal(
     dry_run: bool,
     repo_name: str,
     llm_client=None,
-    message_backend_manager=None,
 ) -> List[Dict[str, Any]]:
     """Process open issues in the repository."""
     try:
@@ -163,7 +160,6 @@ def _process_issues_normal(
                             dry_run,
                             github_client,
                             llm_client,
-                            message_backend_manager,
                         )
                         processed_issue["actions_taken"] = actions
                 finally:
@@ -339,7 +335,6 @@ def _take_issue_actions(
     dry_run: bool,
     github_client,
     llm_client=None,
-    message_backend_manager=None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
     actions = []
@@ -359,7 +354,6 @@ def _take_issue_actions(
                 dry_run,
                 github_client,
                 llm_client,
-                message_backend_manager,
             )
             actions.extend(action_results)
 
@@ -377,7 +371,6 @@ def _create_pr_for_issue(
     base_branch: str,
     llm_response: str,
     github_client,
-    message_backend_manager=None,
     dry_run: bool = False,
 ) -> str:
     """
@@ -390,7 +383,6 @@ def _create_pr_for_issue(
         base_branch: Base branch name (e.g., 'main')
         llm_response: LLM response containing changes summary
         github_client: GitHub client for API operations
-        message_backend_manager: Backend manager for PR message generation
         dry_run: Whether this is a dry run
 
     Returns:
@@ -405,8 +397,12 @@ def _create_pr_for_issue(
         pr_title = None
         pr_body = None
 
-        if message_backend_manager:
-            try:
+        # Try to generate PR message using the singleton message backend
+        try:
+            from .llm_client_base import LLMBackendManager
+
+            message_backend_manager = LLMBackendManager.get_llm_for_message_instance()
+            if message_backend_manager:
                 pr_message_prompt = render_prompt(
                     "pr.pr_message",
                     issue_number=issue_number,
@@ -427,10 +423,10 @@ def _create_pr_for_issue(
                     logger.info(
                         f"Generated PR message using message backend: {pr_title}"
                     )
-            except Exception as e:
-                logger.warning(
-                    f"Failed to generate PR message using message backend: {e}"
-                )
+        except Exception as e:
+            logger.warning(
+                f"Failed to generate PR message using message backend: {e}"
+            )
 
         # Fallback to default PR message if generation failed
         if not pr_title:
@@ -521,7 +517,6 @@ def _apply_issue_actions_directly(
     dry_run: bool,
     github_client,
     llm_client=None,
-    message_backend_manager=None,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     actions = []
@@ -753,7 +748,6 @@ def _apply_issue_actions_directly(
                 repo_name=repo_name,
                 issue_number=issue_data["number"],
                 llm_client=llm_client,
-                message_backend_manager=message_backend_manager,
             )
             actions.append(commit_action)
 
@@ -767,7 +761,6 @@ def _apply_issue_actions_directly(
                     base_branch=pr_base_branch,
                     llm_response=response,
                     github_client=github_client,
-                    message_backend_manager=message_backend_manager,
                     dry_run=dry_run,
                 )
                 actions.append(pr_creation_result)
@@ -896,7 +889,6 @@ def process_single(
     number: int,
     jules_mode: bool = False,
     llm_client=None,
-    message_backend_manager=None,
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
@@ -1068,7 +1060,6 @@ def process_single(
                                 dry_run,
                                 github_client,
                                 llm_client,
-                                message_backend_manager,
                             )
                             processed_issue["actions_taken"] = actions
                     finally:

@@ -485,7 +485,6 @@ def fix_to_pass_tests(
     dry_run: bool = False,
     max_attempts: Optional[int] = None,
     llm_backend_manager: Optional["BackendManager"] = None,
-    message_backend_manager: Optional["BackendManager"] = None,
 ) -> Dict[str, Any]:
     """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
 
@@ -697,7 +696,6 @@ def fix_to_pass_tests(
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
             llm_backend_manager=llm_backend_manager,
-            message_backend_manager=message_backend_manager,
         )
         if not commit_msg:
             commit_msg = format_commit_message(config, action_msg, attempt)
@@ -771,7 +769,6 @@ def fix_to_pass_tests(
 
 def generate_commit_message_via_llm(
     llm_backend_manager: Optional["BackendManager"],
-    message_backend_manager: Optional["BackendManager"] = None,
 ) -> str:
     """Use LLM to generate a concise commit message based on the fix context.
 
@@ -780,15 +777,18 @@ def generate_commit_message_via_llm(
 
     Args:
         llm_backend_manager: Main LLM backend manager (used as fallback)
-        message_backend_manager: Dedicated message backend manager (preferred)
     """
     try:
-        # Use message_backend_manager if available, otherwise fall back to llm_backend_manager
-        manager = (
-            message_backend_manager
-            if message_backend_manager is not None
-            else llm_backend_manager
-        )
+        # Import LLMBackendManager singleton
+        from .llm_client_base import LLMBackendManager
+
+        # Use the singleton message backend manager if available, otherwise fall back to llm_backend_manager
+        try:
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            manager = message_manager
+        except Exception:
+            # If singleton initialization fails, fall back to provided manager
+            manager = llm_backend_manager
 
         if manager is None:
             return ""
