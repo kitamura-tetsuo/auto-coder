@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", json_schema_extra={"env": "LOG_LEVEL"})
     log_format: str = Field(
         default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        json_schema_extra={"env": "LOG_FORMAT"},
+        json_schema_extra={"env": "LOG_FORMAT"}
     )
 
     model_config = ConfigDict(

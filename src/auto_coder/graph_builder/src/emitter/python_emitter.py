@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
+from scanner.python_scanner import CodeEdge, CodeNode, GraphData
+
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from scanner.python_scanner import CodeEdge, CodeNode, GraphData
 
 
 def emit_csv(data: GraphData, output_dir: str) -> None:

@@ -12,9 +12,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from scanner.python_scanner import find_python_project_roots, scan_python_project
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 class TestPythonMonorepo(unittest.TestCase):
@@ -48,7 +48,7 @@ def hello():
 
 class Service1:
     '''Service class'''
-    
+
     def greet(self, name):
         '''Greet someone'''
         return f'Hello, {name}!'
@@ -75,7 +75,7 @@ def world():
 
 class Service2:
     '''Service class'''
-    
+
     def farewell(self, name):
         '''Say goodbye'''
         return f'Goodbye, {name}!'

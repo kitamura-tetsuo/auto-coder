@@ -31,7 +31,10 @@ class TestMCPServerConfig:
 
     def test_full_config(self):
         """Test full server configuration."""
-        callback = lambda x: None
+
+        def callback(x):
+            return None
+
         config = MCPServerConfig(
             name="test-server",
             bundled_path=Path("/path/to/bundled"),
