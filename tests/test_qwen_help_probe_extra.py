@@ -1,6 +1,6 @@
 from unittest.mock import patch
 
-from src.auto_coder.cli import qwen_help_has_flags
+from src.auto_coder.cli_helpers import qwen_help_has_flags
 
 
 @patch("subprocess.run")

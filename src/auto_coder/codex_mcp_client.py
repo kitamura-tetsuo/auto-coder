@@ -32,6 +32,18 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
+def _safe_log(message: str) -> None:
+    """Safe logging wrapper that handles closed streams."""
+    try:
+        # Check if logger handlers are still valid
+        if not logger._core.handlers:
+            return
+        logger.debug(message)
+    except Exception:
+        # Silently ignore any logging errors during cleanup
+        pass
+
+
 def _pump_bytes(stream, log_fn) -> None:
     try:
         for line in iter(stream.readline, b""):
@@ -107,7 +119,7 @@ class CodexMCPClient(LLMClientBase):
             if self.proc.stderr is not None:
                 threading.Thread(
                     target=_pump_bytes,
-                    args=(self.proc.stderr, lambda s: logger.debug(s)),
+                    args=(self.proc.stderr, _safe_log),
                     daemon=True,
                 ).start()
         except Exception as e:
@@ -377,7 +389,8 @@ class CodexMCPClient(LLMClientBase):
                 f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)"
             )
             logger.info(
-                "🤖 Running under MCP session: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]"
+                "🤖 Running under MCP session: codex exec -s workspace-write "
+                "--dangerously-bypass-approvals-and-sandbox [prompt]"
             )
 
             proc = subprocess.Popen(

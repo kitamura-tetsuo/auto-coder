@@ -4,7 +4,7 @@
 
 application:
   name: "Auto-Coder"
-  version: "2025.11.2+g0519cee"
+  version: "2025.11.2.4+g44042b0"
   description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
 features:
@@ -1211,16 +1211,16 @@ workflows:
     name: "Issue Processing Workflow"
     description: "Automated workflow for processing GitHub issues (single-run, no analysis phase) with exclusive processing control"
     steps:
-      1. "Fetch open issues from repository (oldest first)"
-      2. "Try to add @auto-coder label to issue for exclusive processing"
-      3. "Skip if @auto-coder label already exists (being processed by another instance)"
-      4. "Check if issue has a linked PR (via GraphQL Development section or text search)"
-      5. "Skip issues that already have linked PRs to avoid duplicate work"
-      6. "Switch to appropriate branch: PR head_branch if present, otherwise default branch"
-      7. "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
-      8. "Add comments or close issues as appropriate"
-      9. "Remove @auto-coder label after processing (success or error)"
-      10. "Generate automation report"
+      - "Fetch open issues from repository (oldest first)"
+      - "Try to add @auto-coder label to issue for exclusive processing"
+      - "Skip if @auto-coder label already exists (being processed by another instance)"
+      - "Check if issue has a linked PR (via GraphQL Development section or text search)"
+      - "Skip issues that already have linked PRs to avoid duplicate work"
+      - "Switch to appropriate branch: PR head_branch if present, otherwise default branch"
+      - "Take direct actions via AI CLI in a single run (analysis+implementation combined)"
+      - "Add comments or close issues as appropriate"
+      - "Remove @auto-coder label after processing (success or error)"
+      - "Generate automation report"
     exclusive_processing:
       - "Uses @auto-coder label as work-in-progress flag"
       - "Label is added at start of processing"
@@ -1240,11 +1240,11 @@ workflows:
     name: "Pull Request Processing Workflow"
     description: "Automated workflow for processing GitHub pull requests with two-loop priority order and exclusive processing control"
     steps:
-      1. "Fetch open pull requests from repository (oldest first)"
-      2. "At the beginning of each pass iteration, check for Auto-Coder updates and restart with the original CLI arguments when an upgrade is applied"
-      3. "First loop: Try to add @auto-coder label, skip if already exists, check GitHub Actions status AND mergeable status, merge qualifying PRs, remove @auto-coder label"
-      4. "Second loop: Try to add @auto-coder label, skip if already exists or already handled, process remaining PRs for issue resolution, remove @auto-coder label"
-      5. "Generate automation report"
+      - "Fetch open pull requests from repository (oldest first)"
+      - "At the beginning of each pass iteration, check for Auto-Coder updates and restart with the original CLI arguments when an upgrade is applied"
+      - "First loop: Try to add @auto-coder label, skip if already exists, check GitHub Actions status AND mergeable status, merge qualifying PRs, remove @auto-coder label"
+      - "Second loop: Try to add @auto-coder label, skip if already exists or already handled, process remaining PRs for issue resolution, remove @auto-coder label"
+      - "Generate automation report"
     exclusive_processing:
       - "Uses @auto-coder label as work-in-progress flag"
       - "Label is added at start of processing in each loop"
@@ -1315,23 +1315,23 @@ workflows:
     name: "Feature Suggestion Workflow"
     description: "Automated workflow for suggesting and creating feature issues"
     steps:
-      1. "Analyze repository context"
-      2. "Generate feature suggestions using Gemini AI"
-      3. "Create feature issues in repository"
-      4. "Generate feature suggestions report"
+      - "Analyze repository context"
+      - "Generate feature suggestions using Gemini AI"
+      - "Create feature issues in repository"
+      - "Generate feature suggestions report"
 
   jules_mode:
     name: "Jules Mode Workflow"
     description: "Jules mode - simple label addition for issues; PRs processed without analysis-only phase, with exclusive processing control"
     steps:
-      1. "Fetch open issues from repository (oldest first)"
-      2. "Try to add @auto-coder label to issue for exclusive processing"
-      3. "Skip if @auto-coder label already exists (being processed by another instance)"
-      4. "Check if 'jules' label already exists on each issue"
-      5. "Add 'jules' label to issues that don't have it"
-      6. "Remove @auto-coder label after processing"
-      7. "Process PRs with single-run direct actions (no analysis-only phase)"
-      8. "Generate automation report"
+      - "Fetch open issues from repository (oldest first)"
+      - "Try to add @auto-coder label to issue for exclusive processing"
+      - "Skip if @auto-coder label already exists (being processed by another instance)"
+      - "Check if 'jules' label already exists on each issue"
+      - "Add 'jules' label to issues that don't have it"
+      - "Remove @auto-coder label after processing"
+      - "Process PRs with single-run direct actions (no analysis-only phase)"
+      - "Generate automation report"
     exclusive_processing:
       - "Uses @auto-coder label as work-in-progress flag"
       - "Label is added at start of processing"
@@ -1432,7 +1432,7 @@ special_features:
     name: "Commit auto-fix for dprint formatting"
     description: "When git commit fails due to dprint pre-commit formatting errors, the tool automatically runs 'npx dprint fmt', stages changes, and retries commit once."
     behavior:
-      - "Detects dprint-related failures from commit stdout/stderr (e.g., 'Formatting issues detected. Run \'npx dprint fmt\' to fix.')"
+      - "Detects dprint-related failures from commit stdout/stderr (e.g., 'Formatting issues detected. Run \\'npx dprint fmt\\' to fix.')"
       - "Runs 'npx dprint fmt' and stages files, then retries 'git commit'"
       - "If formatting still fails, the commit is reported as failed with the original error"
     implementation:
@@ -1910,7 +1910,7 @@ deployment:
         file: "src/auto_coder/auggie_client.py"
         methods:
           - name: "_run_auggie_cli"
-            description: "Invoke `auggie --print --model <model> "<prompt>"` and stream output via logger; raises AutoCoderUsageLimitError on rate-limit phrases."
+            description: 'Invoke `auggie --print --model <model> "<prompt>"` and stream output via logger; raises AutoCoderUsageLimitError on rate-limit phrases.'
             parameters: ["prompt"]
             returns: "Aggregated CLI output text"
           - name: "switch_to_conflict_model"

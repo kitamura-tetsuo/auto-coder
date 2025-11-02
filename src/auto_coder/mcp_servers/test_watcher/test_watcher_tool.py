@@ -192,8 +192,10 @@ class TestWatcherTool:
 
         # Trigger Playwright test run
         threading.Thread(
-            target=self._run_playwright_tests, args=(True,), daemon=True
-        ).start()  # last_failed=True
+            target=self._run_playwright_tests,
+            args=(True,),  # last_failed=True
+            daemon=True,
+        ).start()
 
     def _run_playwright_tests(self, last_failed: bool = False):
         """

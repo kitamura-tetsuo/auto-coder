@@ -117,7 +117,9 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
 
 
 @mcp.tool()
-def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) -> dict:
+def semantic_code_search(
+    query: str, limit: int = 10, kind_filter: list = None, collection_name: str = None
+) -> dict:
     """
     Search for code using natural language semantic similarity.
 
@@ -131,6 +133,8 @@ def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) 
         limit: Maximum number of results to return (default: 10)
         kind_filter: Optional list of symbol kinds to filter results
                     (e.g., ['Function', 'Class', 'Method'])
+        collection_name: Optional Qdrant collection name to search in.
+                        If not specified, uses the default collection.
 
     Returns:
         Semantically similar symbols:
@@ -139,7 +143,9 @@ def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) 
     Example:
         semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"])
     """
-    return code_tool.semantic_code_search(query, limit, kind_filter)
+    return code_tool.semantic_code_search(query, limit, kind_filter, collection_name)
+
+
 
 
 @mcp.resource("https://graphrag.db/schema/neo4j")

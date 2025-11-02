@@ -234,9 +234,25 @@ class AutomationEngine:
         repo_name: str,
         pr_data: Dict[str, Any],
         failed_checks: List[Dict[str, Any]],
+        search_history: Optional[bool] = None,
     ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。"""
-        return _pr_get_github_actions_logs(repo_name, self.config, failed_checks)
+        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+
+        Args:
+            repo_name: Repository name
+            pr_data: PR data dictionary
+            failed_checks: List of failed check dictionaries
+            search_history: Optional parameter to enable historical search.
+                           If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                           If True, searches through commit history for logs.
+                           If False, uses current state only.
+
+        Returns:
+            String containing GitHub Actions logs
+        """
+        return _pr_get_github_actions_logs(
+            repo_name, self.config, failed_checks, search_history=search_history
+        )
 
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
@@ -693,8 +709,8 @@ DO NOT include git commit or push commands in your response."""
 
             # Call the LLM to get the fix
             if self.llm and hasattr(self.llm, "_run_gemini_cli"):
-                _llm_response = self.llm._run_gemini_cli(prompt)
-                actions.append("Applied GitHub Actions fix")
+                llm_response = self.llm._run_gemini_cli(prompt)
+                actions.append(f"Applied GitHub Actions fix")
 
                 # Commit the changes using the centralized commit logic
                 commit_result = self._commit_with_message(
@@ -757,15 +773,6 @@ DO NOT include git commit or push commands in your response."""
     def _checkout_pr_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
         """Checkout PR branch."""
         return True
-
-    def _get_github_actions_logs(
-        self,
-        repo_name: str,
-        pr_data: Dict[str, Any],
-        failed_checks: List[Dict[str, Any]],
-    ) -> str:
-        """Get GitHub Actions logs for failed checks."""
-        return "Test failed: assertion error"
 
     def _poll_pr_mergeable(
         self,

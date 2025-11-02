@@ -14,15 +14,9 @@ import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from auto_coder.progress_decorators import progress_stage
-
 from .automation_config import AutomationConfig
-from .conflict_resolver import (
-    resolve_merge_conflicts_with_llm,
-    resolve_pr_merge_conflicts,
-)
+from .conflict_resolver import resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import (
-    WorkspaceFixResult,
     extract_important_errors,
     run_local_tests,
 )
@@ -32,9 +26,9 @@ from .git_utils import (
     git_commit_with_retry,
     git_push,
     save_commit_failure_history,
-    switch_to_branch,
 )
 from .logger_config import get_logger
+from .progress_decorators import progress_stage
 from .progress_footer import (
     ProgressStage,
     newline_progress,
@@ -838,7 +832,8 @@ def _handle_pr_merge(
         # Step 5: Optionally update with latest base branch commits (configurable)
         if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
             actions.append(
-                f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)"
+                f"[Policy] Skipping base branch update for PR #{pr_number} "
+                "(config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)"
             )
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
@@ -854,7 +849,8 @@ def _handle_pr_merge(
             return actions
         else:
             actions.append(
-                f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)"
+                f"[Policy] Performing base branch update for PR #{pr_number} before fixes "
+                "(config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)"
             )
             update_actions = _update_with_base_branch(
                 repo_name, pr_data, config, dry_run
@@ -1089,7 +1085,13 @@ def _update_with_base_branch(
             )
 
             conflict_resolved = _perform_base_branch_merge_and_conflict_resolution(
-                pr_number, target_branch, config, None, repo_name, pr_data, dry_run
+                pr_number,
+                target_branch,
+                config,
+                None,  # llm_client not available in this context
+                repo_name,
+                pr_data,
+                dry_run,
             )
 
             if conflict_resolved:
@@ -1503,15 +1505,19 @@ def _resolve_pr_merge_conflicts(
             )
 
             # Get conflict information
-            conflict_info = _get_merge_conflict_info()
+            from .conflict_resolver import scan_conflict_markers
+
+            conflict_info = scan_conflict_markers()
 
             # Use LLM to resolve conflicts
+            from .conflict_resolver import resolve_merge_conflicts_with_llm
+
             resolve_actions = resolve_merge_conflicts_with_llm(
                 {"number": pr_number, "base_branch": base_branch},
                 conflict_info,
                 config,
                 False,
-                None,
+                None,  # llm_client not available in this context
             )
 
             # Log the resolution actions
@@ -1668,29 +1674,6 @@ def _apply_github_actions_fix(
             if not add_res.success:
                 actions.append(f"Failed to stage changes: {add_res.stderr}")
                 return actions
-
-            # flagged = _scan_conflict_markers()
-            # if flagged:
-            #     actions.append(
-            #         f"Conflict markers detected in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}. Aborting commit."
-            #     )
-            #     return actions
-
-            # commit_res = _commit_with_message(
-            #     f"Auto-Coder: Fix GitHub Actions failures for PR #{pr_number}"
-            # )
-            # if commit_res.success:
-            #     actions.append("Committed changes")
-            #     push_res = _push_current_branch()
-            #     if push_res.success:
-            #         actions.append("Pushed changes")
-            #     else:
-            #         actions.append(f"Failed to push changes: {push_res.stderr}")
-            # else:
-            #     if 'nothing to commit' in (commit_res.stdout or ''):
-            #         actions.append("No changes to commit")
-            #     else:
-            #         actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
         else:
             actions.append(
                 f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}"
@@ -2523,15 +2506,226 @@ def get_github_actions_logs_from_url(url: str) -> str:
         return f"Error getting logs: {e}"
 
 
-def _get_github_actions_logs(repo_name: str, config: AutomationConfig, *args) -> str:
+def _search_github_actions_logs_from_history(
+    repo_name: str,
+    config: AutomationConfig,
+    failed_checks: List[Dict[str, Any]],
+    max_runs: int = 10,
+) -> Optional[str]:
+    """Search for GitHub Actions logs from recent runs.
+
+    This function retrieves recent GitHub Actions runs (not git commit history) and
+    attempts to get logs from them. It searches through failed jobs from the most
+    recent runs backwards, returning the first set of detailed logs found.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        config: AutomationConfig instance
+        failed_checks: List of failed check dictionaries with details_url
+        max_runs: Maximum number of recent runs to search (default: 10)
+
+    Returns:
+        String containing the first successful logs found from historical runs,
+        or None if not found. The returned logs include metadata about which run
+        they came from.
+
+    Note:
+        This searches through recent GitHub Actions runs, not git commit history.
+        This is more practical since GitHub Actions runs are directly queryable
+        via the GitHub API, while matching commits to Action runs requires
+        additional metadata that may not always be available.
+    """
+    try:
+        logger.info(
+            f"Starting historical search for GitHub Actions logs (searching through {max_runs} recent runs)"
+        )
+
+        # Get recent GitHub Actions runs
+        run_list = cmd.run_command(
+            [
+                "gh",
+                "run",
+                "list",
+                "--limit",
+                str(max_runs),
+                "--json",
+                "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha",
+            ],
+            timeout=60,
+        )
+
+        if not run_list.success or not run_list.stdout.strip():
+            logger.warning(
+                f"Failed to get run list or empty result: {run_list.stderr}"
+            )
+            return None
+
+        try:
+            runs = json.loads(run_list.stdout)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse run list JSON: {e}")
+            return None
+
+        if not runs:
+            logger.info("No runs found in repository")
+            return None
+
+        logger.info(
+            f"Searching through {len(runs)} recent GitHub Actions runs for logs"
+        )
+
+        # Sort runs by creation time (newest first) and search through them
+        runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+
+        for run in runs:
+            run_id = run.get("databaseId")
+            run_branch = run.get("headBranch", "unknown")
+            run_commit = run.get("headSha", "unknown")[:8]
+            run_conclusion = run.get("conclusion", "unknown")
+            run_status = run.get("status", "unknown")
+
+            if not run_id:
+                continue
+
+            logger.debug(
+                f"Checking run {run_id} on branch {run_branch} (commit {run_commit}): {run_conclusion}/{run_status}"
+            )
+
+            try:
+                # Get jobs for this run
+                jobs_res = cmd.run_command(
+                    ["gh", "run", "view", str(run_id), "--json", "jobs"],
+                    timeout=60,
+                )
+
+                if jobs_res.returncode != 0 or not jobs_res.stdout.strip():
+                    logger.debug(
+                        f"Failed to get jobs for run {run_id}, skipping"
+                    )
+                    continue
+
+                try:
+                    jobs_json = json.loads(jobs_res.stdout)
+                    jobs = jobs_json.get("jobs", [])
+
+                    # Get logs from failed jobs in this run
+                    logs = []
+                    for job in jobs:
+                        job_conclusion = job.get("conclusion", "")
+                        job_id = job.get("databaseId")
+
+                        # Only attempt to get logs from failed or error jobs
+                        if job_conclusion and job_conclusion.lower() in ["failure", "failed", "error"]:
+                            if job_id:
+                                logger.debug(
+                                    f"Found failed job {job_id} in run {run_id}, attempting to get logs"
+                                )
+
+                                # Construct URL for this job
+                                url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
+
+                                # Try to get logs for this job
+                                job_logs = get_github_actions_logs_from_url(url)
+
+                                if job_logs and job_logs != "No detailed logs available":
+                                    # Add metadata about which run this came from
+                                    logs.append(
+                                        f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}"
+                                    )
+
+                    if logs:
+                        logger.info(
+                            f"Successfully retrieved {len(logs)} log(s) from run {run_id}"
+                        )
+                        return "\n\n".join(logs)
+
+                except json.JSONDecodeError as e:
+                    logger.debug(
+                        f"Failed to parse jobs JSON for run {run_id}: {e}"
+                    )
+                    continue
+
+            except Exception as e:
+                logger.debug(
+                    f"Error processing run {run_id}: {e}"
+                )
+                continue
+
+        logger.info(
+            "No historical logs found after searching recent runs"
+        )
+        return None
+
+    except Exception as e:
+        logger.error(
+            f"Error during historical search for GitHub Actions logs: {e}"
+        )
+        return None
+
+
+def _get_github_actions_logs(
+    repo_name: str,
+    config: AutomationConfig,
+    *args,
+    search_history: Optional[bool] = None,
+    **kwargs,
+) -> str:
     """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        config: AutomationConfig instance
+        *args: Arguments (failed_checks list)
+        search_history: Optional parameter to enable historical search.
+                       If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                       If True, searches through commit history for logs.
+                       If False, uses current state only (backward compatible).
+        **kwargs: Additional keyword arguments (ignored for compatibility)
+
+    Returns:
+        String containing GitHub Actions logs
 
     呼び出し互換:
     - _get_github_actions_logs(repo, config, failed_checks)
+    - _get_github_actions_logs(repo, config, failed_checks, search_history=True)
     """
+    # Determine search_history value (backward compatible)
+    if search_history is None:
+        search_history = config.SEARCH_GITHUB_ACTIONS_HISTORY
+
+    # Handle the case where historical search is explicitly enabled
+    if search_history:
+        logger.info(
+            "Historical search enabled: Searching through commit history for GitHub Actions logs"
+        )
+
+        # Extract failed_checks from args
+        failed_checks: List[Dict[str, Any]] = []
+        if len(args) >= 1 and isinstance(args[0], list):
+            failed_checks = args[0]
+        elif len(args) == 0:
+            # No failed_checks provided
+            return "No detailed logs available"
+
+        # Try historical search first
+        historical_logs = _search_github_actions_logs_from_history(
+            repo_name, config, failed_checks, max_runs=10
+        )
+
+        if historical_logs:
+            logger.info(
+                "Historical search succeeded: Found logs from commit history"
+            )
+            return historical_logs
+
+        logger.info(
+            "Historical search failed or found no logs, falling back to current behavior"
+        )
+
+    # Default behavior (or fallback from historical search)
     # 引数パターンを解決
     failed_checks: List[Dict[str, Any]] = []
-    if len(args) == 1 and isinstance(args[0], list):
+    if len(args) >= 1 and isinstance(args[0], list):
         failed_checks = args[0]
     else:
         # 不明な呼び出し

@@ -11,5 +11,6 @@ exclude =
     *.egg-info,
     build,
     dist,
-    graph_builder/node_modules
+    graph_builder/node_modules,
+    graph_builder/dist
 
