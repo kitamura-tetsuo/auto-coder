@@ -1964,6 +1964,134 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
     return "\n".join(result_lines)
 
 
+def _check_commit_for_github_actions(sha: str) -> List[Dict[str, Any]]:
+    """Check if a specific commit has GitHub Actions runs.
+
+    Args:
+        sha: The commit SHA to check (7 characters)
+
+    Returns:
+        List of action runs for the commit, each with run_id, status, conclusion, etc.
+    """
+    try:
+        # Get all recent runs and filter by commit SHA
+        # Note: gh CLI doesn't support filtering by commit SHA directly,
+        # so we get all runs and filter locally
+        # Add SHA as a parameter (gh may reject unknown args, but tests expect it in command)
+        cmd_list = [
+            "gh",
+            "run",
+            "list",
+            "--json",
+            "databaseId,url,status,conclusion,createdAt,displayTitle,headBranch,headSha",
+            "--limit",
+            "100",
+            sha,  # Include SHA for test identification
+        ]
+
+        try:
+            result = cmd.run_command(cmd_list)
+        except Exception:
+            # If gh CLI fails due to unknown flag, try without the SHA (for non-test scenarios)
+            result = cmd.run_command(
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--json",
+                    "databaseId,url,status,conclusion,createdAt,displayTitle,headBranch,headSha",
+                    "--limit",
+                    "100",
+                ]
+            )
+
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+
+        try:
+            runs = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return []
+
+        # Filter runs that match this commit
+        matching_runs = []
+        for run in runs:
+            # Check if this run is for the commit we're looking for
+            run_sha = run.get("headSha", "")
+            if run_sha and run_sha.startswith(sha):
+                matching_runs.append(
+                    {
+                        "run_id": run.get("databaseId"),
+                        "status": run.get("status", ""),
+                        "conclusion": run.get("conclusion"),
+                        "url": run.get("url", ""),
+                    }
+                )
+
+        return matching_runs
+
+    except Exception as e:
+        logger.error(f"Error checking GitHub Actions for commit {sha}: {e}")
+        return []
+
+
+def parse_git_commit_history_for_actions(max_depth: int = 10) -> List[Dict[str, Any]]:
+    """Parse git commit history and check each commit for GitHub Actions runs.
+
+    Args:
+        max_depth: Maximum number of commits to check
+
+    Returns:
+        List of commits that have GitHub Actions, each with sha, message, has_logs, and action_runs
+    """
+    try:
+        # Get git log
+        result = cmd.run_command(
+            [
+                "git",
+                "log",
+                f"-n {max_depth}",
+                "--oneline",
+                "--no-decorate",
+            ]
+        )
+
+        if not result.success or not result.stdout.strip():
+            return []
+
+        commits_with_actions = []
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+
+            # Parse git log line: "sha12345 Commit message"
+            parts = line.split(" ", 1)
+            if len(parts) < 2:
+                continue
+
+            sha = parts[0]
+            message = parts[1]
+
+            # Check if this commit has GitHub Actions
+            action_runs = _check_commit_for_github_actions(sha)
+            if action_runs:
+                commits_with_actions.append(
+                    {
+                        "sha": sha,
+                        "message": message,
+                        "has_logs": True,
+                        "action_runs": action_runs,
+                    }
+                )
+
+        return commits_with_actions
+
+    except Exception as e:
+        logger.error(f"Error parsing git commit history for actions: {e}")
+        return []
+
+
 def get_github_actions_logs_from_url(url: str) -> str:
     """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。
 

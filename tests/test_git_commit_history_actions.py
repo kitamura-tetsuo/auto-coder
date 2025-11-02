@@ -41,7 +41,7 @@ jkl3456 Refactor code"""
             "createdAt": "2025-11-01T09:00:00Z",
             "displayTitle": "CI Build",
             "headBranch": "main",
-            "headSha": "def5674567890abcdef",
+            "headSha": "def5678567890abcdef",  # Fixed: first 7 chars now match commit "def5678"
         }
     ]
 
