@@ -57,11 +57,17 @@ class CodeAnalysisTool:
             self.neo4j_driver = GraphDatabase.driver(
                 self.neo4j_uri, auth=(self.neo4j_user, self.neo4j_password)
             )
-            # Test connection
+            # Test connection - support both repository-labeled and unlabeled nodes
             with self.neo4j_driver.session() as session:
-                result = session.run("MATCH (f:File) RETURN count(f) AS count")
+                result = session.run(
+                    """
+                    MATCH (f:CodeNode)
+                    WHERE (ANY(label IN labels(f) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(f) WHERE label STARTS WITH 'Repo_'))
+                    RETURN count(f) AS count
+                    """
+                )
                 record = result.single()
-                logger.info(f"Connected to Neo4j with {record['count']} files")
+                logger.info(f"Connected to Neo4j with {record['count']} nodes")
         except Exception as e:
             logger.error(f"Neo4j connection error: {e}")
             raise RuntimeError(
@@ -125,10 +131,12 @@ class CodeAnalysisTool:
 
         try:
             with self.neo4j_driver.session() as session:
+                # Support both repository-labeled and unlabeled nodes for backward compatibility
                 cypher_query = """
-                MATCH (s)
+                MATCH (s:CodeNode)
                 WHERE s.fqname = $fqname AND s.kind IN ['Function', 'Method', 'Class', 'Interface', 'Type']
-                RETURN s.id as id, s.kind as kind, s.fqname as fqname, 
+                  AND (ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_'))
+                RETURN s.id as id, s.kind as kind, s.fqname as fqname,
                        s.sig as signature, s.short as short_summary,
                        s.complexity as complexity, s.tokens_est as tokens_est,
                        s.file as file, s.start_line as start_line, s.end_line as end_line,
@@ -200,10 +208,13 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build Cypher query based on direction
+                # Support both repository-labeled and unlabeled nodes for backward compatibility
                 if direction == "callers":
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
-                    MATCH path = (caller)-[:CALLS*1..{depth}]->(s)
+                    MATCH (s:CodeNode {{id: $symbol_id}})
+                    MATCH path = (caller:CodeNode)-[:CALLS*1..{depth}]->(s)
+                    WHERE (ANY(label IN labels(caller) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(caller) WHERE label STARTS WITH 'Repo_'))
+                      AND (ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_'))
                     WITH caller, s, relationships(path) as rels
                     RETURN DISTINCT caller.id as id, caller.kind as kind, caller.fqname as fqname,
                            caller.file as file, caller.start_line as start_line,
@@ -211,8 +222,10 @@ class CodeAnalysisTool:
                     """
                 elif direction == "callees":
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
-                    MATCH path = (s)-[:CALLS*1..{depth}]->(callee)
+                    MATCH (s:CodeNode {{id: $symbol_id}})
+                    MATCH path = (s:CodeNode)-[:CALLS*1..{depth}]->(callee:CodeNode)
+                    WHERE (ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_'))
+                      AND (ANY(label IN labels(callee) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(callee) WHERE label STARTS WITH 'Repo_'))
                     WITH callee, s, relationships(path) as rels
                     RETURN DISTINCT callee.id as id, callee.kind as kind, callee.fqname as fqname,
                            callee.file as file, callee.start_line as start_line,
@@ -220,9 +233,12 @@ class CodeAnalysisTool:
                     """
                 else:  # both
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
-                    OPTIONAL MATCH path1 = (caller)-[:CALLS*1..{depth}]->(s)
-                    OPTIONAL MATCH path2 = (s)-[:CALLS*1..{depth}]->(callee)
+                    MATCH (s:CodeNode {{id: $symbol_id}})
+                    OPTIONAL MATCH path1 = (caller:CodeNode)-[:CALLS*1..{depth}]->(s)
+                    OPTIONAL MATCH path2 = (s:CodeNode)-[:CALLS*1..{depth}]->(callee:CodeNode)
+                    WHERE (ANY(label IN labels(caller) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(caller) WHERE label STARTS WITH 'Repo_'))
+                      AND (ANY(label IN labels(callee) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(callee) WHERE label STARTS WITH 'Repo_'))
+                      AND (ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(s) WHERE label STARTS WITH 'Repo_'))
                     WITH s, caller, callee, relationships(path1) + relationships(path2) as rels
                     WHERE caller IS NOT NULL OR callee IS NOT NULL
                     WITH COALESCE(caller, callee) as related, rels
@@ -282,8 +298,12 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Get imports (what this file imports)
+                # Support both repository-labeled and unlabeled nodes for backward compatibility
                 cypher_query = """
-                MATCH (f:File {file: $file_path})-[r:IMPORTS]->(imported:File)
+                MATCH (f:CodeNode {file: $file_path})
+                WHERE (ANY(label IN labels(f) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(f) WHERE label STARTS WITH 'Repo_'))
+                MATCH (f)-[r:IMPORTS]->(imported:CodeNode)
+                WHERE (ANY(label IN labels(imported) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(imported) WHERE label STARTS WITH 'Repo_'))
                 RETURN imported.file as file, r.count as count
                 ORDER BY count DESC
                 """
@@ -296,7 +316,9 @@ class CodeAnalysisTool:
 
                 # Get imported_by (what files import this)
                 cypher_query = """
-                MATCH (importer:File)-[r:IMPORTS]->(f:File {file: $file_path})
+                MATCH (importer:CodeNode)-[r:IMPORTS]->(f:CodeNode {file: $file_path})
+                WHERE (ANY(label IN labels(importer) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(importer) WHERE label STARTS WITH 'Repo_'))
+                  AND (ANY(label IN labels(f) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(f) WHERE label STARTS WITH 'Repo_'))
                 RETURN importer.file as file, r.count as count
                 ORDER BY count DESC
                 """
@@ -351,23 +373,29 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Find all symbols that depend on the changed symbols
+                # Support both repository-labeled and unlabeled nodes for backward compatibility
                 cypher_query = f"""
-                MATCH (changed)
+                MATCH (changed:CodeNode)
                 WHERE changed.id IN $symbol_ids
+                  AND (ANY(label IN labels(changed) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(changed) WHERE label STARTS WITH 'Repo_'))
 
                 // Find callers (symbols that call the changed symbols)
-                OPTIONAL MATCH (caller)-[:CALLS*1..{max_depth}]->(changed)
-                WHERE caller.id NOT IN $symbol_ids
+                OPTIONAL MATCH (caller:CodeNode)-[:CALLS*1..{max_depth}]->(changed)
+                WHERE (ANY(label IN labels(caller) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(caller) WHERE label STARTS WITH 'Repo_'))
+                  AND caller.id NOT IN $symbol_ids
 
                 // Find symbols in files that import changed symbols' files
-                OPTIONAL MATCH (changed_file:File)-[:CONTAINS]->(changed)
-                OPTIONAL MATCH (importing_file:File)-[:IMPORTS*1..{max_depth}]->(changed_file)
-                OPTIONAL MATCH (importing_file)-[:CONTAINS]->(importing_symbol)
-                WHERE importing_symbol.id NOT IN $symbol_ids
+                OPTIONAL MATCH (changed_file:CodeNode)-[:CONTAINS]->(changed)
+                OPTIONAL MATCH (importing_file:CodeNode)-[:IMPORTS*1..{max_depth}]->(changed_file)
+                OPTIONAL MATCH (importing_file)-[:CONTAINS]->(importing_symbol:CodeNode)
+                WHERE (ANY(label IN labels(importing_file) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(importing_file) WHERE label STARTS WITH 'Repo_'))
+                  AND (ANY(label IN labels(importing_symbol) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(importing_symbol) WHERE label STARTS WITH 'Repo_'))
+                  AND importing_symbol.id NOT IN $symbol_ids
 
                 // Find symbols that extend/implement changed symbols
-                OPTIONAL MATCH (implementer)-[:EXTENDS|IMPLEMENTS*1..{max_depth}]->(changed)
-                WHERE implementer.id NOT IN $symbol_ids
+                OPTIONAL MATCH (implementer:CodeNode)-[:EXTENDS|IMPLEMENTS*1..{max_depth}]->(changed)
+                WHERE (ANY(label IN labels(implementer) WHERE label STARTS WITH 'Repo_') OR NOT ANY(label IN labels(implementer) WHERE label STARTS WITH 'Repo_'))
+                  AND implementer.id NOT IN $symbol_ids
 
                 WITH changed, caller, importing_symbol, implementer
                 WHERE caller IS NOT NULL OR importing_symbol IS NOT NULL OR implementer IS NOT NULL

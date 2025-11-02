@@ -147,6 +147,7 @@ def semantic_code_search(
 
 
 
+
 @mcp.resource("https://graphrag.db/schema/neo4j")
 def get_graph_schema() -> str:
     """

@@ -498,6 +498,10 @@ class GraphRAGIndexManager:
 
         logger.info(f"Connecting to Neo4j at {neo4j_uri}")
 
+        # Calculate repository-specific hash for labeling
+        repo_hash = self._get_codebase_hash()
+        repo_label = f"Repo_{repo_hash}"
+
         try:
             driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
 
@@ -508,30 +512,30 @@ class GraphRAGIndexManager:
                     repo_path=str(self.repo_path.resolve()),
                 )
 
-                # Insert nodes
+                # Insert nodes with repository-specific labels
                 nodes = graph_data.get("nodes", [])
                 for node in nodes:
                     node_data = dict(node)
                     node_data["repo_path"] = str(self.repo_path.resolve())
 
                     session.run(
-                        """
-                        CREATE (n:CodeNode)
+                        f"""
+                        CREATE (n:CodeNode:{repo_label})
                         SET n = $props
                         """,
                         props=node_data,
                     )
 
-                logger.info(f"Inserted {len(nodes)} nodes into Neo4j")
+                logger.info(f"Inserted {len(nodes)} nodes into Neo4j with label {repo_label}")
 
                 # Insert edges
                 edges = graph_data.get("edges", [])
                 for edge in edges:
                     session.run(
-                        """
-                        MATCH (from:CodeNode {id: $from_id, repo_path: $repo_path})
-                        MATCH (to:CodeNode {id: $to_id, repo_path: $repo_path})
-                        CREATE (from)-[r:RELATES {type: $type, count: $count}]->(to)
+                        f"""
+                        MATCH (from:CodeNode:{repo_label} {{id: $from_id, repo_path: $repo_path}})
+                        MATCH (to:CodeNode:{repo_label} {{id: $to_id, repo_path: $repo_path}})
+                        CREATE (from)-[r:RELATES {{type: $type, count: $count}}]->(to)
                         """,
                         from_id=edge.get("from"),
                         to_id=edge.get("to"),
