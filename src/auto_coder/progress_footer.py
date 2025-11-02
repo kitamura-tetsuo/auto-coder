@@ -64,12 +64,12 @@ class ProgressFooter:
 
         main_display += "]\033[0m"
 
-        # Add related issues if available
+        # Add related issues if available (without space before it)
         if self._related_issues:
             related_issues_str = ", ".join(
                 [f"#{issue}" for issue in self._related_issues]
             )
-            main_display += f" \033[95m[Related Issue {related_issues_str}]\033[0m"
+            main_display += f"\033[95m[Issue {related_issues_str}]\033[0m"
 
         # Add stages if available
         if self._stage_stack:
