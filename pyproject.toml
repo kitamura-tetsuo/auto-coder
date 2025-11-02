@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.11.2.4+g44042b0"
+version = "2025.11.2.8+g27a3325"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
