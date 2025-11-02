@@ -710,7 +710,7 @@ def ensure_pushed_with_fallback(
         if not pull_result.success:
             logger.warning(f"Pull failed: {pull_result.stderr}")
             # Note: git_pull function already handles conflict resolution internally
-            # Don't return here - still attempt LLM fallback
+            logger.info("Proceeding to retry push anyway...")
 
         # Retry the push after pull
         logger.info("Retrying push after pull...")
