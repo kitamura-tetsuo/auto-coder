@@ -5,6 +5,7 @@ apply_workspace_test_fix での同一 current_test_file 3連続時の自動切�
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .exceptions import AutoCoderUsageLimitError
@@ -25,6 +26,12 @@ class BackendManager(LLMBackendManagerBase):
     - 各クライアントが使用料制限に達した場合、AutoCoderUsageLimitError を投げる前提で
       これを受けて次のバックエンドに切替して自動リトライする。
     """
+
+    # Class-level lock for thread-safe singleton
+    _instance_lock = threading.Lock()
+
+    # Singleton instance for message backend
+    _message_instance: Optional["BackendManager"] = None
 
     def __init__(
         self,
@@ -284,3 +291,51 @@ class BackendManager(LLMBackendManagerBase):
                 all_success = False
 
         return all_success
+
+    @classmethod
+    def get_llm_for_message_instance(
+        cls,
+        default_backend: str,
+        default_client: Any,
+        factories: Dict[str, Callable[[], Any]],
+        order: Optional[List[str]] = None,
+    ) -> "BackendManager":
+        """Get or create a singleton instance for message backend.
+
+        This method returns a singleton instance optimized for message generation
+        (commit messages, PR descriptions, etc.) using lightweight models.
+
+        Args:
+            default_backend: Name of the default backend
+            default_client: Default client instance
+            factories: Dictionary of backend name to factory function
+            order: Optional list specifying the order of backends for rotation
+
+        Returns:
+            BackendManager singleton instance for message generation
+
+        Note:
+            This singleton is specifically designed for message generation tasks
+            and uses lightweight models to reduce costs and improve response times.
+        """
+        if cls._message_instance is None:
+            with cls._instance_lock:
+                # Double-check locking pattern
+                if cls._message_instance is None:
+                    logger.info("Creating singleton instance for message backend")
+                    cls._message_instance = cls(
+                        default_backend=default_backend,
+                        default_client=default_client,
+                        factories=factories,
+                        order=order,
+                    )
+        return cls._message_instance
+
+    @classmethod
+    def reset_message_instance(cls) -> None:
+        """Reset the singleton instance (useful for testing)."""
+        with cls._instance_lock:
+            if cls._message_instance is not None:
+                logger.info("Resetting message backend singleton instance")
+                cls._message_instance.close()
+                cls._message_instance = None

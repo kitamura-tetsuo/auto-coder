@@ -3,7 +3,7 @@ Base class for LLM clients.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class LLMClientBase(ABC):
@@ -116,6 +116,39 @@ class LLMBackendManagerBase(LLMClientBase):
             The LLM's response as a string
         """
         pass
+
+    @classmethod
+    def get_llm_for_message_instance(
+        cls,
+        default_backend: str,
+        default_client: Any,
+        factories: Dict[str, Callable[[], Any]],
+        order: Optional[List[str]] = None,
+    ) -> "LLMBackendManagerBase":
+        """Get or create a singleton instance for message backend.
+
+        This method should be implemented by subclasses to return a singleton
+        instance optimized for message generation (commit messages, PR descriptions, etc.)
+        using lightweight models.
+
+        Args:
+            default_backend: Name of the default backend
+            default_client: Default client instance
+            factories: Dictionary of backend name to factory function
+            order: Optional list specifying the order of backends for rotation
+
+        Returns:
+            BackendManager singleton instance for message generation
+
+        Note:
+            This singleton is specifically designed for message generation tasks
+            and uses lightweight models to reduce costs and improve response times.
+        """
+        # Default implementation raises NotImplementedError
+        # Subclasses should override this method
+        raise NotImplementedError(
+            "Subclasses must implement get_llm_for_message_instance()"
+        )
 
     def close(self) -> None:
         """Close the backend manager and clean up resources.
