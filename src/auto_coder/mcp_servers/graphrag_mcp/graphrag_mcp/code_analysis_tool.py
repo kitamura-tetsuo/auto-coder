@@ -101,12 +101,15 @@ class CodeAnalysisTool:
                 f"Failed to load embedding model '{self.model_name}'. Error: {e}"
             )
 
-    def find_symbol(self, fqname: str) -> Dict[str, Any]:
+    def find_symbol(
+        self, fqname: str, repo_label: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Find a code symbol by fully qualified name.
 
         Args:
             fqname: Fully qualified name (e.g., 'src/utils.ts::calculateHash')
+            repo_label: Optional repository-specific label for filtering
 
         Returns:
             Symbol details including id, kind, signature, complexity, location
@@ -125,10 +128,15 @@ class CodeAnalysisTool:
 
         try:
             with self.neo4j_driver.session() as session:
-                cypher_query = """
-                MATCH (s)
+                # Build query with repository label filter if provided
+                node_match = (
+                    f"(s:{repo_label}:CodeNode)" if repo_label else "(s:CodeNode)"
+                )
+
+                cypher_query = f"""
+                MATCH {node_match}
                 WHERE s.fqname = $fqname AND s.kind IN ['Function', 'Method', 'Class', 'Interface', 'Type']
-                RETURN s.id as id, s.kind as kind, s.fqname as fqname, 
+                RETURN s.id as id, s.kind as kind, s.fqname as fqname,
                        s.sig as signature, s.short as short_summary,
                        s.complexity as complexity, s.tokens_est as tokens_est,
                        s.file as file, s.start_line as start_line, s.end_line as end_line,
@@ -161,7 +169,11 @@ class CodeAnalysisTool:
         return result
 
     def get_call_graph(
-        self, symbol_id: str, direction: str = "both", depth: int = 1
+        self,
+        symbol_id: str,
+        direction: str = "both",
+        depth: int = 1,
+        repo_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Get call graph for a symbol.
@@ -170,6 +182,7 @@ class CodeAnalysisTool:
             symbol_id: Symbol ID
             direction: 'callers' (who calls this), 'callees' (what this calls), or 'both'
             depth: Traversal depth (1-3)
+            repo_label: Optional repository-specific label for filtering
 
         Returns:
             Call graph with nodes and edges
@@ -199,11 +212,33 @@ class CodeAnalysisTool:
 
         try:
             with self.neo4j_driver.session() as session:
+                # Build base node match with repository label if provided
+                node_match = (
+                    f"(s:{repo_label}:CodeNode {{id: $symbol_id}})"
+                    if repo_label
+                    else "(s:CodeNode {{id: $symbol_id}})"
+                )
+                caller_match = (
+                    f"(caller:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(caller:CodeNode)"
+                )
+                callee_match = (
+                    f"(callee:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(callee:CodeNode)"
+                )
+                related_match = (
+                    f"(related:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(related:CodeNode)"
+                )
+
                 # Build Cypher query based on direction
                 if direction == "callers":
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
-                    MATCH path = (caller)-[:CALLS*1..{depth}]->(s)
+                    MATCH {node_match}
+                    MATCH path = {caller_match}-[:CALLS*1..{depth}]->(s)
                     WITH caller, s, relationships(path) as rels
                     RETURN DISTINCT caller.id as id, caller.kind as kind, caller.fqname as fqname,
                            caller.file as file, caller.start_line as start_line,
@@ -211,8 +246,8 @@ class CodeAnalysisTool:
                     """
                 elif direction == "callees":
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
-                    MATCH path = (s)-[:CALLS*1..{depth}]->(callee)
+                    MATCH {node_match}
+                    MATCH path = (s)-[:CALLS*1..{depth}]->{callee_match}
                     WITH callee, s, relationships(path) as rels
                     RETURN DISTINCT callee.id as id, callee.kind as kind, callee.fqname as fqname,
                            callee.file as file, callee.start_line as start_line,
@@ -220,9 +255,9 @@ class CodeAnalysisTool:
                     """
                 else:  # both
                     cypher_query = f"""
-                    MATCH (s {{id: $symbol_id}})
-                    OPTIONAL MATCH path1 = (caller)-[:CALLS*1..{depth}]->(s)
-                    OPTIONAL MATCH path2 = (s)-[:CALLS*1..{depth}]->(callee)
+                    MATCH {node_match}
+                    OPTIONAL MATCH path1 = {caller_match}-[:CALLS*1..{depth}]->(s)
+                    OPTIONAL MATCH path2 = (s)-[:CALLS*1..{depth}]->{callee_match}
                     WITH s, caller, callee, relationships(path1) + relationships(path2) as rels
                     WHERE caller IS NOT NULL OR callee IS NOT NULL
                     WITH COALESCE(caller, callee) as related, rels
@@ -257,12 +292,15 @@ class CodeAnalysisTool:
 
         return result
 
-    def get_dependencies(self, file_path: str) -> Dict[str, Any]:
+    def get_dependencies(
+        self, file_path: str, repo_label: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Get file dependencies (imports).
 
         Args:
             file_path: File path (e.g., 'src/utils.ts')
+            repo_label: Optional repository-specific label for filtering
 
         Returns:
             List of imported files and symbols
@@ -281,9 +319,18 @@ class CodeAnalysisTool:
 
         try:
             with self.neo4j_driver.session() as session:
+                # Build node matches with repository label if provided
+                file_match = f"(f:{repo_label}:File)" if repo_label else "(f:File)"
+                importer_match = (
+                    f"(importer:{repo_label}:File)" if repo_label else "(importer:File)"
+                )
+                imported_match = (
+                    f"(imported:{repo_label}:File)" if repo_label else "(imported:File)"
+                )
+
                 # Get imports (what this file imports)
-                cypher_query = """
-                MATCH (f:File {file: $file_path})-[r:IMPORTS]->(imported:File)
+                cypher_query = f"""
+                MATCH {file_match} {{file: $file_path}}-[r:IMPORTS]->{imported_match}
                 RETURN imported.file as file, r.count as count
                 ORDER BY count DESC
                 """
@@ -295,8 +342,8 @@ class CodeAnalysisTool:
                     )
 
                 # Get imported_by (what files import this)
-                cypher_query = """
-                MATCH (importer:File)-[r:IMPORTS]->(f:File {file: $file_path})
+                cypher_query = f"""
+                MATCH {importer_match}-[r:IMPORTS]->{file_match} {{file: $file_path}}
                 RETURN importer.file as file, r.count as count
                 ORDER BY count DESC
                 """
@@ -313,7 +360,10 @@ class CodeAnalysisTool:
         return result
 
     def impact_analysis(
-        self, symbol_ids: List[str], max_depth: int = 2
+        self,
+        symbol_ids: List[str],
+        max_depth: int = 2,
+        repo_label: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Analyze the impact of changing given symbols.
@@ -321,6 +371,7 @@ class CodeAnalysisTool:
         Args:
             symbol_ids: List of symbol IDs to analyze
             max_depth: Maximum traversal depth for impact analysis (1-3)
+            repo_label: Optional repository-specific label for filtering
 
         Returns:
             Impact analysis including affected symbols, files, and relationships
@@ -350,23 +401,55 @@ class CodeAnalysisTool:
 
         try:
             with self.neo4j_driver.session() as session:
+                # Build base node match with repository label if provided
+                base_node_match = (
+                    f"(changed:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(changed:CodeNode)"
+                )
+                caller_match = (
+                    f"(caller:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(caller:CodeNode)"
+                )
+                changed_file_match = (
+                    f"(changed_file:{repo_label}:File)"
+                    if repo_label
+                    else "(changed_file:File)"
+                )
+                importing_file_match = (
+                    f"(importing_file:{repo_label}:File)"
+                    if repo_label
+                    else "(importing_file:File)"
+                )
+                importing_symbol_match = (
+                    f"(importing_symbol:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(importing_symbol:CodeNode)"
+                )
+                implementer_match = (
+                    f"(implementer:{repo_label}:CodeNode)"
+                    if repo_label
+                    else "(implementer:CodeNode)"
+                )
+
                 # Find all symbols that depend on the changed symbols
                 cypher_query = f"""
-                MATCH (changed)
+                MATCH {base_node_match}
                 WHERE changed.id IN $symbol_ids
 
                 // Find callers (symbols that call the changed symbols)
-                OPTIONAL MATCH (caller)-[:CALLS*1..{max_depth}]->(changed)
+                OPTIONAL MATCH {caller_match}-[:CALLS*1..{max_depth}]->(changed)
                 WHERE caller.id NOT IN $symbol_ids
 
                 // Find symbols in files that import changed symbols' files
-                OPTIONAL MATCH (changed_file:File)-[:CONTAINS]->(changed)
-                OPTIONAL MATCH (importing_file:File)-[:IMPORTS*1..{max_depth}]->(changed_file)
-                OPTIONAL MATCH (importing_file)-[:CONTAINS]->(importing_symbol)
+                OPTIONAL MATCH {changed_file_match}-[:CONTAINS]->(changed)
+                OPTIONAL MATCH {importing_file_match}-[:IMPORTS*1..{max_depth}]->(changed_file)
+                OPTIONAL MATCH {importing_file_match}-[:CONTAINS]->{importing_symbol_match}
                 WHERE importing_symbol.id NOT IN $symbol_ids
 
                 // Find symbols that extend/implement changed symbols
-                OPTIONAL MATCH (implementer)-[:EXTENDS|IMPLEMENTS*1..{max_depth}]->(changed)
+                OPTIONAL MATCH {implementer_match}-[:EXTENDS|IMPLEMENTS*1..{max_depth}]->(changed)
                 WHERE implementer.id NOT IN $symbol_ids
 
                 WITH changed, caller, importing_symbol, implementer
@@ -452,6 +535,84 @@ class CodeAnalysisTool:
         try:
             search_result = self.qdrant_client.search(
                 collection_name=self.qdrant_collection,
+                query_vector=query_embedding.tolist(),
+                limit=limit * 2,  # Get more results for filtering
+            )
+
+            # Process results
+            for result_item in search_result:
+                symbol_id = result_item.id
+                score = result_item.score
+
+                # Get symbol details from payload or Neo4j
+                if hasattr(result_item, "payload"):
+                    payload = result_item.payload
+
+                    # Apply kind filter if specified
+                    if kind_filter and payload.get("kind") not in kind_filter:
+                        continue
+
+                    result["symbols"].append(
+                        {
+                            "id": symbol_id,
+                            "kind": payload.get("kind"),
+                            "fqname": payload.get("fqname"),
+                            "short_summary": payload.get("short"),
+                            "file": payload.get("file"),
+                            "start_line": payload.get("start_line"),
+                            "score": score,
+                        }
+                    )
+
+                    if len(result["symbols"]) >= limit:
+                        break
+
+        except Exception as e:
+            result["error"] = f"Qdrant search error: {e}"
+
+        return result
+
+    def semantic_code_search_in_collection(
+        self,
+        query: str,
+        collection_name: str,
+        limit: int = 10,
+        kind_filter: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Search for code using semantic similarity in a specific collection.
+
+        Args:
+            query: Natural language query describing what you're looking for
+            collection_name: Name of the collection to search in (used as repo_label)
+            limit: Maximum number of results to return
+            kind_filter: Optional list of symbol kinds to filter (e.g., ['Function', 'Class'])
+
+        Returns:
+            Semantically similar code symbols with scores
+        """
+        result = {"query": query, "symbols": [], "error": None}
+
+        try:
+            self._ensure_connected()
+        except Exception as e:
+            result["error"] = str(e)
+            return result
+
+        if self.model is None:
+            try:
+                self.model = SentenceTransformer(self.model_name)
+            except Exception as e:
+                result["error"] = f"Failed to load embedding model: {e}"
+                return result
+
+        # Generate embedding for query
+        query_embedding = self.model.encode(query)
+
+        # Search Qdrant with repo_label filter
+        try:
+            search_result = self.qdrant_client.search(
+                collection_name=collection_name,
                 query_vector=query_embedding.tolist(),
                 limit=limit * 2,  # Get more results for filtering
             )

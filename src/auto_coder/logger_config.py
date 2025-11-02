@@ -12,7 +12,6 @@ environment specific prefixes and report file paths relative to the
 ``auto_coder`` package root instead.
 """
 
-import os
 import sys
 from functools import wraps
 from inspect import iscoroutinefunction, signature
@@ -63,16 +62,6 @@ def _patch_record(record) -> None:
     """Enrich log records with shortened file paths."""
 
     record["extra"]["short_path"] = format_path_for_log(record["file"].path)
-
-
-def _safe_sink(message):
-    """Safe sink wrapper that handles closed file errors during shutdown."""
-    try:
-        sys.stderr.write(message)
-        sys.stderr.flush()
-    except (ValueError, BrokenPipeError):
-        # Ignore errors during shutdown when streams are closed
-        pass
 
 
 def setup_logger(
@@ -146,21 +135,8 @@ def setup_logger(
             catch=True,  # Catch exceptions during logging to prevent shutdown crashes
         )
     else:
-        # Use a wrapper that safely handles closed files for the given stream
-        def safe_write(message):
-            try:
-                stream.write(message)
-                stream.flush()
-            except (ValueError, BrokenPipeError):
-                pass
-
         logger.add(
-            safe_write,
-            format=format_string,
-            level=level,
-            colorize=True,
-            enqueue=use_enqueue,
-            catch=True,  # Catch exceptions during logging to prevent shutdown crashes
+            stream, format=format_string, level=level, colorize=True, enqueue=use_enqueue
         )
 
     # Add file handler if specified
