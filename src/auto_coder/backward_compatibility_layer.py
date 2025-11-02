@@ -54,7 +54,7 @@ class BackwardCompatibilityLayer:
             config: Compatibility configuration. If None, uses defaults.
         """
         self.config = config or CompatibilityConfig()
-        self._deprecated_warnings_shown = set()
+        self._deprecated_warnings_shown: set[str] = set()
 
     def extract_session_id(
         self,

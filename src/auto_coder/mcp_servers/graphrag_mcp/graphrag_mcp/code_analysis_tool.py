@@ -2,13 +2,14 @@ import hashlib
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, cast
 
 from neo4j import GraphDatabase
+from neo4j._sync.driver import Driver
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from auto_coder.backward_compatibility_layer import (
+from auto_coder.backward_compatibility_layer import (  # type: ignore[import-untyped]
     BackwardCompatibilityLayer,
     get_compatibility_layer,
 )
@@ -16,42 +17,49 @@ from auto_coder.backward_compatibility_layer import (
 # Configure logging to write to a file instead of stdout
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    filename='graphrag.log',
-    filemode='a'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    filename="graphrag.log",
+    filemode="a",
 )
-logger = logging.getLogger('graphrag')
+logger = logging.getLogger("graphrag")
+
 
 class CodeAnalysisTool:
     """MCP Tool for querying TypeScript/JavaScript code structure using GraphRAG."""
 
-    def __init__(self, repo_path: Optional[str] = None, compatibility_layer: Optional[BackwardCompatibilityLayer] = None):
+    def __init__(
+        self,
+        repo_path: Optional[str] = None,
+        compatibility_layer: Optional[BackwardCompatibilityLayer] = None,
+    ):
         # Neo4j connection
-        self.neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        self.neo4j_user = os.getenv("NEO4J_USER", "neo4j")
-        self.neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
-        self.neo4j_driver = None
+        self.neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+        self.neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
+        self.neo4j_password: str = os.getenv("NEO4J_PASSWORD", "password")
+        self.neo4j_driver: Optional[Driver] = None
 
         # Qdrant connection
-        self.qdrant_host = os.getenv("QDRANT_HOST", "localhost")
-        self.qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
-        self.qdrant_collection = os.getenv("QDRANT_COLLECTION", "code_chunks")
-        self.qdrant_client = None
+        self.qdrant_host: str = os.getenv("QDRANT_HOST", "localhost")
+        self.qdrant_port: int = int(os.getenv("QDRANT_PORT", "6333"))
+        self.qdrant_collection: str = os.getenv("QDRANT_COLLECTION", "code_chunks")
+        self.qdrant_client: Optional[QdrantClient] = None
 
         # Embedding model
-        self.model_name = "all-MiniLM-L6-v2"
-        self.model = None
+        self.model_name: str = "all-MiniLM-L6-v2"
+        self.model: Optional[SentenceTransformer] = None
 
         # Connection state
-        self._connected = False
+        self._connected: bool = False
 
         # Repository path for label filtering
-        self.repo_path = Path(repo_path) if repo_path else Path.cwd()
-        self._repo_label = None
-        self._repo_hash = None
+        self.repo_path: Path = Path(repo_path) if repo_path else Path.cwd()
+        self._repo_label: Optional[str] = None
+        self._repo_hash: Optional[str] = None
 
         # Backward compatibility layer
-        self.compat_layer = compatibility_layer or get_compatibility_layer()
+        self.compat_layer: BackwardCompatibilityLayer = (
+            compatibility_layer or get_compatibility_layer()
+        )
 
         # Don't connect immediately - wait until first use
         # This allows the MCP server to start even if Neo4j/Qdrant are not running
@@ -65,7 +73,7 @@ class CodeAnalysisTool:
         Returns:
             Session label in format Session_{HASH}
         """
-        return self.compat_layer.get_repo_label(session_id)
+        return self.compat_layer.get_repo_label(session_id)  # type: ignore[no-any-return]
 
     def _get_repo_hash(self, session_id: Optional[str] = None) -> str:
         """Get repository hash for a session.
@@ -84,7 +92,7 @@ class CodeAnalysisTool:
             repo_path_str = str(self.repo_path.resolve())
             return hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
 
-    def _ensure_connected(self):
+    def _ensure_connected(self) -> None:
         """Ensure connections are established (lazy initialization)."""
         if self._connected:
             return
@@ -92,39 +100,56 @@ class CodeAnalysisTool:
         self._connect()
         self._connected = True
 
-    def _connect(self):
+    def _connect(self) -> None:
         """Establish connections to Neo4j and Qdrant."""
         # Connect to Neo4j
         try:
             self.neo4j_driver = GraphDatabase.driver(
-                self.neo4j_uri,
-                auth=(self.neo4j_user, self.neo4j_password)
+                self.neo4j_uri, auth=(self.neo4j_user, self.neo4j_password)
             )
             # Test connection
             with self.neo4j_driver.session() as session:
                 result = session.run("MATCH (f:File) RETURN count(f) AS count")
                 record = result.single()
-                logger.info(f"Connected to Neo4j with {record['count']} files")
+                if record:
+                    logger.info(f"Connected to Neo4j with {record['count']} files")
+                else:
+                    logger.info("Connected to Neo4j")
         except Exception as e:
             logger.error(f"Neo4j connection error: {e}")
-            raise RuntimeError(f"Failed to connect to Neo4j at {self.neo4j_uri}. Please ensure Neo4j is running. Error: {e}")
+            raise RuntimeError(
+                f"Failed to connect to Neo4j at {self.neo4j_uri}. Please ensure Neo4j is running. Error: {e}"
+            )
 
         # Connect to Qdrant
         try:
-            self.qdrant_client = QdrantClient(host=self.qdrant_host, port=self.qdrant_port)
+            self.qdrant_client = QdrantClient(
+                host=self.qdrant_host, port=self.qdrant_port
+            )
             collection_info = self.qdrant_client.get_collection(self.qdrant_collection)
 
             # Check for vectors count based on client version
             vectors_count = 0
-            if hasattr(collection_info, 'vectors_count'):
+            if (
+                hasattr(collection_info, "vectors_count")
+                and collection_info.vectors_count is not None
+            ):
                 vectors_count = collection_info.vectors_count
-            elif hasattr(collection_info, 'points_count'):
+            elif (
+                hasattr(collection_info, "points_count")
+                and collection_info.points_count is not None
+            ):
                 vectors_count = collection_info.points_count
 
-            logger.info(f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors")
+            logger.info(
+                f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors"
+            )
         except Exception as e:
             logger.error(f"Qdrant connection error: {e}")
-            raise RuntimeError(f"Failed to connect to Qdrant at {self.qdrant_host}:{self.qdrant_port}. Please ensure Qdrant is running. Error: {e}")
+            raise RuntimeError(
+                f"Failed to connect to Qdrant at {self.qdrant_host}:"
+                f"{self.qdrant_port}. Please ensure Qdrant is running. Error: {e}"
+            )
 
         # Load the embedding model
         try:
@@ -132,9 +157,13 @@ class CodeAnalysisTool:
             logger.info(f"Loaded embedding model: {self.model_name}")
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
-            raise RuntimeError(f"Failed to load embedding model '{self.model_name}'. Error: {e}")
+            raise RuntimeError(
+                f"Failed to load embedding model '{self.model_name}'. " f"Error: {e}"
+            )
 
-    def find_symbol(self, fqname: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+    def find_symbol(
+        self, fqname: str, session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Find a code symbol by fully qualified name.
 
@@ -146,11 +175,11 @@ class CodeAnalysisTool:
         Returns:
             Symbol details including id, kind, signature, complexity, location
         """
-        result = {
+        result: Dict[str, Any] = {
             "fqname": fqname,
             "symbol": None,
             "error": None,
-            "session_id": session_id
+            "session_id": session_id,
         }
 
         try:
@@ -165,20 +194,22 @@ class CodeAnalysisTool:
 
         # Extract and validate session_id with backward compatibility
         session_id, is_legacy = self.compat_layer.extract_session_id(
-            session_id=session_id,
-            repo_path=str(self.repo_path)
+            session_id=session_id, repo_path=str(self.repo_path)
         )
         result["session_id"] = session_id
 
         # Emit deprecation warning if using legacy mode
-        if is_legacy and self.compat_layer.should_emit_deprecation_warning("find_symbol_no_session_id"):
+        if is_legacy and self.compat_layer.should_emit_deprecation_warning(
+            "find_symbol_no_session_id"
+        ):
             import warnings
+
             warnings.warn(
                 "Calling find_symbol without session_id is deprecated. "
                 "Please provide session_id for better repository isolation. "
                 f"Auto-generated session_id: {session_id}",
                 DeprecationWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             self.compat_layer.mark_warning_shown("find_symbol_no_session_id")
 
@@ -210,7 +241,7 @@ class CodeAnalysisTool:
                     cypher_query,
                     fqname=fqname,
                     repo_hash=repo_hash,
-                    repo_path=repo_path_str
+                    repo_path=repo_path_str,
                 )
                 record = query_result.single()
 
@@ -226,7 +257,7 @@ class CodeAnalysisTool:
                         "file": record["file"],
                         "start_line": record["start_line"],
                         "end_line": record["end_line"],
-                        "tags": record["tags"] or []
+                        "tags": record["tags"] or [],
                     }
                 else:
                     result["error"] = f"Symbol '{fqname}' not found"
@@ -235,8 +266,14 @@ class CodeAnalysisTool:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
-    
-    def get_call_graph(self, symbol_id: str, direction: str = 'both', depth: int = 1, session_id: Optional[str] = None) -> Dict[str, Any]:
+
+    def get_call_graph(
+        self,
+        symbol_id: str,
+        direction: str = "both",
+        depth: int = 1,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Get call graph for a symbol.
 
@@ -250,14 +287,14 @@ class CodeAnalysisTool:
         Returns:
             Call graph with nodes and edges
         """
-        result = {
+        result: Dict[str, Any] = {
             "symbol_id": symbol_id,
             "direction": direction,
             "depth": depth,
             "nodes": [],
             "edges": [],
             "error": None,
-            "session_id": session_id
+            "session_id": session_id,
         }
 
         try:
@@ -276,20 +313,22 @@ class CodeAnalysisTool:
 
         # Extract and validate session_id with backward compatibility
         session_id, is_legacy = self.compat_layer.extract_session_id(
-            session_id=session_id,
-            repo_path=str(self.repo_path)
+            session_id=session_id, repo_path=str(self.repo_path)
         )
         result["session_id"] = session_id
 
         # Emit deprecation warning if using legacy mode
-        if is_legacy and self.compat_layer.should_emit_deprecation_warning("get_call_graph_no_session_id"):
+        if is_legacy and self.compat_layer.should_emit_deprecation_warning(
+            "get_call_graph_no_session_id"
+        ):
             import warnings
+
             warnings.warn(
                 "Calling get_call_graph without session_id is deprecated. "
                 "Please provide session_id for better repository isolation. "
                 f"Auto-generated session_id: {session_id}",
                 DeprecationWarning,
-                stacklevel=2
+                stacklevel=2,
             )
             self.compat_layer.mark_warning_shown("get_call_graph_no_session_id")
 
@@ -300,7 +339,7 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build Cypher query based on direction with session label filtering
-                if direction == 'callers':
+                if direction == "callers":
                     cypher_query = f"""
                     MATCH (s)
                     WHERE (
@@ -319,7 +358,7 @@ class CodeAnalysisTool:
                            caller.file as file, caller.start_line as start_line,
                            [r IN rels | {{from: startNode(r).id, to: endNode(r).id, count: r.count}}] as edges
                     """
-                elif direction == 'callees':
+                elif direction == "callees":
                     cypher_query = f"""
                     MATCH (s)
                     WHERE (
@@ -361,26 +400,30 @@ class CodeAnalysisTool:
                     WITH s, caller, callee, relationships(path1) + relationships(path2) as rels
                     WHERE caller IS NOT NULL OR callee IS NOT NULL
                     WITH COALESCE(caller, callee) as related, rels
-                    RETURN DISTINCT related.id as id, related.kind as kind, related.fqname as fqname,
-                           related.file as file, related.start_line as start_line,
-                           [r IN rels WHERE r IS NOT NULL | {{from: startNode(r).id, to: endNode(r).id, count: r.count}}] as edges
+                    RETURN DISTINCT related.id as id, related.kind as kind,
+                           related.fqname as fqname, related.file as file,
+                           related.start_line as start_line,
+                           [r IN rels WHERE r IS NOT NULL | {{from: startNode(r).id,
+                           to: endNode(r).id, count: r.count}}] as edges
                     """
 
                 query_result = session.run(
                     cypher_query,
                     symbol_id=symbol_id,
                     repo_hash=repo_hash,
-                    repo_path=repo_path_str
+                    repo_path=repo_path_str,
                 )
 
                 for record in query_result:
-                    result["nodes"].append({
-                        "id": record["id"],
-                        "kind": record["kind"],
-                        "fqname": record["fqname"],
-                        "file": record["file"],
-                        "start_line": record["start_line"]
-                    })
+                    result["nodes"].append(
+                        {
+                            "id": record["id"],
+                            "kind": record["kind"],
+                            "fqname": record["fqname"],
+                            "file": record["file"],
+                            "start_line": record["start_line"],
+                        }
+                    )
 
                     # Add edges
                     for edge in record["edges"]:
@@ -394,8 +437,10 @@ class CodeAnalysisTool:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
-    
-    def get_dependencies(self, file_path: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+
+    def get_dependencies(
+        self, file_path: str, session_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Get file dependencies (imports).
 
@@ -407,11 +452,11 @@ class CodeAnalysisTool:
         Returns:
             List of imported files and symbols
         """
-        result = {
+        result: Dict[str, Any] = {
             "file": file_path,
             "imports": [],
             "imported_by": [],
-            "error": None
+            "error": None,
         }
 
         try:
@@ -424,8 +469,15 @@ class CodeAnalysisTool:
             result["error"] = "Neo4j connection not available"
             return result
 
-        repo_label = self._get_repo_label()
-        repo_hash = self._get_repo_hash()
+        # Extract and validate session_id with backward compatibility
+        session_id, is_legacy = self.compat_layer.extract_session_id(
+            session_id=session_id, repo_path=str(self.repo_path)
+        )
+        result["session_id"] = session_id
+
+        session_label = self._get_session_label(session_id)
+        repo_hash = self._get_repo_hash(session_id)
+        repo_path_str = str(self.repo_path.resolve())
 
         try:
             with self.neo4j_driver.session() as session:
@@ -433,15 +485,15 @@ class CodeAnalysisTool:
                 cypher_query = f"""
                 MATCH (f)
                 WHERE (
-                    (f:{repo_label}:File AND f.file = $file_path AND f.repo_hash = $repo_hash)
+                    (f:{session_label}:File AND f.file = $file_path AND f.repo_hash = $repo_hash)
                     OR
-                    (f:File AND NOT f:{repo_label} AND f.file = $file_path AND f.repo_path = $repo_path)
+                    (f:File AND NOT f:{session_label} AND f.file = $file_path AND f.repo_path = $repo_path)
                 )
                 MATCH (f)-[r:IMPORTS]->(imported:File)
                 WHERE (
-                    (imported:{repo_label}:File AND imported.repo_hash = $repo_hash)
+                    (imported:{session_label}:File AND imported.repo_hash = $repo_hash)
                     OR
-                    (imported:File AND NOT imported:{repo_label} AND imported.repo_path = $repo_path)
+                    (imported:File AND NOT imported:{session_label} AND imported.repo_path = $repo_path)
                 )
                 RETURN imported.file as file, r.count as count
                 ORDER BY count DESC
@@ -451,27 +503,26 @@ class CodeAnalysisTool:
                     cypher_query,
                     file_path=file_path,
                     repo_hash=repo_hash,
-                    repo_path=str(self.repo_path.resolve())
+                    repo_path=repo_path_str,
                 )
                 for record in query_result:
-                    result["imports"].append({
-                        "file": record["file"],
-                        "count": record["count"]
-                    })
+                    result["imports"].append(
+                        {"file": record["file"], "count": record["count"]}
+                    )
 
                 # Get imported_by (what files import this)
                 cypher_query = f"""
                 MATCH (importer:File)
                 WHERE (
-                    (importer:{repo_label}:File AND importer.repo_hash = $repo_hash)
+                    (importer:{session_label}:File AND importer.repo_hash = $repo_hash)
                     OR
-                    (importer:File AND NOT importer:{repo_label} AND importer.repo_path = $repo_path)
+                    (importer:File AND NOT importer:{session_label} AND importer.repo_path = $repo_path)
                 )
                 MATCH (importer)-[r:IMPORTS]->(f)
                 WHERE (
-                    (f:{repo_label}:File AND f.file = $file_path AND f.repo_hash = $repo_hash)
+                    (f:{session_label}:File AND f.file = $file_path AND f.repo_hash = $repo_hash)
                     OR
-                    (f:File AND NOT f:{repo_label} AND f.file = $file_path AND f.repo_path = $repo_path)
+                    (f:File AND NOT f:{session_label} AND f.file = $file_path AND f.repo_path = $repo_path)
                 )
                 RETURN importer.file as file, r.count as count
                 ORDER BY count DESC
@@ -481,20 +532,24 @@ class CodeAnalysisTool:
                     cypher_query,
                     file_path=file_path,
                     repo_hash=repo_hash,
-                    repo_path=str(self.repo_path.resolve())
+                    repo_path=repo_path_str,
                 )
                 for record in query_result:
-                    result["imported_by"].append({
-                        "file": record["file"],
-                        "count": record["count"]
-                    })
+                    result["imported_by"].append(
+                        {"file": record["file"], "count": record["count"]}
+                    )
 
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
 
-    def impact_analysis(self, symbol_ids: List[str], max_depth: int = 2, session_id: Optional[str] = None) -> Dict[str, Any]:
+    def impact_analysis(
+        self,
+        symbol_ids: List[str],
+        max_depth: int = 2,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Analyze the impact of changing given symbols.
 
@@ -507,13 +562,13 @@ class CodeAnalysisTool:
         Returns:
             Impact analysis including affected symbols, files, and relationships
         """
-        result = {
+        result: Dict[str, Any] = {
             "analyzed_symbols": symbol_ids,
             "max_depth": max_depth,
             "affected_symbols": [],
             "affected_files": set(),
             "impact_summary": {},
-            "error": None
+            "error": None,
         }
 
         try:
@@ -530,8 +585,15 @@ class CodeAnalysisTool:
             result["error"] = "max_depth must be between 1 and 3"
             return result
 
-        repo_label = self._get_repo_label()
-        repo_hash = self._get_repo_hash()
+        # Extract and validate session_id with backward compatibility
+        session_id, is_legacy = self.compat_layer.extract_session_id(
+            session_id=session_id, repo_path=str(self.repo_path)
+        )
+        result["session_id"] = session_id
+
+        session_label = self._get_session_label(session_id)
+        repo_hash = self._get_repo_hash(session_id)
+        repo_path_str = str(self.repo_path.resolve())
 
         try:
             with self.neo4j_driver.session() as session:
@@ -539,49 +601,55 @@ class CodeAnalysisTool:
                 cypher_query = f"""
                 MATCH (changed)
                 WHERE (
-                    (changed:{repo_label}:CodeNode AND changed.id IN $symbol_ids AND changed.repo_hash = $repo_hash)
+                    (changed:{session_label}:CodeNode AND changed.id IN $symbol_ids
+                     AND changed.repo_hash = $repo_hash)
                     OR
-                    (changed:CodeNode AND NOT changed:{repo_label} AND changed.id IN $symbol_ids AND changed.repo_path = $repo_path)
+                    (changed:CodeNode AND NOT changed:{session_label}
+                     AND changed.id IN $symbol_ids AND changed.repo_path = $repo_path)
                 )
 
                 // Find callers (symbols that call the changed symbols)
                 OPTIONAL MATCH (caller)-[:CALLS*1..{max_depth}]->(changed)
                 WHERE (
-                    (caller:{repo_label}:CodeNode AND caller.repo_hash = $repo_hash)
+                    (caller:{session_label}:CodeNode AND caller.repo_hash = $repo_hash)
                     OR
-                    (caller:CodeNode AND NOT caller:{repo_label} AND caller.repo_path = $repo_path)
+                    (caller:CodeNode AND NOT caller:{session_label} AND caller.repo_path = $repo_path)
                 )
                 AND caller.id NOT IN $symbol_ids
 
                 // Find symbols in files that import changed symbols' files
                 OPTIONAL MATCH (changed_file:File)
                 WHERE (
-                    (changed_file:{repo_label}:File AND changed_file.repo_hash = $repo_hash)
+                    (changed_file:{session_label}:File AND changed_file.repo_hash = $repo_hash)
                     OR
-                    (changed_file:File AND NOT changed_file:{repo_label} AND changed_file.repo_path = $repo_path)
+                    (changed_file:File AND NOT changed_file:{session_label}
+                     AND changed_file.repo_path = $repo_path)
                 )
                 OPTIONAL MATCH (changed_file)-[:CONTAINS]->(changed)
                 OPTIONAL MATCH (importing_file:File)
                 WHERE (
-                    (importing_file:{repo_label}:File AND importing_file.repo_hash = $repo_hash)
+                    (importing_file:{session_label}:File AND importing_file.repo_hash = $repo_hash)
                     OR
-                    (importing_file:File AND NOT importing_file:{repo_label} AND importing_file.repo_path = $repo_path)
+                    (importing_file:File AND NOT importing_file:{session_label}
+                     AND importing_file.repo_path = $repo_path)
                 )
                 OPTIONAL MATCH (importing_file)-[:IMPORTS*1..{max_depth}]->(changed_file)
                 OPTIONAL MATCH (importing_file)-[:CONTAINS]->(importing_symbol)
                 WHERE (
-                    (importing_symbol:{repo_label}:CodeNode AND importing_symbol.repo_hash = $repo_hash)
+                    (importing_symbol:{session_label}:CodeNode
+                     AND importing_symbol.repo_hash = $repo_hash)
                     OR
-                    (importing_symbol:CodeNode AND NOT importing_symbol:{repo_label} AND importing_symbol.repo_path = $repo_path)
+                    (importing_symbol:CodeNode AND NOT importing_symbol:{session_label}
+                     AND importing_symbol.repo_path = $repo_path)
                 )
                 AND importing_symbol.id NOT IN $symbol_ids
 
                 // Find symbols that extend/implement changed symbols
                 OPTIONAL MATCH (implementer)-[:EXTENDS|IMPLEMENTS*1..{max_depth}]->(changed)
                 WHERE (
-                    (implementer:{repo_label}:CodeNode AND implementer.repo_hash = $repo_hash)
+                    (implementer:{session_label}:CodeNode AND implementer.repo_hash = $repo_hash)
                     OR
-                    (implementer:CodeNode AND NOT implementer:{repo_label} AND implementer.repo_path = $repo_path)
+                    (implementer:CodeNode AND NOT implementer:{session_label} AND implementer.repo_path = $repo_path)
                 )
                 AND implementer.id NOT IN $symbol_ids
 
@@ -600,7 +668,7 @@ class CodeAnalysisTool:
                     cypher_query,
                     symbol_ids=symbol_ids,
                     repo_hash=repo_hash,
-                    repo_path=str(self.repo_path.resolve())
+                    repo_path=repo_path_str,
                 )
 
                 for record in query_result:
@@ -610,34 +678,40 @@ class CodeAnalysisTool:
                         "fqname": record["fqname"],
                         "file": record["file"],
                         "start_line": record["start_line"],
-                        "end_line": record["end_line"]
+                        "end_line": record["end_line"],
                     }
                     result["affected_symbols"].append(affected_symbol)
                     result["affected_files"].add(record["file"])
 
                 # Convert set to list for JSON serialization
-                result["affected_files"] = sorted(list(result["affected_files"]))
+                result["affected_files"] = list(result["affected_files"])
 
                 # Generate summary
                 result["impact_summary"] = {
                     "total_affected_symbols": len(result["affected_symbols"]),
                     "total_affected_files": len(result["affected_files"]),
-                    "by_kind": {}
+                    "by_kind": {},
                 }
 
                 # Count by kind
                 for symbol in result["affected_symbols"]:
                     kind = symbol["kind"]
-                    result["impact_summary"]["by_kind"][kind] = \
+                    result["impact_summary"]["by_kind"][kind] = (
                         result["impact_summary"]["by_kind"].get(kind, 0) + 1
+                    )
 
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
 
-    def semantic_code_search(self, query: str, limit: int = 10,
-                            kind_filter: Optional[List[str]] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
+    def semantic_code_search(
+        self,
+        query: str,
+        limit: int = 10,
+        kind_filter: Optional[List[str]] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Search for code using semantic similarity.
 
@@ -651,11 +725,7 @@ class CodeAnalysisTool:
         Returns:
             Semantically similar code symbols with scores
         """
-        result = {
-            "query": query,
-            "symbols": [],
-            "error": None
-        }
+        result: Dict[str, Any] = {"query": query, "symbols": [], "error": None}
 
         try:
             self._ensure_connected()
@@ -677,21 +747,17 @@ class CodeAnalysisTool:
 
         # Search Qdrant with repository filtering
         try:
+            # Ensure qdrant_client is initialized
+            assert self.qdrant_client is not None, "Qdrant client not initialized"
+
             # Get more results for filtering and repository-specific filtering
             search_result = self.qdrant_client.search(
                 collection_name=self.qdrant_collection,
                 query_vector=query_embedding.tolist(),
                 limit=limit * 3,  # Get more results for filtering
                 query_filter={
-                    "must": [
-                        {
-                            "key": "repo_hash",
-                            "match": {
-                                "value": repo_hash
-                            }
-                        }
-                    ]
-                }
+                    "must": [{"key": "repo_hash", "match": {"value": repo_hash}}]
+                },
             )
 
             # Process results
@@ -700,28 +766,31 @@ class CodeAnalysisTool:
                 score = result_item.score
 
                 # Get symbol details from payload or Neo4j
-                if hasattr(result_item, 'payload'):
+                if hasattr(result_item, "payload") and result_item.payload is not None:
                     payload = result_item.payload
 
                     # Apply kind filter if specified
-                    if kind_filter and payload.get('kind') not in kind_filter:
+                    if kind_filter and payload.get("kind") not in kind_filter:
                         continue
 
-                    result["symbols"].append({
-                        "id": symbol_id,
-                        "kind": payload.get('kind'),
-                        "fqname": payload.get('fqname'),
-                        "short_summary": payload.get('short'),
-                        "file": payload.get('file'),
-                        "start_line": payload.get('start_line'),
-                        "score": score
-                    })
+                    symbols_list = cast(List[Dict[str, Any]], result["symbols"])
+                    symbols_list.append(
+                        {
+                            "id": symbol_id,
+                            "kind": payload.get("kind"),
+                            "fqname": payload.get("fqname"),
+                            "short_summary": payload.get("short"),
+                            "file": payload.get("file"),
+                            "start_line": payload.get("start_line"),
+                            "score": score,
+                        }
+                    )
 
-                    if len(result["symbols"]) >= limit:
+                    symbols_list = cast(List[Dict[str, Any]], result["symbols"])
+                    if len(symbols_list) >= limit:
                         break
 
         except Exception as e:
             result["error"] = f"Qdrant search error: {e}"
 
         return result
-
