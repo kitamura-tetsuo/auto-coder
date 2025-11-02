@@ -4,8 +4,8 @@ Test Watcher MCP Client for querying test results.
 
 import json
 import subprocess
-from typing import Dict, Any, Optional
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from .logger_config import get_logger
 

@@ -2,6 +2,7 @@
 
 import os
 import re
+from pathlib import Path
 from typing import Optional
 
 import click
@@ -13,6 +14,7 @@ from .cli_helpers import (
     build_backend_manager,
     build_models_map,
     check_backend_prerequisites,
+    check_github_sub_issue_or_setup,
     check_graphrag_mcp_for_backends,
     ensure_test_script_or_fail,
     initialize_graphrag,
@@ -111,6 +113,11 @@ logger = get_logger(__name__)
     help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
 )
 @click.option(
+    "--enable-graphrag/--disable-graphrag",
+    default=True,
+    help="Enable GraphRAG integration (default: enabled)",
+)
+@click.option(
     "--only",
     "only_target",
     help="Process only a specific issue/PR by URL or number (e.g., https://github.com/owner/repo/issues/123 or 123)",
@@ -152,6 +159,7 @@ def process_issues(
     ignore_dependabot_prs: bool,
     force_clean_before_checkout: bool,
     only_target: Optional[str],
+    enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
@@ -227,8 +235,9 @@ def process_issues(
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
-    # Initialize GraphRAG (always enabled)
-    initialize_graphrag(force_reindex=force_reindex)
+    # Initialize GraphRAG (conditionally enabled)
+    if enable_graphrag:
+        initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
     github_client = GitHubClient(github_token_final, disable_labels=disable_labels)
@@ -241,7 +250,7 @@ def process_issues(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=True,  # Always enable GraphRAG
+        enable_graphrag=enable_graphrag,
     )
 
     # Check GraphRAG MCP configuration for selected backends using client
@@ -450,6 +459,11 @@ def process_issues(
     "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
 )
 @click.option(
+    "--enable-graphrag/--disable-graphrag",
+    default=True,
+    help="Enable GraphRAG integration (default: enabled)",
+)
+@click.option(
     "--force-reindex",
     is_flag=True,
     default=False,
@@ -478,6 +492,7 @@ def create_feature_issues(
     model_qwen: Optional[str],
     model_auggie: Optional[str],
     model_claude: Optional[str],
+    enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
@@ -503,6 +518,7 @@ def create_feature_issues(
     # Check prerequisites
     github_token_final = get_github_token_or_fail(github_token)
     check_backend_prerequisites(selected_backends)
+    check_github_sub_issue_or_setup()
 
     # Get repository name (from parameter or auto-detect)
     repo_name = get_repo_or_detect(repo)
@@ -522,8 +538,9 @@ def create_feature_issues(
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
-    # Initialize GraphRAG (always enabled)
-    initialize_graphrag(force_reindex=force_reindex)
+    # Initialize GraphRAG (conditionally enabled)
+    if enable_graphrag:
+        initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
     github_client = GitHubClient(github_token_final)
@@ -536,7 +553,7 @@ def create_feature_issues(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=True,  # Always enable GraphRAG
+        enable_graphrag=enable_graphrag,
     )
 
     # Check GraphRAG MCP configuration for selected backends using client
@@ -611,6 +628,11 @@ def create_feature_issues(
     help="Maximum fix attempts before giving up (defaults to engine config)",
 )
 @click.option(
+    "--enable-graphrag/--disable-graphrag",
+    default=True,
+    help="Enable GraphRAG integration (default: enabled)",
+)
+@click.option(
     "--dry-run", is_flag=True, help="Run without making changes (LLM edits simulated)"
 )
 @click.option(
@@ -643,6 +665,7 @@ def fix_to_pass_tests_command(
     model_claude: Optional[str],
     max_attempts: Optional[int],
     dry_run: bool,
+    enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
     log_file: Optional[str],
@@ -671,6 +694,7 @@ def fix_to_pass_tests_command(
 
     # Check backend CLI availability
     check_backend_prerequisites(selected_backends)
+    check_github_sub_issue_or_setup()
 
     backend_list_str = ", ".join(selected_backends)
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
@@ -680,8 +704,9 @@ def fix_to_pass_tests_command(
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
-    # Initialize GraphRAG (always enabled)
-    initialize_graphrag(force_reindex=force_reindex)
+    # Initialize GraphRAG (conditionally enabled)
+    if enable_graphrag:
+        initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize minimal clients (GitHub not used here, but engine expects a client)
     try:
@@ -704,7 +729,7 @@ def fix_to_pass_tests_command(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=True,  # Always enable GraphRAG
+        enable_graphrag=enable_graphrag,
     )
 
     # Check GraphRAG MCP configuration for selected backends using client

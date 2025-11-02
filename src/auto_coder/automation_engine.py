@@ -10,14 +10,29 @@ from typing import Any, Dict, List, Optional
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
-from .issue_processor import create_feature_issues, process_issues, process_single
-from .git_utils import git_commit_with_retry, git_push
+from .git_utils import git_commit_with_retry
+from .issue_processor import (
+    _take_issue_actions,
+    create_feature_issues,
+    process_issues,
+    process_single,
+)
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
+from .pr_processor import (
+    _check_github_actions_status,
+)
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
+from .pr_processor import (
+    _extract_linked_issues_from_pr_body,
+)
 from .pr_processor import _get_github_actions_logs as _pr_get_github_actions_logs
 from .pr_processor import _get_pr_diff as _pr_get_diff
-from .pr_processor import get_github_actions_logs_from_url, process_pull_requests
+from .pr_processor import (
+    _take_pr_actions,
+    get_github_actions_logs_from_url,
+    process_pull_requests,
+)
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -45,8 +60,224 @@ class AutomationEngine:
         # Note: レポートディレクトリはリポジトリごとに作成されるため、
         # ここでは作成しない（_save_reportで作成）
 
+    def _get_candidates(
+        self, repo_name: str, max_items: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Get PR and issue candidates for processing.
+
+        Returns:
+            List of candidate items with type, data, and priority information
+        """
+        candidates = []
+
+        try:
+            # Get PR candidates
+            prs = self.github.get_open_pull_requests(repo_name, limit=max_items)
+            for pr in prs:
+                try:
+                    pr_data = self.github.get_pr_details(pr)
+                    # Skip if already has @auto-coder label
+                    if not self.github.disable_labels:
+                        current_labels = pr_data.get("labels", [])
+                        if "@auto-coder" in current_labels:
+                            continue
+
+                    # Check GitHub Actions status for priority
+                    github_checks = _check_github_actions_status(
+                        repo_name, pr_data, self.config
+                    )
+                    mergeable = pr_data.get("mergeable", True)
+
+                    # Priority scoring: mergeable + passing checks = highest priority
+                    priority = 1
+                    if github_checks["success"]:
+                        priority += 2
+                    if mergeable:
+                        priority += 1
+
+                    candidates.append(
+                        {
+                            "type": "pr",
+                            "data": pr_data,
+                            "priority": priority,
+                            "branch_name": pr_data.get("head", {}).get("ref"),
+                            "related_issues": _extract_linked_issues_from_pr_body(
+                                pr_data.get("body", "")
+                            ),
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to process PR candidate: {e}")
+                    continue
+
+            # Get issue candidates
+            issues = self.github.get_open_issues(repo_name, limit=max_items)
+            for issue in issues:
+                try:
+                    issue_data = self.github.get_issue_details(issue)
+                    issue_number = issue_data["number"]
+
+                    # Skip if already has @auto-coder label
+                    if not self.github.disable_labels:
+                        current_labels = issue_data.get("labels", [])
+                        if "@auto-coder" in current_labels:
+                            continue
+
+                    # Skip if has open sub-issues
+                    open_sub_issues = self.github.get_open_sub_issues(
+                        repo_name, issue_number
+                    )
+                    if open_sub_issues:
+                        continue
+
+                    # Skip if already has a linked PR
+                    if self.github.has_linked_pr(repo_name, issue_number):
+                        continue
+
+                    # Issues get lower priority than PRs by default
+                    candidates.append(
+                        {
+                            "type": "issue",
+                            "data": issue_data,
+                            "priority": 0,
+                            "issue_number": issue_number,
+                        }
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to process issue candidate: {e}")
+                    continue
+
+        except Exception as e:
+            logger.error(f"Failed to get candidates: {e}")
+
+        # Sort by priority (higher first)
+        candidates.sort(key=lambda x: x["priority"], reverse=True)
+        return candidates
+
+    def _select_best_candidate(
+        self, candidates: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Select the best candidate to process next."""
+        if not candidates:
+            return None
+
+        # Return the highest priority candidate
+        return candidates[0]
+
+    def _process_single_candidate(
+        self, repo_name: str, candidate: Dict[str, Any], jules_mode: bool = False
+    ) -> Dict[str, Any]:
+        """Process a single candidate (PR or issue)."""
+        try:
+            candidate_type = candidate["type"]
+            candidate_data = candidate["data"]
+
+            if candidate_type == "pr":
+                # Process single PR
+                result = {
+                    "pr_data": candidate_data,
+                    "actions_taken": [],
+                    "priority": candidate["priority"],
+                }
+
+                # Add @auto-coder label to mark as being processed
+                if not self.dry_run and not self.github.disable_labels:
+                    self.github.try_add_work_in_progress_label(
+                        repo_name, candidate_data["number"]
+                    )
+
+                try:
+                    # Process PR using existing logic
+                    actions = _take_pr_actions(
+                        repo_name, candidate_data, self.config, self.dry_run, self.llm
+                    )
+                    result["actions_taken"] = actions
+                finally:
+                    # Remove @auto-coder label after processing
+                    if not self.dry_run and not self.github.disable_labels:
+                        try:
+                            self.github.remove_labels_from_issue(
+                                repo_name, candidate_data["number"], ["@auto-coder"]
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove @auto-coder label from PR #{candidate_data['number']}: {e}"
+                            )
+
+                return result
+
+            elif candidate_type == "issue":
+                # Process single issue
+                result = {
+                    "issue_data": candidate_data,
+                    "actions_taken": [],
+                    "priority": candidate["priority"],
+                }
+
+                # Add @auto-coder label to mark as being processed
+                if not self.dry_run and not self.github.disable_labels:
+                    self.github.try_add_work_in_progress_label(
+                        repo_name, candidate["issue_number"]
+                    )
+
+                try:
+                    # Process issue using existing logic
+                    if jules_mode:
+                        # Jules mode: only add 'jules' label
+                        current_labels = candidate_data.get("labels", [])
+                        if "jules" not in current_labels:
+                            if not self.dry_run:
+                                self.github.add_labels_to_issue(
+                                    repo_name, candidate["issue_number"], ["jules"]
+                                )
+                                result["actions_taken"].append(
+                                    f"Added 'jules' label to issue #{candidate['issue_number']}"
+                                )
+                            else:
+                                result["actions_taken"].append(
+                                    f"[DRY RUN] Would add 'jules' label to issue #{candidate['issue_number']}"
+                                )
+                        else:
+                            result["actions_taken"].append(
+                                f"Issue #{candidate['issue_number']} already has 'jules' label"
+                            )
+                    else:
+                        # Normal mode: full processing
+                        actions = _take_issue_actions(
+                            repo_name,
+                            candidate_data,
+                            self.config,
+                            self.dry_run,
+                            self.github,
+                            self.llm,
+                            self.message_backend_manager,
+                        )
+                        result["actions_taken"] = actions
+                finally:
+                    # Remove @auto-coder label after processing
+                    if not self.dry_run and not self.github.disable_labels:
+                        try:
+                            self.github.remove_labels_from_issue(
+                                repo_name, candidate["issue_number"], ["@auto-coder"]
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to remove @auto-coder label from issue #{candidate['issue_number']}: {e}"
+                            )
+
+                return result
+
+        except Exception as e:
+            error_msg = f"Failed to process candidate: {e}"
+            logger.error(error_msg)
+            return {
+                "error": error_msg,
+                "candidate_type": candidate.get("type"),
+                "candidate_data": candidate.get("data", {}),
+            }
+
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
-        """Run the main automation process."""
+        """Run the main automation process using _get_candidates loop."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
         # LLMバックエンド情報を取得
@@ -90,10 +321,24 @@ class AutomationEngine:
             return results
 
         except Exception as e:
-            error_msg = f"Automation failed for {repo_name}: {e}"
+            error_msg = f"Automation failed: {e}"
             logger.error(error_msg)
             results["errors"].append(error_msg)
             return results
+
+    def _has_open_sub_issues(self, repo_name: str, candidate: Dict[str, Any]) -> bool:
+        """Check if an issue candidate has open sub-issues."""
+        if candidate["type"] != "issue":
+            return False
+        
+        try:
+            issue_data = candidate["data"]
+            issue_number = issue_data["number"]
+            open_sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
+            return len(open_sub_issues) > 0
+        except Exception as e:
+            logger.warning(f"Failed to check sub-issues for issue #{candidate.get('data', {}).get('number', 'N/A')}: {e}")
+            return True  # Assume has sub-issues on error to be safe
 
     def process_single(
         self, repo_name: str, target_type: str, number: int, jules_mode: bool = False
@@ -234,25 +479,9 @@ class AutomationEngine:
         repo_name: str,
         pr_data: Dict[str, Any],
         failed_checks: List[Dict[str, Any]],
-        search_history: Optional[bool] = None,
     ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
-
-        Args:
-            repo_name: Repository name
-            pr_data: PR data dictionary
-            failed_checks: List of failed check dictionaries
-            search_history: Optional parameter to enable historical search.
-                           If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
-                           If True, searches through commit history for logs.
-                           If False, uses current state only.
-
-        Returns:
-            String containing GitHub Actions logs
-        """
-        return _pr_get_github_actions_logs(
-            repo_name, self.config, failed_checks, search_history=search_history
-        )
+        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。"""
+        return _pr_get_github_actions_logs(repo_name, self.config, failed_checks)
 
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
@@ -768,28 +997,6 @@ DO NOT include git commit or push commands in your response."""
     def _checkout_pr_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
         """Checkout PR branch."""
         return True
-
-    def _get_github_actions_logs(
-        self,
-        repo_name: str,
-        pr_data: Dict[str, Any],
-        failed_checks: List[Dict[str, Any]],
-        search_history: Optional[bool] = None,
-    ) -> str:
-        """Get GitHub Actions logs for failed checks.
-
-        This is a compatibility stub for tests.
-
-        Args:
-            repo_name: Repository name
-            pr_data: PR data dictionary (unused in stub)
-            failed_checks: List of failed check dictionaries
-            search_history: Optional parameter (unused in stub)
-
-        Returns:
-            Test log string
-        """
-        return "Test failed: assertion error"
 
     def _poll_pr_mergeable(
         self,

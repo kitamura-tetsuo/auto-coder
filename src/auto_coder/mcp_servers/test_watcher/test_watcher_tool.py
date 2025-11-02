@@ -2,18 +2,19 @@
 Test Watcher Tool - Manages continuous test execution and result collection.
 """
 
+import json
 import os
 import subprocess
 import threading
 import time
-import json
-from typing import Dict, Any, List, Optional, Set
 from datetime import datetime
 from pathlib import Path
-from loguru import logger
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler, FileSystemEvent
+from typing import Any, Dict, List, Optional, Set
+
 import pathspec
+from loguru import logger
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
 
 
 class GitIgnoreFileHandler(FileSystemEventHandler):

@@ -8,8 +8,8 @@ continuous test monitoring during LLM invocations.
 import os
 import subprocess
 import threading
-from typing import Optional
 from pathlib import Path
+from typing import Optional
 
 from .logger_config import get_logger
 
