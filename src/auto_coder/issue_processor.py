@@ -1013,7 +1013,6 @@ def process_single(
                             result["errors"].append(msg)
                             newline_progress()
                             return result
-
                     # Add @auto-coder label now that we're actually going to process this issue
                     if not dry_run:
                         if not github_client.try_add_work_in_progress_label(
