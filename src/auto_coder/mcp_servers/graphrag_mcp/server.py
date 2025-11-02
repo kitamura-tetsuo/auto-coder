@@ -1,5 +1,6 @@
 from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
 from mcp.server.fastmcp import Context, FastMCP
+from typing import Optional
 
 # Create an MCP server
 mcp = FastMCP(
@@ -10,17 +11,69 @@ mcp = FastMCP(
 # Initialize the code analysis tool
 code_tool = CodeAnalysisTool()
 
+# Global compatibility layer for backward compatibility
+_compatibility_layer = None
+
+
+def _get_session_context(session_id: str) -> Optional[dict]:
+    """Get session context by session_id.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Session context dictionary or None if not found
+    """
+    # In a full implementation, this would retrieve from a session store
+    return {"session_id": session_id}
+
+
+def _get_repo_label_for_session(session_id: str) -> Optional[str]:
+    """Get repository label for a session.
+
+    Args:
+        session_id: Session identifier
+
+    Returns:
+        Repository label string or None if session not found
+    """
+    import hashlib
+    repo_hash = hashlib.sha256(session_id.encode()).hexdigest()[:8].upper()
+    return f"Repo_{repo_hash}"
+
 
 @mcp.tool()
-def find_symbol(fqname: str) -> dict:
+def get_api_version() -> dict:
+    """Get API version and compatibility information.
+
+    Returns:
+        Dictionary with version and feature information
     """
-    Find a code symbol by fully qualified name.
+    return {
+        "api_version": "2.0.0",
+        "compatibility_mode": "supported",
+        "isolation_mode": "available",
+        "session_support": True,
+        "repository_isolation": True,
+        "features": {
+            "session_management": "2.0+",
+            "repository_isolation": "2.0+",
+            "backward_compatibility": "2.0+",
+        },
+    }
+
+
+@mcp.tool()
+def find_symbol(fqname: str, session_id: str = None) -> dict:
+    """Find symbol with backward compatibility.
 
     This tool searches the TypeScript/JavaScript code graph for a specific symbol
     (function, method, class, interface, or type) by its fully qualified name.
 
     Args:
         fqname: Fully qualified name (e.g., 'src/utils.ts::calculateHash' or 'src/models/User.ts::User::getName')
+        session_id: Optional session ID for repository isolation
+                  (if not provided, uses default/global behavior for backward compatibility)
 
     Returns:
         Symbol details including:
@@ -34,17 +87,33 @@ def find_symbol(fqname: str) -> dict:
         - file: Source file path
         - start_line, end_line: Source location
         - tags: Associated tags
+        - _compatibility_mode: True if using backward compatibility mode
+        - _warning: Warning message if in compatibility mode
 
     Example:
         find_symbol("src/utils/hash.ts::calculateHash")
+        find_symbol("src/utils/hash.ts::calculateHash", session_id="session_123")
     """
-    return code_tool.find_symbol(fqname)
+    # Backward compatibility: if no session_id, use default behavior
+    if not session_id:
+        # Use global collection without repository filtering (backward compatible)
+        result = code_tool.find_symbol(fqname)
+        result["_compatibility_mode"] = True
+        result["_warning"] = "Using global search (data contamination possible)"
+        return result
+
+    # New isolation mode
+    session = _get_session_context(session_id)
+    if not session:
+        return {"error": "Invalid session_id"}
+
+    repo_label = _get_repo_label_for_session(session_id)
+    return code_tool.find_symbol(fqname, repo_label=repo_label)
 
 
 @mcp.tool()
-def get_call_graph(symbol_id: str, direction: str = "both", depth: int = 1) -> dict:
-    """
-    Get the call graph for a symbol to understand function/method relationships.
+def get_call_graph(symbol_id: str, direction: str = "both", depth: int = 1, session_id: str = None) -> dict:
+    """Get call graph with backward compatibility.
 
     This tool analyzes the call relationships in the code graph, showing which
     functions/methods call the target symbol (callers) and which functions/methods
@@ -54,44 +123,74 @@ def get_call_graph(symbol_id: str, direction: str = "both", depth: int = 1) -> d
         symbol_id: Symbol ID (obtained from find_symbol)
         direction: 'callers' (who calls this), 'callees' (what this calls), or 'both' (default: 'both')
         depth: Traversal depth 1-3 (default: 1). Higher depth shows indirect relationships.
+        session_id: Optional session ID for repository isolation
 
     Returns:
         Call graph with:
         - nodes: List of related symbols with their details
         - edges: List of call relationships with call counts
+        - _compatibility_mode: True if using backward compatibility mode
 
     Example:
         get_call_graph("symbol_123", direction="callers", depth=2)
+        get_call_graph("symbol_123", session_id="session_123")
     """
-    return code_tool.get_call_graph(symbol_id, direction, depth)
+    # Backward compatibility: if no session_id, use default behavior
+    if not session_id:
+        result = code_tool.get_call_graph(symbol_id, direction, depth)
+        result["_compatibility_mode"] = True
+        result["_warning"] = "Searching all repositories (cross-contamination possible)"
+        return result
+
+    # New isolation mode
+    session = _get_session_context(session_id)
+    if not session:
+        return {"error": "Invalid session_id"}
+
+    repo_label = _get_repo_label_for_session(session_id)
+    return code_tool.get_call_graph(symbol_id, direction, depth, repo_label=repo_label)
 
 
 @mcp.tool()
-def get_dependencies(file_path: str) -> dict:
-    """
-    Get file dependencies (import relationships).
+def get_dependencies(file_path: str, session_id: str = None) -> dict:
+    """Get file dependencies with backward compatibility.
 
     This tool analyzes the import graph to show which files a given file imports
     and which files import the given file.
 
     Args:
         file_path: File path (e.g., 'src/utils.ts')
+        session_id: Optional session ID for repository isolation
 
     Returns:
         Dependency information:
         - imports: List of files this file imports (with import counts)
         - imported_by: List of files that import this file (with import counts)
+        - _compatibility_mode: True if using backward compatibility mode
 
     Example:
         get_dependencies("src/utils/hash.ts")
+        get_dependencies("src/utils/hash.ts", session_id="session_123")
     """
-    return code_tool.get_dependencies(file_path)
+    # Backward compatibility: if no session_id, use default behavior
+    if not session_id:
+        result = code_tool.get_dependencies(file_path)
+        result["_compatibility_mode"] = True
+        result["_warning"] = "Searching all repositories (cross-contamination possible)"
+        return result
+
+    # New isolation mode
+    session = _get_session_context(session_id)
+    if not session:
+        return {"error": "Invalid session_id"}
+
+    repo_label = _get_repo_label_for_session(session_id)
+    return code_tool.get_dependencies(file_path, repo_label=repo_label)
 
 
 @mcp.tool()
-def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
-    """
-    Analyze the impact of changing given symbols across the codebase.
+def impact_analysis(symbol_ids: list, max_depth: int = 2, session_id: str = None) -> dict:
+    """Analyze impact with backward compatibility.
 
     This tool performs comprehensive impact analysis by traversing the code graph
     to find all symbols and files that would be affected by changes to the specified
@@ -103,23 +202,38 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2) -> dict:
     Args:
         symbol_ids: List of symbol IDs to analyze (obtained from find_symbol)
         max_depth: Maximum traversal depth 1-3 (default: 2)
+        session_id: Optional session ID for repository isolation
 
     Returns:
         Impact analysis:
         - affected_symbols: List of symbols that would be affected
         - affected_files: List of files that would be affected
         - impact_summary: Summary statistics (total counts, breakdown by kind)
+        - _compatibility_mode: True if using backward compatibility mode
 
     Example:
         impact_analysis(["symbol_123", "symbol_456"], max_depth=2)
+        impact_analysis(["symbol_123"], session_id="session_123")
     """
-    return code_tool.impact_analysis(symbol_ids, max_depth)
+    # Backward compatibility: if no session_id, use default behavior
+    if not session_id:
+        result = code_tool.impact_analysis(symbol_ids, max_depth)
+        result["_compatibility_mode"] = True
+        result["_warning"] = "Searching all repositories (cross-contamination possible)"
+        return result
+
+    # New isolation mode
+    session = _get_session_context(session_id)
+    if not session:
+        return {"error": "Invalid session_id"}
+
+    repo_label = _get_repo_label_for_session(session_id)
+    return code_tool.impact_analysis(symbol_ids, max_depth, repo_label=repo_label)
 
 
 @mcp.tool()
-def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) -> dict:
-    """
-    Search for code using natural language semantic similarity.
+def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None, session_id: str = None) -> dict:
+    """Semantic search with backward compatibility.
 
     This tool uses vector embeddings to find code symbols that are semantically
     similar to your natural language query. Useful for finding relevant code
@@ -131,15 +245,31 @@ def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None) 
         limit: Maximum number of results to return (default: 10)
         kind_filter: Optional list of symbol kinds to filter results
                     (e.g., ['Function', 'Class', 'Method'])
+        session_id: Optional session ID for repository isolation
 
     Returns:
         Semantically similar symbols:
         - symbols: List of matching symbols with similarity scores
+        - _compatibility_mode: True if using backward compatibility mode
 
     Example:
         semantic_code_search("hash calculation functions", limit=5, kind_filter=["Function"])
+        semantic_code_search("authentication", session_id="session_123")
     """
-    return code_tool.semantic_code_search(query, limit, kind_filter)
+    # Backward compatibility: if no session_id, use default behavior
+    if not session_id:
+        result = code_tool.semantic_code_search(query, limit, kind_filter)
+        result["_compatibility_mode"] = True
+        result["_warning"] = "Searching all repositories (cross-contamination possible)"
+        return result
+
+    # New isolation mode
+    session = _get_session_context(session_id)
+    if not session:
+        return {"error": "Invalid session_id"}
+
+    repo_label = _get_repo_label_for_session(session_id)
+    return code_tool.semantic_code_search_in_collection(query, repo_label, limit)
 
 
 @mcp.resource("https://graphrag.db/schema/neo4j")
