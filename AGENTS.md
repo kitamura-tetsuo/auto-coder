@@ -17,6 +17,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Define strict expectations for test assertions.
 * When a test fails, first verify that the expected values align with the specifications.
 * Do not skip tests.
+* Run all tests at the end of tasks.
 * Do not copy implementation code into test files for testing.
 * Do not use mocks in end-to-end (e2e) tests.
 * Run e2e tests in headless mode.
