@@ -10,11 +10,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
-
 from emitter.python_emitter import emit_csv, emit_diff_json, emit_json
 from scanner.python_scanner import GraphData, scan_python_project
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent))
 
 
 def scan_command(args):

@@ -4,7 +4,15 @@ import os
 import sys
 
 import click
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    # Fallback if python-dotenv is not installed
+    def load_dotenv():
+        """No-op function when python-dotenv is not installed."""
+        pass
+
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_graphrag import graphrag_group

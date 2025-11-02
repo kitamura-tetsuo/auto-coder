@@ -118,5 +118,5 @@ class TestSettings:
 
         # Check that model_config is properly set
         assert hasattr(Settings, "model_config")
-        assert settings.model_config["env_file"] == ".env"
-        assert settings.model_config["env_file_encoding"] == "utf-8"
+        assert Settings.model_config["env_file"] == ".env"
+        assert Settings.model_config["env_file_encoding"] == "utf-8"

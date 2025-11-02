@@ -16,19 +16,6 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def _get_merge_conflict_info() -> str:
-    """Get information about merge conflicts."""
-    try:
-        result = cmd.run_command(["git", "status", "--porcelain"])
-        return (
-            result.stdout
-            if result.success
-            else "Could not get merge conflict information"
-        )
-    except Exception as e:
-        return f"Error getting conflict info: {e}"
-
-
 def scan_conflict_markers() -> List[str]:
     """Scan for conflict markers in the current working directory.
 

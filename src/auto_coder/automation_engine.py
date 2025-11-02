@@ -788,5 +788,121 @@ DO NOT include git commit or push commands in your response."""
         """Merge PR."""
         return True
 
+    def parse_commit_history_with_actions(
+        self, repo_name: str, search_depth: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Parse git commit history and identify commits that triggered GitHub Actions.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            search_depth: Number of recent commits to check (default: 10)
+
+        Returns:
+            List of commits that have GitHub Actions runs with status information.
+            Each dict contains: commit_hash, message, actions_status, actions_url
+        """
+        import subprocess
+
+        try:
+            # Use git log --oneline to retrieve recent commit history
+            result = subprocess.run(
+                ["git", "log", "--oneline", f"-{search_depth}"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode != 0:
+                logger.error(f"Failed to get git log: {result.stderr}")
+                return []
+
+            commits_with_actions = []
+
+            # Parse the output to extract commit hashes and messages
+            lines = result.stdout.strip().split('\n')
+
+            for line in lines:
+                if not line.strip():
+                    continue
+
+                # Parse commit hash and message (format: "hash message")
+                # Strip leading/trailing whitespace from line first
+                line = line.strip()
+                parts = line.split(" ", 1)
+                if len(parts) < 2:
+                    continue
+
+                commit_hash = parts[0]
+                commit_message = parts[1]
+
+                # Skip lines with empty commit hash (e.g., malformed lines)
+                if not commit_hash:
+                    continue
+
+                # Check if this commit has associated GitHub Actions runs
+                # Use gh CLI to list workflow runs for this commit
+                try:
+                    run_result = subprocess.run(
+                        [
+                            "gh", "run", "list",
+                            "--commit", commit_hash,
+                            "--limit", "1"
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+
+                    # If no runs found for this commit, skip it
+                    if run_result.returncode != 0 or "no runs found" in run_result.stdout.lower():
+                        logger.debug(f"Commit {commit_hash[:8]}: No GitHub Actions runs found")
+                        continue
+
+                    # Check if there are any runs (success or failure)
+                    # Parse the output to check for completed runs
+                    run_lines = run_result.stdout.strip().split('\n')
+
+                    actions_status = None
+                    actions_url = ""
+
+                    for run_line in run_lines:
+                        if not run_line.strip() or run_line.startswith("STATUS") or run_line.startswith("WORKFLOW"):
+                            continue
+
+                        # Parse tab-separated format
+                        if '\t' in run_line:
+                            parts = run_line.split('\t')
+                            if len(parts) >= 3:
+                                status = parts[1].strip().lower()
+                                url = parts[3] if len(parts) > 3 else ""
+
+                                # Only include commits with completed runs (success or failure)
+                                # Skip queued or in-progress runs
+                                if status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
+                                    actions_status = status
+                                    actions_url = url
+                                    break
+
+                    # Only add commits that have completed Action runs
+                    if actions_status and actions_status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
+                        commits_with_actions.append({
+                            "commit_hash": commit_hash,
+                            "message": commit_message,
+                            "actions_status": actions_status,
+                            "actions_url": actions_url
+                        })
+                        logger.info(f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'")
+
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"Timeout checking Actions for commit {commit_hash[:8]}")
+                    continue
+
+            logger.info(f"Found {len(commits_with_actions)} commits with GitHub Actions")
+            return commits_with_actions
+
+        except Exception as e:
+            logger.error(f"Error parsing commit history: {e}")
+            return []
+
     # Constants
     FLAG_SKIP_ANALYSIS = "[SKIP_LLM_ANALYSIS]"
