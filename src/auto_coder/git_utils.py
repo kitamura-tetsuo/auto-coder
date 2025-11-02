@@ -25,6 +25,33 @@ from .utils import CommandExecutor, CommandResult
 logger = get_logger(__name__)
 
 
+def _get_llm_clients(llm_client=None, message_backend_manager=None):
+    """Get LLM clients from singleton if not provided.
+
+    Args:
+        llm_client: Optional LLM client
+        message_backend_manager: Optional message backend manager
+
+    Returns:
+        Tuple of (llm_client, message_backend_manager)
+    """
+    if llm_client is None or message_backend_manager is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_manager = LLMBackendManager.get_llm_instance()
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            if llm_client is None:
+                llm_client = llm_manager
+            if message_backend_manager is None:
+                message_backend_manager = message_manager
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized, use provided parameters or None
+            pass
+
+    return llm_client, message_backend_manager
+
+
 def get_current_branch(cwd: Optional[str] = None) -> Optional[str]:
     """
     Get the current git branch name.
@@ -673,6 +700,11 @@ def ensure_pushed_with_fallback(
     Returns:
         CommandResult object with success status and output
     """
+    # Get LLM clients from singleton if not provided
+    llm_client, message_backend_manager = _get_llm_clients(
+        llm_client, message_backend_manager
+    )
+
     cmd = CommandExecutor()
 
     # Check if there are unpushed commits
@@ -1124,6 +1156,11 @@ def try_llm_commit_push(
     Returns:
         True if LLM successfully resolved the issue, False otherwise
     """
+    # Get LLM clients from singleton if not provided
+    llm_client, message_backend_manager = _get_llm_clients(
+        llm_client, message_backend_manager
+    )
+
     cmd = CommandExecutor()
 
     try:

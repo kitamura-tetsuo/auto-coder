@@ -46,6 +46,26 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
+def _get_llm_client(llm_client=None):
+    """Get LLM client from singleton if not provided.
+
+    Args:
+        llm_client: Optional LLM client to use instead of singleton
+
+    Returns:
+        LLM client instance
+    """
+    if llm_client is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            return LLMBackendManager.get_llm_instance()
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized
+            pass
+    return llm_client
+
+
 def parse_git_commit_history_for_actions(
     max_depth: int = 10,
     cwd: Optional[str] = None,
@@ -255,7 +275,25 @@ def process_pull_requests(
     repo_name: str,
     llm_client=None,
 ) -> List[Dict[str, Any]]:
-    """Process open pull requests in the repository with priority order."""
+    """Process open pull requests in the repository with priority order.
+
+    Args:
+        github_client: GitHub client instance
+        config: Automation configuration
+        dry_run: Whether to run in dry-run mode
+        repo_name: Repository name
+        llm_client: (Deprecated) Now uses singleton automatically
+    """
+    # Get LLM manager from singleton if not provided
+    if llm_client is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_client = LLMBackendManager.get_llm_instance()
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized
+            pass
+
     try:
         prs = github_client.get_open_pull_requests(
             repo_name, limit=config.max_prs_per_run
@@ -574,6 +612,16 @@ def _process_pr_for_merge(
     repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool, llm_client=None
 ) -> Dict[str, Any]:
     """Process a PR for quick merging when GitHub Actions are passing."""
+    # Get LLM manager from singleton if not provided
+    if llm_client is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_client = LLMBackendManager.get_llm_instance()
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized
+            pass
+
     processed_pr = {
         "pr_data": pr_data,
         "actions_taken": [],
@@ -617,6 +665,7 @@ def _process_pr_for_fixes(
     llm_client=None,
 ) -> Dict[str, Any]:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
+    llm_client = _get_llm_client(llm_client)
     processed_pr = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
 
     try:
@@ -641,6 +690,7 @@ def _take_pr_actions(
     llm_client=None,
 ) -> List[str]:
     """Take actions on a PR including merge handling and analysis."""
+    llm_client = _get_llm_client(llm_client)
     actions = []
     pr_number = pr_data["number"]
 

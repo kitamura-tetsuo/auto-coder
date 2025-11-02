@@ -40,7 +40,33 @@ def process_issues(
     llm_client=None,
     message_backend_manager=None,
 ) -> List[Dict[str, Any]]:
-    """Process open issues in the repository."""
+    """Process open issues in the repository.
+
+    Args:
+        github_client: GitHub client instance
+        config: Automation configuration
+        dry_run: Whether to run in dry-run mode
+        repo_name: Repository name
+        jules_mode: Whether to use Jules mode
+        llm_client: (Deprecated) Now uses singleton automatically
+        message_backend_manager: (Deprecated) Now uses singleton automatically
+    """
+    # Get LLM managers from singleton if not provided
+    if llm_client is None or message_backend_manager is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_manager = LLMBackendManager.get_llm_instance()
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            # Use the managers from singleton
+            if llm_client is None:
+                llm_client = llm_manager
+            if message_backend_manager is None:
+                message_backend_manager = message_manager
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized, use provided parameters or None
+            pass
+
     if jules_mode:
         return _process_issues_jules_mode(github_client, config, dry_run, repo_name)
     else:
@@ -342,6 +368,22 @@ def _take_issue_actions(
     message_backend_manager=None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
+    # Get LLM managers from singleton if not provided
+    if llm_client is None or message_backend_manager is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_manager = LLMBackendManager.get_llm_instance()
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            # Use the managers from singleton
+            if llm_client is None:
+                llm_client = llm_manager
+            if message_backend_manager is None:
+                message_backend_manager = message_manager
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized, use provided parameters or None
+            pass
+
     actions = []
     issue_number = issue_data["number"]
 
@@ -524,6 +566,22 @@ def _apply_issue_actions_directly(
     message_backend_manager=None,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
+    # Get LLM managers from singleton if not provided
+    if llm_client is None or message_backend_manager is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_manager = LLMBackendManager.get_llm_instance()
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            # Use the managers from singleton
+            if llm_client is None:
+                llm_client = llm_manager
+            if message_backend_manager is None:
+                message_backend_manager = message_manager
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized, use provided parameters or None
+            pass
+
     actions = []
     issue_number = issue_data.get("number", "unknown")
 
@@ -789,8 +847,26 @@ def create_feature_issues(
     repo_name: str,
     gemini_client=None,
 ) -> List[Dict[str, Any]]:
-    """Analyze repository and create feature enhancement issues."""
+    """Analyze repository and create feature enhancement issues.
+
+    Args:
+        github_client: GitHub client instance
+        config: Automation configuration
+        dry_run: Whether to run in dry-run mode
+        repo_name: Repository name
+        gemini_client: (Deprecated) Now uses singleton automatically
+    """
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
+
+    # Get LLM manager from singleton if not provided
+    if gemini_client is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            gemini_client = LLMBackendManager.get_llm_instance()
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized
+            pass
 
     if not gemini_client:
         logger.error("LLM client is required for feature issue creation")
@@ -902,7 +978,34 @@ def process_single(
 
     target_type: 'issue' | 'pr' | 'auto'
     When 'auto', try PR first then fall back to issue.
+
+    Args:
+        github_client: GitHub client instance
+        config: Automation configuration
+        dry_run: Whether to run in dry-run mode
+        repo_name: Repository name
+        target_type: Type of target ('issue', 'pr', or 'auto')
+        number: Issue or PR number
+        jules_mode: Whether to use Jules mode
+        llm_client: (Deprecated) Now uses singleton automatically
+        message_backend_manager: (Deprecated) Now uses singleton automatically
     """
+    # Get LLM managers from singleton if not provided
+    if llm_client is None or message_backend_manager is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_manager = LLMBackendManager.get_llm_instance()
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            # Use the managers from singleton
+            if llm_client is None:
+                llm_client = llm_manager
+            if message_backend_manager is None:
+                message_backend_manager = message_manager
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized, use provided parameters or None
+            pass
+
     with ProgressStage("Processing single PR/IS"):
         logger.info(
             f"Processing single target: type={target_type}, number={number} for {repo_name}"

@@ -492,6 +492,22 @@ def fix_to_pass_tests(
     If the LLM makes no edits (no changes to commit) in an iteration, raise an error and stop.
     Returns a summary dict.
     """
+    # Get LLM managers from singleton if not provided
+    if llm_backend_manager is None or message_backend_manager is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_manager = LLMBackendManager.get_llm_instance()
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            # Use the managers from singleton
+            if llm_backend_manager is None:
+                llm_backend_manager = llm_manager
+            if message_backend_manager is None:
+                message_backend_manager = message_manager
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized, use provided parameters or None
+            pass
+
     attempts_limit = (
         max_attempts
         if isinstance(max_attempts, int) and max_attempts > 0
@@ -782,6 +798,22 @@ def generate_commit_message_via_llm(
         llm_backend_manager: Main LLM backend manager (used as fallback)
         message_backend_manager: Dedicated message backend manager (preferred)
     """
+    # Get LLM managers from singleton if not provided
+    if llm_backend_manager is None or message_backend_manager is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_manager = LLMBackendManager.get_llm_instance()
+            message_manager = LLMBackendManager.get_llm_for_message_instance()
+            # Use the managers from singleton
+            if llm_backend_manager is None:
+                llm_backend_manager = llm_manager
+            if message_backend_manager is None:
+                message_backend_manager = message_manager
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized, use provided parameters or None
+            pass
+
     try:
         # Use message_backend_manager if available, otherwise fall back to llm_backend_manager
         manager = (

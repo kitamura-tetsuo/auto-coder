@@ -282,6 +282,11 @@ def process_issues(
             f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
         )
 
+    # Initialize the singleton backend manager
+    from .backend_manager import LLMBackendManager
+
+    LLMBackendManager.initialize(manager, message_manager)
+
     # Configure engine behavior flags
     engine_config = AutomationConfig()
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
@@ -291,10 +296,8 @@ def process_issues(
 
     automation_engine = AutomationEngine(
         github_client,
-        manager,
         dry_run=dry_run,
         config=engine_config,
-        message_backend_manager=message_manager,
     )
 
     # Check if we should resume work on current branch
@@ -559,7 +562,12 @@ def create_feature_issues(
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    automation_engine = AutomationEngine(github_client, manager)
+    # Initialize the singleton backend manager (use same manager for both)
+    from .backend_manager import LLMBackendManager
+
+    LLMBackendManager.initialize(manager, manager)
+
+    automation_engine = AutomationEngine(github_client)
 
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)
@@ -761,12 +769,15 @@ def fix_to_pass_tests_command(
             f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
         )
 
-    engine = AutomationEngine(github_client, manager, dry_run=dry_run)
+    # Initialize the singleton backend manager
+    from .backend_manager import LLMBackendManager
+
+    LLMBackendManager.initialize(manager, message_manager)
+
+    engine = AutomationEngine(github_client, dry_run=dry_run)
 
     try:
-        result = engine.fix_to_pass_tests(
-            max_attempts=max_attempts, message_backend_manager=message_manager
-        )
+        result = engine.fix_to_pass_tests(max_attempts=max_attempts)
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")
         else:

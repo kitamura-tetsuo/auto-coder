@@ -34,7 +34,15 @@ class AutomationEngine:
         config: Optional[AutomationConfig] = None,
         message_backend_manager=None,
     ):
-        """Initialize automation engine."""
+        """Initialize automation engine.
+
+        Args:
+            github_client: GitHub client instance
+            llm_client: (Deprecated) LLM client - now uses singleton automatically
+            dry_run: Whether to run in dry-run mode
+            config: Automation configuration
+            message_backend_manager: (Deprecated) Message backend manager - now uses singleton automatically
+        """
         self.github = github_client
         self.llm = llm_client
         self.dry_run = dry_run
@@ -44,6 +52,26 @@ class AutomationEngine:
 
         # Note: レポートディレクトリはリポジトリごとに作成されるため、
         # ここでは作成しない（_save_reportで作成）
+
+    def _get_llm_manager(self):
+        """Get the LLM backend manager from singleton.
+
+        Returns:
+            BackendManager instance
+        """
+        from .backend_manager import LLMBackendManager
+
+        return LLMBackendManager.get_llm_instance()
+
+    def _get_message_manager(self):
+        """Get the message backend manager from singleton.
+
+        Returns:
+            BackendManager instance for commit messages
+        """
+        from .backend_manager import LLMBackendManager
+
+        return LLMBackendManager.get_llm_for_message_instance()
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
@@ -65,9 +93,13 @@ class AutomationEngine:
         }
 
         try:
+            # Get LLM managers from singleton
+            llm_manager = self._get_llm_manager()
+            message_manager = self._get_message_manager()
+
             # Process pull requests (always use normal processing)
             prs_result = process_pull_requests(
-                self.github, self.config, self.dry_run, repo_name, self.llm
+                self.github, self.config, self.dry_run, repo_name, llm_manager
             )
             results["prs_processed"] = prs_result
 
@@ -78,8 +110,8 @@ class AutomationEngine:
                 self.dry_run,
                 repo_name,
                 jules_mode,
-                self.llm,
-                self.message_backend_manager,
+                llm_manager,
+                message_manager,
             )
             results["issues_processed"] = issues_result
 
@@ -99,6 +131,10 @@ class AutomationEngine:
         self, repo_name: str, target_type: str, number: int, jules_mode: bool = False
     ) -> Dict[str, Any]:
         """Process a single issue or PR by number."""
+        # Get LLM managers from singleton
+        llm_manager = self._get_llm_manager()
+        message_manager = self._get_message_manager()
+
         return process_single(
             self.github,
             self.config,
@@ -107,20 +143,32 @@ class AutomationEngine:
             target_type,
             number,
             jules_mode,
-            self.llm,
-            self.message_backend_manager,
+            llm_manager,
+            message_manager,
         )
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
+        # Get LLM manager from singleton
+        llm_manager = self._get_llm_manager()
+
         return create_feature_issues(
-            self.github, self.config, self.dry_run, repo_name, self.llm
+            self.github, self.config, self.dry_run, repo_name, llm_manager
         )
 
     def fix_to_pass_tests(
         self, max_attempts: Optional[int] = None, message_backend_manager=None
     ) -> Dict[str, Any]:
-        """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
+        """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
+
+        Args:
+            max_attempts: Maximum number of fix attempts
+            message_backend_manager: (Deprecated) Now uses singleton automatically
+        """
+        # Get LLM managers from singleton (ignore the parameter for backward compatibility)
+        llm_manager = self._get_llm_manager()
+        message_manager = self._get_message_manager()
+
         run_override = getattr(self, "_run_local_tests", None)
         apply_override = getattr(self, "_apply_workspace_test_fix", None)
 
@@ -138,8 +186,8 @@ class AutomationEngine:
                     self.config,
                     self.dry_run,
                     max_attempts,
-                    self.llm,
-                    message_backend_manager,
+                    llm_manager,
+                    message_manager,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
@@ -148,7 +196,7 @@ class AutomationEngine:
                 )
 
         return fix_to_pass_tests(
-            self.config, self.dry_run, max_attempts, self.llm, message_backend_manager
+            self.config, self.dry_run, max_attempts, llm_manager, message_manager
         )
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
@@ -157,33 +205,36 @@ class AutomationEngine:
         Returns:
             Dictionary with 'backend' and 'model' keys.
         """
-        if self.llm is None:
-            return {"backend": None, "model": None}
+        try:
+            # Get LLM manager from singleton
+            llm_manager = self._get_llm_manager()
 
-        # BackendManagerの場合
-        if hasattr(self.llm, "get_last_backend_and_model"):
-            backend, model = self.llm.get_last_backend_and_model()
+            # BackendManagerの場合
+            if hasattr(llm_manager, "get_last_backend_and_model"):
+                backend, model = llm_manager.get_last_backend_and_model()
+                return {"backend": backend, "model": model}
+
+            # 個別クライアントの場合
+            backend = None
+            model = getattr(llm_manager, "model_name", None)
+
+            # クラス名からバックエンド名を推測
+            class_name = llm_manager.__class__.__name__
+            if "Gemini" in class_name:
+                backend = "gemini"
+            elif "Codex" in class_name:
+                if "MCP" in class_name:
+                    backend = "codex-mcp"
+                else:
+                    backend = "codex"
+            elif "Qwen" in class_name:
+                backend = "qwen"
+            elif "Auggie" in class_name:
+                backend = "auggie"
+
             return {"backend": backend, "model": model}
-
-        # 個別クライアントの場合
-        backend = None
-        model = getattr(self.llm, "model_name", None)
-
-        # クラス名からバックエンド名を推測
-        class_name = self.llm.__class__.__name__
-        if "Gemini" in class_name:
-            backend = "gemini"
-        elif "Codex" in class_name:
-            if "MCP" in class_name:
-                backend = "codex-mcp"
-            else:
-                backend = "codex"
-        elif "Qwen" in class_name:
-            backend = "qwen"
-        elif "Auggie" in class_name:
-            backend = "auggie"
-
-        return {"backend": backend, "model": model}
+        except Exception:
+            return {"backend": None, "model": None}
 
     def _save_report(
         self, data: Dict[str, Any], filename: str, repo_name: Optional[str] = None
@@ -261,8 +312,11 @@ class AutomationEngine:
         self, repo_name: str, pr_data: Dict[str, Any]
     ) -> List[str]:
         """Ask LLM CLI to apply PR fixes directly; avoid posting PR comments."""
+        # Get LLM manager from singleton
+        llm_manager = self._get_llm_manager()
+
         return _pr_apply_actions(
-            repo_name, pr_data, self.config, self.dry_run, self.llm
+            repo_name, pr_data, self.config, self.dry_run, llm_manager
         )
 
     def _take_issue_actions(
@@ -271,14 +325,18 @@ class AutomationEngine:
         """Take actions on an issue using direct LLM CLI analysis and implementation."""
         from .issue_processor import _take_issue_actions as _take_issue_actions_func
 
+        # Get LLM managers from singleton
+        llm_manager = self._get_llm_manager()
+        message_manager = self._get_message_manager()
+
         return _take_issue_actions_func(
             repo_name,
             issue_data,
             self.config,
             self.dry_run,
             self.github,
-            self.llm,
-            self.message_backend_manager,
+            llm_manager,
+            message_manager,
         )
 
     def _apply_issue_actions_directly(
@@ -289,14 +347,18 @@ class AutomationEngine:
             _apply_issue_actions_directly as _apply_issue_actions_directly_func,
         )
 
+        # Get LLM managers from singleton
+        llm_manager = self._get_llm_manager()
+        message_manager = self._get_message_manager()
+
         return _apply_issue_actions_directly_func(
             repo_name,
             issue_data,
             self.config,
             self.dry_run,
             self.github,
-            self.llm,
-            self.message_backend_manager,
+            llm_manager,
+            message_manager,
         )
 
     def _commit_changes(self, fix_suggestion: Dict[str, Any]) -> str:
@@ -707,8 +769,13 @@ Please fix the issues that are causing the GitHub Actions failures. Make the nec
 DO NOT include git commit or push commands in your response."""
 
             # Call the LLM to get the fix
-            if self.llm and hasattr(self.llm, "_run_gemini_cli"):
-                llm_response = self.llm._run_gemini_cli(prompt)
+            try:
+                llm_manager = self._get_llm_manager()
+                llm_response = llm_manager._run_llm_cli(prompt)
+            except Exception:
+                llm_response = None
+
+            if llm_response:
                 actions.append(f"Applied GitHub Actions fix")
 
                 # Commit the changes using the centralized commit logic

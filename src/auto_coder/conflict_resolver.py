@@ -74,6 +74,16 @@ def resolve_merge_conflicts_with_llm(
     llm_client=None,
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
+    # Get LLM client from singleton if not provided
+    if llm_client is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_client = LLMBackendManager.get_llm_instance()
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized
+            pass
+
     actions: List[str] = []
 
     try:
@@ -173,6 +183,16 @@ def _perform_base_branch_merge_and_conflict_resolution(
     Returns:
         True if conflicts were resolved successfully, False otherwise
     """
+    # Get LLM client from singleton if not provided
+    if llm_client is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_client = LLMBackendManager.get_llm_instance()
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized
+            pass
+
     try:
         if dry_run:
             logger.info(f"[DRY RUN] Would resolve merge conflicts for PR #{pr_number}")
@@ -295,6 +315,16 @@ def resolve_pr_merge_conflicts(
 
     This function has been moved from pr_processor.py to conflict_resolver.py for better organization.
     """
+    # Get LLM client from singleton if not provided
+    if llm_client is None:
+        from .backend_manager import LLMBackendManager
+
+        try:
+            llm_client = LLMBackendManager.get_llm_instance()
+        except (RuntimeError, AttributeError):
+            # If singleton not initialized
+            pass
+
     try:
         # Get PR details to determine the target base branch
         pr_details_result = cmd.run_command(

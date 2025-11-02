@@ -15,6 +15,80 @@ from .progress_footer import ProgressStage
 logger = get_logger(__name__)
 
 
+class LLMBackendManager:
+    """
+    Singleton class for managing global LLM backend instances.
+
+    This class provides global access to backend managers, eliminating the need
+    to pass backend instances as parameters throughout the codebase.
+    """
+
+    _instance: Optional["LLMBackendManager"] = None
+    _llm_instance: Optional[BackendManager] = None
+    _message_instance: Optional[BackendManager] = None
+
+    def __new__(cls) -> "LLMBackendManager":
+        """Ensure singleton pattern."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @classmethod
+    def initialize(cls, llm_backend: BackendManager, message_backend: BackendManager) -> None:
+        """Initialize the singleton instances.
+
+        Args:
+            llm_backend: The main LLM backend manager for general operations
+            message_backend: The backend manager for commit message generation
+        """
+        instance = cls()
+        instance._llm_instance = llm_backend
+        instance._message_instance = message_backend
+        logger.info("LLMBackendManager singleton initialized")
+
+    @classmethod
+    def get_llm_instance(cls) -> BackendManager:
+        """Get the singleton LLM backend instance for general operations.
+
+        Returns:
+            The main BackendManager instance
+
+        Raises:
+            RuntimeError: If the singleton has not been initialized
+        """
+        if cls._instance is None or cls._instance._llm_instance is None:
+            raise RuntimeError(
+                "LLMBackendManager singleton not initialized. "
+                "Call LLMBackendManager.initialize() first."
+            )
+        return cls._instance._llm_instance
+
+    @classmethod
+    def get_llm_for_message_instance(cls) -> BackendManager:
+        """Get the singleton backend instance for commit message generation.
+
+        Returns:
+            The message BackendManager instance
+
+        Raises:
+            RuntimeError: If the singleton has not been initialized
+        """
+        if cls._instance is None or cls._instance._message_instance is None:
+            raise RuntimeError(
+                "LLMBackendManager singleton not initialized. "
+                "Call LLMBackendManager.initialize() first."
+            )
+        return cls._instance._message_instance
+
+    @classmethod
+    def reset(cls) -> None:
+        """Reset the singleton instances (mainly for testing)."""
+        cls._instance = None
+        cls._llm_instance = None
+        cls._message_instance = None
+        logger.info("LLMBackendManager singleton reset")
+
+
 class BackendManager(LLMBackendManagerBase):
     """LLMクライアントを循環的に切替管理するラッパー。
 
