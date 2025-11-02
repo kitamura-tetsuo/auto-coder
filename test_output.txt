@@ -1,0 +1,903 @@
+Running all tests...
+Some tests failed. Analyzing failures...
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-8.4.2, pluggy-1.6.0 -- /home/node/src/auto-coder/venv/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /home/node/src/auto-coder
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.2.0, anyio-4.11.0, cov-7.0.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 588 items
+
+tests/test_actions_log_cli_e2e.py::test_get_actions_logs_cli PASSED      [  0%]
+tests/test_actions_log_prelude_strip.py::test_cli_get_actions_logs_strips_prelude_and_is_compact PASSED [  0%]
+tests/test_apply_workspace_test_fix_switch.py::test_apply_workspace_test_fix_switch_after_three_same_test_files PASSED [  0%]
+tests/test_auggie_client_daily_limit.py::test_auggie_usage_counter_persists PASSED [  0%]
+tests/test_auggie_client_daily_limit.py::test_auggie_usage_limit_blocks_21st_call PASSED [  0%]
+tests/test_auggie_client_daily_limit.py::test_auggie_usage_resets_when_date_changes PASSED [  1%]
+tests/test_automation_engine.py::test_create_pr_prompt_is_action_oriented_no_comments PASSED [  1%]
+tests/test_automation_engine.py::test_apply_pr_actions_directly_does_not_post_comments PASSED [  1%]
+tests/test_automation_engine.py::TestAutomationEngine::test_init PASSED  [  1%]
+tests/test_automation_engine.py::TestAutomationEngine::test_run_success PASSED [  1%]
+tests/test_automation_engine.py::TestAutomationEngine::test_run_jules_mode_success PASSED [  1%]
+tests/test_automation_engine.py::TestAutomationEngine::test_run_with_error PASSED [  2%]
+tests/test_automation_engine.py::TestAutomationEngine::test_create_feature_issues_success PASSED [  2%]
+tests/test_automation_engine.py::TestAutomationEngine::test_create_feature_issues_dry_run PASSED [  2%]
+tests/test_automation_engine.py::TestAutomationEngine::test_merge_pr_with_conflict_resolution_success PASSED [  2%]
+tests/test_automation_engine.py::TestAutomationEngine::test_merge_pr_with_conflict_resolution_failure PASSED [  2%]
+tests/test_automation_engine.py::TestAutomationEngine::test_resolve_pr_merge_conflicts_git_cleanup PASSED [  2%]
+tests/test_automation_engine.py::TestAutomationEngine::test_take_issue_actions_dry_run PASSED [  3%]
+tests/test_automation_engine.py::TestAutomationEngine::test_apply_issue_actions_directly PASSED [  3%]
+tests/test_automation_engine.py::TestAutomationEngine::test_resolve_pr_merge_conflicts_uses_base_branch PASSED [  3%]
+tests/test_automation_engine.py::TestAutomationEngine::test_update_with_base_branch_uses_provided_base_branch PASSED [  3%]
+tests/test_automation_engine.py::TestAutomationEngine::test_get_repository_context_success PASSED [  3%]
+tests/test_automation_engine.py::TestAutomationEngine::test_format_feature_issue_body PASSED [  3%]
+tests/test_automation_engine.py::TestAutomationEngine::test_save_report_success PASSED [  4%]
+tests/test_automation_engine.py::TestAutomationEngine::test_save_report_with_repo_name PASSED [  4%]
+tests/test_automation_engine.py::TestAutomationEngine::test_should_auto_merge_pr_low_risk_bugfix PASSED [  4%]
+tests/test_automation_engine.py::TestAutomationEngine::test_should_auto_merge_pr_high_risk PASSED [  4%]
+tests/test_automation_engine.py::TestAutomationEngine::test_should_auto_merge_pr_draft PASSED [  4%]
+tests/test_automation_engine.py::TestAutomationEngine::test_run_pr_tests_success PASSED [  4%]
+tests/test_automation_engine.py::TestAutomationEngine::test_run_pr_tests_failure PASSED [  5%]
+tests/test_automation_engine.py::TestAutomationEngine::test_extract_important_errors PASSED [  5%]
+tests/test_automation_engine.py::TestAutomationEngine::test_check_github_actions_status_all_passed PASSED [  5%]
+tests/test_automation_engine.py::TestAutomationEngine::test_check_github_actions_status_some_failed PASSED [  5%]
+tests/test_automation_engine.py::TestAutomationEngine::test_check_github_actions_status_tab_format_with_failures PASSED [  5%]
+tests/test_automation_engine.py::TestAutomationEngine::test_check_github_actions_status_tab_format_all_pass PASSED [  5%]
+tests/test_automation_engine.py::TestAutomationEngine::test_check_github_actions_status_no_checks_reported PASSED [  6%]
+tests/test_automation_engine.py::TestAutomationEngine::test_checkout_pr_branch_success PASSED [  6%]
+tests/test_automation_engine.py::TestAutomationEngine::test_checkout_pr_branch_failure PASSED [  6%]
+tests/test_automation_engine.py::TestAutomationEngine::test_apply_github_actions_fixes_directly PASSED [  6%]
+tests/test_automation_engine.py::TestAutomationEngine::test_apply_local_test_fixes_directly PASSED [  6%]
+tests/test_automation_engine.py::TestAutomationEngine::test_apply_github_actions_fix_no_commit_in_prompt_and_code_commits PASSED [  6%]
+tests/test_automation_engine.py::TestAutomationEngine::test_format_direct_fix_comment PASSED [  7%]
+tests/test_automation_engine.py::TestAutomationEngine::test_update_with_base_branch_up_to_date PASSED [  7%]
+tests/test_automation_engine.py::TestAutomationEngine::test_update_with_base_branch_merge_success PASSED [  7%]
+tests/test_automation_engine.py::TestCommandExecutor::test_run_command_timeout PASSED [  7%]
+tests/test_automation_engine.py::TestAutomationConfig::test_get_reports_dir PASSED [  7%]
+tests/test_automation_engine.py::TestAutomationConfig::test_get_llm_backend_info_with_gemini_client PASSED [  7%]
+tests/test_automation_engine.py::TestAutomationConfig::test_get_llm_backend_info_with_backend_manager PASSED [  8%]
+tests/test_automation_engine.py::TestAutomationConfig::test_get_llm_backend_info_with_no_client PASSED [  8%]
+tests/test_automation_engine.py::TestAutomationEngineExtended::test_fix_pr_issues_with_testing_success PASSED [  8%]
+tests/test_automation_engine.py::TestAutomationEngineExtended::test_fix_pr_issues_with_testing_retry PASSED [  8%]
+tests/test_automation_engine.py::TestAutomationEngineExtended::test_checkout_pr_branch_force_cleanup PASSED [  8%]
+tests/test_automation_engine.py::TestAutomationEngineExtended::test_checkout_pr_branch_without_force_clean PASSED [  9%]
+tests/test_backend_manager.py::test_manager_switches_on_usage_limit PASSED [  9%]
+tests/test_backend_manager.py::test_run_test_fix_prompt_switch_after_three_same_test_files PASSED [  9%]
+tests/test_backend_manager.py::test_cyclic_rotation_across_multiple_backends_on_usage_limits PASSED [  9%]
+tests/test_backend_manager.py::test_run_test_fix_prompt_resets_to_default_on_new_test_file PASSED [  9%]
+tests/test_backend_manager.py::test_same_test_file_counter_resets_when_backend_changes_due_to_limit PASSED [  9%]
+tests/test_backend_manager.py::test_get_last_backend_and_model_reflects_actual_client_usage PASSED [ 10%]
+tests/test_ci_workflow.py::test_github_actions_ci_workflow_exists_and_has_required_jobs PASSED [ 10%]
+tests/test_cli_codex_usage_limit_e2e.py::test_codex_cli_usage_limit_detection_e2e PASSED [ 10%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_codex_with_model_warns_and_ignores PASSED [ 10%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_success_default_codex PASSED [ 10%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_missing_github_token PASSED [ 10%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_missing_codex_cli PASSED [ 11%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_with_env_vars_default_codex PASSED [ 11%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_backend_gemini_custom_model PASSED [ 11%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_force_reindex_flag PASSED [ 11%]
+tests/test_cli_create_feature_issues.py::TestCLICreateFeatureIssues::test_create_feature_issues_default_no_force_reindex PASSED [ 11%]
+tests/test_cli_main.py::TestCLIMain::test_main_command_help PASSED       [ 11%]
+tests/test_cli_main.py::TestCLIMain::test_main_command_version PASSED    [ 12%]
+tests/test_cli_main.py::TestCLIMain::test_process_issues_help_includes_skip_flag PASSED [ 12%]
+tests/test_cli_main.py::TestCLIMain::test_process_issues_help_includes_only_flag PASSED [ 12%]
+tests/test_cli_main.py::TestCLIMain::test_process_issues_help PASSED     [ 12%]
+tests/test_cli_main.py::TestCLIMain::test_create_feature_issues_help PASSED [ 12%]
+tests/test_cli_mcp_pdb.py::TestMCPPDBCLI::test_mcp_pdb_group_help PASSED [ 12%]
+tests/test_cli_mcp_pdb.py::TestMCPPDBCLI::test_mcp_pdb_print_config_windsurf PASSED [ 13%]
+tests/test_cli_mcp_pdb.py::TestMCPPDBCLI::test_mcp_pdb_print_config_claude PASSED [ 13%]
+tests/test_cli_mcp_pdb.py::TestMCPPDBCLI::test_mcp_pdb_status PASSED     [ 13%]
+tests/test_cli_verbose_e2e.py::test_verbose_logging_emits_command_trace PASSED [ 13%]
+tests/test_codex_client.py::TestCodexClient::test_init_checks_cli PASSED [ 13%]
+tests/test_codex_client.py::TestCodexClient::test_llm_invocation_warn_log PASSED [ 13%]
+tests/test_codex_client.py::TestCodexClient::test_run_exec_success PASSED [ 14%]
+tests/test_codex_client.py::TestCodexClient::test_run_exec_failure PASSED [ 14%]
+tests/test_codex_mcp_client.py::test_handshake_timeout_uses_configured_limit PASSED [ 14%]
+tests/test_codex_mcp_client.py::test_rpc_call_times_out_without_stdout_ready PASSED [ 14%]
+tests/test_codex_mcp_client_graphrag.py::test_codex_mcp_client_graphrag_disabled PASSED [ 14%]
+tests/test_codex_mcp_client_graphrag.py::test_codex_mcp_client_graphrag_enabled PASSED [ 14%]
+tests/test_codex_mcp_client_graphrag.py::test_run_gemini_cli_graphrag_ensure_ready_success PASSED [ 15%]
+tests/test_codex_mcp_client_graphrag.py::test_run_gemini_cli_graphrag_ensure_ready_failure PASSED [ 15%]
+tests/test_codex_mcp_client_graphrag.py::test_run_gemini_cli_graphrag_ensure_ready_exception PASSED [ 15%]
+tests/test_codex_mcp_client_graphrag.py::test_run_gemini_cli_no_graphrag PASSED [ 15%]
+tests/test_codex_mcp_e2e.py::test_codex_mcp_jsonrpc_handshake_and_tool_call_e2e PASSED [ 15%]
+tests/test_config.py::TestSettings::test_default_settings PASSED         [ 15%]
+tests/test_config.py::TestSettings::test_settings_from_environment PASSED [ 16%]
+tests/test_config.py::TestSettings::test_settings_partial_environment PASSED [ 16%]
+tests/test_config.py::TestSettings::test_settings_validation PASSED      [ 16%]
+tests/test_config.py::TestSettings::test_boolean_environment_variable_false PASSED [ 16%]
+tests/test_config.py::TestSettings::test_boolean_environment_variable_true_capitalized PASSED [ 16%]
+tests/test_config.py::TestSettings::test_boolean_environment_variable_numeric_true PASSED [ 17%]
+tests/test_config.py::TestSettings::test_boolean_environment_variable_numeric_false PASSED [ 17%]
+tests/test_config.py::TestSettings::test_settings_immutability PASSED    [ 17%]
+tests/test_config.py::TestSettings::test_config_class_attributes PASSED  [ 17%]
+tests/test_e2e_pr_checks_no_checks.py::TestPRChecksNoChecks::test_pr_with_no_checks_reports_as_success PASSED [ 17%]
+tests/test_e2e_prompt_yaml.py::test_pr_prompt_uses_yaml_template PASSED  [ 17%]
+tests/test_ensure_pushed_with_fallback.py::TestEnsurePushedWithFallback::test_non_fast_forward_error_handling_success PASSED [ 18%]
+tests/test_ensure_pushed_with_fallback.py::TestEnsurePushedWithFallback::test_non_fast_forward_error_with_conflicts PASSED [ 18%]
+tests/test_ensure_pushed_with_fallback.py::TestEnsurePushedWithFallback::test_non_fast_forward_error_pull_fails PASSED [ 18%]
+tests/test_ensure_pushed_with_fallback.py::TestEnsurePushedWithFallback::test_no_unpushed_commits PASSED [ 18%]
+tests/test_ensure_pushed_with_fallback.py::TestEnsurePushedWithFallback::test_regular_push_failure PASSED [ 18%]
+tests/test_ensure_pushed_with_fallback.py::TestEnsurePushedWithFallback::test_non_fast_forward_error_with_successful_conflict_resolution PASSED [ 18%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_try_add_work_in_progress_label_success PASSED [ 19%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_try_add_work_in_progress_label_already_exists PASSED [ 19%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_remove_labels_from_issue PASSED [ 19%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_has_label_true PASSED [ 19%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_has_label_false PASSED [ 19%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_disable_labels_add_labels PASSED [ 19%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_disable_labels_remove_labels PASSED [ 20%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_disable_labels_has_label PASSED [ 20%]
+tests/test_exclusive_processing_label.py::TestGitHubClientExclusiveLabels::test_disable_labels_try_add_work_in_progress_label PASSED [ 20%]
+tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_skips_when_label_exists PASSED [ 20%]
+tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_processes_when_label_added PASSED [ 20%]
+tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_normal_removes_label_on_error PASSED [ 20%]
+tests/test_exclusive_processing_label.py::TestIssueProcessorExclusiveProcessing::test_process_issues_jules_mode_skips_when_label_exists PASSED [ 21%]
+tests/test_exclusive_processing_label.py::TestPRProcessorExclusiveProcessing::test_process_pull_requests_skips_when_label_exists PASSED [ 21%]
+tests/test_extract_error_context.py::test_extract_error_context_with_playwright_error PASSED [ 21%]
+tests/test_extract_error_context.py::test_extract_error_context_with_multiple_errors PASSED [ 21%]
+tests/test_extract_error_context.py::test_extract_error_context_with_long_log PASSED [ 21%]
+tests/test_extract_error_context.py::test_extract_error_context_no_errors PASSED [ 21%]
+tests/test_extract_error_context.py::test_extract_error_context_empty_log PASSED [ 22%]
+tests/test_extract_error_context.py::test_extract_error_context_preserves_important_context PASSED [ 22%]
+tests/test_gemini_client.py::TestGeminiClient::test_llm_invocation_warn_log PASSED [ 22%]
+tests/test_gemini_client.py::TestGeminiClient::test_init PASSED          [ 22%]
+tests/test_gemini_client.py::TestGeminiClient::test_analyze_issue_removed PASSED [ 22%]
+tests/test_gemini_client.py::TestGeminiClient::test_analyze_pull_request_removed PASSED [ 22%]
+tests/test_gemini_client.py::TestGeminiClient::test_suggest_features_success PASSED [ 23%]
+tests/test_gemini_client.py::TestGeminiClient::test_generate_solution_removed PASSED [ 23%]
+tests/test_gemini_client.py::TestGeminiClient::test_parse_analysis_response_valid_json PASSED [ 23%]
+tests/test_gemini_client.py::TestGeminiClient::test_parse_analysis_response_invalid_json PASSED [ 23%]
+tests/test_gemini_client.py::TestGeminiClient::test_parse_feature_suggestions_valid_json PASSED [ 23%]
+tests/test_gemini_client.py::TestGeminiClient::test_parse_feature_suggestions_invalid_json PASSED [ 23%]
+tests/test_gemini_client.py::TestGeminiClient::test_parse_solution_response_valid_json PASSED [ 24%]
+tests/test_gemini_client.py::TestGeminiClient::test_parse_solution_response_invalid_json PASSED [ 24%]
+tests/test_gemini_client.py::TestGeminiClient::test_switch_to_conflict_model PASSED [ 24%]
+tests/test_gemini_client.py::TestGeminiClient::test_switch_to_conflict_model_no_change_if_already_conflict PASSED [ 24%]
+tests/test_gemini_client.py::TestGeminiClient::test_escape_prompt_basic PASSED [ 24%]
+tests/test_gemini_client.py::TestGeminiClient::test_escape_prompt_multiple_at_symbols PASSED [ 25%]
+tests/test_gemini_client.py::TestGeminiClient::test_escape_prompt_no_at_symbols PASSED [ 25%]
+tests/test_gemini_client.py::TestGeminiClient::test_escape_prompt_empty_string PASSED [ 25%]
+tests/test_git_commit_history_actions.py::test_parse_git_commit_history_with_actions PASSED [ 25%]
+tests/test_git_commit_history_actions.py::test_parse_git_commit_history_no_actions PASSED [ 25%]
+tests/test_git_commit_history_actions.py::test_parse_git_commit_history_no_git_repo PASSED [ 25%]
+tests/test_git_commit_history_actions.py::test_parse_git_commit_history_depth_limit PASSED [ 26%]
+tests/test_git_commit_history_actions.py::test_check_commit_for_github_actions_with_runs PASSED [ 26%]
+tests/test_git_commit_history_actions.py::test_check_commit_for_github_actions_no_runs PASSED [ 26%]
+tests/test_git_commit_history_actions.py::test_check_commit_for_github_actions_error PASSED [ 26%]
+tests/test_git_commit_history_actions.py::test_parse_git_commit_history_with_malformed_lines PASSED [ 26%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_successful_commit PASSED [ 26%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_and_retry PASSED [ 27%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_fmt_fails PASSED [ 27%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_non_dprint_error PASSED [ 27%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_cwd PASSED [ 27%]
+tests/test_git_utils.py::TestGitPush::test_successful_push PASSED        [ 27%]
+tests/test_git_utils.py::TestGitPush::test_push_with_branch PASSED       [ 27%]
+tests/test_git_utils.py::TestGitPush::test_push_with_custom_remote PASSED [ 28%]
+tests/test_git_utils.py::TestGitPush::test_push_failure PASSED           [ 28%]
+tests/test_git_utils.py::TestGitPush::test_push_with_cwd PASSED          [ 28%]
+tests/test_git_utils.py::TestGitPush::test_push_no_upstream_auto_retry PASSED [ 28%]
+tests/test_git_utils.py::TestGitPush::test_push_no_upstream_with_branch_specified PASSED [ 28%]
+tests/test_git_utils.py::TestGitPush::test_push_other_error_no_retry PASSED [ 28%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_and_retry PASSED [ 29%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_and_commit_message PASSED [ 29%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_fmt_fails PASSED [ 29%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_commit_amend_fails PASSED [ 29%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_and_upstream_retry PASSED [ 29%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_https_url PASSED [ 29%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_https_url_with_git_suffix PASSED [ 30%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_ssh_url PASSED [ 30%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_ssh_url_with_git_suffix PASSED [ 30%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_ssh_alternative_url PASSED [ 30%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_non_github_url PASSED [ 30%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_invalid_url PASSED [ 30%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_empty_url PASSED [ 31%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_none_url PASSED [ 31%]
+tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_with_repo_name PASSED [ 31%]
+tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_without_repo_name PASSED [ 31%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_existing_branch PASSED [ 31%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_new_branch FAILED [ 31%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_from_base_branch FAILED [ 32%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_failure PASSED [ 32%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_success_but_verification_fails PASSED [ 32%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_success_but_branch_mismatch PASSED [ 32%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_cwd PASSED [ 32%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_push_failure FAILED [ 32%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_without_publish FAILED [ 33%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_uncommitted_changes_auto_commit PASSED [ 33%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_uncommitted_changes_error_retry PASSED [ 33%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_uncommitted_changes_commit_fails PASSED [ 33%]
+tests/test_git_utils.py::TestGetCurrentBranch::test_get_current_branch_success PASSED [ 33%]
+tests/test_git_utils.py::TestGetCurrentBranch::test_get_current_branch_with_cwd PASSED [ 34%]
+tests/test_git_utils.py::TestGetCurrentBranch::test_get_current_branch_failure PASSED [ 34%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_issue_number PASSED [ 34%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_pr_number PASSED [ 34%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_number_with_prefix PASSED [ 34%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_number_case_insensitive PASSED [ 34%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_number_no_match PASSED [ 35%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_check_unpushed_commits_with_unpushed PASSED [ 35%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_check_unpushed_commits_without_unpushed PASSED [ 35%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_check_unpushed_commits_branch_not_exist PASSED [ 35%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_git_push_success PASSED [ 35%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_git_push_failure PASSED [ 35%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_ensure_pushed_with_unpushed_commits PASSED [ 36%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_ensure_pushed_without_unpushed_commits PASSED [ 36%]
+tests/test_git_utils_push.py::TestGitPushUtils::test_ensure_pushed_push_failure PASSED [ 36%]
+tests/test_github_client.py::TestGitHubClient::test_init PASSED          [ 36%]
+tests/test_github_client.py::TestGitHubClient::test_get_repository_success PASSED [ 36%]
+tests/test_github_client.py::TestGitHubClient::test_get_repository_failure PASSED [ 36%]
+tests/test_github_client.py::TestGitHubClient::test_get_open_issues_success PASSED [ 37%]
+tests/test_github_client.py::TestGitHubClient::test_get_open_pull_requests_success PASSED [ 37%]
+tests/test_github_client.py::TestGitHubClient::test_get_open_issues_sorted_oldest_first PASSED [ 37%]
+tests/test_github_client.py::TestGitHubClient::test_get_open_pull_requests_sorted_oldest_first PASSED [ 37%]
+tests/test_github_client.py::TestGitHubClient::test_find_pr_by_head_branch_found PASSED [ 37%]
+tests/test_github_client.py::TestGitHubClient::test_find_pr_by_head_branch_not_found PASSED [ 37%]
+tests/test_github_client.py::TestGitHubClient::test_find_pr_by_head_branch_error PASSED [ 38%]
+tests/test_github_client.py::TestGitHubClient::test_get_issue_details PASSED [ 38%]
+tests/test_github_client.py::TestGitHubClient::test_get_pr_details PASSED [ 38%]
+tests/test_github_client.py::TestGitHubClient::test_get_pr_details_by_number_success PASSED [ 38%]
+tests/test_github_client.py::TestGitHubClient::test_get_issue_details_by_number_success PASSED [ 38%]
+tests/test_github_client.py::TestGitHubClient::test_create_issue_success PASSED [ 38%]
+tests/test_github_client.py::TestGitHubClient::test_add_comment_to_issue_success PASSED [ 39%]
+tests/test_github_client.py::TestGitHubClient::test_close_issue_success PASSED [ 39%]
+tests/test_github_client.py::TestGitHubClient::test_add_labels_to_issue_success PASSED [ 39%]
+tests/test_github_client.py::TestGitHubClient::test_add_labels_to_issue_no_duplicates PASSED [ 39%]
+tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_linked_pr PASSED [ 39%]
+tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_no_linked_pr PASSED [ 39%]
+tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_with_multiple_patterns PASSED [ 40%]
+tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_handles_exception PASSED [ 40%]
+tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_success PASSED [ 40%]
+tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_no_linked_prs PASSED [ 40%]
+tests/test_github_client.py::TestGitHubClient::test_get_linked_prs_via_graphql_handles_error PASSED [ 40%]
+tests/test_github_client.py::TestGitHubClient::test_has_linked_pr_uses_graphql_first PASSED [ 40%]
+tests/test_github_client.py::TestGitHubClient::test_get_pr_closing_issues_success PASSED [ 41%]
+tests/test_github_client.py::TestGitHubClient::test_get_pr_closing_issues_empty PASSED [ 41%]
+tests/test_github_client.py::TestGitHubClient::test_get_pr_closing_issues_error PASSED [ 41%]
+tests/test_github_client_parent_issue.py::TestGitHubClientParentIssue::test_get_parent_issue_exists PASSED [ 41%]
+tests/test_github_client_parent_issue.py::TestGitHubClientParentIssue::test_get_parent_issue_no_parent PASSED [ 41%]
+tests/test_github_client_parent_issue.py::TestGitHubClientParentIssue::test_get_parent_issue_graphql_error PASSED [ 42%]
+tests/test_github_client_parent_issue.py::TestGitHubClientParentIssue::test_get_parent_issue_closed_parent PASSED [ 42%]
+tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_all_open PASSED [ 42%]
+tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_some_closed PASSED [ 42%]
+tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_all_closed PASSED [ 42%]
+tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_no_sub_issues PASSED [ 42%]
+tests/test_github_client_sub_issues.py::TestGitHubClientSubIssues::test_get_open_sub_issues_graphql_error PASSED [ 43%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_find_graph_builder_in_repo PASSED [ 43%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_find_graph_builder_in_auto_coder PASSED [ 43%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_find_graph_builder_not_found PASSED [ 43%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_fallback_python_indexing PASSED [ 43%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_fallback_python_indexing_skips_empty_files PASSED [ 43%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_run_graph_builder_typescript_version PASSED [ 44%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_run_graph_builder_python_version PASSED [ 44%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_run_graph_builder_fallback_on_error PASSED [ 44%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_store_graph_in_neo4j_structure PASSED [ 44%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_store_embeddings_in_qdrant_structure PASSED [ 44%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_graph_builder_supports_multiple_languages PASSED [ 44%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_index_codebase_integration PASSED [ 45%]
+tests/test_graphrag_code_analysis_integration.py::TestGraphRAGCodeAnalysisIntegration::test_run_graph_builder_with_all_languages PASSED [ 45%]
+tests/test_graphrag_docker_manager.py::test_init_default_compose_file PASSED [ 45%]
+tests/test_graphrag_docker_manager.py::test_init_custom_compose_file PASSED [ 45%]
+tests/test_graphrag_docker_manager.py::test_start_success PASSED         [ 45%]
+tests/test_graphrag_docker_manager.py::test_start_failure PASSED         [ 45%]
+tests/test_graphrag_docker_manager.py::test_stop_success PASSED          [ 46%]
+tests/test_graphrag_docker_manager.py::test_stop_failure PASSED          [ 46%]
+tests/test_graphrag_docker_manager.py::test_is_running_true PASSED       [ 46%]
+tests/test_graphrag_docker_manager.py::test_is_running_false PASSED      [ 46%]
+tests/test_graphrag_docker_manager.py::test_is_running_command_failure PASSED [ 46%]
+tests/test_graphrag_docker_manager.py::test_wait_for_health_success PASSED [ 46%]
+tests/test_graphrag_docker_manager.py::test_wait_for_health_timeout PASSED [ 47%]
+tests/test_graphrag_docker_manager.py::test_get_status PASSED            [ 47%]
+tests/test_graphrag_docker_manager.py::test_check_neo4j_health_success PASSED [ 47%]
+tests/test_graphrag_docker_manager.py::test_check_neo4j_health_failure PASSED [ 47%]
+tests/test_graphrag_docker_manager.py::test_check_neo4j_health_exception PASSED [ 47%]
+tests/test_graphrag_docker_manager.py::test_check_qdrant_health_success PASSED [ 47%]
+tests/test_graphrag_docker_manager.py::test_check_qdrant_health_failure PASSED [ 48%]
+tests/test_graphrag_docker_manager.py::test_check_qdrant_health_exception PASSED [ 48%]
+tests/test_graphrag_docker_manager.py::test_restart_success PASSED       [ 48%]
+tests/test_graphrag_docker_manager.py::test_restart_stop_failure PASSED  [ 48%]
+tests/test_graphrag_docker_manager.py::test_restart_start_failure PASSED [ 48%]
+tests/test_graphrag_docker_manager.py::test_detect_docker_compose_command_docker_compose PASSED [ 48%]
+tests/test_graphrag_docker_manager.py::test_detect_docker_compose_command_docker_compose_legacy PASSED [ 49%]
+tests/test_graphrag_docker_manager.py::test_detect_docker_compose_command_not_found PASSED [ 49%]
+tests/test_graphrag_docker_manager.py::test_is_permission_error PASSED   [ 49%]
+tests/test_graphrag_docker_manager.py::test_run_docker_compose_with_sudo_retry PASSED [ 49%]
+tests/test_graphrag_docker_manager.py::test_run_docker_compose_no_retry_on_other_errors PASSED [ 49%]
+tests/test_graphrag_docker_manager.py::test_run_docker_compose_no_retry_when_disabled PASSED [ 50%]
+tests/test_graphrag_docker_manager.py::test_get_current_container_id_in_container PASSED [ 50%]
+tests/test_graphrag_docker_manager.py::test_get_current_container_id_not_in_container PASSED [ 50%]
+tests/test_graphrag_docker_manager.py::test_get_graphrag_network_name_success PASSED [ 50%]
+tests/test_graphrag_docker_manager.py::test_get_graphrag_network_name_not_found PASSED [ 50%]
+tests/test_graphrag_docker_manager.py::test_connect_to_graphrag_network_success PASSED [ 50%]
+tests/test_graphrag_docker_manager.py::test_connect_to_graphrag_network_already_connected PASSED [ 51%]
+tests/test_graphrag_docker_manager.py::test_connect_to_graphrag_network_not_in_container PASSED [ 51%]
+tests/test_graphrag_docker_manager.py::test_start_connects_to_network PASSED [ 51%]
+tests/test_graphrag_index_manager.py::test_init_default_paths PASSED     [ 51%]
+tests/test_graphrag_index_manager.py::test_init_custom_paths PASSED      [ 51%]
+tests/test_graphrag_index_manager.py::test_get_codebase_hash PASSED      [ 51%]
+tests/test_graphrag_index_manager.py::test_get_codebase_hash_with_git PASSED [ 52%]
+tests/test_graphrag_index_manager.py::test_get_codebase_hash_git_failure PASSED [ 52%]
+tests/test_graphrag_index_manager.py::test_load_index_state_nonexistent PASSED [ 52%]
+tests/test_graphrag_index_manager.py::test_load_index_state_existing PASSED [ 52%]
+tests/test_graphrag_index_manager.py::test_load_index_state_invalid_json PASSED [ 52%]
+tests/test_graphrag_index_manager.py::test_save_index_state PASSED       [ 52%]
+tests/test_graphrag_index_manager.py::test_save_index_state_creates_directory PASSED [ 53%]
+tests/test_graphrag_index_manager.py::test_is_index_up_to_date_no_state PASSED [ 53%]
+tests/test_graphrag_index_manager.py::test_is_index_up_to_date_matching_hash PASSED [ 53%]
+tests/test_graphrag_index_manager.py::test_is_index_up_to_date_different_hash PASSED [ 53%]
+tests/test_graphrag_index_manager.py::test_update_index_when_up_to_date PASSED [ 53%]
+tests/test_graphrag_index_manager.py::test_update_index_when_outdated PASSED [ 53%]
+tests/test_graphrag_index_manager.py::test_update_index_force PASSED     [ 54%]
+tests/test_graphrag_index_manager.py::test_ensure_index_up_to_date_when_up_to_date PASSED [ 54%]
+tests/test_graphrag_index_manager.py::test_ensure_index_up_to_date_when_outdated PASSED [ 54%]
+tests/test_graphrag_index_manager.py::test_update_index_saves_indexed_at PASSED [ 54%]
+tests/test_graphrag_index_manager.py::test_check_indexed_path_no_state PASSED [ 54%]
+tests/test_graphrag_index_manager.py::test_check_indexed_path_matching PASSED [ 54%]
+tests/test_graphrag_index_manager.py::test_check_indexed_path_different PASSED [ 55%]
+tests/test_graphrag_index_manager.py::test_is_index_up_to_date_path_mismatch PASSED [ 55%]
+tests/test_graphrag_index_manager.py::test_is_index_up_to_date_path_and_hash_match PASSED [ 55%]
+tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_server_starts SKIPPED [ 55%]
+tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_initialize SKIPPED [ 55%]
+tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_list_tools SKIPPED [ 55%]
+tests/test_graphrag_mcp_connection.py::test_graphrag_mcp_connection_from_python SKIPPED [ 56%]
+tests/test_graphrag_mcp_fork.py::test_fork_info_exists PASSED            [ 56%]
+tests/test_graphrag_mcp_fork.py::test_code_analysis_tool_exists PASSED   [ 56%]
+tests/test_graphrag_mcp_fork.py::test_code_analysis_tool_has_required_methods PASSED [ 56%]
+tests/test_graphrag_mcp_fork.py::test_server_imports_code_analysis_tool PASSED [ 56%]
+tests/test_graphrag_mcp_fork.py::test_server_has_code_analysis_tools PASSED [ 56%]
+tests/test_graphrag_mcp_fork.py::test_server_has_enhanced_schema_description PASSED [ 57%]
+tests/test_graphrag_mcp_fork.py::test_mcp_server_name_updated PASSED     [ 57%]
+tests/test_graphrag_mcp_fork.py::test_prompts_yaml_updated PASSED        [ 57%]
+tests/test_graphrag_mcp_fork.py::test_client_features_yaml_updated PASSED [ 57%]
+tests/test_graphrag_mcp_fork.py::test_fork_info_in_bundled_mcp PASSED    [ 57%]
+tests/test_graphrag_mcp_fork.py::test_code_analysis_tool_method_signatures PASSED [ 57%]
+tests/test_graphrag_mcp_fork.py::test_original_documentation_tool_not_used PASSED [ 58%]
+tests/test_graphrag_mcp_fork.py::test_mcp_server_bundled_in_package PASSED [ 58%]
+tests/test_graphrag_mcp_fork.py::test_setup_mcp_uses_bundled_server PASSED [ 58%]
+tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_skips_issue_with_linked_pr PASSED [ 58%]
+tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_processes_all_when_no_linked_prs PASSED [ 58%]
+tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_skips_all_when_all_have_linked_prs PASSED [ 59%]
+tests/test_issue_processor_skip_linked.py::TestIssueProcessorSkipLinked::test_process_issues_normal_handles_has_linked_pr_exception PASSED [ 59%]
+tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_skips_issue_with_open_sub_issues PASSED [ 59%]
+tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_processes_issue_without_sub_issues PASSED [ 59%]
+tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_processes_issue_with_closed_sub_issues PASSED [ 59%]
+tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_jules_mode_skips_issue_with_open_sub_issues PASSED [ 59%]
+tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_jules_mode_processes_issue_without_sub_issues PASSED [ 60%]
+tests/test_issue_processor_skip_sub_issues.py::TestIssueProcessorSkipSubIssues::test_process_issues_normal_dry_run_skips_label_removal PASSED [ 60%]
+tests/test_llm_cli_neutral.py::test_gemini_client_run_llm_cli_delegates PASSED [ 60%]
+tests/test_llm_cli_neutral.py::test_qwen_client_run_llm_cli_delegates PASSED [ 60%]
+tests/test_llm_cli_neutral.py::test_codex_client_run_llm_cli_delegates PASSED [ 60%]
+tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_add_mcp_server_config PASSED [ 60%]
+tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_check_mcp_server_configured PASSED [ 61%]
+tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_check_mcp_server_not_configured PASSED [ 61%]
+tests/test_llm_client_mcp.py::TestGeminiClientMCP::test_ensure_mcp_server_configured PASSED [ 61%]
+tests/test_llm_client_mcp.py::TestQwenClientMCP::test_add_mcp_server_config PASSED [ 61%]
+tests/test_llm_client_mcp.py::TestQwenClientMCP::test_check_mcp_server_not_configured PASSED [ 61%]
+tests/test_llm_client_mcp.py::TestQwenClientMCP::test_ensure_mcp_server_configured PASSED [ 61%]
+tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_add_mcp_server_config PASSED [ 62%]
+tests/test_llm_client_mcp.py::TestAuggieClientMCP::test_check_mcp_server_not_configured PASSED [ 62%]
+tests/test_llm_client_mcp.py::TestCodexClientMCP::test_add_mcp_server_config PASSED [ 62%]
+tests/test_llm_client_mcp.py::TestCodexClientMCP::test_check_mcp_server_not_configured PASSED [ 62%]
+tests/test_llm_client_mcp.py::TestCodexMCPClientMCP::test_add_mcp_server_config PASSED [ 62%]
+tests/test_llm_client_mcp.py::TestCodexMCPClientMCP::test_check_mcp_server_not_configured PASSED [ 62%]
+tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_add_mcp_server_config PASSED [ 63%]
+tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_check_mcp_server_configured PASSED [ 63%]
+tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_ensure_mcp_server_configured_all_backends PASSED [ 63%]
+tests/test_llm_client_mcp.py::TestBackendManagerMCP::test_ensure_mcp_server_configured_partial_failure PASSED [ 63%]
+tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_add_mcp_server_config PASSED [ 63%]
+tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_check_mcp_server_configured PASSED [ 63%]
+tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_check_mcp_server_not_configured PASSED [ 64%]
+tests/test_llm_client_mcp.py::TestClaudeClientMCP::test_ensure_mcp_server_configured PASSED [ 64%]
+tests/test_logger_config.py::TestLoggerConfig::test_setup_logger_default_settings PASSED [ 64%]
+tests/test_logger_config.py::TestLoggerConfig::test_setup_logger_with_custom_level PASSED [ 64%]
+tests/test_logger_config.py::TestLoggerConfig::test_setup_logger_with_file_output PASSED [ 64%]
+tests/test_logger_config.py::TestLoggerConfig::test_setup_logger_creates_log_directory PASSED [ 64%]
+tests/test_logger_config.py::TestLoggerConfig::test_setup_logger_without_file_info PASSED [ 65%]
+tests/test_logger_config.py::TestLoggerConfig::test_get_logger_returns_logger_instance PASSED [ 65%]
+tests/test_logger_config.py::TestLoggerConfig::test_logger_levels PASSED [ 65%]
+tests/test_logger_config.py::TestLoggerConfig::test_logger_file_format_contains_file_info PASSED [ 65%]
+tests/test_logger_config.py::TestLoggerConfig::test_logger_console_format_with_colors PASSED [ 65%]
+tests/test_logger_config.py::TestLoggerConfig::test_logger_error_handling_for_invalid_log_level PASSED [ 65%]
+tests/test_logger_config.py::TestLoggerConfig::test_format_path_for_log_trims_package_prefix PASSED [ 66%]
+tests/test_logger_config.py::TestLoggerConfig::test_format_path_for_log_preserves_external_paths PASSED [ 66%]
+tests/test_logger_config.py::TestLoggerConfig::test_logger_output_uses_trimmed_paths PASSED [ 66%]
+tests/test_mcp_auto_setup.py::test_auto_setup_when_mcp_dir_missing PASSED [ 66%]
+tests/test_mcp_auto_setup.py::test_no_auto_setup_when_disabled PASSED    [ 66%]
+tests/test_mcp_auto_setup.py::test_skip_auto_setup_when_mcp_dir_exists PASSED [ 67%]
+tests/test_mcp_auto_setup.py::test_auto_setup_for_different_backends PASSED [ 67%]
+tests/test_mcp_auto_setup.py::test_auto_setup_failure_handling PASSED    [ 67%]
+tests/test_mcp_auto_setup.py::test_add_mcp_config_checks_directory_existence PASSED [ 67%]
+tests/test_mcp_auto_setup.py::test_suggest_graphrag_mcp_setup_mentions_auto_setup PASSED [ 67%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_not_configured PASSED [ 67%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_configured PASSED [ 68%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_gemini_mcp_other_servers_only PASSED [ 68%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_qwen_mcp_not_configured PASSED [ 68%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_qwen_mcp_configured PASSED [ 68%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_auggie_mcp_windsurf_configured PASSED [ 68%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_codex_mcp_configured PASSED [ 68%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_unknown_backend PASSED [ 69%]
+tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_gemini PASSED [ 69%]
+tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_qwen PASSED [ 69%]
+tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_auggie PASSED [ 69%]
+tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_codex PASSED [ 69%]
+tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_unknown PASSED [ 69%]
+tests/test_mcp_checker.py::TestMCPChecker::test_add_gemini_mcp_config PASSED [ 70%]
+tests/test_mcp_checker.py::TestMCPChecker::test_add_qwen_mcp_config PASSED [ 70%]
+tests/test_mcp_checker.py::TestMCPChecker::test_add_auggie_mcp_config PASSED [ 70%]
+tests/test_mcp_checker.py::TestMCPChecker::test_add_codex_mcp_config PASSED [ 70%]
+tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_adds_config PASSED [ 70%]
+tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_already_configured PASSED [ 70%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_claude_mcp_not_configured PASSED [ 71%]
+tests/test_mcp_checker.py::TestMCPChecker::test_check_claude_mcp_configured PASSED [ 71%]
+tests/test_mcp_checker.py::TestMCPChecker::test_suggest_graphrag_mcp_setup_claude PASSED [ 71%]
+tests/test_mcp_checker.py::TestMCPChecker::test_add_claude_mcp_config PASSED [ 71%]
+tests/test_mcp_checker.py::TestMCPChecker::test_ensure_graphrag_mcp_configured_claude_already_configured PASSED [ 71%]
+tests/test_mcp_manager.py::TestMCPServerConfig::test_basic_config PASSED [ 71%]
+tests/test_mcp_manager.py::TestMCPServerConfig::test_full_config PASSED  [ 72%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_initialization PASSED [ 72%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_register_server PASSED [ 72%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_get_server_config PASSED [ 72%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_is_server_installed_not_installed PASSED [ 72%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_is_server_installed_no_config PASSED [ 72%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_get_server_path_not_installed PASSED [ 73%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_get_server_path_no_config PASSED [ 73%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_setup_server_basic PASSED [ 73%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_setup_server_unknown PASSED [ 73%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_setup_server_uv_failure PASSED [ 73%]
+tests/test_mcp_manager.py::TestMCPServerManager::test_add_backend_config_unknown_backend PASSED [ 73%]
+tests/test_mcp_manager.py::TestGetMCPManager::test_get_mcp_manager_singleton PASSED [ 74%]
+tests/test_mcp_manager.py::TestGetMCPManager::test_get_mcp_manager_returns_manager PASSED [ 74%]
+tests/test_mcp_manager.py::TestMCPServerManagerClaude::test_add_backend_config_claude_success PASSED [ 74%]
+tests/test_mcp_manager.py::TestMCPServerManagerClaude::test_add_backend_config_claude_failure PASSED [ 74%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_initialization PASSED [ 74%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_initialization_default_path PASSED [ 75%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_gitignore_loading PASSED [ 75%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_start_watching PASSED [ 75%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_start_watching_already_running PASSED [ 75%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_stop_watching PASSED [ 75%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_stop_watching_not_running PASSED [ 75%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_parse_playwright_json_report PASSED [ 76%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_query_test_results_idle PASSED [ 76%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_query_test_results_e2e PASSED [ 76%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_get_status PASSED [ 76%]
+tests/test_mcp_test_watcher.py::TestTestWatcherTool::test_query_test_results_invalid_type PASSED [ 76%]
+tests/test_mcp_test_watcher.py::TestMCPServer::test_server_imports PASSED [ 76%]
+tests/test_mcp_test_watcher.py::TestMCPServer::test_server_tools_registered PASSED [ 77%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_closes_keyword PASSED [ 77%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_fixes_keyword PASSED [ 77%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_resolves_keyword PASSED [ 77%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_multiple_keywords PASSED [ 77%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_case_insensitive PASSED [ 77%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_all_keyword_variants PASSED [ 78%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_with_cross_repo_reference PASSED [ 78%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_removes_duplicates PASSED [ 78%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_empty_body PASSED [ 78%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_none_body PASSED [ 78%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_no_keywords PASSED [ 78%]
+tests/test_pr_merge_close_issues.py::TestExtractLinkedIssues::test_extract_preserves_order PASSED [ 79%]
+tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_close_single_issue PASSED [ 79%]
+tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_close_multiple_issues PASSED [ 79%]
+tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_no_linked_issues PASSED [ 79%]
+tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_pr_view_failure PASSED [ 79%]
+tests/test_pr_merge_close_issues.py::TestCloseLinkedIssues::test_issue_close_failure PASSED [ 79%]
+tests/test_pr_merge_close_issues.py::TestMergePRWithIssueClosing::test_merge_pr_closes_issues_on_success PASSED [ 80%]
+tests/test_pr_merge_close_issues.py::TestMergePRWithIssueClosing::test_merge_pr_does_not_close_issues_on_failure PASSED [ 80%]
+tests/test_pr_merge_close_issues.py::TestMergePRWithIssueClosing::test_merge_pr_auto_merge_closes_issues PASSED [ 80%]
+tests/test_progress_footer.py::test_progress_footer_format PASSED        [ 80%]
+tests/test_progress_footer.py::test_progress_footer_update_with_tty PASSED [ 80%]
+tests/test_progress_footer.py::test_progress_footer_update_without_tty PASSED [ 80%]
+tests/test_progress_footer.py::test_progress_footer_clear PASSED         [ 81%]
+tests/test_progress_footer.py::test_progress_footer_newline PASSED       [ 81%]
+tests/test_progress_footer.py::test_global_progress_footer PASSED        [ 81%]
+tests/test_progress_footer.py::test_progress_context PASSED              [ 81%]
+tests/test_progress_footer.py::test_progress_footer_thread_safety PASSED [ 81%]
+tests/test_progress_footer.py::test_progress_footer_race_condition_print_footer PASSED [ 81%]
+tests/test_progress_footer.py::test_progress_footer_race_condition_sink_wrapper PASSED [ 82%]
+tests/test_progress_footer.py::test_progress_footer_multiple_updates PASSED [ 82%]
+tests/test_progress_footer.py::test_progress_footer_different_items PASSED [ 82%]
+tests/test_progress_footer.py::test_progress_footer_special_characters PASSED [ 82%]
+tests/test_progress_footer.py::test_progress_footer_nested_stages PASSED [ 82%]
+tests/test_progress_footer.py::test_progress_stage_context_manager PASSED [ 82%]
+tests/test_progress_footer.py::test_progress_stage_with_set_and_push PASSED [ 83%]
+tests/test_prompt_loader.py::test_render_prompt_with_custom_path PASSED  [ 83%]
+tests/test_prompt_loader.py::test_get_prompt_template_uses_cache PASSED  [ 83%]
+tests/test_prompt_loader.py::test_default_prompt_file_exists PASSED      [ 83%]
+tests/test_prompt_loader.py::test_missing_prompt_file_causes_system_exit PASSED [ 83%]
+tests/test_prompt_loader.py::test_invalid_yaml_causes_system_exit PASSED [ 84%]
+tests/test_qwen_client.py::TestQwenClient::test_init_checks_cli PASSED   [ 84%]
+tests/test_qwen_client.py::TestQwenClient::test_run_prompt_success PASSED [ 84%]
+tests/test_qwen_client.py::TestQwenClient::test_run_prompt_failure_nonzero PASSED [ 84%]
+tests/test_qwen_client_alias.py::test_run_qwen_cli_alias_delegates_and_returns_output PASSED [ 84%]
+tests/test_qwen_client_cli_options.py::test_qwen_client_cli_options_mode PASSED [ 84%]
+tests/test_qwen_client_cli_options.py::test_qwen_client_preserve_env_mode PASSED [ 85%]
+tests/test_qwen_client_cli_options.py::test_qwen_client_default_env_mode PASSED [ 85%]
+tests/test_qwen_client_fallback.py::test_qwen_client_prefers_configured_api_keys_before_oauth PASSED [ 85%]
+tests/test_qwen_client_fallback.py::test_qwen_client_fallback_to_openrouter PASSED [ 85%]
+tests/test_qwen_client_fallback.py::test_qwen_client_fallbacks_to_oauth_after_api_keys PASSED [ 85%]
+tests/test_qwen_client_fallback.py::test_qwen_client_all_limits_raise PASSED [ 85%]
+tests/test_qwen_client_model_flag.py::test_run_prompt_includes_model_flag_when_model_set PASSED [ 86%]
+tests/test_qwen_client_openai_env.py::test_qwen_client_env_injection_for_openai PASSED [ 86%]
+tests/test_qwen_help_probe.py::test_qwen_help_probe_detects_required_flags PASSED [ 86%]
+tests/test_qwen_help_probe.py::test_qwen_help_probe_missing_flag_returns_false PASSED [ 86%]
+tests/test_qwen_help_probe.py::test_qwen_help_probe_accepts_long_form_for_short_flags PASSED [ 86%]
+tests/test_qwen_help_probe.py::test_qwen_help_probe_accepts_short_form_for_long_flags PASSED [ 86%]
+tests/test_qwen_help_probe_extra.py::test_qwen_help_probe_handles_trailing_space_and_text PASSED [ 87%]
+tests/test_qwen_help_probe_extra.py::test_qwen_help_probe_handles_table_style PASSED [ 87%]
+tests/test_qwen_help_probe_extra.py::test_qwen_help_probe_handles_unknown_flags_and_separators PASSED [ 87%]
+tests/test_qwen_provider_config.py::test_load_qwen_provider_configs_defaults PASSED [ 87%]
+tests/test_qwen_provider_config.py::test_load_qwen_provider_configs_skips_missing_key PASSED [ 87%]
+tests/test_real_github_actions_log_extraction.py::test_extract_error_context_with_realistic_playwright_log PASSED [ 87%]
+tests/test_real_github_actions_log_extraction.py::test_get_github_actions_logs_from_url_with_realistic_zip PASSED [ 88%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_initialization_default PASSED [ 88%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_initialization_with_params PASSED [ 88%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_installed_no_path PASSED [ 88%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_installed_not_exists PASSED [ 88%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_installed_no_main_file PASSED [ 88%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_installed_with_main_py PASSED [ 89%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_installed_with_server_py PASSED [ 89%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_running_no_process PASSED [ 89%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_running_process_terminated PASSED [ 89%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_is_mcp_server_running_process_alive PASSED [ 89%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_start_mcp_server_with_run_script PASSED [ 89%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_start_mcp_server_with_uv PASSED [ 90%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_start_mcp_server_no_path PASSED [ 90%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_start_mcp_server_exception PASSED [ 90%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_stop_mcp_server_no_process PASSED [ 90%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_stop_mcp_server_normal PASSED [ 90%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_stop_mcp_server_timeout PASSED [ 90%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_get_mcp_config_for_llm_not_running PASSED [ 91%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_get_mcp_config_for_llm_running PASSED [ 91%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_context_manager PASSED [ 91%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_ensure_ready_not_installed PASSED [ 91%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_ensure_ready_start_failure PASSED [ 91%]
+tests/test_test_watcher_integration.py::TestTestWatcherIntegration::test_ensure_ready_success PASSED [ 92%]
+tests/test_update_manager.py::test_maybe_run_auto_update_skips_outside_pipx PASSED [ 92%]
+tests/test_update_manager.py::test_maybe_run_auto_update_runs_pipx PASSED [ 92%]
+tests/test_update_manager.py::test_maybe_run_auto_update_reports_failure PASSED [ 92%]
+tests/test_update_manager.py::test_maybe_run_auto_update_respects_disable_flag PASSED [ 92%]
+tests/test_update_manager.py::test_check_for_updates_and_restart_triggers_capture PASSED [ 92%]
+tests/test_update_manager.py::test_restart_without_recorded_command PASSED [ 93%]
+tests/test_usage_limit_detection.py::test_qwen_raises_usage_limit_on_message PASSED [ 93%]
+tests/test_usage_limit_detection.py::test_qwen_raises_usage_limit_on_nonzero_429 PASSED [ 93%]
+tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_nonzero_429 PASSED [ 93%]
+tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_message_even_zero PASSED [ 93%]
+tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_429_only PASSED [ 93%]
+tests/test_usage_limit_detection.py::test_gemini_raises_usage_limit_on_zero_with_resource_exhausted PASSED [ 94%]
+tests/test_usage_limit_detection.py::test_codex_raises_usage_limit_on_message_even_zero PASSED [ 94%]
+tests/test_usage_limit_detection.py::test_codex_raises_usage_limit_on_nonzero_429 PASSED [ 94%]
+tests/test_usage_limit_detection.py::test_codex_raises_usage_limit_on_upgrade_to_pro_message PASSED [ 94%]
+tests/test_utils_change_fraction.py::test_change_fraction_ignores_large_prefix_when_last_20_lines_identical PASSED [ 94%]
+tests/test_utils_change_fraction.py::test_change_fraction_ignores_large_prefix_when_last_1000_chars_identical PASSED [ 94%]
+tests/test_utils_change_fraction.py::test_change_fraction_detects_tail_difference PASSED [ 95%]
+tests/test_utils_change_fraction.py::test_change_fraction_none_and_equal_cases PASSED [ 95%]
+tests/test_utils_command_executor.py::test_run_command_respects_stream_flag PASSED [ 95%]
+tests/test_utils_command_executor.py::test_run_command_streams_output PASSED [ 95%]
+tests/test_utils_command_executor.py::test_should_stream_when_debugger_attached PASSED [ 95%]
+tests/test_utils_command_executor.py::test_should_stream_when_env_forced PASSED [ 95%]
+tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers[PYDEVD_USE_FRAME_EVAL] PASSED [ 96%]
+tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers[PYDEVD_LOAD_VALUES_ASYNC] PASSED [ 96%]
+tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers[DEBUGPY_LAUNCHER_PORT] PASSED [ 96%]
+tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers[PYDEV_DEBUG] PASSED [ 96%]
+tests/test_utils_command_executor.py::test_should_stream_for_debugger_markers[VSCODE_PID] PASSED [ 96%]
+tests/test_utils_command_executor.py::test_is_running_in_debugger_false PASSED [ 96%]
+tests/test_utils_command_executor.py::test_is_running_in_debugger_true_gettrace PASSED [ 97%]
+tests/test_utils_command_executor.py::test_is_running_in_debugger_true_env_markers[PYDEVD_USE_FRAME_EVAL] PASSED [ 97%]
+tests/test_utils_command_executor.py::test_is_running_in_debugger_true_env_markers[PYDEVD_LOAD_VALUES_ASYNC] PASSED [ 97%]
+tests/test_utils_command_executor.py::test_is_running_in_debugger_true_env_markers[DEBUGPY_LAUNCHER_PORT] PASSED [ 97%]
+tests/test_utils_command_executor.py::test_is_running_in_debugger_true_env_markers[PYDEV_DEBUG] PASSED [ 97%]
+tests/test_utils_command_executor.py::test_is_running_in_debugger_true_env_markers[VSCODE_PID] PASSED [ 97%]
+tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_failed_summary_hyphen PASSED [ 98%]
+tests/test_utils_extract_first_failed_test.py::test_extract_from_pytest_traceback_line PASSED [ 98%]
+tests/test_utils_extract_first_failed_test.py::test_extract_from_playwright_spec PASSED [ 98%]
+tests/test_utils_extract_first_failed_test.py::test_extract_playwright_candidate_returned_even_if_not_exists PASSED [ 98%]
+tests/test_utils_extract_first_failed_test.py::test_extract_playwright_from_sample_full_output_excerpt PASSED [ 98%]
+tests/test_utils_extract_first_failed_test.py::test_playwright_prefers_fail_over_pass_when_both_present PASSED [ 98%]
+tests/test_utils_extract_first_failed_test.py::test_stderr_is_prioritized_over_stdout PASSED [ 99%]
+tests/test_utils_extract_first_failed_test.py::test_vitest_fail_line_extracts_test_ts PASSED [ 99%]
+tests/test_utils_extract_first_failed_test.py::test_vitest_success_playwright_fail_should_detect_playwright PASSED [ 99%]
+tests/test_utils_extract_first_failed_test.py::test_playwright_success_vitest_fail_should_detect_vitest PASSED [ 99%]
+tests/test_utils_extract_first_failed_test.py::test_pytest_success_playwright_fail_should_detect_playwright PASSED [ 99%]
+tests/test_utils_streaming_limit_detection.py::test_streaming_detects_usage_limit_and_aborts_early PASSED [100%]
+
+=================================== FAILURES ===================================
+_______ TestGitCheckoutBranch.test_successful_checkout_create_new_branch _______
+tests/test_git_utils.py:735: in test_successful_checkout_create_new_branch
+    assert result.success is True
+E   assert False is True
+E    +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+----------------------------- Captured stdout call -----------------------------
+[32m2025-11-02 07:19:47.477[0m | [1mINFO    [0m | auto_coder/git_utils.py:350 in [36mgit_checkout_branch[0m - [1mBranch 'new-feature' already exists, checking out existing branch[0m
+[32m2025-11-02 07:19:47.478[0m | [31m[1mERROR   [0m | auto_coder/git_utils.py:422 in [36mgit_checkout_branch[0m - [31m[1mBranch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'[0m
+____ TestGitCheckoutBranch.test_successful_checkout_create_from_base_branch ____
+tests/test_git_utils.py:785: in test_successful_checkout_create_from_base_branch
+    assert result.success is True
+E   assert False is True
+E    +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+----------------------------- Captured stdout call -----------------------------
+[32m2025-11-02 07:19:47.603[0m | [1mINFO    [0m | auto_coder/git_utils.py:350 in [36mgit_checkout_branch[0m - [1mBranch 'new-feature' already exists, checking out existing branch[0m
+__________ TestGitCheckoutBranch.test_create_new_branch_push_failure ___________
+tests/test_git_utils.py:944: in test_create_new_branch_push_failure
+    assert result.success is True
+E   AssertionError: assert False is True
+E    +  where False = CommandResult(success=False, stdout='new-feature\n', stderr='Checkout succeeded but verification failed: fatal: unable to access remote', returncode=1).success
+----------------------------- Captured stdout call -----------------------------
+[32m2025-11-02 07:19:47.657[0m | [1mINFO    [0m | auto_coder/git_utils.py:350 in [36mgit_checkout_branch[0m - [1mBranch 'new-feature' already exists, checking out existing branch[0m
+--------------------------- Captured stdout teardown ---------------------------
+[32m2025-11-02 07:19:47.657[0m | [31m[1mERROR   [0m | auto_coder/git_utils.py:409 in [36mgit_checkout_branch[0m - [31m[1mFailed to verify current branch after checkout: fatal: unable to access remote[0m
+_________ TestGitCheckoutBranch.test_create_new_branch_without_publish _________
+tests/test_git_utils.py:968: in test_create_new_branch_without_publish
+    result = git_checkout_branch("new-feature", create_new=True, publish=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/auto_coder/git_utils.py:404: in git_checkout_branch
+    verify_result = cmd.run_command(
+/usr/lib/python3.11/unittest/mock.py:1118: in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.11/unittest/mock.py:1122: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.11/unittest/mock.py:1179: in _execute_mock_call
+    result = next(effect)
+             ^^^^^^^^^^^^
+E   StopIteration
+=============================== warnings summary ===============================
+tests/test_e2e_pr_checks_no_checks.py:9
+  /home/node/src/auto-coder/tests/test_e2e_pr_checks_no_checks.py:9: PytestUnknownMarkWarning: Unknown pytest.mark.e2e - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.e2e
+
+tests/test_e2e_pr_checks_no_checks.py:10
+  /home/node/src/auto-coder/tests/test_e2e_pr_checks_no_checks.py:10: PytestUnknownMarkWarning: Unknown pytest.mark.headless - is this a typo?  You can register custom marks to avoid this warning - for details, see https://docs.pytest.org/en/stable/how-to/mark.html
+    @pytest.mark.headless
+
+src/auto_coder/mcp_servers/test_watcher/test_watcher_tool.py:56
+  /home/node/src/auto-coder/src/auto_coder/mcp_servers/test_watcher/test_watcher_tool.py:56: PytestCollectionWarning: cannot collect test class 'TestWatcherTool' because it has a __init__ constructor (from: tests/test_mcp_test_watcher.py)
+    class TestWatcherTool:
+
+src/auto_coder/test_watcher_integration.py:19
+  /home/node/src/auto-coder/src/auto_coder/test_watcher_integration.py:19: PytestCollectionWarning: cannot collect test class 'TestWatcherIntegration' because it has a __init__ constructor (from: tests/test_test_watcher_integration.py)
+    class TestWatcherIntegration:
+
+tests/test_e2e_pr_checks_no_checks.py: 1 warning
+tests/test_exclusive_processing_label.py: 9 warnings
+tests/test_github_client.py: 6 warnings
+tests/test_github_client_parent_issue.py: 4 warnings
+tests/test_github_client_sub_issues.py: 5 warnings
+  /home/node/src/auto-coder/src/auto_coder/github_client.py:27: DeprecationWarning: Argument login_or_token is deprecated, please use auth=github.Auth.Token(...) instead
+    self.github = Github(token)
+
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+  /usr/lib/python3.11/subprocess.py:1014: RuntimeWarning: line buffering (buffering=1) isn't supported in binary mode, the default buffer size will be used
+    self.stdout = io.open(c2pread, 'rb', bufsize)
+
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+tests/test_graphrag_docker_manager.py::test_start_success
+  /usr/lib/python3.11/subprocess.py:1019: RuntimeWarning: line buffering (buffering=1) isn't supported in binary mode, the default buffer size will be used
+    self.stderr = io.open(errread, 'rb', bufsize)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.11.2-final-0 ________________
+
+Name                                                                         Stmts   Miss  Cover   Missing
+----------------------------------------------------------------------------------------------------------
+src/auto_coder/__init__.py                                                       3      0   100%
+src/auto_coder/auggie_client.py                                                135     22    84%   52, 58, 62, 182, 191-193, 197, 202, 206, 227-230, 236-242, 284-288
+src/auto_coder/auth_utils.py                                                   107     82    23%   31-32, 42-49, 55-64, 81-177, 187-193, 203-221, 231
+src/auto_coder/automation_config.py                                             24      0   100%
+src/auto_coder/automation_engine.py                                            403    174    57%   71-155, 161-165, 171-273, 362-388, 414-422, 454-455, 468, 477, 481, 527-539, 566-568, 588, 622-624, 632-637, 652-655, 695, 719-726, 804, 823, 881-891, 915-958, 968-970, 974-976, 982, 988, 992, 1002, 1006, 1012
+src/auto_coder/backend_manager.py                                              155     42    73%   41-43, 71, 76-78, 87-90, 102-103, 120-122, 139-145, 175, 193-197, 202-209, 212-216, 224-225, 280-284
+src/auto_coder/claude_client.py                                                 98     52    47%   38-40, 44-48, 52-54, 60, 66-135, 139, 165-171, 199-200, 216-218
+src/auto_coder/cli.py                                                           28      1    96%   48
+src/auto_coder/cli_commands_graphrag.py                                        425    318    25%   51-52, 66-71, 75-145, 150-153, 156, 165-171, 182-196, 200, 210-211, 213-216, 239-242, 251-259, 262-263, 315-320, 350-353, 356-358, 363, 368, 376-377, 381-386, 389-396, 400-402, 414-430, 457, 460-462, 474-498, 510-534, 547, 564-635, 647-661, 667-690, 706-797, 858-894
+src/auto_coder/cli_commands_main.py                                            303    188    38%   170-411, 510-511, 570-571, 678-784
+src/auto_coder/cli_commands_mcp.py                                             125    100    20%   22, 76-126, 132-143, 150-177, 184-231, 253-263
+src/auto_coder/cli_commands_mcp_pdb.py                                          46     11    76%   68-73, 91-96
+src/auto_coder/cli_commands_utils.py                                           101     76    25%   31-32, 49-60, 71-76, 82-173
+src/auto_coder/cli_helpers.py                                                  284    197    31%   25-28, 48-125, 165-239, 244-255, 271-307, 315-324, 333-342, 350-359, 404, 415-422, 448, 451, 454, 481, 502-560, 576, 598-599
+src/auto_coder/codex_client.py                                                  94     20    79%   38-40, 44, 48, 92-94, 152-155, 161-167, 192-193, 209-211
+src/auto_coder/codex_mcp_client.py                                             290     93    68%   38-50, 59-73, 108-110, 136-142, 188, 190, 194, 199, 207, 212, 223-224, 226, 231, 238, 240, 243, 255-256, 260, 274, 283, 286, 299-310, 318-322, 358-389, 427, 429-430, 434, 441-444, 454-455, 478-481, 487-493, 518-519, 535-537
+src/auto_coder/config.py                                                        15      0   100%
+src/auto_coder/conflict_resolver.py                                            387    363     6%   22-30, 39-80, 91-172, 191-303, 313-337, 342-365, 377-418, 428-465, 474-496, 503-512, 521-542, 563-655, 666-787
+src/auto_coder/exceptions.py                                                     2      0   100%
+src/auto_coder/fix_to_pass_tests_runner.py                                     464    393    15%   49-51, 57-64, 72-87, 100-113, 121, 130-139, 144-149, 165-320, 345-394, 417-420, 435, 461-462, 474-475, 495-769, 785-830, 842-851, 862-1035, 1040-1053
+src/auto_coder/gemini_client.py                                                151     30    80%   55-57, 67-73, 169, 180-183, 196-197, 201-203, 207, 244-245, 276-277, 311-317, 348-352
+src/auto_coder/git_utils.py                                                    446    207    54%   18-19, 92-125, 167-172, 187-197, 253, 331, 340, 357-361, 379-380, 395-398, 435-448, 531-532, 604-607, 637, 700, 742-758, 838-840, 893-916, 937-994, 1024-1115, 1136-1197, 1224-1288
+src/auto_coder/github_client.py                                                274     43    84%   55-56, 61, 66-67, 80-82, 155-157, 167-169, 409-413, 488-491, 574-576, 588-590, 602-604, 620-622, 648-650, 678-680, 699-701, 737-741
+src/auto_coder/graphrag_docker_manager.py                                      212     32    85%   69-87, 111-112, 124-125, 219-220, 395-398, 432-433, 446-447, 498-499, 506-516
+src/auto_coder/graphrag_index_manager.py                                       310     67    78%   67-69, 77, 86-88, 120-121, 175, 210-212, 239-248, 290-296, 342-345, 390-406, 449-451, 482-483, 496-502, 567-569, 582-590, 618, 628-629, 657, 660, 689-694
+src/auto_coder/graphrag_mcp_integration.py                                     139    111    20%   59-67, 84-174, 182-210, 218-223, 232-248, 252-263, 267, 275-280
+src/auto_coder/issue_processor.py                                              475    292    39%   44-47, 138-150, 177-178, 194-195, 202-204, 262-273, 291-301, 309-310, 316-328, 332-334, 368-370, 401-516, 541-542, 544-545, 556-569, 595-608, 628-784, 795-845, 850-868, 873-889, 925-929, 957-981, 999-1099, 1112-1115, 1126, 1135-1157
+src/auto_coder/llm_client_base.py                                               28      9    68%   25, 37, 53, 73, 80, 88, 96, 118, 126
+src/auto_coder/logger_config.py                                                 89     18    80%   47-49, 70-75, 137, 151-152, 178, 227-236
+src/auto_coder/mcp_checker.py                                                  233     64    73%   64-66, 89-93, 117-138, 163-167, 184, 197-201, 290-291, 337-341, 439-471, 524-525, 531-538, 554-561
+src/auto_coder/mcp_manager.py                                                  217    108    50%   55-57, 138-139, 143-144, 155, 159-161, 166-168, 179-181, 198-200, 205-209, 213-217, 221, 226-227, 251, 253, 255, 261-263, 275-291, 303-328, 340-365, 377-401, 413-438, 458-464, 480
+src/auto_coder/mcp_servers/graphrag_mcp/graphrag_mcp/__init__.py                 1      0   100%
+src/auto_coder/mcp_servers/graphrag_mcp/graphrag_mcp/code_analysis_tool.py     201    184     8%   24-40, 47-51, 56-100, 117-169, 190-293, 308-360, 379-500, 516-573
+src/auto_coder/mcp_servers/test_watcher/server.py                               38     20    47%   33, 47, 79, 97, 111-134, 145
+src/auto_coder/mcp_servers/test_watcher/test_watcher_tool.py                   207     81    61%   32-36, 40-53, 150-152, 180-182, 191-194, 207-283, 317, 332-346, 361-374, 421, 467, 471, 486
+src/auto_coder/pr_processor.py                                                1246    860    31%   104-105, 112, 147-151, 162-164, 204, 209-213, 240-242, 259-263, 283-286, 299, 337-384, 394-400, 406-422, 429-432, 448-518, 522-524, 532-539, 546-578, 589-602, 613-647, 696-697, 699, 701, 709, 719-778, 792-793, 832, 849-969, 981-1104, 1125, 1134, 1157-1159, 1187-1203, 1214-1315, 1408-1412, 1441-1444, 1462-1519, 1524-1526, 1539-1567, 1574-1600, 1607-1729, 1762-1765, 1791-1793, 1796-1799, 1806-1807, 1825-1898, 1914-1986, 2021-2086, 2131-2141, 2156-2157, 2174-2175, 2192, 2205-2211, 2220-2234, 2237, 2244-2249, 2277-2278, 2280, 2286, 2320, 2356-2412, 2427, 2432-2719, 2729-2839
+src/auto_coder/progress_decorators.py                                          111     80    28%   59, 63-76, 83-85, 97, 104-115, 139-153, 176-191, 210-211, 214-258
+src/auto_coder/progress_footer.py                                              179      6    97%   69-72, 259-263, 421
+src/auto_coder/prompt_loader.py                                                 68     10    85%   45-48, 51-53, 69, 90, 108
+src/auto_coder/qwen_client.py                                                  219     59    73%   80-82, 92-94, 99-100, 106-107, 125, 154, 213, 215, 224-229, 293, 295, 298, 345, 353-361, 364, 374-382, 410-416, 449-467
+src/auto_coder/qwen_provider_config.py                                          62      9    85%   59, 72-73, 77-78, 123-124, 131-135
+src/auto_coder/test_watcher_client.py                                           67     67     0%   5-174
+src/auto_coder/test_watcher_integration.py                                      97     10    90%   41, 174-175, 181-187
+src/auto_coder/update_manager.py                                               178     38    79%   53, 56, 64, 68, 70-76, 94-104, 137-142, 147-151, 167, 171, 181, 216-217, 231, 261-264, 268-269, 281-286, 301, 309
+src/auto_coder/utils.py                                                        312     46    85%   77-78, 196-197, 214-219, 226-227, 230-240, 245-246, 278, 334, 357-359, 369, 390, 394, 434, 436, 449, 456-459, 465, 495, 527-530, 538, 581
+----------------------------------------------------------------------------------------------------------
+TOTAL                                                                         9049   4583    49%
+Coverage HTML written to dir htmlcov
+=========================== short test summary info ============================
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_new_branch - assert False is True
+ +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_from_base_branch - assert False is True
+ +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_push_failure - AssertionError: assert False is True
+ +  where False = CommandResult(success=False, stdout='new-feature\n', stderr='Checkout succeeded but verification failed: fatal: unable to access remote', returncode=1).success
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_without_publish - StopIteration
+============ 4 failed, 580 passed, 4 skipped, 41 warnings in 42.29s ============
+Running only the first failed test: tests/test_git_utils.py
+============================= test session starts ==============================
+platform linux -- Python 3.11.2, pytest-8.4.2, pluggy-1.6.0 -- /home/node/src/auto-coder/venv/bin/python3.11
+cachedir: .pytest_cache
+rootdir: /home/node/src/auto-coder
+configfile: pyproject.toml
+plugins: asyncio-1.2.0, anyio-4.11.0, cov-7.0.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 49 items
+
+tests/test_git_utils.py::TestGitCommitWithRetry::test_successful_commit PASSED [  2%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_and_retry PASSED [  4%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_dprint_error_fmt_fails PASSED [  6%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_non_dprint_error PASSED [  8%]
+tests/test_git_utils.py::TestGitCommitWithRetry::test_commit_with_cwd PASSED [ 10%]
+tests/test_git_utils.py::TestGitPush::test_successful_push PASSED        [ 12%]
+tests/test_git_utils.py::TestGitPush::test_push_with_branch PASSED       [ 14%]
+tests/test_git_utils.py::TestGitPush::test_push_with_custom_remote PASSED [ 16%]
+tests/test_git_utils.py::TestGitPush::test_push_failure PASSED           [ 18%]
+tests/test_git_utils.py::TestGitPush::test_push_with_cwd PASSED          [ 20%]
+tests/test_git_utils.py::TestGitPush::test_push_no_upstream_auto_retry PASSED [ 22%]
+tests/test_git_utils.py::TestGitPush::test_push_no_upstream_with_branch_specified PASSED [ 24%]
+tests/test_git_utils.py::TestGitPush::test_push_other_error_no_retry PASSED [ 26%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_and_retry PASSED [ 28%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_and_commit_message PASSED [ 30%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_fmt_fails PASSED [ 32%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_commit_amend_fails PASSED [ 34%]
+tests/test_git_utils.py::TestGitPush::test_push_with_dprint_error_and_upstream_retry PASSED [ 36%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_https_url PASSED [ 38%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_https_url_with_git_suffix PASSED [ 40%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_ssh_url PASSED [ 42%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_ssh_url_with_git_suffix PASSED [ 44%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_ssh_alternative_url PASSED [ 46%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_non_github_url PASSED [ 48%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_invalid_url PASSED [ 51%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_empty_url PASSED [ 53%]
+tests/test_git_utils.py::TestParseGithubRepoFromUrl::test_none_url PASSED [ 55%]
+tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_with_repo_name PASSED [ 57%]
+tests/test_git_utils.py::TestSaveCommitFailureHistory::test_save_commit_failure_history_without_repo_name PASSED [ 59%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_existing_branch PASSED [ 61%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_new_branch FAILED [ 63%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_from_base_branch FAILED [ 65%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_failure PASSED [ 67%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_success_but_verification_fails PASSED [ 69%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_success_but_branch_mismatch PASSED [ 71%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_cwd PASSED [ 73%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_push_failure FAILED [ 75%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_without_publish FAILED [ 77%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_uncommitted_changes_auto_commit PASSED [ 79%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_uncommitted_changes_error_retry PASSED [ 81%]
+tests/test_git_utils.py::TestGitCheckoutBranch::test_checkout_with_uncommitted_changes_commit_fails PASSED [ 83%]
+tests/test_git_utils.py::TestGetCurrentBranch::test_get_current_branch_success PASSED [ 85%]
+tests/test_git_utils.py::TestGetCurrentBranch::test_get_current_branch_with_cwd PASSED [ 87%]
+tests/test_git_utils.py::TestGetCurrentBranch::test_get_current_branch_failure PASSED [ 89%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_issue_number PASSED [ 91%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_pr_number PASSED [ 93%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_number_with_prefix PASSED [ 95%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_number_case_insensitive PASSED [ 97%]
+tests/test_git_utils.py::TestExtractNumberFromBranch::test_extract_number_no_match PASSED [100%]
+
+=================================== FAILURES ===================================
+_______ TestGitCheckoutBranch.test_successful_checkout_create_new_branch _______
+tests/test_git_utils.py:735: in test_successful_checkout_create_new_branch
+    assert result.success is True
+E   assert False is True
+E    +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+----------------------------- Captured stdout call -----------------------------
+[32m2025-11-02 07:20:13.107[0m | [1mINFO    [0m | auto_coder/git_utils.py:350 in [36mgit_checkout_branch[0m - [1mBranch 'new-feature' already exists, checking out existing branch[0m
+[32m2025-11-02 07:20:13.108[0m | [31m[1mERROR   [0m | auto_coder/git_utils.py:422 in [36mgit_checkout_branch[0m - [31m[1mBranch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'[0m
+____ TestGitCheckoutBranch.test_successful_checkout_create_from_base_branch ____
+tests/test_git_utils.py:785: in test_successful_checkout_create_from_base_branch
+    assert result.success is True
+E   assert False is True
+E    +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+__________ TestGitCheckoutBranch.test_create_new_branch_push_failure ___________
+tests/test_git_utils.py:944: in test_create_new_branch_push_failure
+    assert result.success is True
+E   AssertionError: assert False is True
+E    +  where False = CommandResult(success=False, stdout='new-feature\n', stderr='Checkout succeeded but verification failed: fatal: unable to access remote', returncode=1).success
+----------------------------- Captured stdout call -----------------------------
+[32m2025-11-02 07:20:13.260[0m | [1mINFO    [0m | auto_coder/git_utils.py:350 in [36mgit_checkout_branch[0m - [1mBranch 'new-feature' already exists, checking out existing branch[0m
+_________ TestGitCheckoutBranch.test_create_new_branch_without_publish _________
+tests/test_git_utils.py:968: in test_create_new_branch_without_publish
+    result = git_checkout_branch("new-feature", create_new=True, publish=False)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+src/auto_coder/git_utils.py:404: in git_checkout_branch
+    verify_result = cmd.run_command(
+/usr/lib/python3.11/unittest/mock.py:1118: in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.11/unittest/mock.py:1122: in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.11/unittest/mock.py:1179: in _execute_mock_call
+    result = next(effect)
+             ^^^^^^^^^^^^
+E   StopIteration
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.11.2-final-0 ________________
+
+Name                                         Stmts   Miss  Cover   Missing
+--------------------------------------------------------------------------
+src/auto_coder/__init__.py                       3      0   100%
+src/auto_coder/auggie_client.py                135    135     0%   11-288
+src/auto_coder/auth_utils.py                   107    107     0%   5-231
+src/auto_coder/automation_config.py             24      3    88%   25-29
+src/auto_coder/automation_engine.py            403    344    15%   53-58, 71-155, 161-165, 171-273, 281-334, 340, 354, 362-388, 398-424, 437-455, 464, 468, 477, 481, 487, 495-497, 511-515, 527-539, 544-568, 574-639, 643-655, 665-679, 685, 689-726, 734-765, 771-891, 903, 909, 915-958, 964, 968-970, 974-976, 982, 988, 992, 1002, 1006, 1012
+src/auto_coder/backend_manager.py              155    155     0%   6-286
+src/auto_coder/claude_client.py                 98     98     0%   5-218
+src/auto_coder/cli.py                           28     28     0%   3-48
+src/auto_coder/cli_commands_graphrag.py        425    425     0%   3-894
+src/auto_coder/cli_commands_main.py            303    303     0%   3-784
+src/auto_coder/cli_commands_mcp.py             125    125     0%   7-263
+src/auto_coder/cli_commands_mcp_pdb.py          46     46     0%   3-101
+src/auto_coder/cli_commands_utils.py           101    101     0%   3-173
+src/auto_coder/cli_helpers.py                  284    284     0%   3-599
+src/auto_coder/codex_client.py                  94     94     0%   5-211
+src/auto_coder/codex_mcp_client.py             290    290     0%   15-537
+src/auto_coder/config.py                        15      0   100%
+src/auto_coder/conflict_resolver.py            387    363     6%   22-30, 39-80, 91-172, 191-303, 313-337, 342-365, 377-418, 428-465, 474-496, 503-512, 521-542, 563-655, 666-787
+src/auto_coder/exceptions.py                     2      0   100%
+src/auto_coder/fix_to_pass_tests_runner.py     464    421     9%   49-51, 57-64, 72-87, 100-113, 120-139, 144-149, 165-320, 345-394, 412-475, 495-769, 785-830, 842-851, 862-1035, 1040-1053
+src/auto_coder/gemini_client.py                151    123    19%   36-73, 77-81, 85-89, 93, 97-183, 187-203, 207, 223, 238-247, 254-257, 266-277, 281, 292-317, 332-352
+src/auto_coder/git_utils.py                    446    255    43%   18-19, 92-125, 167-172, 187-197, 253, 331, 340, 357-361, 379-380, 395-398, 435-448, 466-493, 531-532, 604-607, 637, 685-763, 778-786, 838-840, 875-916, 937-994, 1024-1115, 1136-1197, 1224-1288
+src/auto_coder/github_client.py                274    245    11%   27-29, 33-37, 43-82, 88-104, 108, 124, 151-157, 163-169, 183-197, 209-286, 296-326, 338-413, 425-494, 506-576, 582-590, 596-604, 610-622, 628-650, 656-680, 684-701, 711-741
+src/auto_coder/graphrag_docker_manager.py      212    212     0%   7-524
+src/auto_coder/graphrag_index_manager.py       310    310     0%   7-711
+src/auto_coder/graphrag_mcp_integration.py     139    139     0%   8-280
+src/auto_coder/issue_processor.py              475    454     4%   44-47, 66-204, 211-334, 347-372, 401-516, 529-784, 795-845, 850-868, 873-889, 908-1159
+src/auto_coder/llm_client_base.py               28     12    57%   25, 37, 53, 72-80, 88, 96, 118, 126
+src/auto_coder/logger_config.py                 89     38    57%   47-49, 54-55, 59, 70-75, 108, 128, 137, 151-152, 166-185, 211-216, 227-236, 241-246
+src/auto_coder/mcp_checker.py                  233    233     0%   7-561
+src/auto_coder/mcp_manager.py                  217    217     0%   8-498
+src/auto_coder/pr_processor.py                1246   1193     4%   82-164, 180-242, 253-524, 532-539, 546-578, 589-602, 613-647, 663-778, 783-793, 800-801, 821-969, 981-1104, 1115-1159, 1166-1203, 1214-1315, 1330-1351, 1361-1412, 1427-1526, 1539-1567, 1574-1600, 1607-1729, 1741-1809, 1825-1898, 1914-1986, 1998-2008, 2021-2086, 2099-2177, 2186-2719, 2729-2839
+src/auto_coder/progress_decorators.py          111     95    14%   51-97, 104-115, 139-153, 176-191, 210-211, 214-258
+src/auto_coder/progress_footer.py              179    144    20%   28-41, 59-80, 84-101, 119-128, 132-137, 146-166, 175-186, 190-196, 200-216, 225-229, 246-249, 259-263, 281-282, 292-293, 298-299, 304-305, 310-311, 344-348, 352-356, 360-362, 371-372, 406-421, 427-436, 440-447
+src/auto_coder/prompt_loader.py                 68     52    24%   22-24, 33-56, 61, 66-73, 81-91, 103-115
+src/auto_coder/qwen_client.py                  219    219     0%   10-476
+src/auto_coder/qwen_provider_config.py          62     62     0%   3-137
+src/auto_coder/test_watcher_client.py           67     67     0%   5-174
+src/auto_coder/test_watcher_integration.py      97     97     0%   8-218
+src/auto_coder/update_manager.py               178    138    22%   43-46, 51-57, 62-76, 81-87, 92-104, 109-111, 118-125, 135-151, 160-173, 179-194, 203-217, 223-241, 246-312, 324-328
+src/auto_coder/utils.py                        312    275    12%   69-78, 83-92, 100-113, 129-246, 260-316, 326-359, 368-395, 413-581, 586-594
+--------------------------------------------------------------------------
+TOTAL                                         8602   7902     8%
+Coverage HTML written to dir htmlcov
+=========================== short test summary info ============================
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_new_branch - assert False is True
+ +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_successful_checkout_create_from_base_branch - assert False is True
+ +  where False = CommandResult(success=False, stdout='new-feature\n', stderr="Branch mismatch after checkout: expected 'new-feature', but currently on 'Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.'", returncode=1).success
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_push_failure - AssertionError: assert False is True
+ +  where False = CommandResult(success=False, stdout='new-feature\n', stderr='Checkout succeeded but verification failed: fatal: unable to access remote', returncode=1).success
+FAILED tests/test_git_utils.py::TestGitCheckoutBranch::test_create_new_branch_without_publish - StopIteration
+========================= 4 failed, 45 passed in 4.48s =========================

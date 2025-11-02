@@ -113,10 +113,10 @@ class TestSettings:
         assert settings.github_token != original_token
 
     def test_config_class_attributes(self):
-        """Test Config class attributes."""
+        """Test model_config attributes."""
         settings = Settings()
 
-        # Check that model_config is properly set (Pydantic v2 approach)
-        assert hasattr(settings, "model_config")
-        assert settings.model_config["env_file"] == ".env"
-        assert settings.model_config["env_file_encoding"] == "utf-8"
+        # Check that model_config is properly set
+        assert hasattr(Settings, "model_config")
+        assert Settings.model_config["env_file"] == ".env"
+        assert Settings.model_config["env_file_encoding"] == "utf-8"

@@ -6,10 +6,10 @@ import os
 import sys
 from pathlib import Path
 
+from scanner.python_scanner import scan_python_file, scan_python_project
+
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from scanner.python_scanner import scan_python_file, scan_python_project
 
 
 def test_scan_python_file():

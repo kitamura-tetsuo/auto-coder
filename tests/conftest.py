@@ -202,6 +202,11 @@ def stub_git_and_gh_commands(monkeypatch, request):
     orig_run = subprocess.run
     orig_popen = subprocess.Popen
 
+    print(
+        f"DEBUG: stub_git_and_gh_commands initialized, orig_run = {orig_run}",
+        file=__import__("sys").stderr,
+    )
+
     def _as_text_or_bytes(text_output: str, text: bool):
         if text:
             return text_output, ""
@@ -225,6 +230,86 @@ def stub_git_and_gh_commands(monkeypatch, request):
             elif isinstance(cmd, str):
                 program = cmd.split()[0]
 
+            # Commands that should pass through to real subprocess with modified env
+            # This ensures PYTHONPATH is set correctly for source-based imports
+            pass_through_programs = ("python", "python3", "/usr/bin/python3")
+            if program in pass_through_programs:
+                # Debug output
+                print(
+                    f"DEBUG: Intercepted python command: {program}",
+                    file=__import__("sys").stderr,
+                )
+
+                # Ensure PYTHONPATH includes user site-packages and current directory
+                import os
+                import site
+
+                # Get user site-packages path
+                user_site = site.getusersitepackages()
+                print(
+                    f"DEBUG: user_site = {user_site!r}", file=__import__("sys").stderr
+                )
+                print(f"DEBUG: cwd = {os.getcwd()!r}", file=__import__("sys").stderr)
+
+                # Build environment with proper PYTHONPATH
+                if env is None:
+                    env = os.environ.copy()
+                else:
+                    env = env.copy()
+
+                # Add user site-packages and current directory to PYTHONPATH
+                pythonpath = env.get("PYTHONPATH", "")
+                print(
+                    f"DEBUG: initial pythonpath = {pythonpath!r}",
+                    file=__import__("sys").stderr,
+                )
+                paths_to_add = [user_site, os.getcwd()]
+                print(
+                    f"DEBUG: paths_to_add = {paths_to_add!r}",
+                    file=__import__("sys").stderr,
+                )
+                for path in paths_to_add:
+                    print(
+                        f"DEBUG: checking path={path!r}, truthy={bool(path)}, in_pythonpath={path in pythonpath.split(os.pathsep)}",
+                        file=__import__("sys").stderr,
+                    )
+                    if path and path not in pythonpath.split(os.pathsep):
+                        env["PYTHONPATH"] = (
+                            f"{path}:{pythonpath}" if pythonpath else path
+                        )
+                        pythonpath = env["PYTHONPATH"]
+                        print(
+                            f"DEBUG: updated pythonpath to {pythonpath!r}",
+                            file=__import__("sys").stderr,
+                        )
+
+                print(
+                    f"DEBUG: final PYTHONPATH = {env.get('PYTHONPATH')!r}",
+                    file=__import__("sys").stderr,
+                )
+                print(
+                    f"DEBUG: calling orig_run with env['PYTHONPATH']={env.get('PYTHONPATH')!r}",
+                    file=__import__("sys").stderr,
+                )
+
+                result = orig_run(
+                    cmd,
+                    capture_output=capture_output,
+                    text=text,
+                    timeout=timeout,
+                    cwd=cwd,
+                    check=check,
+                    input=input,
+                    env=env,
+                )
+
+                print(
+                    f"DEBUG: orig_run returned with returncode={result.returncode}",
+                    file=__import__("sys").stderr,
+                )
+                return result
+
+            # Stubbed commands
             if program not in ("git", "gh", "gemini", "codex", "uv"):
                 return orig_run(
                     cmd,
@@ -387,3 +472,48 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+
+# GraphRAG Session Management Test Fixtures
+@pytest.fixture
+def isolated_graphrag_session():
+    """Create isolated session for testing."""
+    from pathlib import Path
+    from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
+
+    graphrag_integration = GraphRAGMCPIntegration()
+    session_id = graphrag_integration.create_session(str(Path.cwd().resolve()))
+    yield session_id
+    # Cleanup handled by integration test teardown
+
+
+@pytest.fixture
+def compatibility_graphrag_setup():
+    """Setup for backward compatibility testing."""
+    from src.auto_coder.graphrag_mcp_integration import (
+        GraphRAGMCPIntegration,
+        BackwardCompatibilityLayer,
+    )
+
+    # Setup existing behavior for compatibility tests
+    graphrag_integration = GraphRAGMCPIntegration()
+    compat_layer = BackwardCompatibilityLayer(graphrag_integration)
+    return compat_layer
+
+
+@pytest.fixture
+def mock_code_tool():
+    """Mock CodeAnalysisTool for testing."""
+    from unittest.mock import Mock
+    from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
+
+    mock_tool = Mock(spec=CodeAnalysisTool)
+    mock_tool.find_symbol = Mock(return_value={"symbol": {"id": "test"}})
+    mock_tool.get_call_graph = Mock(return_value={"nodes": [], "edges": []})
+    mock_tool.get_dependencies = Mock(return_value={"imports": [], "imported_by": []})
+    mock_tool.impact_analysis = Mock(
+        return_value={"affected_symbols": [], "affected_files": []}
+    )
+    mock_tool.semantic_code_search = Mock(return_value={"symbols": []})
+    mock_tool.semantic_code_search_in_collection = Mock(return_value={"symbols": []})
+    return mock_tool

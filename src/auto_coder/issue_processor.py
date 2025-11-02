@@ -78,22 +78,21 @@ def _process_issues_normal(
                 set_progress_item("Issue", issue_number)
                 # Check if issue already has @auto-coder label (being processed by another instance)
                 with ProgressStage("Checking status"):
-                    if not dry_run and not github_client.disable_labels:
-                        current_labels = issue_data.get("labels", [])
-                        if "@auto-coder" in current_labels:
-                            logger.info(
-                                f"Skipping issue #{issue_number} - already has @auto-coder label"
-                            )
-                            processed_issues.append(
-                                {
-                                    "issue_data": issue_data,
-                                    "actions_taken": [
-                                        "Skipped - already being processed (@auto-coder label present)"
-                                    ],
-                                }
-                            )
-                            newline_progress()
-                            continue
+                    current_labels = issue_data.get("labels", [])
+                    if "@auto-coder" in current_labels:
+                        logger.info(
+                            f"Skipping issue #{issue_number} - already has @auto-coder label"
+                        )
+                        processed_issues.append(
+                            {
+                                "issue_data": issue_data,
+                                "actions_taken": [
+                                    "Skipped - already being processed (@auto-coder label present)"
+                                ],
+                            }
+                        )
+                        newline_progress()
+                        continue
 
                 # Skip if issue has open sub-issues
                 with ProgressStage("Checking sub-issues"):
@@ -220,21 +219,20 @@ def _process_issues_jules_mode(
                 issue_number = issue_data["number"]
 
                 # Check if issue already has @auto-coder label (being processed by another instance)
-                if not dry_run and not github_client.disable_labels:
-                    current_labels = issue_data.get("labels", [])
-                    if "@auto-coder" in current_labels:
-                        logger.info(
-                            f"Skipping issue #{issue_number} - already has @auto-coder label"
-                        )
-                        processed_issues.append(
-                            {
-                                "issue_data": issue_data,
-                                "actions_taken": [
-                                    "Skipped - already being processed (@auto-coder label present)"
-                                ],
-                            }
-                        )
-                        continue
+                current_labels = issue_data.get("labels", [])
+                if "@auto-coder" in current_labels:
+                    logger.info(
+                        f"Skipping issue #{issue_number} - already has @auto-coder label"
+                    )
+                    processed_issues.append(
+                        {
+                            "issue_data": issue_data,
+                            "actions_taken": [
+                                "Skipped - already being processed (@auto-coder label present)"
+                            ],
+                        }
+                    )
+                    continue
 
                 # Skip if issue has open sub-issues
                 open_sub_issues = github_client.get_open_sub_issues(
@@ -947,6 +945,16 @@ def process_single(
 
                     set_progress_item("PR", number, related_issues, branch_name)
 
+                    # Skip if PR already has @auto-coder label
+                    pr_labels = pr_data.get("labels", [])
+                    if "@auto-coder" in pr_labels:
+                        msg = f"Skipping PR #{number} - already has @auto-coder label"
+                        logger.info(msg)
+                        result["errors"].append(msg)
+                        newline_progress()
+                        return result
+
+
                     # Check GitHub Actions status before processing
                     github_checks = _check_github_actions_status(
                         repo_name, pr_data, config
@@ -1005,15 +1013,13 @@ def process_single(
 
                     # Check if issue already has @auto-coder label (being processed by another instance)
                     push_progress_stage("Checking status")
-                    if not dry_run and not github_client.disable_labels:
-                        current_labels = issue_data.get("labels", [])
-                        if "@auto-coder" in current_labels:
-                            msg = f"Skipping issue #{number} - already has @auto-coder label"
-                            logger.info(msg)
-                            result["errors"].append(msg)
-                            newline_progress()
-                            return result
-
+                    current_labels = issue_data.get("labels", [])
+                    if "@auto-coder" in current_labels:
+                        msg = f"Skipping issue #{number} - already has @auto-coder label"
+                        logger.info(msg)
+                        result["errors"].append(msg)
+                        newline_progress()
+                        return result
                     # Add @auto-coder label now that we're actually going to process this issue
                     if not dry_run:
                         if not github_client.try_add_work_in_progress_label(

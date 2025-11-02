@@ -1,6 +1,5 @@
 """GraphRAG-related CLI commands."""
 
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -38,8 +37,6 @@ def run_graphrag_setup_mcp_programmatically(
         True if setup was successful, False otherwise
     """
     # Use new MCP manager for setup
-    from .mcp_manager import get_mcp_manager
-
     try:
         # Determine installation directory
         if install_dir is None:
@@ -171,6 +168,8 @@ def run_graphrag_setup_mcp_programmatically(
                         return False
 
                     # Copy the bundled MCP server to install directory
+                    import shutil
+
                     shutil.copytree(
                         bundled_mcp,
                         install_path,
@@ -872,9 +871,11 @@ def graphrag_setup_mcp(
             return
 
         # Remove existing directory
+        import shutil
+
         try:
             shutil.rmtree(install_path)
-            click.echo(f"既存のディレクトリ削除しました: {install_path}")
+            click.echo(f"既存のディレクトリを削除しました: {install_path}")
         except Exception as e:
             raise click.ClickException(f"ディレクトリの削除に失敗しました: {e}")
 
