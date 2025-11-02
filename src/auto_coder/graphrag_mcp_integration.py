@@ -143,8 +143,6 @@ class GraphRAGMCPIntegration:
                             logger.info("Retrying after cleanup...")
                             # Try to stop containers before retry
                             self.docker_manager.stop()
-                            import time
-
                             time.sleep(2)
                 except Exception as e:
                     logger.error(
@@ -280,10 +278,7 @@ class GraphRAGMCPIntegration:
         # Check if any MCP server process is running (started by another terminal)
         try:
             result = subprocess.run(
-                ["ps", "aux"],
-                capture_output=True,
-                text=True,
-                timeout=5
+                ["ps", "aux"], capture_output=True, text=True, timeout=5
             )
             # Look for graphrag_mcp main.py process
             for line in result.stdout.splitlines():
@@ -363,7 +358,8 @@ class GraphRAGMCPIntegration:
         """
         with self.session_lock:
             expired_sessions = [
-                sid for sid, session in self.active_sessions.items()
+                sid
+                for sid, session in self.active_sessions.items()
                 if session.is_expired(max_age_hours)
             ]
 
@@ -423,7 +419,6 @@ class GraphRAGMCPIntegration:
                     return session
             return None
 
-
     def get_mcp_config_for_llm(self) -> Optional[dict]:
         """Get MCP configuration to pass to LLM client.
 
@@ -442,4 +437,3 @@ class GraphRAGMCPIntegration:
                 "https://graphrag.db/collection/qdrant",
             ],
         }
-

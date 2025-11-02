@@ -7,7 +7,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.pr_processor import get_github_actions_logs_from_url, _extract_error_context
+from src.auto_coder.pr_processor import (
+    _extract_error_context,
+    get_github_actions_logs_from_url,
+)
 
 
 def test_extract_error_context_with_realistic_playwright_log():
@@ -96,28 +99,37 @@ def test_extract_error_context_with_realistic_playwright_log():
 2025-10-27T03:26:50.0000000Z 
 2025-10-27T03:26:51.0000000Z ##[error]Process completed with exit code 1.
 """
-    
+
     result = _extract_error_context(realistic_log)
-    
+
     # 重要なエラー情報が含まれていることを確認
     assert "Error: expect(received).toContain(expected)" in result
-    assert 'Expected substring: "<a href=\\"https://example.com\\""' in result or 'Expected substring: "<a href="https://example.com"' in result
-    assert 'Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"' in result
+    assert (
+        'Expected substring: "<a href=\\"https://example.com\\""' in result
+        or 'Expected substring: "<a href="https://example.com"' in result
+    )
+    assert (
+        'Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"'
+        in result
+    )
     assert "fmt-url-label-links-a391b6c2.spec.ts" in result
     assert "URL label links" in result
-    
+
     # エラーの前後のコンテキストが含まれていることを確認
     assert "expect(firstItemHtml).toContain" in result
-    assert "at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31" in result
-    
+    assert (
+        "at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31"
+        in result
+    )
+
     # テストサマリが含まれていることを確認
     assert "1 failed" in result or "147 passed" in result
-    
+
     # 結果が適切な長さであることを確認
-    result_lines = result.split('\n')
+    result_lines = result.split("\n")
     assert len(result_lines) >= 20  # 最低でもエラー行の前後10行
     assert len(result_lines) <= 500  # 最大500行
-    
+
     # 不要なセットアップ情報が除外されていることを確認（または最小限であること）
     # セットアップ情報が含まれていても、エラー部分が優先されていることを確認
     error_line_index = None
@@ -125,14 +137,14 @@ def test_extract_error_context_with_realistic_playwright_log():
         if "Error: expect(received).toContain(expected)" in line:
             error_line_index = i
             break
-    
+
     assert error_line_index is not None, "エラー行が見つかりません"
 
 
 def test_get_github_actions_logs_from_url_with_realistic_zip():
     """実際のGitHub Actions ZIPログに近い形式で処理できることを確認"""
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/18828609259/job/53715705095"
-    
+
     # 実際のログに近いZIPファイルを作成
     realistic_step_log = """2025-10-27T03:26:08.0000000Z 
 2025-10-27T03:26:09.0000000Z > outliner@1.0.0 test
@@ -166,68 +178,104 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 2025-10-27T03:26:37.0000000Z   1 skipped
 2025-10-27T03:26:38.0000000Z   151 did not run
 """
-    
+
     def fake_subprocess_run(cmd, capture_output=True, timeout=60, cwd=None):
         # ジョブ名取得
         if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
             jobs_obj = {
                 "jobs": [
-                    {"databaseId": 53715705095, "name": "CI / e2e tests", "conclusion": "failure"}
+                    {
+                        "databaseId": 53715705095,
+                        "name": "CI / e2e tests",
+                        "conclusion": "failure",
+                    }
                 ]
             }
             return Mock(returncode=0, stdout=json.dumps(jobs_obj).encode(), stderr=b"")
-        
+
         # ジョブ詳細（ステップ情報）
-        if cmd[:2] == ["gh", "api"] and "actions/jobs/53715705095" in cmd[2] and not cmd[2].endswith("/logs"):
+        if (
+            cmd[:2] == ["gh", "api"]
+            and "actions/jobs/53715705095" in cmd[2]
+            and not cmd[2].endswith("/logs")
+        ):
             job_obj = {
                 "id": 53715705095,
                 "name": "CI / e2e tests",
                 "conclusion": "failure",
                 "steps": [
-                    {"name": "Set up job", "status": "completed", "conclusion": "success"},
-                    {"name": "Run actions/checkout@v4", "status": "completed", "conclusion": "success"},
-                    {"name": "Run npm ci", "status": "completed", "conclusion": "success"},
-                    {"name": "Run npm test", "status": "completed", "conclusion": "failure"},
+                    {
+                        "name": "Set up job",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "name": "Run actions/checkout@v4",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "name": "Run npm ci",
+                        "status": "completed",
+                        "conclusion": "success",
+                    },
+                    {
+                        "name": "Run npm test",
+                        "status": "completed",
+                        "conclusion": "failure",
+                    },
                 ],
             }
             return Mock(returncode=0, stdout=json.dumps(job_obj).encode(), stderr=b"")
-        
+
         # job ZIP -> 成功
         if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/logs"):
             bio = io.BytesIO()
             with zipfile.ZipFile(bio, "w") as zf:
-                zf.writestr("1_Set up job.txt", "Setting up job...\nJob setup complete.")
-                zf.writestr("2_Run actions checkout@v4.txt", "Checking out code...\nCheckout complete.")
-                zf.writestr("3_Run npm ci.txt", "Installing dependencies...\nadded 1234 packages in 45s")
+                zf.writestr(
+                    "1_Set up job.txt", "Setting up job...\nJob setup complete."
+                )
+                zf.writestr(
+                    "2_Run actions checkout@v4.txt",
+                    "Checking out code...\nCheckout complete.",
+                )
+                zf.writestr(
+                    "3_Run npm ci.txt",
+                    "Installing dependencies...\nadded 1234 packages in 45s",
+                )
                 zf.writestr("4_Run npm test.txt", realistic_step_log)
             return Mock(returncode=0, stdout=bio.getvalue(), stderr=b"")
-        
+
         return Mock(returncode=1, stdout=b"", stderr=b"unknown")
-    
-    def fake_cmd_run(cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True):
+
+    def fake_cmd_run(
+        cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True
+    ):
         # この関数は使用されないはずだが、念のため定義
         from src.auto_coder.utils import CommandResult
+
         return CommandResult(success=False, returncode=1, stdout="", stderr="not used")
-    
+
     with patch("subprocess.run", side_effect=fake_subprocess_run):
-        with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=fake_cmd_run):
+        with patch(
+            "src.auto_coder.pr_processor.cmd.run_command", side_effect=fake_cmd_run
+        ):
             result = get_github_actions_logs_from_url(url)
-    
+
     # ジョブ情報が含まれていることを確認
     assert "53715705095" in result
-    
+
     # エラー情報が含まれていることを確認
     assert "Error: expect(received).toContain(expected)" in result
     assert "fmt-url-label-links-a391b6c2.spec.ts" in result
-    assert 'Expected substring:' in result
-    assert 'Received string:' in result
-    
+    assert "Expected substring:" in result
+    assert "Received string:" in result
+
     # 成功したステップは除外されていることを確認
     assert "Set up job" not in result  # 成功したステップは除外されるべき
     assert "Checking out code" not in result  # 成功したステップは除外されるべき
     assert "Installing dependencies" not in result  # 成功したステップは除外されるべき
-    
+
     # テストサマリが含まれていることを確認
     assert "1 failed" in result
     assert "147 passed" in result
-

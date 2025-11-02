@@ -37,8 +37,7 @@ def get_current_branch(cwd: Optional[str] = None) -> Optional[str]:
     """
     cmd = CommandExecutor()
     branch_result = cmd.run_command(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=cwd
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
     )
     if branch_result.success:
         return branch_result.stdout.strip()
@@ -219,9 +218,7 @@ def git_commit_with_retry(
     cmd = CommandExecutor()
 
     for attempt in range(max_retries + 1):
-        result = cmd.run_command(
-            ["git", "commit", "-m", commit_message], cwd=cwd
-        )
+        result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
 
         # If commit succeeded, return immediately
         if result.success:
@@ -243,16 +240,12 @@ def git_commit_with_retry(
                 )
 
                 # Run dprint formatter
-                fmt_result = cmd.run_command(
-                    ["npx", "dprint", "fmt"], cwd=cwd
-                )
+                fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
 
                 if fmt_result.success:
                     logger.info("Successfully ran dprint formatter")
                     # Stage the formatted files
-                    add_result = cmd.run_command(
-                        ["git", "add", "-u"], cwd=cwd
-                    )
+                    add_result = cmd.run_command(["git", "add", "-u"], cwd=cwd)
                     if add_result.success:
                         logger.info("Staged formatted files, retrying commit...")
                         continue
@@ -278,6 +271,22 @@ def git_commit_with_retry(
     return result
 
 
+def branch_exists(branch_name: str, cwd: Optional[str] = None) -> bool:
+    """
+    Check if a branch with the given name exists.
+
+    Args:
+        branch_name: Name of the branch to check
+        cwd: Optional working directory for the git command
+
+    Returns:
+        True if the branch exists, False otherwise
+    """
+    cmd = CommandExecutor()
+    result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
+    return result.success and result.stdout.strip()
+
+
 def git_checkout_branch(
     branch_name: str,
     create_new: bool = False,
@@ -290,11 +299,13 @@ def git_checkout_branch(
 
     This function centralizes git checkout operations and ensures that after
     switching branches, the current branch matches the expected branch.
+    If create_new is True, it will first check if a branch with the same name exists.
+    If it exists, it will checkout the existing branch instead of creating a new one.
     If creating a new branch, it will automatically push to remote and set up tracking.
 
     Args:
         branch_name: Name of the branch to checkout
-        create_new: If True, creates a new branch with -b flag
+        create_new: If True, creates a new branch with -b flag (if it doesn't exist)
         base_branch: If create_new is True and base_branch is specified, creates
                      the new branch from base_branch (using -B flag)
         cwd: Optional working directory for the git command
@@ -311,7 +322,9 @@ def git_checkout_branch(
     has_changes = status_result.success and status_result.stdout.strip()
 
     if has_changes:
-        logger.info("Detected uncommitted changes before checkout, committing them first")
+        logger.info(
+            "Detected uncommitted changes before checkout, committing them first"
+        )
         # Add all changes
         add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
         if not add_result.success:
@@ -321,21 +334,32 @@ def git_checkout_branch(
         commit_result = git_commit_with_retry(
             commit_message="WIP: Auto-commit before branch checkout",
             cwd=cwd,
-            max_retries=1
+            max_retries=1,
         )
         if not commit_result.success:
-            logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
+            logger.warning(
+                f"Failed to commit changes before checkout: {commit_result.stderr}"
+            )
 
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
+
     if create_new:
-        if base_branch:
-            # Create new branch from base_branch (or reset if exists)
-            checkout_cmd.append("-B")
+        # Check if the branch already exists
+        if branch_exists(branch_name, cwd=cwd):
+            logger.info(f"Branch '{branch_name}' already exists, checking out existing branch")
+            # Checkout existing branch instead of creating new one
+            checkout_cmd = ["git", "checkout", branch_name]
         else:
-            # Create new branch
-            checkout_cmd.append("-b")
-    checkout_cmd.append(branch_name)
+            # Create new branch from base_branch (or reset if exists)
+            if base_branch:
+                checkout_cmd.append("-B")
+            else:
+                checkout_cmd.append("-b")
+            checkout_cmd.append(branch_name)
+    else:
+        # Regular checkout (not creating new branch)
+        checkout_cmd.append(branch_name)
 
     # Execute checkout
     result = cmd.run_command(checkout_cmd, cwd=cwd)
@@ -343,7 +367,9 @@ def git_checkout_branch(
     if not result.success:
         # If checkout failed due to uncommitted changes, try to commit and retry
         if "would be overwritten by checkout" in result.stderr:
-            logger.warning("Checkout failed due to uncommitted changes, attempting to commit and retry")
+            logger.warning(
+                "Checkout failed due to uncommitted changes, attempting to commit and retry"
+            )
 
             # Add all changes
             add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
@@ -355,7 +381,7 @@ def git_checkout_branch(
             commit_result = git_commit_with_retry(
                 commit_message="WIP: Auto-commit before branch checkout (retry)",
                 cwd=cwd,
-                max_retries=1
+                max_retries=1,
             )
             if not commit_result.success:
                 logger.error(f"Failed to commit changes: {commit_result.stderr}")
@@ -364,7 +390,9 @@ def git_checkout_branch(
             # Retry checkout
             result = cmd.run_command(checkout_cmd, cwd=cwd)
             if not result.success:
-                logger.error(f"Failed to checkout branch '{branch_name}' after commit: {result.stderr}")
+                logger.error(
+                    f"Failed to checkout branch '{branch_name}' after commit: {result.stderr}"
+                )
                 return result
         else:
             logger.error(f"Failed to checkout branch '{branch_name}': {result.stderr}")
@@ -372,17 +400,18 @@ def git_checkout_branch(
 
     # Verify that we're now on the expected branch
     verify_result = cmd.run_command(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=cwd
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
     )
 
     if not verify_result.success:
-        logger.error(f"Failed to verify current branch after checkout: {verify_result.stderr}")
+        logger.error(
+            f"Failed to verify current branch after checkout: {verify_result.stderr}"
+        )
         return CommandResult(
             success=False,
             stdout=result.stdout,
             stderr=f"Checkout succeeded but verification failed: {verify_result.stderr}",
-            returncode=1
+            returncode=1,
         )
 
     current_branch = verify_result.stdout.strip()
@@ -390,26 +419,27 @@ def git_checkout_branch(
         error_msg = f"Branch mismatch after checkout: expected '{branch_name}', but currently on '{current_branch}'"
         logger.error(error_msg)
         return CommandResult(
-            success=False,
-            stdout=result.stdout,
-            stderr=error_msg,
-            returncode=1
+            success=False, stdout=result.stdout, stderr=error_msg, returncode=1
         )
 
     logger.info(f"Successfully checked out branch '{branch_name}'")
 
-    # If creating a new branch, push to remote and set up tracking
-    if create_new and publish:
-        logger.info(f"Publishing new branch '{branch_name}' to remote...")
-        push_result = cmd.run_command(
-            ["git", "push", "-u", "origin", branch_name],
-            cwd=cwd
-        )
-        if not push_result.success:
-            logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
-            # Don't exit on push failure - the branch is still created locally
+    # If creating a new branch and it was actually created (not just checked out), push to remote and set up tracking
+    if create_new and not branch_exists(branch_name + "_backup", cwd=cwd):  # Check if this was a new branch by using a temp check
+        # Actually, we need a better way to detect if this was a new branch
+        # Let's check if the branch existed before our operation by checking if it has remote tracking
+        if not branch_exists(f"origin/{branch_name}", cwd=cwd):
+            logger.info(f"Publishing new branch '{branch_name}' to remote...")
+            push_result = cmd.run_command(
+                ["git", "push", "-u", "origin", branch_name], cwd=cwd
+            )
+            if not push_result.success:
+                logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
+                # Don't exit on push failure - the branch is still created locally
+            else:
+                logger.info(f"Successfully published branch '{branch_name}' to remote")
         else:
-            logger.info(f"Successfully published branch '{branch_name}' to remote")
+            logger.info(f"Branch '{branch_name}' already exists on remote, skipping publish")
 
     return result
 
@@ -429,8 +459,7 @@ def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") ->
 
     # Get current branch
     branch_result = cmd.run_command(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-        cwd=cwd
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
     )
     if not branch_result.success:
         logger.warning(f"Failed to get current branch: {branch_result.stderr}")
@@ -440,8 +469,7 @@ def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") ->
 
     # Check if there are unpushed commits
     result = cmd.run_command(
-        ["git", "rev-list", f"{remote}/{current_branch}..HEAD", "--count"],
-        cwd=cwd
+        ["git", "rev-list", f"{remote}/{current_branch}..HEAD", "--count"], cwd=cwd
     )
 
     if not result.success:
@@ -487,8 +515,7 @@ def git_push(
     target_branch = branch
     if not target_branch:
         branch_result = cmd.run_command(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=cwd
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
         )
         if branch_result.returncode == 0:
             target_branch = branch_result.stdout.strip()
@@ -498,7 +525,7 @@ def git_push(
                 success=False,
                 stdout="",
                 stderr=f"Failed to get current branch: {branch_result.stderr}",
-                returncode=branch_result.returncode
+                returncode=branch_result.returncode,
             )
 
     # Build push command
@@ -520,7 +547,13 @@ def git_push(
                 f"Branch {target_branch} has no upstream, setting upstream to {remote}/{target_branch}"
             )
             # Retry with --set-upstream
-            push_cmd_with_upstream = ["git", "push", "--set-upstream", remote, target_branch]
+            push_cmd_with_upstream = [
+                "git",
+                "push",
+                "--set-upstream",
+                remote,
+                target_branch,
+            ]
             result = cmd.run_command(push_cmd_with_upstream, cwd=cwd)
 
     # Check if push failed due to dprint formatting issues
@@ -536,16 +569,12 @@ def git_push(
             )
 
             # Run dprint formatter
-            fmt_result = cmd.run_command(
-                ["npx", "dprint", "fmt"], cwd=cwd
-            )
+            fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
 
             if fmt_result.success:
                 logger.info("Successfully ran dprint formatter")
                 # Stage all changes including formatted files
-                add_result = cmd.run_command(
-                    ["git", "add", "-A"], cwd=cwd
-                )
+                add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
                 if add_result.success:
                     logger.info("Staged formatted files")
 
@@ -553,8 +582,7 @@ def git_push(
                     if commit_message:
                         logger.info("Re-committing changes after dprint formatting...")
                         commit_result = cmd.run_command(
-                            ["git", "commit", "--amend", "--no-edit"],
-                            cwd=cwd
+                            ["git", "commit", "--amend", "--no-edit"], cwd=cwd
                         )
                         if not commit_result.success:
                             logger.warning(
@@ -562,8 +590,7 @@ def git_push(
                             )
                             # Try regular commit if amend fails
                             commit_result = cmd.run_command(
-                                ["git", "commit", "-m", commit_message],
-                                cwd=cwd
+                                ["git", "commit", "-m", commit_message], cwd=cwd
                             )
                             if not commit_result.success:
                                 logger.warning(
@@ -590,26 +617,25 @@ def git_push(
                             logger.info(
                                 f"Branch {target_branch} has no upstream, setting upstream to {remote}/{target_branch}"
                             )
-                            push_cmd_with_upstream = ["git", "push", "--set-upstream", remote, target_branch]
+                            push_cmd_with_upstream = [
+                                "git",
+                                "push",
+                                "--set-upstream",
+                                remote,
+                                target_branch,
+                            ]
                             result = cmd.run_command(push_cmd_with_upstream, cwd=cwd)
                 else:
                     logger.warning(
                         f"Failed to stage formatted files: {add_result.stderr}"
                     )
             else:
-                logger.warning(
-                    f"Failed to run dprint formatter: {fmt_result.stderr}"
-                )
+                logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
 
     if result.returncode == 0:
-        logger.info(
-            f"Successfully pushed changes to {remote}/{target_branch}"
-        )
+        logger.info(f"Successfully pushed changes to {remote}/{target_branch}")
         return CommandResult(
-            success=True,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            returncode=0
+            success=True, stdout=result.stdout, stderr=result.stderr, returncode=0
         )
     else:
         logger.warning(f"Failed to push changes: {result.stderr}")
@@ -617,7 +643,7 @@ def git_push(
             success=False,
             stdout=result.stdout,
             stderr=result.stderr,
-            returncode=result.returncode
+            returncode=result.returncode,
         )
 
 
@@ -632,7 +658,7 @@ def ensure_pushed_with_fallback(
 ) -> CommandResult:
     """
     Ensure all commits are pushed to remote with enhanced error handling.
-    
+
     This function handles non-fast-forward errors by pulling first, then pushing.
     If push still fails, it falls back to LLM resolution.
 
@@ -649,47 +675,50 @@ def ensure_pushed_with_fallback(
         CommandResult object with success status and output
     """
     cmd = CommandExecutor()
-    
+
     # Check if there are unpushed commits
     if not check_unpushed_commits(cwd=cwd, remote=remote):
         logger.debug("No unpushed commits found")
         return CommandResult(
-            success=True,
-            stdout="No unpushed commits",
-            stderr="",
-            returncode=0
+            success=True, stdout="No unpushed commits", stderr="", returncode=0
         )
 
     # Push unpushed commits
     logger.info("Pushing unpushed commits...")
     push_result = git_push(cwd=cwd, remote=remote, commit_message=commit_message)
-    
+
     # If push succeeded, return the result
     if push_result.success:
         return push_result
-    
+
     # Check if this is a non-fast-forward error
     is_non_fast_forward = (
-        "non-fast-forward" in push_result.stderr.lower() or
-        "Updates were rejected because the tip of your current branch is behind" in push_result.stderr or
-        "the tip of your current branch is behind its remote counterpart" in push_result.stderr
+        "non-fast-forward" in push_result.stderr.lower()
+        or "Updates were rejected because the tip of your current branch is behind"
+        in push_result.stderr
+        or "the tip of your current branch is behind its remote counterpart"
+        in push_result.stderr
     )
-    
+
     if is_non_fast_forward:
-        logger.info("Detected non-fast-forward error, attempting to pull and retry push...")
-        
+        logger.info(
+            "Detected non-fast-forward error, attempting to pull and retry push..."
+        )
+
         # Use the centralized git_pull function
         pull_result = git_pull(remote=remote, branch=None, cwd=cwd)
-        
+
         if not pull_result.success:
             logger.warning(f"Pull failed: {pull_result.stderr}")
             # Note: git_pull function already handles conflict resolution internally
             # Don't return here - still attempt LLM fallback
-        
+
         # Retry the push after pull
         logger.info("Retrying push after pull...")
-        retry_push_result = git_push(cwd=cwd, remote=remote, commit_message=commit_message)
-        
+        retry_push_result = git_push(
+            cwd=cwd, remote=remote, commit_message=commit_message
+        )
+
         if retry_push_result.success:
             logger.info("Successfully pushed after resolving non-fast-forward error")
             return retry_push_result
@@ -697,9 +726,11 @@ def ensure_pushed_with_fallback(
             logger.warning(f"Push still failed after pull: {retry_push_result.stderr}")
             # Update push_result for LLM fallback
             push_result = retry_push_result
-    
+
     # If push still failed and we have LLM clients, try LLM fallback
-    if (llm_client is not None or message_backend_manager is not None) and commit_message:
+    if (
+        llm_client is not None or message_backend_manager is not None
+    ) and commit_message:
         logger.info("Attempting to resolve push failure using LLM...")
         llm_success = try_llm_commit_push(
             commit_message,
@@ -713,13 +744,13 @@ def ensure_pushed_with_fallback(
                 success=True,
                 stdout="Successfully resolved push failure using LLM",
                 stderr="",
-                returncode=0
+                returncode=0,
             )
         else:
             logger.error("LLM failed to resolve push failure")
     else:
         logger.warning("No LLM client available for push failure resolution")
-    
+
     # Return the final push result
     return push_result
 
@@ -739,10 +770,7 @@ def ensure_pushed(cwd: Optional[str] = None, remote: str = "origin") -> CommandR
     if not check_unpushed_commits(cwd=cwd, remote=remote):
         logger.debug("No unpushed commits found")
         return CommandResult(
-            success=True,
-            stdout="No unpushed commits",
-            stderr="",
-            returncode=0
+            success=True, stdout="No unpushed commits", stderr="", returncode=0
         )
 
     # Push unpushed commits
@@ -817,11 +845,11 @@ def switch_to_branch(
 ) -> CommandResult:
     """
     Switch to a git branch and automatically pull latest changes.
-    
+
     This function centralizes branch switching operations with automatic pull.
     It combines git_checkout_branch with automatic pull to ensure the branch
     is synchronized with the remote repository.
-    
+
     Args:
         branch_name: Name of the branch to switch to
         create_new: If True, creates a new branch with -b flag
@@ -830,14 +858,14 @@ def switch_to_branch(
         cwd: Optional working directory for the git command
         publish: If True and create_new is True, push the new branch to remote and set up tracking
         pull_after_switch: If True, automatically pull latest changes after successful checkout
-    
+
     Returns:
         CommandResult with the result of the checkout operation.
         success=True only if checkout succeeded AND (pull succeeded if requested) AND
         current branch matches expected branch.
     """
     cmd = CommandExecutor()
-    
+
     # First, checkout the branch using existing logic
     checkout_result = git_checkout_branch(
         branch_name=branch_name,
@@ -846,91 +874,100 @@ def switch_to_branch(
         cwd=cwd,
         publish=publish,
     )
-    
+
     if not checkout_result.success:
-        logger.error(f"Failed to checkout branch '{branch_name}': {checkout_result.stderr}")
+        logger.error(
+            f"Failed to checkout branch '{branch_name}': {checkout_result.stderr}"
+        )
         return checkout_result
-    
+
     # If pull is not requested, return the checkout result
     if not pull_after_switch:
         logger.info(f"Successfully switched to branch '{branch_name}' (skipping pull)")
         return checkout_result
-    
+
     # Pull the latest changes from remote
     logger.info(f"Pulling latest changes for branch '{branch_name}'...")
     pull_result = git_pull(remote="origin", branch=branch_name, cwd=cwd)
-    
+
     if not pull_result.success:
-        logger.error(f"Failed to pull latest changes for branch '{branch_name}': {pull_result.stderr}")
+        logger.error(
+            f"Failed to pull latest changes for branch '{branch_name}': {pull_result.stderr}"
+        )
         # Return a combined result showing both the checkout and pull results
         return CommandResult(
             success=False,
             stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
             stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
-            returncode=pull_result.returncode
+            returncode=pull_result.returncode,
         )
-    
-    logger.info(f"Successfully switched to branch '{branch_name}' and pulled latest changes")
+
+    logger.info(
+        f"Successfully switched to branch '{branch_name}' and pulled latest changes"
+    )
     return CommandResult(
         success=True,
         stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
         stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
-        returncode=0
+        returncode=0,
     )
 
 
 def resolve_pull_conflicts(
-    cwd: Optional[str] = None,
-    merge_method: str = "merge"
+    cwd: Optional[str] = None, merge_method: str = "merge"
 ) -> CommandResult:
     """
     Resolve pull conflicts by attempting merge/rebase strategies.
-    
+
     Args:
         cwd: Optional working directory for the git command
         merge_method: Strategy to resolve conflicts - "merge" or "rebase"
-    
+
     Returns:
         CommandResult with the result of the conflict resolution
     """
     cmd = CommandExecutor()
     logger.info(f"Attempting to resolve pull conflicts using {merge_method} strategy")
-    
+
     # First, abort any ongoing merge/rebase to start clean
     abort_result = cmd.run_command(["git", "merge", "--abort"], cwd=cwd)
     if not abort_result.success:
         abort_result = cmd.run_command(["git", "rebase", "--abort"], cwd=cwd)
-    
+
     try:
         if merge_method == "rebase":
             # Try rebase first
             logger.info("Attempting git rebase to resolve pull conflicts")
             rebase_result = cmd.run_command(["git", "rebase", "origin/HEAD"], cwd=cwd)
-            
+
             if rebase_result.success:
                 logger.info("Successfully resolved pull conflicts using rebase")
                 return CommandResult(
                     success=True,
                     stdout="Pull conflicts resolved via rebase",
                     stderr="",
-                    returncode=0
+                    returncode=0,
                 )
             else:
                 # If rebase fails, fall back to merge
-                logger.warning(f"Rebase failed: {rebase_result.stderr}, trying merge strategy")
+                logger.warning(
+                    f"Rebase failed: {rebase_result.stderr}, trying merge strategy"
+                )
                 return resolve_pull_conflicts(cwd, "merge")
         else:
             # Default: try merge strategy
             logger.info("Attempting git merge to resolve pull conflicts")
-            merge_result = cmd.run_command(["git", "merge", "--no-ff", "origin/HEAD"], cwd=cwd)
-            
+            merge_result = cmd.run_command(
+                ["git", "merge", "--no-ff", "origin/HEAD"], cwd=cwd
+            )
+
             if merge_result.success:
                 logger.info("Successfully resolved pull conflicts using merge")
                 return CommandResult(
                     success=True,
                     stdout="Pull conflicts resolved via merge",
                     stderr="",
-                    returncode=0
+                    returncode=0,
                 )
             else:
                 # Check if it's actually a conflict or another error
@@ -939,16 +976,18 @@ def resolve_pull_conflicts(
                     # For now, return the merge result so the caller can handle conflicts
                     return merge_result
                 else:
-                    logger.error(f"Merge failed for non-conflict reasons: {merge_result.stderr}")
+                    logger.error(
+                        f"Merge failed for non-conflict reasons: {merge_result.stderr}"
+                    )
                     return merge_result
-                    
+
     except Exception as e:
         logger.error(f"Error during pull conflict resolution: {e}")
         return CommandResult(
             success=False,
             stdout="",
             stderr=f"Error resolving pull conflicts: {e}",
-            returncode=1
+            returncode=1,
         )
 
 
@@ -959,29 +998,28 @@ def git_pull(
 ) -> CommandResult:
     """
     Perform git pull with comprehensive error handling and conflict resolution.
-    
+
     This function centralizes git pull operations and handles various scenarios:
     - Standard pull operations
     - Merge conflicts
     - Diverging branches
     - No tracking information (new branches)
-    
+
     Args:
         remote: Remote name (default: 'origin')
         branch: Optional branch name. If None, uses current branch
         cwd: Optional working directory for the git command
-    
+
     Returns:
         CommandResult with the result of the pull operation
     """
     cmd = CommandExecutor()
-    
+
     # Determine which branch to pull
     target_branch = branch
     if not target_branch:
         branch_result = cmd.run_command(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=cwd
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
         )
         if not branch_result.success:
             logger.warning(f"Failed to get current branch: {branch_result.stderr}")
@@ -989,68 +1027,81 @@ def git_pull(
                 success=False,
                 stdout="",
                 stderr=f"Failed to get current branch: {branch_result.stderr}",
-                returncode=branch_result.returncode
+                returncode=branch_result.returncode,
             )
         target_branch = branch_result.stdout.strip()
-    
+
     logger.info(f"Pulling latest changes from {remote}/{target_branch}...")
     pull_result = cmd.run_command(["git", "pull", remote, target_branch], cwd=cwd)
-    
+
     if pull_result.success:
         logger.info(f"Successfully pulled latest changes from {remote}/{target_branch}")
         return pull_result
-    
+
     # Handle various error cases
     error_msg = pull_result.stderr.lower()
-    
+
     # Check if it's a "no tracking information" error (new branch)
-    if "no tracking information" in error_msg or "fatal: no such ref was fetched" in error_msg:
-        logger.warning(f"No remote tracking information for branch '{target_branch}', skipping pull")
+    if (
+        "no tracking information" in error_msg
+        or "fatal: no such ref was fetched" in error_msg
+    ):
+        logger.warning(
+            f"No remote tracking information for branch '{target_branch}', skipping pull"
+        )
         # This is not a critical error for new branches
         return CommandResult(
             success=True,  # Treat as success for new branches
             stdout=f"No remote tracking information for branch '{target_branch}'",
             stderr=pull_result.stderr,
-            returncode=0
+            returncode=0,
         )
-    
+
     # Check if it's a "diverging branches" error
     if "diverging branches" in error_msg or "not possible to fast-forward" in error_msg:
-        logger.info(f"Detected diverging branches for branch '{target_branch}', attempting to resolve...")
-        
+        logger.info(
+            f"Detected diverging branches for branch '{target_branch}', attempting to resolve..."
+        )
+
         # Try to resolve pull conflicts using our conflict resolution function
         conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
-        
+
         if conflict_result.success:
-            logger.info(f"Successfully resolved pull conflicts for branch '{target_branch}'")
+            logger.info(
+                f"Successfully resolved pull conflicts for branch '{target_branch}'"
+            )
             return CommandResult(
                 success=True,
                 stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
                 stderr=conflict_result.stderr,
-                returncode=0
+                returncode=0,
             )
         else:
-            logger.warning(f"Failed to resolve pull conflicts for branch '{target_branch}': {conflict_result.stderr}")
+            logger.warning(
+                f"Failed to resolve pull conflicts for branch '{target_branch}': {conflict_result.stderr}"
+            )
             # Return the conflict resolution result
             return conflict_result
-    
+
     # Check for merge conflicts during pull
     if "conflict" in error_msg or "merge conflict" in error_msg:
         logger.info(f"Detected merge conflicts during pull, attempting to resolve...")
         conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
-        
+
         if conflict_result.success:
             logger.info(f"Successfully resolved pull conflicts")
             return CommandResult(
                 success=True,
                 stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
                 stderr=conflict_result.stderr,
-                returncode=0
+                returncode=0,
             )
         else:
-            logger.warning(f"Failed to resolve pull conflicts: {conflict_result.stderr}")
+            logger.warning(
+                f"Failed to resolve pull conflicts: {conflict_result.stderr}"
+            )
             return conflict_result
-    
+
     # Other errors
     logger.error(f"Failed to pull latest changes: {pull_result.stderr}")
     return pull_result
@@ -1075,10 +1126,14 @@ def try_llm_commit_push(
         True if LLM successfully resolved the issue, False otherwise
     """
     cmd = CommandExecutor()
-    
+
     try:
         # Use message_backend_manager if available, otherwise fall back to llm_client
-        manager = message_backend_manager if message_backend_manager is not None else llm_client
+        manager = (
+            message_backend_manager
+            if message_backend_manager is not None
+            else llm_client
+        )
 
         if manager is None:
             logger.error("No LLM manager available for commit/push resolution")
@@ -1103,18 +1158,16 @@ def try_llm_commit_push(
             logger.info("LLM successfully resolved commit/push failure")
 
             # Verify that there are no uncommitted changes
-            status_result = cmd.run_command(
-                ["git", "status", "--porcelain"]
-            )
+            status_result = cmd.run_command(["git", "status", "--porcelain"])
             if status_result.stdout.strip():
-                logger.error("LLM claimed success but there are still uncommitted changes")
+                logger.error(
+                    "LLM claimed success but there are still uncommitted changes"
+                )
                 logger.error(f"Uncommitted changes: {status_result.stdout}")
                 return False
 
             # Verify that the push was successful by checking if there are unpushed commits
-            unpushed_result = cmd.run_command(
-                ["git", "log", "@{u}..HEAD", "--oneline"]
-            )
+            unpushed_result = cmd.run_command(["git", "log", "@{u}..HEAD", "--oneline"])
             if unpushed_result.success and unpushed_result.stdout.strip():
                 logger.error("LLM claimed success but there are still unpushed commits")
                 logger.error(f"Unpushed commits: {unpushed_result.stdout}")
@@ -1145,7 +1198,7 @@ def commit_and_push_changes(
 ) -> str:
     """
     Commit changes and push them to remote using centralized git helper.
-    
+
     This function handles the complete commit-and-push workflow, including
     handling non-fast-forward errors by pulling and retrying.
 
@@ -1161,13 +1214,11 @@ def commit_and_push_changes(
     """
     global cmd  # Use the existing CommandExecutor instance
     cmd = CommandExecutor()
-    
+
     summary = result_data.get("summary", "Auto-Coder: Automated changes")
 
     # Check if there are any changes to commit
-    status_result = cmd.run_command(
-        ["git", "status", "--porcelain"]
-    )
+    status_result = cmd.run_command(["git", "status", "--porcelain"])
     if not status_result.stdout.strip():
         return "No changes to commit"
 
@@ -1186,9 +1237,9 @@ def commit_and_push_changes(
             message_backend_manager=message_backend_manager,
             commit_message=summary,
             issue_number=issue_number,
-            repo_name=repo_name
+            repo_name=repo_name,
         )
-        
+
         if push_result.success:
             return f"Successfully committed and pushed changes: {summary}"
         else:

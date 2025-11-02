@@ -7,19 +7,20 @@ This module provides backward compatibility for the GraphRAG MCP tools by:
 3. Managing compatibility mode configuration
 """
 
+import hashlib
 import os
 import warnings
-import hashlib
-from pathlib import Path
-from typing import Optional, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 logger = __import__("logging").getLogger(__name__)
 
 
 class CompatibilityMode(Enum):
     """Compatibility mode configuration."""
+
     STRICT = "strict"  # Only new API with session_id
     COMPATIBLE = "compatible"  # Both old and new API (default)
     LEGACY = "legacy"  # Only old API, no isolation
@@ -28,6 +29,7 @@ class CompatibilityMode(Enum):
 @dataclass
 class CompatibilityConfig:
     """Configuration for backward compatibility."""
+
     mode: CompatibilityMode = CompatibilityMode.COMPATIBLE
     warn_on_legacy: bool = True
     warn_on_missing_session_id: bool = False
@@ -58,7 +60,7 @@ class BackwardCompatibilityLayer:
         self,
         session_id: Optional[str] = None,
         repo_path: Optional[str] = None,
-        warn: bool = True
+        warn: bool = True,
     ) -> tuple[str, bool]:
         """
         Extract and validate session_id parameter.
@@ -91,7 +93,7 @@ class BackwardCompatibilityLayer:
                 self._warn(
                     f"No session_id provided. Auto-generated session_id: {session_id}. "
                     f"Consider explicitly passing session_id for better isolation.",
-                    category=UserWarning
+                    category=UserWarning,
                 )
         else:
             session_id = "default"
@@ -126,10 +128,7 @@ class BackwardCompatibilityLayer:
         return all(c.isalnum() or c in "_-" for c in session_id)
 
     def _warn(
-        self,
-        message: str,
-        category: type = DeprecationWarning,
-        stacklevel: int = 2
+        self, message: str, category: type = DeprecationWarning, stacklevel: int = 2
     ) -> None:
         """
         Emit a deprecation warning.
@@ -216,7 +215,7 @@ class BackwardCompatibilityLayer:
         logger.info(f"Legacy warnings {'enabled' if warn else 'disabled'}")
 
     @staticmethod
-    def from_environment() -> 'BackwardCompatibilityLayer':
+    def from_environment() -> "BackwardCompatibilityLayer":
         """
         Create compatibility layer from environment variables.
 
@@ -239,7 +238,9 @@ class BackwardCompatibilityLayer:
         warn_str = os.environ.get("GRAPHRAG_WARN_ON_LEGACY", "true").lower()
         config.warn_on_legacy = warn_str in ["true", "1", "yes"]
 
-        warn_missing_str = os.environ.get("GRAPHRAG_WARN_ON_MISSING_SESSION_ID", "false").lower()
+        warn_missing_str = os.environ.get(
+            "GRAPHRAG_WARN_ON_MISSING_SESSION_ID", "false"
+        ).lower()
         config.warn_on_missing_session_id = warn_missing_str in ["true", "1", "yes"]
 
         # Read default session ID

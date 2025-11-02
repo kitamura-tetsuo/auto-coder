@@ -1,7 +1,6 @@
 """Test execution functionality for Auto-Coder automation engine."""
 
 import csv
-import json
 import math
 import os
 import re
@@ -176,7 +175,9 @@ def run_local_tests(
                     results = client.query_test_results(test_type="all")
 
                     if results.get("status") == "running":
-                        logger.info("Tests are currently running in test_watcher, waiting...")
+                        logger.info(
+                            "Tests are currently running in test_watcher, waiting..."
+                        )
                         # Fall back to normal test execution
                     elif results.get("status") == "completed":
                         # Convert MCP results to expected format
@@ -198,14 +199,26 @@ def run_local_tests(
                         if failed_tests:
                             output_lines.append("\nFailed Tests:")
                             for test in failed_tests:
-                                output_lines.append(f"  - {test.get('file', 'unknown')}: {test.get('title', '')}")
-                                if test.get('error'):
+                                output_lines.append(
+                                    f"  - {test.get('file', 'unknown')}: {test.get('title', '')}"
+                                )
+                                if test.get("error"):
                                     output_lines.append(f"    Error: {test['error']}")
 
                         return {
                             "success": success,
                             "output": "\n".join(output_lines),
-                            "errors": "" if success else "\n".join([t.get('error', '') for t in failed_tests if t.get('error')]),
+                            "errors": (
+                                ""
+                                if success
+                                else "\n".join(
+                                    [
+                                        t.get("error", "")
+                                        for t in failed_tests
+                                        if t.get("error")
+                                    ]
+                                )
+                            ),
                             "return_code": 0 if success else 1,
                             "command": "test_watcher_mcp_query",
                             "test_file": None,
@@ -213,13 +226,19 @@ def run_local_tests(
                             "mcp_results": results,
                         }
         except Exception as e:
-            logger.warning(f"Failed to query test_watcher MCP, falling back to normal test execution: {e}")
+            logger.warning(
+                f"Failed to query test_watcher MCP, falling back to normal test execution: {e}"
+            )
 
     try:
         # If a specific test file is specified, run only that test (always via TEST_SCRIPT_PATH)
         if test_file:
-            with ProgressStage(f"Running only the specified test file via script: {test_file}"):
-                logger.info(f"Running only the specified test file via script: {test_file}")
+            with ProgressStage(
+                f"Running only the specified test file via script: {test_file}"
+            ):
+                logger.info(
+                    f"Running only the specified test file via script: {test_file}"
+                )
                 cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
                 result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
                 return {
@@ -765,7 +784,11 @@ def generate_commit_message_via_llm(
     """
     try:
         # Use message_backend_manager if available, otherwise fall back to llm_backend_manager
-        manager = message_backend_manager if message_backend_manager is not None else llm_backend_manager
+        manager = (
+            message_backend_manager
+            if message_backend_manager is not None
+            else llm_backend_manager
+        )
 
         if manager is None:
             return ""

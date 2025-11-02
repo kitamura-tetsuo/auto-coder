@@ -1,13 +1,17 @@
-import os
 import hashlib
 import logging
+import os
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Any, Dict, List, Optional, Union
+
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 from sentence_transformers import SentenceTransformer
 
-from ...backward_compatibility_layer import BackwardCompatibilityLayer, get_compatibility_layer
+from ...backward_compatibility_layer import (
+    BackwardCompatibilityLayer,
+    get_compatibility_layer,
+)
 
 # Configure logging to write to a file instead of stdout
 logging.basicConfig(
