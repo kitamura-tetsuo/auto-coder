@@ -4,7 +4,7 @@
 
 application:
   name: "Auto-Coder"
-  version: "2025.11.3.31+g3210bfb"
+  version: "2025.11.3.33+gd77cf97"
   description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
 features:
