@@ -1529,3 +1529,477 @@ class TestAutomationEngineExtended:
 
         # Assert
         assert len(result) == 0  # Should return empty list on timeout
+
+
+class TestGetCandidates:
+    """Test cases for _get_candidates method with priority-based selection."""
+
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_urgent_issue_highest_priority(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that urgent issues receive the highest priority (3)."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Mock GitHub client to return various items
+        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.get_open_issues.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Urgent issue - should be first
+            Mock(number=3, created_at="2024-01-03T00:00:00Z"),
+        ]
+
+        # Mock issue details with one urgent issue
+        issue_data = {
+            1: {
+                "number": 1,
+                "title": "Regular issue",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-01T00:00:00Z",
+            },
+            2: {
+                "number": 2,
+                "title": "Urgent issue",
+                "body": "",
+                "labels": ["urgent"],
+                "state": "open",
+                "created_at": "2024-01-02T00:00:00Z",
+            },
+            3: {
+                "number": 3,
+                "title": "Another issue",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": "2024-01-03T00:00:00Z",
+            },
+        }
+
+        def get_issue_details_side_effect(issue):
+            return issue_data[issue.number]
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - Urgent issue should be first (priority 3)
+        assert len(candidates) == 3
+        assert candidates[0]["type"] == "issue"
+        assert candidates[0]["priority"] == 3
+        assert candidates[0]["data"]["number"] == 2
+        assert "urgent" in candidates[0]["data"]["labels"]
+
+        # Regular issues should have priority 0
+        assert candidates[1]["priority"] == 0
+        assert candidates[2]["priority"] == 0
+
+        mock_extract_issues.assert_not_called()  # No PRs
+
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_priority_order_prs_and_issues(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that candidates are sorted by priority (urgent > ready > needs fix > regular)."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        # Mock GitHub client to return various PRs and issues
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),  # PR needs fix (priority 1)
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # PR ready for merge (priority 2)
+            Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Urgent PR (priority 3)
+        ]
+
+        mock_github_client.get_open_issues.return_value = [
+            Mock(number=10, created_at="2024-01-04T00:00:00Z"),  # Regular issue (priority 0)
+            Mock(number=11, created_at="2024-01-05T00:00:00Z"),  # Urgent issue (priority 3)
+        ]
+
+        # Mock PR details
+        pr_data = {
+            1: {
+                "number": 1,
+                "title": "PR with failing checks",
+                "body": "",
+                "head": {"ref": "pr-1"},
+                "labels": [],
+                "mergeable": False,
+                "created_at": "2024-01-01T00:00:00Z",
+            },
+            2: {
+                "number": 2,
+                "title": "PR ready for merge",
+                "body": "",
+                "head": {"ref": "pr-2"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-02T00:00:00Z",
+            },
+            3: {
+                "number": 3,
+                "title": "Urgent PR",
+                "body": "",
+                "head": {"ref": "pr-3"},
+                "labels": ["urgent"],
+                "mergeable": False,
+                "created_at": "2024-01-03T00:00:00Z",
+            },
+        }
+
+        def get_pr_details_side_effect(pr):
+            return pr_data[pr.number]
+
+        def get_issue_details_side_effect(issue):
+            return {
+                "number": issue.number,
+                "title": f"Issue {issue.number}",
+                "body": "",
+                "labels": ["urgent"] if issue.number == 11 else [],
+                "state": "open",
+                "created_at": issue.created_at,
+            }
+
+        mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+
+        # Mock GitHub Actions checks
+        def check_actions_side_effect(repo_name, pr_data, config):
+            if pr_data["number"] == 1:
+                return {"success": False, "failed_checks": []}
+            elif pr_data["number"] == 2:
+                return {"success": True, "failed_checks": []}
+            elif pr_data["number"] == 3:
+                return {"success": False, "failed_checks": []}
+            return {"success": True, "failed_checks": []}
+
+        mock_check_actions.side_effect = check_actions_side_effect
+
+        mock_extract_issues.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - Should be sorted by priority (3 -> 0), then by creation date (oldest first)
+        assert len(candidates) == 5
+
+        # First two should be urgent (priority 3)
+        assert candidates[0]["priority"] == 3
+        assert candidates[0]["data"]["number"] == 11  # Urgent issue - newer but urgent
+        assert candidates[1]["priority"] == 3
+        assert candidates[1]["data"]["number"] == 3  # Urgent PR
+
+        # Next should be PR ready for merge (priority 2)
+        assert candidates[2]["priority"] == 2
+        assert candidates[2]["data"]["number"] == 2
+
+        # Next should be PR needing fix (priority 1)
+        assert candidates[3]["priority"] == 1
+        assert candidates[3]["data"]["number"] == 1
+
+        # Last should be regular issue (priority 0)
+        assert candidates[4]["priority"] == 0
+        assert candidates[4]["data"]["number"] == 10
+
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_skips_items_with_auto_coder_label(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that items with @auto-coder label are skipped."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+        ]
+
+        mock_github_client.get_open_issues.return_value = [
+            Mock(number=10, created_at="2024-01-02T00:00:00Z"),
+            Mock(number=11, created_at="2024-01-03T00:00:00Z"),  # Has @auto-coder label
+        ]
+
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1,
+            "title": "PR",
+            "body": "",
+            "head": {"ref": "pr-1"},
+            "labels": ["@auto-coder"],  # Has @auto-coder label - should skip
+            "mergeable": True,
+            "created_at": "2024-01-01T00:00:00Z",
+        }
+
+        def get_issue_details_side_effect(issue):
+            return {
+                "number": issue.number,
+                "title": f"Issue {issue.number}",
+                "body": "",
+                "labels": ["@auto-coder"] if issue.number == 11 else [],
+                "state": "open",
+                "created_at": issue.created_at,
+            }
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_check_actions.return_value = {"success": True, "failed_checks": []}
+        mock_extract_issues.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - Only non-labeled items should be returned (PR #1 has @auto-coder label, Issue #11 has @auto-coder label)
+        assert len(candidates) == 1
+        assert candidates[0]["data"]["number"] == 10  # Issue without @auto-coder label
+
+        # PR #1 and Issue #11 should be skipped
+        candidate_numbers = [c["data"]["number"] for c in candidates]
+        assert 1 not in candidate_numbers  # PR with @auto-coder label
+        assert 11 not in candidate_numbers  # Issue with @auto-coder label
+
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_skips_issues_with_sub_issues_or_linked_prs(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that issues with sub-issues or linked PRs are skipped."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.get_open_issues.return_value = [
+            Mock(number=10, created_at="2024-01-01T00:00:00Z"),
+            Mock(number=11, created_at="2024-01-02T00:00:00Z"),  # Has sub-issues
+            Mock(number=12, created_at="2024-01-03T00:00:00Z"),  # Has linked PR
+        ]
+
+        def get_issue_details_side_effect(issue):
+            return {
+                "number": issue.number,
+                "title": f"Issue {issue.number}",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": issue.created_at,
+            }
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_github_client.get_open_sub_issues.side_effect = lambda repo, num: [1] if num == 11 else []
+        mock_github_client.has_linked_pr.side_effect = lambda repo, num: True if num == 12 else False
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - Only issue #10 should be returned
+        assert len(candidates) == 1
+        assert candidates[0]["data"]["number"] == 10
+        assert candidates[0]["type"] == "issue"
+
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_extracts_related_issues_from_pr_body(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that PR candidates include related issues extracted from PR body."""
+        # Setup
+        engine = AutomationEngine(mock_github_client, mock_gemini_client)
+
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+        ]
+
+        mock_github_client.get_open_issues.return_value = []
+
+        mock_github_client.get_pr_details.return_value = {
+            "number": 1,
+            "title": "PR",
+            "body": "This PR fixes #10 and #20",
+            "head": {"ref": "pr-1"},
+            "labels": [],
+            "mergeable": True,
+            "created_at": "2024-01-01T00:00:00Z",
+        }
+
+        mock_check_actions.return_value = {"success": True, "failed_checks": []}
+        mock_extract_issues.return_value = [10, 20]  # Extracted from PR body
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert
+        assert len(candidates) == 1
+        assert candidates[0]["type"] == "pr"
+        assert candidates[0]["data"]["number"] == 1
+        assert candidates[0]["related_issues"] == [10, 20]
+        assert candidates[0]["branch_name"] == "pr-1"
+
+        mock_extract_issues.assert_called_once_with("This PR fixes #10 and #20")
+
+
+class TestUrgentLabelPropagation:
+    """Test cases for urgent label propagation in PR creation."""
+
+    @patch("src.auto_coder.issue_processor.cmd.run_command")
+    def test_create_pr_for_issue_propagates_urgent_label(
+        self, mock_cmd, mock_github_client, mock_gemini_client
+    ):
+        """Test that urgent label is propagated from issue to PR."""
+        # Setup
+        from src.auto_coder.issue_processor import _create_pr_for_issue
+
+        issue_data = {
+            "number": 123,
+            "title": "Urgent issue",
+            "body": "This is an urgent issue",
+            "labels": ["urgent", "bug"],
+        }
+
+        # Mock gh pr create to return PR URL
+        mock_cmd.side_effect = [
+            Mock(success=True, stdout="https://github.com/test/repo/pull/456"),  # gh pr create
+            Mock(success=True, stdout="", stderr=""),  # gh pr edit
+        ]
+
+        # Mock get_pr_closing_issues to return the issue number
+        mock_github_client.get_pr_closing_issues.return_value = [123]
+
+        # Execute
+        result = _create_pr_for_issue(
+            repo_name="test/repo",
+            issue_data=issue_data,
+            work_branch="issue-123",
+            base_branch="main",
+            llm_response="Fixed the urgent issue",
+            github_client=mock_github_client,
+            dry_run=False,
+        )
+
+        # Assert
+        assert "Successfully created PR for issue #123" in result
+
+        # Verify gh pr create was called
+        assert mock_cmd.call_count == 2
+        create_call = mock_cmd.call_args_list[0][0][0]
+        assert create_call[0] == "gh"
+        assert create_call[1] == "pr"
+        assert create_call[2] == "create"
+
+        # Verify urgent label was added to PR
+        add_label_call = mock_cmd.call_args_list[1][0][0]
+        assert add_label_call[0] == "gh"
+        assert add_label_call[1] == "pr"
+        assert add_label_call[2] == "edit"
+        assert str(456) in add_label_call  # PR number
+
+        # Verify GitHub client was called to add labels
+        mock_github_client.add_labels_to_issue.assert_called_once_with(
+            "test/repo", 456, ["urgent"]
+        )
+
+    @patch("src.auto_coder.issue_processor.cmd.run_command")
+    def test_create_pr_for_issue_without_urgent_label(
+        self, mock_cmd, mock_github_client, mock_gemini_client
+    ):
+        """Test that no urgent label is propagated when issue doesn't have it."""
+        # Setup
+        from src.auto_coder.issue_processor import _create_pr_for_issue
+
+        issue_data = {
+            "number": 123,
+            "title": "Regular issue",
+            "body": "This is a regular issue",
+            "labels": ["bug"],
+        }
+
+        # Mock gh pr create to return PR URL
+        mock_cmd.return_value = Mock(success=True, stdout="https://github.com/test/repo/pull/456")
+
+        # Mock get_pr_closing_issues to return the issue number
+        mock_github_client.get_pr_closing_issues.return_value = [123]
+
+        # Execute
+        result = _create_pr_for_issue(
+            repo_name="test/repo",
+            issue_data=issue_data,
+            work_branch="issue-123",
+            base_branch="main",
+            llm_response="Fixed the issue",
+            github_client=mock_github_client,
+            dry_run=False,
+        )
+
+        # Assert
+        assert "Successfully created PR for issue #123" in result
+        # gh pr create should be called but NOT gh pr edit for urgent note
+        assert mock_cmd.call_count == 1
+
+        # Verify urgent label was NOT added
+        mock_github_client.add_labels_to_issue.assert_not_called()
+
+    @patch("src.auto_coder.issue_processor.cmd.run_command")
+    def test_create_pr_for_issue_dry_run_no_label_propagation(
+        self, mock_cmd, mock_github_client, mock_gemini_client
+    ):
+        """Test that urgent label is not propagated in dry run mode."""
+        # Setup
+        from src.auto_coder.issue_processor import _create_pr_for_issue
+
+        issue_data = {
+            "number": 123,
+            "title": "Urgent issue",
+            "body": "This is an urgent issue",
+            "labels": ["urgent"],
+        }
+
+        # Execute
+        result = _create_pr_for_issue(
+            repo_name="test/repo",
+            issue_data=issue_data,
+            work_branch="issue-123",
+            base_branch="main",
+            llm_response="Fixed the urgent issue",
+            github_client=mock_github_client,
+            dry_run=True,
+        )
+
+        # Assert
+        assert "[DRY RUN] Would create PR:" in result
+        # No actual GitHub operations should be performed
+        assert mock_cmd.call_count == 0
+        mock_github_client.add_labels_to_issue.assert_not_called()
