@@ -19,6 +19,7 @@ from src.auto_coder.git_utils import (
     is_git_repository,
     parse_github_repo_from_url,
     save_commit_failure_history,
+    validate_branch_name,
 )
 from src.auto_coder.utils import CommandResult
 
@@ -1203,3 +1204,178 @@ class TestExtractNumberFromBranch:
         assert extract_number_from_branch("develop") is None
         assert extract_number_from_branch("") is None
         assert extract_number_from_branch(None) is None
+
+
+class TestValidateBranchName:
+    """Tests for validate_branch_name function."""
+
+    def test_validate_branch_name_pr_pattern_lowercase(self):
+        """Test that lowercase pr-<number> pattern is rejected."""
+        error = validate_branch_name("pr-123")
+        assert error is not None
+        assert "pr-123" in error
+        assert "pr-<number>" in error
+        assert "issue-<number>" in error
+
+    def test_validate_branch_name_pr_pattern_uppercase(self):
+        """Test that uppercase PR-<number> pattern is rejected."""
+        error = validate_branch_name("PR-456")
+        assert error is not None
+        assert "PR-456" in error
+        assert "pr-<number>" in error
+        assert "issue-<number>" in error
+
+    def test_validate_branch_name_pr_pattern_mixed_case(self):
+        """Test that mixed case PR-<number> pattern is rejected."""
+        error = validate_branch_name("Pr-789")
+        assert error is not None
+        assert "Pr-789" in error
+
+    def test_validate_branch_name_valid_issue_pattern(self):
+        """Test that issue-<number> pattern is allowed."""
+        error = validate_branch_name("issue-123")
+        assert error is None
+
+    def test_validate_branch_name_valid_feature_branch(self):
+        """Test that valid branch names are allowed."""
+        error = validate_branch_name("feature/new-feature")
+        assert error is None
+        error = validate_branch_name("fix/bug-123")
+        assert error is None
+        error = validate_branch_name("main")
+        assert error is None
+        error = validate_branch_name("develop")
+        assert error is None
+
+    def test_validate_branch_name_empty_string(self):
+        """Test that empty branch name is rejected."""
+        error = validate_branch_name("")
+        assert error is not None
+        assert "empty" in error.lower()
+
+    def test_validate_branch_name_with_path_prefix(self):
+        """Test that pr-<number> in paths is rejected."""
+        error = validate_branch_name("feature/pr-123")
+        assert error is not None
+        assert "pr-123" in error
+
+    def test_validate_branch_name_issue_with_pr_prefix(self):
+        """Test that branches like issue-pr-123 are rejected (contains pr-<number> pattern)."""
+        error = validate_branch_name("issue-pr-123")
+        # Should be rejected because it contains the pr-<number> pattern
+        assert error is not None
+        assert "pr-<number>" in error
+
+    def test_validate_branch_name_numeric_only(self):
+        """Test that numeric-only branch names are allowed."""
+        error = validate_branch_name("123")
+        assert error is None
+
+    def test_validate_branch_name_pr_with_letters(self):
+        """Test that pr- prefix with letters (not just numbers) is allowed."""
+        error = validate_branch_name("pr-fix-bug")
+        assert error is None
+        error = validate_branch_name("pr-feature")
+        assert error is None
+
+
+class TestGitCheckoutBranchWithValidation:
+    """Tests for git_checkout_branch function with branch name validation."""
+
+    def test_checkout_rejects_pr_branch(self):
+        """Test that git_checkout_branch rejects pr-<number> branch names."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+
+            result = git_checkout_branch("pr-123", create_new=True)
+
+            # Should fail validation without making any git commands
+            assert result.success is False
+            assert "pr-<number>" in result.stderr
+            assert "issue-<number>" in result.stderr
+            assert mock_cmd.run_command.call_count == 0
+
+    def test_checkout_rejects_pr_branch_uppercase(self):
+        """Test that git_checkout_branch rejects PR-<number> branch names (case insensitive)."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+
+            result = git_checkout_branch("PR-456", create_new=True)
+
+            # Should fail validation without making any git commands
+            assert result.success is False
+            assert "PR-456" in result.stderr
+            assert mock_cmd.run_command.call_count == 0
+
+    def test_checkout_allows_issue_branch(self):
+        """Test that git_checkout_branch allows issue-<number> branch names."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git status --porcelain (no changes)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Second call: git branch --list issue-123 (from branch_exists check)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Third call: git checkout -b issue-123
+                CommandResult(
+                    success=True,
+                    stdout="Switched to a new branch 'issue-123'\n",
+                    stderr="",
+                    returncode=0,
+                ),
+                # Fourth call: verify current branch
+                CommandResult(
+                    success=True, stdout="issue-123\n", stderr="", returncode=0
+                ),
+                # Fifth call: git push -u origin issue-123
+                CommandResult(
+                    success=True,
+                    stdout="Branch 'issue-123' set up to track remote branch 'issue-123' from 'origin'.\n",
+                    stderr="",
+                    returncode=0,
+                ),
+            ]
+
+            result = git_checkout_branch("issue-123", create_new=True)
+
+            # Should succeed
+            assert result.success is True
+            assert mock_cmd.run_command.call_count > 0
+
+    def test_checkout_allows_regular_branch(self):
+        """Test that git_checkout_branch allows regular branch names."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # First call: git status --porcelain (no changes)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Second call: git branch --list feature-branch (from branch_exists check)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Third call: git checkout -b feature-branch
+                CommandResult(
+                    success=True,
+                    stdout="Switched to a new branch 'feature-branch'\n",
+                    stderr="",
+                    returncode=0,
+                ),
+                # Fourth call: verify current branch
+                CommandResult(
+                    success=True, stdout="feature-branch\n", stderr="", returncode=0
+                ),
+                # Fifth call: git push -u origin feature-branch
+                CommandResult(
+                    success=True,
+                    stdout="Branch 'feature-branch' set up to track remote branch 'feature-branch' from 'origin'.\n",
+                    stderr="",
+                    returncode=0,
+                ),
+            ]
+
+            result = git_checkout_branch("feature-branch", create_new=True)
+
+            # Should succeed
+            assert result.success is True

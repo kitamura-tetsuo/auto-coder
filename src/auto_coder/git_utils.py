@@ -287,6 +287,35 @@ def branch_exists(branch_name: str, cwd: Optional[str] = None) -> bool:
     return result.success and result.stdout.strip()
 
 
+def validate_branch_name(branch_name: str) -> Optional[str]:
+    """
+    Validate branch name to prevent creation of branches with forbidden patterns.
+
+    This function checks if a branch name matches the forbidden `pr-<number>` pattern,
+    which is reserved for GitHub PR branches fetched from remote repositories.
+
+    Args:
+        branch_name: Name of the branch to validate
+
+    Returns:
+        None if branch name is valid, or an error message string if invalid
+    """
+    if not branch_name:
+        return "Branch name cannot be empty"
+
+    # Check if branch name contains the forbidden pr-<number> pattern
+    # This pattern is reserved for GitHub PR branches
+    # Match pr- followed by one or more digits, case-insensitive
+    if re.search(r"pr-\d+", branch_name, re.IGNORECASE):
+        return (
+            f"Branch name '{branch_name}' contains the forbidden pattern 'pr-<number>'. "
+            "This naming pattern is reserved for GitHub PR branches. "
+            "Please use 'issue-<number>' naming convention instead."
+        )
+
+    return None
+
+
 def git_checkout_branch(
     branch_name: str,
     create_new: bool = False,
@@ -316,6 +345,17 @@ def git_checkout_branch(
         success=True only if checkout succeeded AND current branch matches expected branch.
     """
     cmd = CommandExecutor()
+
+    # Validate branch name before any operations
+    validation_error = validate_branch_name(branch_name)
+    if validation_error:
+        logger.error(validation_error)
+        return CommandResult(
+            success=False,
+            stdout="",
+            stderr=validation_error,
+            returncode=1,
+        )
 
     # Check for uncommitted changes before checkout
     status_result = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
