@@ -79,7 +79,7 @@ def mcp_pdb_status() -> None:
     setup_logger()
     click.echo("Checking MCP-PDB prerequisites...\n")
 
-    # uv の存在確認
+    # Check for uv existence
     try:
         import subprocess as _sp
 
