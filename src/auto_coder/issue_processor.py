@@ -979,14 +979,13 @@ def process_single(
 
                     set_progress_item("PR", number, related_issues, branch_name)
 
-                    # Skip if PR already has @auto-coder label
+                    # Check if PR has @auto-coder label
+                    # In single processing mode, we allow processing even if the label is present
                     pr_labels = pr_data.get("labels", [])
                     if "@auto-coder" in pr_labels:
-                        msg = f"Skipping PR #{number} - already has @auto-coder label"
-                        logger.info(msg)
-                        result["errors"].append(msg)
-                        newline_progress()
-                        return result
+                        logger.info(
+                            f"Processing PR #{number} despite @auto-coder label (explicit single processing)"
+                        )
 
                     # Check GitHub Actions status before processing
                     github_checks = _check_github_actions_status(
@@ -1044,27 +1043,30 @@ def process_single(
                         repo_name, number
                     )
 
-                    # Check if issue already has @auto-coder label (being processed by another instance)
                     push_progress_stage("Checking status")
+                    # Check if issue already has @auto-coder label
+                    # In single processing mode, we allow processing even if the label is present
                     current_labels = issue_data.get("labels", [])
-                    if "@auto-coder" in current_labels:
-                        msg = (
-                            f"Skipping issue #{number} - already has @auto-coder label"
-                        )
-                        logger.info(msg)
-                        result["errors"].append(msg)
-                        newline_progress()
-                        return result
-                    # Add @auto-coder label now that we're actually going to process this issue
-                    if not dry_run:
+                    label_already_exists = "@auto-coder" in current_labels
+
+                    # Add @auto-coder label if it doesn't exist (only if not in dry_run mode)
+                    label_added = False
+                    if not dry_run and not label_already_exists:
                         if not github_client.try_add_work_in_progress_label(
                             repo_name, number
                         ):
+                            # Another instance just added the label, skip to avoid conflict
                             msg = f"Skipping issue #{number} - @auto-coder label was just added by another instance"
                             logger.info(msg)
                             result["errors"].append(msg)
                             newline_progress()
                             return result
+                        label_added = True
+
+                    if label_already_exists:
+                        logger.info(
+                            f"Processing issue #{number} despite @auto-coder label (explicit single processing)"
+                        )
 
                     processed_issue = {
                         "issue_data": issue_data,
@@ -1107,8 +1109,8 @@ def process_single(
                             )
                             processed_issue["actions_taken"] = actions
                     finally:
-                        # Remove @auto-coder label after processing
-                        if not dry_run:
+                        # Remove @auto-coder label after processing (only if we added it)
+                        if not dry_run and label_added:
                             try:
                                 github_client.remove_labels_from_issue(
                                     repo_name, number, ["@auto-coder"]
@@ -1124,8 +1126,8 @@ def process_single(
                 except Exception as e:
                     msg = f"Failed to process issue #{number}: {e}"
                     logger.error(msg)
-                    # Try to remove @auto-coder label on error
-                    if not dry_run:
+                    # Try to remove @auto-coder label on error (only if we added it)
+                    if not dry_run and label_added:
                         try:
                             github_client.remove_labels_from_issue(
                                 repo_name, number, ["@auto-coder"]
