@@ -32,7 +32,7 @@ wheels = [
 [[package]]
 name = "auto-coder"
 
-version = "2025.11.3+g0b03ffb"
+version = "2025.11.3.1+g2a0854e"
 
 version = "2025.11.3+g0b03ffb"
 
