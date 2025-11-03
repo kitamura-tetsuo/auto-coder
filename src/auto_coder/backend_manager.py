@@ -129,7 +129,7 @@ class BackendManager(LLMBackendManagerBase):
                 tried.add(self._current_idx)
                 try:
                     cli = self._get_or_create_client(name)
-                    out = cli._run_llm_cli(prompt)
+                    out: str = cli._run_llm_cli(prompt)
                     # 実行に成功した場合のみ、直近利用したバックエンド/モデルを更新する
                     self._last_backend = name
                     self._last_model = getattr(cli, "model_name", None)
@@ -182,7 +182,7 @@ class BackendManager(LLMBackendManagerBase):
 
         # 実行
         with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
-            out = self._run_llm_cli(prompt)
+            out: str = self._run_llm_cli(prompt)
 
         # 状態更新
         self._last_prompt = prompt
@@ -240,7 +240,7 @@ class BackendManager(LLMBackendManagerBase):
             True if the MCP server is configured, False otherwise
         """
         cli = self._get_or_create_client(self._current_backend_name())
-        return cli.check_mcp_server_configured(server_name)
+        return cli.check_mcp_server_configured(server_name)  # type: ignore[no-any-return]
 
     def add_mcp_server_config(
         self, server_name: str, command: str, args: list[str]
@@ -256,7 +256,7 @@ class BackendManager(LLMBackendManagerBase):
             True if configuration was added successfully, False otherwise
         """
         cli = self._get_or_create_client(self._current_backend_name())
-        return cli.add_mcp_server_config(server_name, command, args)
+        return cli.add_mcp_server_config(server_name, command, args)  # type: ignore[no-any-return]
 
     def ensure_mcp_server_configured(
         self, server_name: str, command: str, args: list[str]
@@ -341,7 +341,11 @@ class LLMBackendManager:
             # Check if we need to initialize
             if cls._instance is None or force_reinitialize:
                 # Validate initialization parameters
-                if default_backend is None or default_client is None or factories is None:
+                if (
+                    default_backend is None
+                    or default_client is None
+                    or factories is None
+                ):
                     if cls._instance is None or force_reinitialize:
                         raise RuntimeError(
                             "LLMBackendManager.get_llm_instance() must be called with "
@@ -378,7 +382,11 @@ class LLMBackendManager:
                             "factories": factories,
                             "order": order,
                         }
-            elif default_backend is not None or default_client is not None or factories is not None:
+            elif (
+                default_backend is not None
+                or default_client is not None
+                or factories is not None
+            ):
                 # Parameters provided but instance already exists (and not forcing reinit)
                 # This is allowed - we just ignore the parameters and return existing instance
                 logger.debug(
