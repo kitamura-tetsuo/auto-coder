@@ -76,7 +76,8 @@ def _process_issues_normal(
 
                 # Set progress item
                 set_progress_item("Issue", issue_number)
-                # Check if issue already has @auto-coder label (being processed by another instance)
+                # Check if issue already has @auto-coder label (being processed by
+# another instance)
                 with ProgressStage("Checking status"):
                     if not dry_run and not github_client.disable_labels:
                         current_labels = issue_data.get("labels", [])
@@ -130,7 +131,8 @@ def _process_issues_normal(
                         newline_progress()
                         continue
 
-                # Add @auto-coder label now that we're actually going to process this issue
+                # Add @auto-coder label now that we're actually going to process this
+# issue
                 if not dry_run:
                     if not github_client.try_add_work_in_progress_label(
                         repo_name, issue_number
@@ -219,7 +221,8 @@ def _process_issues_jules_mode(
                 issue_data = github_client.get_issue_details(issue)
                 issue_number = issue_data["number"]
 
-                # Check if issue already has @auto-coder label (being processed by another instance)
+                # Check if issue already has @auto-coder label (being processed by
+# another instance)
                 if not dry_run and not github_client.disable_labels:
                     current_labels = issue_data.get("labels", [])
                     if "@auto-coder" in current_labels:
@@ -254,7 +257,8 @@ def _process_issues_jules_mode(
                     )
                     continue
 
-                # Add @auto-coder label now that we're actually going to process this issue
+                # Add @auto-coder label now that we're actually going to process this
+# issue
                 if not dry_run:
                     if not github_client.try_add_work_in_progress_label(
                         repo_name, issue_number
@@ -737,13 +741,15 @@ def _apply_issue_actions_directly(
                 or "invalid" in response.lower()
             ):
                 # Close the issue
-                # github_client.close_issue(repo_name, issue_data['number'], f"Auto-Coder Analysis: {response[:500]}...")
+                # github_client.close_issue(repo_name, issue_data['number'],
+# f"Auto-Coder Analysis: {response[:500]}...")
                 actions.append(
                     f"Closed issue #{issue_data['number']} based on analysis"
                 )
             else:
                 # Add analysis comment
-                # github_client.add_comment_to_issue(repo_name, issue_data['number'], f"## 🤖 Auto-Coder Analysis\n\n{response}")
+                # github_client.add_comment_to_issue(repo_name, issue_data['number'],
+# f"## 🤖 Auto-Coder Analysis\n\n{response}")
                 actions.append(
                     f"Added analysis comment to issue #{issue_data['number']}"
                 )
@@ -1003,7 +1009,8 @@ def process_single(
                         repo_name, number
                     )
 
-                    # Check if issue already has @auto-coder label (being processed by another instance)
+                    # Check if issue already has @auto-coder label (being processed by
+# another instance)
                     push_progress_stage("Checking status")
                     if not dry_run and not github_client.disable_labels:
                         current_labels = issue_data.get("labels", [])
@@ -1013,7 +1020,8 @@ def process_single(
                             result["errors"].append(msg)
                             newline_progress()
                             return result
-                    # Add @auto-coder label now that we're actually going to process this issue
+                    # Add @auto-coder label now that we're actually going to process
+# this issue
                     if not dry_run:
                         if not github_client.try_add_work_in_progress_label(
                             repo_name, number

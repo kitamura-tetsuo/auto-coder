@@ -430,14 +430,16 @@ def git_checkout_branch(
 
     logger.info(f"Successfully checked out branch '{branch_name}'")
 
-    # If creating a new branch and it was actually created (not just checked out), push to remote and set up tracking
+    # If creating a new branch and it was actually created (not just checked out), push
+    # to remote and set up tracking
     if (
         create_new
         and publish
         and not branch_exists(branch_name + "_backup", cwd=cwd, cmd=cmd)
     ):  # Check if this was a new branch by using a temp check
         # Actually, we need a better way to detect if this was a new branch
-        # Let's check if the branch existed before our operation by checking if it has remote tracking
+        # Let's check if the branch existed before our operation by checking if it has
+# remote tracking
         if not branch_exists(f"origin/{branch_name}", cwd=cwd, cmd=cmd):
             logger.info(f"Publishing new branch '{branch_name}' to remote...")
             push_result = cmd.run_command(
@@ -987,7 +989,8 @@ def resolve_pull_conflicts(
                 # Check if it's actually a conflict or another error
                 if "conflict" in merge_result.stderr.lower():
                     logger.error(f"Merge conflicts detected: {merge_result.stderr}")
-                    # For now, return the merge result so the caller can handle conflicts
+                    # For now, return the merge result so the caller can handle
+# conflicts
                     return merge_result
                 else:
                     logger.error(
@@ -1180,7 +1183,8 @@ def try_llm_commit_push(
                 logger.error(f"Uncommitted changes: {status_result.stdout}")
                 return False
 
-            # Verify that the push was successful by checking if there are unpushed commits
+            # Verify that the push was successful by checking if there are unpushed
+# commits
             unpushed_result = cmd.run_command(["git", "log", "@{u}..HEAD", "--oneline"])
             if unpushed_result.success and unpushed_result.stdout.strip():
                 logger.error("LLM claimed success but there are still unpushed commits")
@@ -1279,7 +1283,8 @@ def commit_and_push_changes(
                     "commit_message": summary,
                 }
                 save_commit_failure_history(commit_result.stderr, context, repo_name)
-                # This line will never be reached due to sys.exit in save_commit_failure_history
+                # This line will never be reached due to sys.exit in
+# save_commit_failure_history
                 return f"Failed to commit changes: {commit_result.stderr}"
         else:
             # Save history and exit immediately
@@ -1289,5 +1294,6 @@ def commit_and_push_changes(
                 "commit_message": summary,
             }
             save_commit_failure_history(commit_result.stderr, context, repo_name)
-            # This line will never be reached due to sys.exit in save_commit_failure_history
+            # This line will never be reached due to sys.exit in
+# save_commit_failure_history
             return f"Failed to commit changes: {commit_result.stderr}"
