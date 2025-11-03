@@ -179,7 +179,11 @@ class CommandExecutor:
                         else:
                             stderr_lines.append(chunk)
 
+<<<<<<< HEAD
                         # Skip empty lines and don't log them
+=======
+                        # Ignore empty lines and don't log them
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
                         stripped_chunk = chunk.rstrip("\n")
                         if stripped_chunk:
                             # Also output stderr at INFO level
@@ -319,10 +323,16 @@ class CommandExecutor:
 def change_fraction(old: str, new: str) -> float:
     """Return fraction of change between two strings (0.0..1.0).
 
+<<<<<<< HEAD
     For performance optimization, the comparison targets the smaller of either
     the trailing "20 lines" or "1000 characters".
     Implementation: Extract a trailing window from each string, then calculate
     the similarity using difflib.SequenceMatcher and return change = 1 - ratio.
+=======
+    For performance optimization, compare the trailing "20 lines" or "1000 characters", whichever is smaller.
+    Implementation: Extract trailing windows from each string and calculate
+    difflib.SequenceMatcher similarity between those windows, returning change = 1 - ratio.
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     """
     try:
         import difflib
@@ -333,10 +343,17 @@ def change_fraction(old: str, new: str) -> float:
         def tail_window(s: str) -> str:
             if not s:
                 return ""
+<<<<<<< HEAD
             # Trailing 20 lines
             lines = s.splitlines()
             tail_by_lines = "\n".join(lines[-20:])
             # Trailing 1000 characters
+=======
+            # Last 20 lines
+            lines = s.splitlines()
+            tail_by_lines = "\n".join(lines[-20:])
+            # Last 1000 characters
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
             tail_by_chars = s[-1000:]
             # Use the shorter one
             return (
@@ -361,15 +378,27 @@ def change_fraction(old: str, new: str) -> float:
 
 
 def slice_relevant_error_window(text: str) -> str:
+<<<<<<< HEAD
     """Return only the necessary parts related to errors (discard prelude, emphasize and shorten latter half).
     Policy:
     - Search for priority triggers and return from the earliest position to the end
     - If not found, limit to the last several hundred lines
+=======
+    """Return only the necessary parts related to errors (truncate prelude + emphasize later part + shorten).
+
+    Strategy:
+    - Search for priority triggers and return from the earliest position to the end
+    - If not found, limit to the last few hundred lines
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     """
     if not text:
         return text
     lines = text.split("\n")
+<<<<<<< HEAD
     # Group by priority from highest to lowest
+=======
+    # Group by priority (high to low)
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     priority_groups = [
         ["Expected substring:", "Received string:", "expect(received)"],
         ["Error:   ", ".spec.ts", "##[error]", "##[warning]"],
@@ -377,7 +406,11 @@ def slice_relevant_error_window(text: str) -> str:
         ["error was not a part of any test", "Notice:", "##[notice]", "notice"],
     ]
     start_idx = None
+<<<<<<< HEAD
     # Search for the earliest priority trigger (from front)
+=======
+    # Search for the earliest priority trigger (from the beginning)
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     for group in priority_groups:
         for i in range(len(lines)):
             low = lines[i].lower()
@@ -387,9 +420,15 @@ def slice_relevant_error_window(text: str) -> str:
         if start_idx is not None:
             break
     if start_idx is None:
+<<<<<<< HEAD
         # If no trigger found, use only the end (max 500 lines)
         return "\n".join(lines[-500:])
     # Keep the end as-is. Also limit to max 1500 lines
+=======
+        # If no trigger, only the tail (max 500 lines)
+        return "\n".join(lines[-500:])
+    # Keep the tail as is. Also limit to max 1500 lines
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     sliced = lines[start_idx:]
     if len(sliced) > 1500:
         sliced = sliced[:1500]
@@ -397,19 +436,32 @@ def slice_relevant_error_window(text: str) -> str:
 
 
 def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
+<<<<<<< HEAD
     """Extract and return the "path of the first failed test file" from test output.
+=======
+    """Extract and return the path of the first failed test file from test output.
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
 
     Two-stage detection method:
     1. First, determine which test library failed
     2. Then, extract the failed test file using patterns specific to that test library
 
     Supported formats:
+<<<<<<< HEAD
     - pytest: End summary "FAILED tests/test_x.py::test_y - ..." etc.
     - pytest: Traceback "tests/test_x.py:123: in test_y" etc.
     - Playwright: Any log "e2e/foo/bar.spec.ts:16:5" etc.
     - Vitest: "FAIL src/foo.test.ts" etc.
 
     Returns the found path. May return a candidate even if existence check fails (interpreted by caller).
+=======
+    - pytest: trailing summary "FAILED tests/test_x.py::test_y - ..." etc.
+    - pytest: traceback "tests/test_x.py:123: in test_y" etc.
+    - Playwright: any log "e2e/foo/bar.spec.ts:16:5" etc.
+    - Vitest: "FAIL src/foo.test.ts" etc.
+
+    Returns the found path. May return a candidate even if file existence check fails (to be interpreted by caller).
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     """
     import re
 
@@ -435,7 +487,11 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
             return "pytest"
         if re.search(r"=+ \d+ failed", text, re.MULTILINE):
             return "pytest"
+<<<<<<< HEAD
         # pytest traceback lines (tests/ directory .py files)
+=======
+        # pytest traceback lines (.py files under tests/)
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
         if re.search(r"(?:^|\s)(?:tests?/)[^:\s]+\.py:\d+", text, re.MULTILINE):
             return "pytest"
 
@@ -451,7 +507,11 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
 
         # Vitest failure patterns
         # Patterns like "FAIL  |unit| src/tests/..."
+<<<<<<< HEAD
         # Match even in the middle of lines to handle log output
+=======
+        # Match even in the middle of lines to support log output
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
         if re.search(r"FAIL\s+(?:\|[^|]+\|\s+)?[^\s>]+\.(?:spec|test)\.ts", text):
             return "vitest"
         if re.search(r"Test Files\s+\d+ failed", text, re.MULTILINE):
@@ -478,7 +538,11 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
                 found.append(m.group(1))
                 break
 
+<<<<<<< HEAD
         # 2) Extract .py files under tests/ from pytest traceback lines
+=======
+        # 2) Extract .py from pytest traceback lines under tests/
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
         m = re.search(
             r"(^|\s)((?:tests?/|^tests?/)[^:\s]+\.py):\d+", text, re.MULTILINE
         )
@@ -523,7 +587,11 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
                 if norm not in found:
                     found.append(norm)
 
+<<<<<<< HEAD
         # Fallback: Search for lines containing .spec.ts
+=======
+        # Fallback: look for lines containing .spec.ts
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
         if not found:
             for spec_path in re.findall(r"([^\s:]+\.spec\.ts)", text):
                 norm = _normalize_spec(spec_path)
@@ -540,8 +608,13 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
 
         found: List[str] = []
 
+<<<<<<< HEAD
         # Extract .test.ts / .spec.ts from Vitest/Jest format FAIL lines
         # Match even in the middle of lines to handle log output
+=======
+        # Extract .test.ts / .spec.ts from Vitest/Jest FAIL lines
+        # Match even in the middle of lines to support log output
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
         vitest_fail_re = re.compile(
             r"FAIL\s+(?:\|[^|]+\|\s+)?([^\s>]+\.(?:spec|test)\.ts)(?=\s|>|$)",
         )
@@ -552,7 +625,11 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
 
         return found
 
+<<<<<<< HEAD
     # Analyze stderr first, then stdout, if neither found, analyze combined output as before
+=======
+    # Parse stderr first, then stdout, and if still not found, parse combined output as before
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     ordered_outputs = [stderr, stdout, f"{stdout}\n{stderr}"]
     candidates: List[str] = []
 
@@ -570,12 +647,20 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         if candidates:
             break
 
+<<<<<<< HEAD
     # Prefer to return existing files
+=======
+    # Prioritize returning files that actually exist
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     for path in candidates:
         if os.path.exists(path):
             return path
 
+<<<<<<< HEAD
     # If candidates exist, return the first candidate even if it doesn't exist
+=======
+    # If candidate exists but doesn't actually exist, return the first candidate
+>>>>>>> b5503ddfa0815aae640c31c593514c3fd15e1a39
     if candidates:
         return candidates[0]
 
