@@ -7,6 +7,8 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
+from auto_coder.prompt_loader import render_prompt
 from auto_coder.util.github_action import get_github_actions_logs_from_url
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
@@ -29,17 +31,13 @@ class AutomationEngine:
     def __init__(
         self,
         github_client,
-        llm_client=None,
         dry_run: bool = False,
         config: Optional[AutomationConfig] = None,
-        message_backend_manager=None,
     ):
         """Initialize automation engine."""
         self.github = github_client
-        self.llm = llm_client
         self.dry_run = dry_run
         self.config = config or AutomationConfig()
-        self.message_backend_manager = message_backend_manager
         self.cmd = CommandExecutor()
 
         # Note: Report directories are created per repository,
@@ -298,14 +296,15 @@ class AutomationEngine:
             target_type,
             number,
             jules_mode,
-            self.llm,
-            self.message_backend_manager,
         )
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
         return create_feature_issues(
-            self.github, self.config, self.dry_run, repo_name, self.llm
+            self.github,
+            self.config,
+            self.dry_run,
+            repo_name,
         )
 
     def fix_to_pass_tests(
@@ -329,8 +328,6 @@ class AutomationEngine:
                     self.config,
                     self.dry_run,
                     max_attempts,
-                    self.llm,
-                    message_backend_manager,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
@@ -338,9 +335,7 @@ class AutomationEngine:
                     original_apply
                 )
 
-        return fix_to_pass_tests(
-            self.config, self.dry_run, max_attempts, self.llm, message_backend_manager
-        )
+        return fix_to_pass_tests(self.config, self.dry_run, max_attempts)
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
         """Get LLM backend and model information.
@@ -348,32 +343,9 @@ class AutomationEngine:
         Returns:
             Dictionary with 'backend' and 'model' keys.
         """
-        if self.llm is None:
-            return {"backend": None, "model": None}
 
         # For BackendManager case
-        if hasattr(self.llm, "get_last_backend_and_model"):
-            backend, model = self.llm.get_last_backend_and_model()
-            return {"backend": backend, "model": model}
-
-        # For individual client case
-        backend = None
-        model = getattr(self.llm, "model_name", None)
-
-        # Infer backend name from class name
-        class_name = self.llm.__class__.__name__
-        if "Gemini" in class_name:
-            backend = "gemini"
-        elif "Codex" in class_name:
-            if "MCP" in class_name:
-                backend = "codex-mcp"
-            else:
-                backend = "codex"
-        elif "Qwen" in class_name:
-            backend = "qwen"
-        elif "Auggie" in class_name:
-            backend = "auggie"
-
+        backend, model = get_llm_backend_manager().get_last_backend_and_model()
         return {"backend": backend, "model": model}
 
     def _save_report(
@@ -425,7 +397,10 @@ class AutomationEngine:
     ) -> List[str]:
         """Ask LLM CLI to apply PR fixes directly; avoid posting PR comments."""
         return _pr_apply_actions(
-            repo_name, pr_data, self.config, self.dry_run, self.llm
+            repo_name,
+            pr_data,
+            self.config,
+            self.dry_run,
         )
 
     def _take_issue_actions(
@@ -440,8 +415,6 @@ class AutomationEngine:
             self.config,
             self.dry_run,
             self.github,
-            self.llm,
-            self.message_backend_manager,
         )
 
     def _apply_issue_actions_directly(
@@ -458,8 +431,6 @@ class AutomationEngine:
             self.config,
             self.dry_run,
             self.github,
-            self.llm,
-            self.message_backend_manager,
         )
 
     def _commit_changes(self, fix_suggestion: Dict[str, Any]) -> str:
@@ -855,42 +826,36 @@ class AutomationEngine:
         actions = []
 
         try:
-            # Create prompt for fixing GitHub Actions issues (no commit/push instructions)
-            prompt = f"""Fix the GitHub Actions issues in this PR.
+            # Load prompt from yaml file and format with context
+            prompt = render_prompt(
+                "pr.github_actions_fix_direct",
+                data={
+                    "repo_name": repo_name,
+                    "pr_title": pr_data.get("title", "N/A"),
+                    "pr_body": pr_data.get("body", "N/A"),
+                    "pr_number": pr_data.get("number", "N/A"),
+                    "github_logs": github_logs,
+                },
+            )
 
-PR Details:
-- Title: {pr_data.get('title', 'N/A')}
-- Body: {pr_data.get('body', 'N/A')}
-- Number: {pr_data.get('number', 'N/A')}
+            llm_response = run_llm_prompt(prompt)
+            actions.append(f"Applied GitHub Actions fix")
 
-GitHub Actions Logs:
-{github_logs}
+            # Commit the changes using the centralized commit logic
+            commit_result = self._commit_with_message(
+                f"Auto-Coder: Fix GitHub Actions issues for PR #{pr_data.get('number', 'N/A')}"
+            )
+            if commit_result.success:
+                actions.append("Committed changes")
 
-Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
-DO NOT include git commit or push commands in your response."""
-
-            # Call the LLM to get the fix
-            if self.llm and hasattr(self.llm, "_run_gemini_cli"):
-                llm_response = self.llm._run_gemini_cli(prompt)
-                actions.append(f"Applied GitHub Actions fix")
-
-                # Commit the changes using the centralized commit logic
-                commit_result = self._commit_with_message(
-                    f"Auto-Coder: Fix GitHub Actions issues for PR #{pr_data.get('number', 'N/A')}"
-                )
-                if commit_result.success:
-                    actions.append("Committed changes")
-
-                    # Push the changes
-                    push_result = self._push_current_branch()
-                    if push_result.success:
-                        actions.append("Pushed changes")
-                    else:
-                        actions.append(f"Failed to push: {push_result.stderr}")
+                # Push the changes
+                push_result = self._push_current_branch()
+                if push_result.success:
+                    actions.append("Pushed changes")
                 else:
-                    actions.append(f"Failed to commit: {commit_result.stderr}")
+                    actions.append(f"Failed to push: {push_result.stderr}")
             else:
-                actions.append("Applied GitHub Actions fix")
+                actions.append(f"Failed to commit: {commit_result.stderr}")
 
         except Exception as e:
             actions.append(f"Error applying GitHub Actions fix: {e}")

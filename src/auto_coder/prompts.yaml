@@ -73,6 +73,20 @@ pr:
     - First, provide a concise summary of what you changed and why.
     - Return only a short summary line; no commit/push output is needed.
 
+  github_actions_fix_direct: |-
+    Fix the GitHub Actions issues in this PR.
+
+    PR Details:
+    - Title: $pr_title
+    - Body: $pr_body
+    - Number: $pr_number
+
+    GitHub Actions Logs:
+    $github_logs
+
+    Please fix the issues that are causing the GitHub Actions failures. Make the necessary code changes to resolve the errors.
+    DO NOT include git commit or push commands in your response.
+
   local_test_fix: |-
     Fix the following local test failures for PR #$pr_number:
 

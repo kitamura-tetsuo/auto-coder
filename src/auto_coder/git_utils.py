@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from auto_coder.backend_manager import get_message_backend_manager, run_message_prompt
+
 try:
     from git import InvalidGitRepositoryError, Repo
 
@@ -476,193 +478,20 @@ def git_push(
     commit_message: Optional[str] = None,
 ) -> CommandResult:
     """
-    Push changes to remote repository.
-
-    This function centralizes git push operations for consistent error handling.
-    Automatically handles upstream branch setup if needed.
-    Also handles dprint formatting errors by running formatter and retrying push.
-
-    Args:
-        cwd: Optional working directory for the git command
-        remote: Remote name (default: 'origin')
-        branch: Optional branch name. If None, pushes current branch
-        commit_message: Optional commit message for re-committing after dprint formatting
-
-    Returns:
-        CommandResult with the result of the push operation
-    """
-    cmd = CommandExecutor()
-
-    # Determine which branch to push
-    # If branch is specified, use it directly
-    # If not, get the current branch
-    target_branch = branch
-    if not target_branch:
-        branch_result = cmd.run_command(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
-        )
-        if branch_result.returncode == 0:
-            target_branch = branch_result.stdout.strip()
-        else:
-            logger.warning(f"Failed to get current branch: {branch_result.stderr}")
-            return CommandResult(
-                success=False,
-                stdout="",
-                stderr=f"Failed to get current branch: {branch_result.stderr}",
-                returncode=branch_result.returncode,
-            )
-
-    # Build push command
-    push_cmd: List[str] = ["git", "push"]
-    if branch:
-        push_cmd.extend([remote, branch])
-
-    result = cmd.run_command(push_cmd, cwd=cwd)
-
-    # Check if push failed due to missing upstream
-    if result.returncode != 0:
-        is_upstream_error = (
-            "has no upstream branch" in result.stderr
-            or "--set-upstream" in result.stderr
-        )
-
-        if is_upstream_error:
-            logger.info(
-                f"Branch {target_branch} has no upstream, setting upstream to {remote}/{target_branch}"
-            )
-            # Retry with --set-upstream
-            push_cmd_with_upstream = [
-                "git",
-                "push",
-                "--set-upstream",
-                remote,
-                target_branch,
-            ]
-            result = cmd.run_command(push_cmd_with_upstream, cwd=cwd)
-
-    # Check if push failed due to dprint formatting issues
-    if result.returncode != 0:
-        is_dprint_error = (
-            "dprint output-file-paths" in result.stderr
-            or "You may want to try using `dprint output-file-paths`" in result.stderr
-        )
-
-        if is_dprint_error:
-            logger.info(
-                "Detected dprint formatting issues in push hook, running 'npx dprint fmt' and retrying..."
-            )
-
-            # Run dprint formatter
-            fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
-
-            if fmt_result.success:
-                logger.info("Successfully ran dprint formatter")
-                # Stage all changes including formatted files
-                add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
-                if add_result.success:
-                    logger.info("Staged formatted files")
-
-                    # Re-commit with the same message if provided
-                    if commit_message:
-                        logger.info("Re-committing changes after dprint formatting...")
-                        commit_result = cmd.run_command(
-                            ["git", "commit", "--amend", "--no-edit"], cwd=cwd
-                        )
-                        if not commit_result.success:
-                            logger.warning(
-                                f"Failed to amend commit: {commit_result.stderr}"
-                            )
-                            # Try regular commit if amend fails
-                            commit_result = cmd.run_command(
-                                ["git", "commit", "-m", commit_message], cwd=cwd
-                            )
-                            if not commit_result.success:
-                                logger.warning(
-                                    f"Failed to commit formatted changes: {commit_result.stderr}"
-                                )
-                                return CommandResult(
-                                    success=False,
-                                    stdout=commit_result.stdout,
-                                    stderr=commit_result.stderr,
-                                    returncode=commit_result.returncode,
-                                )
-
-                    logger.info("Retrying push...")
-                    # Retry push
-                    result = cmd.run_command(push_cmd, cwd=cwd)
-
-                    # If still failing due to upstream, try with --set-upstream
-                    if result.returncode != 0:
-                        is_upstream_error = (
-                            "has no upstream branch" in result.stderr
-                            or "--set-upstream" in result.stderr
-                        )
-                        if is_upstream_error:
-                            logger.info(
-                                f"Branch {target_branch} has no upstream, setting upstream to {remote}/{target_branch}"
-                            )
-                            push_cmd_with_upstream = [
-                                "git",
-                                "push",
-                                "--set-upstream",
-                                remote,
-                                target_branch,
-                            ]
-                            result = cmd.run_command(push_cmd_with_upstream, cwd=cwd)
-                else:
-                    logger.warning(
-                        f"Failed to stage formatted files: {add_result.stderr}"
-                    )
-            else:
-                logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
-
-    if result.returncode == 0:
-        logger.info(f"Successfully pushed changes to {remote}/{target_branch}")
-        return CommandResult(
-            success=True, stdout=result.stdout, stderr=result.stderr, returncode=0
-        )
-    else:
-        logger.warning(f"Failed to push changes: {result.stderr}")
-        return CommandResult(
-            success=False,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            returncode=result.returncode,
-        )
-
-
-def ensure_pushed_with_fallback(
-    cwd: Optional[str] = None,
-    remote: str = "origin",
-    llm_client=None,
-    message_backend_manager=None,
-    commit_message: Optional[str] = None,
-    issue_number: Optional[int] = None,
-    repo_name: Optional[str] = None,
-    branch: Optional[str] = None,
-) -> CommandResult:
-    """
-    Ensure all commits are pushed to remote with enhanced error handling.
+    Push all unpushed commits to remote with enhanced error handling.
 
     This function handles non-fast-forward errors by pulling first, then pushing.
     Includes enhanced dprint formatting error handling and upstream branch setup
-    like git_push, then falls back to LLM resolution if needed.
+    like git_push.
 
     Args:
         cwd: Optional working directory for git command
         remote: Remote name (default: 'origin')
-        llm_client: LLM backend manager for fallback resolution
-        message_backend_manager: Message backend manager for fallback resolution
-        commit_message: Commit message for LLM context
-        issue_number: Issue number for LLM context
-        repo_name: Repository name for history saving
         branch: Optional branch name. If None, pushes current branch
 
     Returns:
         CommandResult object with success status and output
     """
-    cmd = CommandExecutor()
-
     # Check if there are unpushed commits
     if not check_unpushed_commits(cwd=cwd, remote=remote):
         logger.debug("No unpushed commits found")
@@ -718,15 +547,11 @@ def ensure_pushed_with_fallback(
             push_result = retry_push_result
 
     # If push still failed and we have LLM clients, try LLM fallback
-    if (
-        llm_client is not None or message_backend_manager is not None
-    ) and commit_message:
+    if commit_message:
         logger.info("Attempting to resolve push failure using LLM...")
         llm_success = try_llm_commit_push(
             commit_message,
             push_result.stderr,
-            llm_client,
-            message_backend_manager,
         )
         if llm_success:
             logger.info("LLM successfully resolved push failure")
@@ -854,8 +679,6 @@ def switch_to_branch(
         success=True only if checkout succeeded AND (pull succeeded if requested) AND
         current branch matches expected branch.
     """
-    cmd = CommandExecutor()
-
     # First, checkout the branch using existing logic
     checkout_result = git_checkout_branch(
         branch_name=branch_name,
@@ -1100,8 +923,6 @@ def git_pull(
 def try_llm_commit_push(
     commit_message: str,
     error_message: str,
-    llm_client=None,
-    message_backend_manager=None,
 ) -> bool:
     """
     Try to use LLM to resolve commit/push failures.
@@ -1109,8 +930,6 @@ def try_llm_commit_push(
     Args:
         commit_message: The commit message that was attempted
         error_message: The error message from the failed commit/push
-        llm_client: LLM backend manager for commit/push operations
-        message_backend_manager: Message backend manager for commit/push operations
 
     Returns:
         True if LLM successfully resolved the issue, False otherwise
@@ -1118,16 +937,6 @@ def try_llm_commit_push(
     cmd = CommandExecutor()
 
     try:
-        # Use message_backend_manager if available, otherwise fall back to llm_client
-        manager = (
-            message_backend_manager
-            if message_backend_manager is not None
-            else llm_client
-        )
-
-        if manager is None:
-            logger.error("No LLM manager available for commit/push resolution")
-            return False
 
         # Create prompt for LLM to resolve commit/push failure
         prompt = render_prompt(
@@ -1137,7 +946,7 @@ def try_llm_commit_push(
         )
 
         # Execute LLM to resolve the issue
-        response = manager._run_llm_cli(prompt)
+        response = run_message_prompt(prompt)
 
         if not response:
             logger.error("No response from LLM for commit/push resolution")
@@ -1183,8 +992,6 @@ def commit_and_push_changes(
     result_data: Dict[str, Any],
     repo_name: Optional[str] = None,
     issue_number: Optional[int] = None,
-    llm_client=None,
-    message_backend_manager=None,
 ) -> str:
     """
     Commit changes and push them to remote using centralized git helper.
@@ -1222,12 +1029,8 @@ def commit_and_push_changes(
 
     if commit_result.success:
         # Use ensure_pushed which handles non-fast-forward errors and LLM fallback
-        push_result = ensure_pushed_with_fallback(
-            llm_client=llm_client,
-            message_backend_manager=message_backend_manager,
+        push_result = git_push(
             commit_message=summary,
-            issue_number=issue_number,
-            repo_name=repo_name,
         )
 
         if push_result.success:
@@ -1236,29 +1039,15 @@ def commit_and_push_changes(
             logger.error(f"Failed to push changes after retry: {push_result.stderr}")
             return f"Failed to commit and push changes: {push_result.stderr}"
     else:
-        # Commit failed - try to use LLM to resolve the commit failure
-        if llm_client is not None or message_backend_manager is not None:
-            logger.info("Attempting to resolve commit failure using LLM...")
-            llm_success = try_llm_commit_push(
-                summary,
-                commit_result.stderr,
-                llm_client,
-                message_backend_manager,
-            )
-            if llm_success:
-                return f"Successfully committed and pushed changes using LLM: {summary}"
-            else:
-                logger.error("LLM failed to resolve commit failure")
-                # Save history and exit immediately
-                context = {
-                    "type": "issue",
-                    "issue_number": issue_number,
-                    "commit_message": summary,
-                }
-                save_commit_failure_history(commit_result.stderr, context, repo_name)
-                # This line will never be reached due to sys.exit in save_commit_failure_history
-                return f"Failed to commit changes: {commit_result.stderr}"
+        logger.info("Attempting to resolve commit failure using LLM...")
+        llm_success = try_llm_commit_push(
+            summary,
+            commit_result.stderr,
+        )
+        if llm_success:
+            return f"Successfully committed and pushed changes using LLM: {summary}"
         else:
+            logger.error("LLM failed to resolve commit failure")
             # Save history and exit immediately
             context = {
                 "type": "issue",

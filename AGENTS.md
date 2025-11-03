@@ -19,6 +19,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Run e2e tests in headless mode.
 * Do not return Dict[str, Any]. Use @dataclass with initial values instead.
 * Write coments and messages in English.
+* Remove backwards compatibility code and unused code and dependencies.
 
 ### Project Structure
 

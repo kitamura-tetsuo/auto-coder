@@ -14,6 +14,7 @@ import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 from auto_coder.util.github_action import (
     DetailedChecksResult,
     _check_github_actions_status,
@@ -27,18 +28,12 @@ from .conflict_resolver import (
     resolve_merge_conflicts_with_llm,
     resolve_pr_merge_conflicts,
 )
-from .fix_to_pass_tests_runner import (
-    WorkspaceFixResult,
-    extract_important_errors,
-    run_local_tests,
-)
+from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
 from .git_utils import (
-    ensure_pushed_with_fallback,
     git_checkout_branch,
     git_commit_with_retry,
     git_push,
     save_commit_failure_history,
-    switch_to_branch,
 )
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
@@ -56,7 +51,6 @@ def process_pull_requests(
     config: AutomationConfig,
     dry_run: bool,
     repo_name: str,
-    llm_client=None,
 ) -> List[Dict[str, Any]]:
     """Process open pull requests in the repository with priority order."""
     try:
@@ -176,7 +170,10 @@ def process_pull_requests(
                                 )
                                 with ProgressStage("Attempting merge"):
                                     processed_pr = _process_pr_for_merge(
-                                        repo_name, pr_data, config, dry_run, llm_client
+                                        repo_name,
+                                        pr_data,
+                                        config,
+                                        dry_run,
                                     )
                                 processed_prs.append(processed_pr)
                                 handled_pr_numbers.add(pr_number)
@@ -190,7 +187,10 @@ def process_pull_requests(
                                 # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
                                 with ProgressStage("Taking actions"):
                                     actions = _take_pr_actions(
-                                        repo_name, pr_data, config, dry_run, llm_client
+                                        repo_name,
+                                        pr_data,
+                                        config,
+                                        dry_run,
                                     )
                                 processed_prs.append(
                                     {
@@ -308,7 +308,7 @@ def process_pull_requests(
                     try:
                         logger.info(f"PR #{pr_number}: Processing for issue resolution")
                         processed_pr = _process_pr_for_fixes(
-                            repo_name, pr_data, config, dry_run, llm_client
+                            repo_name, pr_data, config, dry_run
                         )
                         # Ensure priority is fix in second pass
                         processed_pr["priority"] = "fix"
@@ -378,7 +378,6 @@ def _process_pr_for_merge(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    llm_client=None,
 ) -> Dict[str, Any]:
     """Process a PR for quick merging when GitHub Actions are passing."""
     processed_pr = {
@@ -397,9 +396,7 @@ def _process_pr_for_merge(
             return processed_pr
         else:
             # Since Actions are passing, attempt direct merge
-            merge_result = _merge_pr(
-                repo_name, pr_data["number"], {}, config, llm_client
-            )
+            merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
             if merge_result:
                 processed_pr["actions_taken"].append(
                     f"Successfully merged PR #{pr_data['number']}"
@@ -423,7 +420,6 @@ def _process_pr_for_fixes(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    llm_client=None,
 ) -> Dict[str, Any]:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
@@ -431,7 +427,7 @@ def _process_pr_for_fixes(
     try:
         # Use the existing PR actions logic for fixing issues
         with ProgressStage("Fixing issues"):
-            actions = _take_pr_actions(repo_name, pr_data, config, dry_run, llm_client)
+            actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
         processed_pr["actions_taken"] = actions
 
     except Exception as e:
@@ -447,7 +443,6 @@ def _take_pr_actions(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    llm_client=None,
 ) -> List[str]:
     """Take actions on a PR including merge handling and analysis."""
     actions = []
@@ -462,9 +457,7 @@ def _take_pr_actions(
 
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(
-            repo_name, pr_data, config, dry_run, {}, llm_client
-        )
+        merge_actions = _handle_pr_merge(repo_name, pr_data, config, dry_run, {})
         actions.extend(merge_actions)
 
         # If merge process completed successfully (PR was merged), skip analysis
@@ -477,7 +470,7 @@ def _take_pr_actions(
         else:
             # Only do Gemini analysis if merge process didn't complete
             analysis_results = _apply_pr_actions_directly(
-                repo_name, pr_data, config, dry_run, llm_client
+                repo_name, pr_data, config, dry_run
             )
             actions.extend(analysis_results)
 
@@ -492,7 +485,6 @@ def _apply_pr_actions_directly(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    llm_client=None,
 ) -> List[str]:
     """Ask LLM CLI to apply PR fixes directly; avoid posting PR comments.
 
@@ -524,7 +516,7 @@ def _apply_pr_actions_directly(
 
         # Call LLM client
         with ProgressStage("Running LLM"):
-            response = llm_client._run_llm_cli(action_prompt)
+            response = get_llm_backend_manager()._run_llm_cli(action_prompt)
 
         # Process the response
         if response and len(response.strip()) > 0:
@@ -659,7 +651,6 @@ def _handle_pr_merge(
     config: AutomationConfig,
     dry_run: bool,
     analysis: Dict[str, Any],
-    llm_client=None,
 ) -> List[str]:
     """Handle PR merge process following the intended flow."""
     actions = []
@@ -670,12 +661,8 @@ def _handle_pr_merge(
         logger.info(
             f"Checking for unpushed commits before processing PR #{pr_number}..."
         )
-        push_result = ensure_pushed_with_fallback(
-            llm_client=llm_client,
-            message_backend_manager=llm_client,  # Use llm_client as both for backward compatibility
+        push_result = git_push(
             commit_message=f"Auto-Coder: PR #{pr_number} processing",
-            issue_number=pr_number,
-            repo_name=repo_name,
         )
         if push_result.success and "No unpushed commits" not in push_result.stdout:
             actions.append(f"Pushed unpushed commits: {push_result.stdout}")
@@ -701,9 +688,7 @@ def _handle_pr_merge(
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
             if not dry_run:
-                merge_result = _merge_pr(
-                    repo_name, pr_number, analysis, config, llm_client
-                )
+                merge_result = _merge_pr(repo_name, pr_number, analysis, config)
                 if merge_result:
                     actions.append(f"Successfully merged PR #{pr_number}")
                 else:
@@ -737,7 +722,7 @@ def _handle_pr_merge(
                     repo_name, config, failed_checks, pr_data
                 )
                 fix_actions = _fix_pr_issues_with_testing(
-                    repo_name, pr_data, config, dry_run, github_logs, llm_client
+                    repo_name, pr_data, config, dry_run, github_logs
                 )
                 actions.extend(fix_actions)
             else:
@@ -749,7 +734,7 @@ def _handle_pr_merge(
                 f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)"
             )
             update_actions = _update_with_base_branch(
-                repo_name, pr_data, config, dry_run, llm_client
+                repo_name, pr_data, config, dry_run
             )
             actions.extend(update_actions)
 
@@ -776,7 +761,7 @@ def _handle_pr_merge(
                         repo_name, config, failed_checks, pr_data
                     )
                     fix_actions = _fix_pr_issues_with_testing(
-                        repo_name, pr_data, config, dry_run, github_logs, llm_client
+                        repo_name, pr_data, config, dry_run, github_logs
                     )
                     actions.extend(fix_actions)
                 else:
@@ -897,7 +882,6 @@ def _update_with_base_branch(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    llm_client=None,
 ) -> List[str]:
     """Update PR branch with latest base branch commits.
 
@@ -988,7 +972,6 @@ def _update_with_base_branch(
                 pr_number,
                 target_branch,
                 config,
-                llm_client,
                 repo_name,
                 pr_data,
                 dry_run,
@@ -1110,7 +1093,6 @@ def _merge_pr(
     pr_number: int,
     analysis: Dict[str, Any],
     config: AutomationConfig,
-    llm_client=None,
 ) -> bool:
     """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
 
@@ -1164,7 +1146,7 @@ def _merge_pr(
                 )
 
                 # Try to resolve merge conflicts using the new function from conflict_resolver
-                if resolve_pr_merge_conflicts(repo_name, pr_number, config, llm_client):
+                if resolve_pr_merge_conflicts(repo_name, pr_number, config):
                     # Retry merge after conflict resolution
                     retry_result = cmd.run_command(direct_cmd)
                     if retry_result.success:
@@ -1402,7 +1384,6 @@ def _resolve_pr_merge_conflicts(
                 conflict_info,
                 config,
                 False,
-                None,  # llm_client not available in this function
             )
 
             # Log the resolution actions
@@ -1430,7 +1411,6 @@ def _fix_pr_issues_with_testing(
     config: AutomationConfig,
     dry_run: bool,
     github_logs: str,
-    llm_client=None,
 ) -> List[str]:
     """Fix PR issues using GitHub Actions logs first, then local testing loop."""
     actions = []
@@ -1443,7 +1423,7 @@ def _fix_pr_issues_with_testing(
         )
 
         initial_fix_actions = _apply_github_actions_fix(
-            repo_name, pr_data, config, dry_run, github_logs, llm_client
+            repo_name, pr_data, config, dry_run, github_logs
         )
         actions.extend(initial_fix_actions)
 
@@ -1494,7 +1474,7 @@ def _fix_pr_issues_with_testing(
                         break
                     else:
                         local_fix_actions = _apply_local_test_fix(
-                            repo_name, pr_data, config, dry_run, test_result, llm_client
+                            repo_name, pr_data, config, dry_run, test_result
                         )
                         actions.extend(local_fix_actions)
 
@@ -1510,7 +1490,6 @@ def _apply_github_actions_fix(
     config: AutomationConfig,
     dry_run: bool,
     github_logs: str,
-    llm_client=None,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
 
@@ -1536,13 +1515,10 @@ def _apply_github_actions_fix(
         )
 
         if not dry_run:
-            if llm_client is None:
-                actions.append("No LLM client available for GitHub Actions fix")
-                return actions
 
             # Use LLM backend manager to run the prompt
             logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-            response = llm_client._run_llm_cli(fix_prompt)
+            response = run_llm_prompt(fix_prompt)
 
             if response:
                 response_preview = (
@@ -1599,7 +1575,6 @@ def _apply_local_test_fix(
     config: AutomationConfig,
     dry_run: bool,
     test_result: Dict[str, Any],
-    llm_client=None,
 ) -> List[str]:
     """Apply fix using local test failure logs.
 
@@ -1644,23 +1619,15 @@ def _apply_local_test_fix(
                 )
                 return actions
 
-            if llm_client is None:
-                actions.append("No LLM client available for local test fix")
-                return actions
-
             # Use LLM backend manager to run the prompt
             # Check if llm_client has run_test_fix_prompt method (BackendManager)
             # or fall back to _run_llm_cli
             logger.info(f"Requesting LLM local test fix for PR #{pr_number}")
 
-            if hasattr(llm_client, "run_test_fix_prompt"):
-                # BackendManager with test file tracking
-                response = llm_client.run_test_fix_prompt(
-                    fix_prompt, current_test_file=None
-                )
-            else:
-                # Regular LLM client
-                response = llm_client._run_llm_cli(fix_prompt)
+            # BackendManager with test file tracking
+            response = get_llm_backend_manager().run_test_fix_prompt(
+                fix_prompt, current_test_file=None
+            )
 
             if response:
                 response_preview = (

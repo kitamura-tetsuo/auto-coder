@@ -6,6 +6,8 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
+from auto_coder.backend_manager import run_llm_prompt
+
 from .automation_config import AutomationConfig
 from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
@@ -84,7 +86,6 @@ def resolve_merge_conflicts_with_llm(
     conflict_info: str,
     config: AutomationConfig,
     dry_run: bool,
-    llm_client=None,
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
@@ -110,17 +111,12 @@ def resolve_merge_conflicts_with_llm(
             prompt[:160].replace("\n", " "),
         )
 
-        # Use LLM to resolve conflicts
-        if llm_client is None:
-            actions.append("No LLM client available for merge conflict resolution")
-            return actions
-
         logger.info(
             f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}"
         )
 
         # Call LLM to resolve conflicts
-        response = llm_client._run_llm_cli(prompt)
+        response = run_llm_prompt(prompt)
 
         # Parse the response
         if response and len(response.strip()) > 0:
@@ -174,7 +170,6 @@ def _perform_base_branch_merge_and_conflict_resolution(
     pr_number: int,
     base_branch: str,
     config: AutomationConfig,
-    llm_client=None,
     repo_name: str = None,
     pr_data: Dict[str, Any] = None,
     dry_run: bool = False,
@@ -279,7 +274,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
                 pr_data = {**pr_data, "base_branch": base_branch}
 
             resolve_actions = resolve_merge_conflicts_with_llm(
-                pr_data, conflict_info, config, False, llm_client
+                pr_data, conflict_info, config, False
             )
 
             # Log the resolution actions

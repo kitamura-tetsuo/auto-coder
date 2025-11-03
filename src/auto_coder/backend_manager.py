@@ -425,3 +425,190 @@ class LLMBackendManager:
         """
         with cls._lock:
             return cls._instance is not None
+
+    @classmethod
+    def get_message_instance(
+        cls,
+        default_backend: Optional[str] = None,
+        default_client: Optional[Any] = None,
+        factories: Optional[Dict[str, Callable[[], Any]]] = None,
+        order: Optional[List[str]] = None,
+        force_reinitialize: bool = False,
+    ) -> BackendManager:
+        """
+        Get or create the singleton backend manager instance for message operations.
+
+        This method delegates to get_llm_instance() for unified backend management.
+
+        Args:
+            default_backend: Name of the default backend
+            default_client: Default client instance
+            factories: Dictionary of backend name to factory function
+            order: Optional list specifying backend order
+            force_reinitialize: Force reinitialization with new parameters (default: False)
+
+        Returns:
+            BackendManager: The singleton instance for message generation operations
+
+        Raises:
+            RuntimeError: If called without initialization parameters on first call
+        """
+        return cls.get_llm_instance(
+            default_backend=default_backend,
+            default_client=default_client,
+            factories=factories,
+            order=order,
+            force_reinitialize=force_reinitialize,
+        )
+
+
+# Global convenience functions for message backend operations
+
+
+def get_message_backend_manager(
+    default_backend: Optional[str] = None,
+    default_client: Optional[Any] = None,
+    factories: Optional[Dict[str, Callable[[], Any]]] = None,
+    order: Optional[List[str]] = None,
+    force_reinitialize: bool = False,
+) -> BackendManager:
+    """
+    Get the global message backend manager singleton instance.
+
+    This is a convenience function that delegates to LLMBackendManager.get_message_instance().
+    Use this when you need to access the message backend manager from anywhere in your code.
+
+    Args:
+        default_backend: Name of the default backend
+        default_client: Default client instance
+        factories: Dictionary of backend name to factory function
+        order: Optional list specifying backend order
+        force_reinitialize: Force reinitialization with new parameters (default: False)
+
+    Returns:
+        BackendManager: The singleton instance for message generation operations
+
+    Raises:
+        RuntimeError: If called without initialization parameters on first call
+    """
+    return LLMBackendManager.get_message_instance(
+        default_backend=default_backend,
+        default_client=default_client,
+        factories=factories,
+        order=order,
+        force_reinitialize=force_reinitialize,
+    )
+
+
+def run_message_prompt(prompt: str) -> str:
+    """
+    Run a prompt using the global message backend manager.
+
+    This is a convenience function that provides a simple way to execute message generation
+    tasks using the global message backend manager singleton.
+
+    Args:
+        prompt: The prompt to send to the LLM
+
+    Returns:
+        str: The response from the LLM
+
+    Raises:
+        RuntimeError: If the message backend manager hasn't been initialized
+    """
+    manager = LLMBackendManager.get_message_instance()
+    if manager is None:
+        raise RuntimeError(
+            "Message backend manager not initialized. "
+            "Call get_message_backend_manager() with initialization parameters first."
+        )
+    return manager._run_llm_cli(prompt)
+
+
+def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Get the backend and model used for the most recent message generation.
+
+    Returns:
+        Tuple[Optional[str], Optional[str]]: (backend_name, model_name) or (None, None) if not available
+    """
+    manager = LLMBackendManager.get_message_instance()
+    if manager is None:
+        return None, None
+    return manager.get_last_backend_and_model()
+
+
+# Global convenience functions for general LLM backend operations
+
+
+def get_llm_backend_manager(
+    default_backend: Optional[str] = None,
+    default_client: Optional[Any] = None,
+    factories: Optional[Dict[str, Callable[[], Any]]] = None,
+    order: Optional[List[str]] = None,
+    force_reinitialize: bool = False,
+) -> BackendManager:
+    """
+    Get the global LLM backend manager singleton instance.
+
+    This is a convenience function that delegates to LLMBackendManager.get_llm_instance().
+    Use this when you need to access the general LLM backend manager from anywhere in your code.
+
+    Args:
+        default_backend: Name of the default backend
+        default_client: Default client instance
+        factories: Dictionary of backend name to factory function
+        order: Optional list specifying backend order
+        force_reinitialize: Force reinitialization with new parameters (default: False)
+
+    Returns:
+        BackendManager: The singleton instance for general LLM operations
+
+    Raises:
+        RuntimeError: If called without initialization parameters on first call
+    """
+    return LLMBackendManager.get_llm_instance(
+        default_backend=default_backend,
+        default_client=default_client,
+        factories=factories,
+        order=order,
+        force_reinitialize=force_reinitialize,
+    )
+
+
+def run_llm_prompt(prompt: str) -> str:
+    """
+    Run a prompt using the global LLM backend manager.
+
+    This is a convenience function that provides a simple way to execute general LLM
+    tasks using the global LLM backend manager singleton.
+
+    Args:
+        prompt: The prompt to send to the LLM
+
+    Returns:
+        str: The response from the LLM
+
+    Raises:
+        RuntimeError: If the LLM backend manager hasn't been initialized
+    """
+    manager = LLMBackendManager.get_llm_instance()
+    if manager is None:
+        raise RuntimeError(
+            "LLM backend manager not initialized. "
+            "Call get_llm_backend_manager() with initialization parameters first."
+        )
+    return manager._run_llm_cli(prompt)
+
+
+def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Get the backend and model used for the most recent general LLM execution.
+
+    Returns:
+        Tuple[Optional[str], Optional[str]]: (backend_name, model_name) or (None, None) if not available
+    """
+    manager = LLMBackendManager.get_llm_instance()
+    if manager is None:
+        return None, None
+    return manager.get_last_backend_and_model()

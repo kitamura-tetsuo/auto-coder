@@ -241,7 +241,13 @@ def process_issues(
 
     # Initialize clients
     github_client = GitHubClient(github_token_final, disable_labels=disable_labels)
-    manager = build_backend_manager(
+    # Use global LLMBackendManager for main backend
+    from auto_coder.backend_manager import get_llm_backend_manager
+
+    from .cli_helpers import build_backend_manager
+
+    # First create a temporary manager to get the configuration
+    temp_manager = build_backend_manager(
         selected_backends,
         primary_backend,
         models,
@@ -253,15 +259,28 @@ def process_issues(
         enable_graphrag=enable_graphrag,
     )
 
+    # Initialize the global singleton with proper configuration
+    from auto_coder.backend_manager import get_llm_backend_manager
+
+    manager = get_llm_backend_manager(
+        default_backend=primary_backend,
+        default_client=temp_manager._clients[primary_backend],
+        factories=temp_manager._factories,
+        order=selected_backends,
+        force_reinitialize=True,
+    )
+
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Initialize message backend manager (use same backends if not specified)
+    from .cli_helpers import build_message_backend_manager
+
     message_backend_list = (
         normalize_backends(message_backends) if message_backends else selected_backends
     )
     message_primary_backend = message_backend_list[0]
-    message_manager = build_backend_manager(
+    message_manager = build_message_backend_manager(
         message_backend_list,
         message_primary_backend,
         models,
@@ -270,7 +289,6 @@ def process_issues(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=False,  # GraphRAG not needed for messages
     )
 
     if message_backends:
@@ -291,10 +309,8 @@ def process_issues(
 
     automation_engine = AutomationEngine(
         github_client,
-        manager,
         dry_run=dry_run,
         config=engine_config,
-        message_backend_manager=message_manager,
     )
 
     # Check if we should resume work on current branch
@@ -559,7 +575,7 @@ def create_feature_issues(
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    automation_engine = AutomationEngine(github_client, manager)
+    automation_engine = AutomationEngine(github_client)
 
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)
@@ -736,11 +752,13 @@ def fix_to_pass_tests_command(
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Initialize message backend manager (use same backends if not specified)
+    from .cli_helpers import build_message_backend_manager
+
     message_backend_list = (
         normalize_backends(message_backends) if message_backends else selected_backends
     )
     message_primary_backend = message_backend_list[0]
-    message_manager = build_backend_manager(
+    message_manager = build_message_backend_manager(
         message_backend_list,
         message_primary_backend,
         models,
@@ -749,7 +767,6 @@ def fix_to_pass_tests_command(
         openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
-        enable_graphrag=False,  # GraphRAG not needed for messages
     )
 
     if message_backends:
@@ -761,7 +778,7 @@ def fix_to_pass_tests_command(
             f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
         )
 
-    engine = AutomationEngine(github_client, manager, dry_run=dry_run)
+    engine = AutomationEngine(github_client, dry_run=dry_run)
 
     try:
         result = engine.fix_to_pass_tests(

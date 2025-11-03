@@ -616,3 +616,64 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
         return all(flag_present(f) for f in required_flags)
     except Exception:
         return False
+
+
+def build_message_backend_manager(
+    selected_backends: list[str],
+    primary_backend: str,
+    models: dict[str, str],
+    gemini_api_key: Optional[str],
+    openai_api_key: Optional[str],
+    openai_base_url: Optional[str],
+    qwen_use_env_vars: bool = True,
+    qwen_preserve_env: bool = False,
+) -> BackendManager:
+    """Construct and initialize LLMBackendManager singleton with selected backends.
+
+    This function creates a LLMBackendManager singleton instance dedicated to message
+    generation (commit messages, PR messages, etc.) using the specified backend configuration.
+
+    Args:
+        selected_backends: List of backend names in priority order
+        primary_backend: Primary backend name
+        models: mapping backend -> model_name
+        gemini_api_key: Gemini API key (optional)
+        openai_api_key: OpenAI-style API key (optional)
+        openai_base_url: OpenAI-style Base URL (optional)
+        qwen_use_env_vars: Pass Qwen credentials via environment variables (default: True)
+        qwen_preserve_env: Preserve existing OPENAI_* environment variables (default: False)
+
+    Returns:
+        BackendManager: The singleton instance for message generation operations
+
+    Raises:
+        click.ClickException: If backend configuration is invalid
+    """
+    from .backend_manager import LLMBackendManager
+
+    # Reuse the existing build_backend_manager logic but return the singleton
+    backend_manager = build_backend_manager(
+        selected_backends=selected_backends,
+        primary_backend=primary_backend,
+        models=models,
+        gemini_api_key=gemini_api_key,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
+        qwen_use_env_vars=qwen_use_env_vars,
+        qwen_preserve_env=qwen_preserve_env,
+        enable_graphrag=False,  # GraphRAG not needed for messages
+    )
+
+    # Get default client and factories for singleton initialization
+    default_client = backend_manager._clients[primary_backend]
+    factories = backend_manager._factories
+
+    # Initialize the singleton
+    message_manager = LLMBackendManager.get_message_instance(
+        default_backend=primary_backend,
+        default_client=default_client,
+        factories=factories,
+        order=selected_backends,
+    )
+
+    return message_manager
