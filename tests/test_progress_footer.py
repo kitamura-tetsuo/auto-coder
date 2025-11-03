@@ -33,6 +33,56 @@ def test_progress_footer_format():
     assert "Running tests" in formatted
 
 
+def test_progress_footer_pr_color():
+    """Test that PR displays in cyan color (ANSI 96m)."""
+    footer = ProgressFooter()
+    formatted = footer._format_footer("PR", 123)
+
+    # Verify cyan color code is present: \033[96m
+    assert "\033[96m" in formatted
+    assert "[PR #123]" in formatted
+
+
+def test_progress_footer_issue_color():
+    """Test that Issue displays in light purple/magenta color (ANSI 95m)."""
+    footer = ProgressFooter()
+    formatted = footer._format_footer("Issue", 456)
+
+    # Verify purple color code is present: \033[95m
+    assert "\033[95m" in formatted
+    assert "[Issue #456]" in formatted
+
+
+def test_progress_footer_branch_name_color():
+    """Test that branch names display in dark red color (ANSI 91m)."""
+    footer = ProgressFooter()
+    footer._branch_name = "feature-branch"
+    formatted = footer._format_footer("PR", 789)
+
+    # Verify branch name in red color code: \033[91m
+    assert "\033[91m" in formatted
+    assert "feature-branch" in formatted
+    # The format is [PR #789/feature-branch] with red color for the branch name
+    assert "feature-branch]" in formatted
+
+
+def test_progress_footer_case_insensitive_item_type():
+    """Test that item type matching is case-insensitive."""
+    footer = ProgressFooter()
+
+    # Test lowercase "pr"
+    formatted = footer._format_footer("pr", 123)
+    assert "\033[96m" in formatted  # Should use cyan for PR
+
+    # Test mixed case "Issue"
+    formatted = footer._format_footer("Issue", 456)
+    assert "\033[95m" in formatted  # Should use purple for Issue
+
+    # Test uppercase "ISSUE"
+    formatted = footer._format_footer("ISSUE", 789)
+    assert "\033[95m" in formatted  # Should use purple for Issue
+
+
 def test_progress_footer_update_with_tty(monkeypatch):
     """Test progress footer set_item and push_stage when stream is a TTY."""
     # Mock stream as a TTY
