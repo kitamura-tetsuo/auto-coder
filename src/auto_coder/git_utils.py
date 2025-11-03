@@ -727,19 +727,23 @@ def ensure_pushed_with_fallback(
         if not pull_result.success:
             logger.warning(f"Pull failed: {pull_result.stderr}")
             # Note: git_pull function already handles conflict resolution internally
-            # Don't return here - still attempt LLM fallback
+            logger.info("Proceeding to retry push anyway...")
 
-        # Retry the push after pull
-        logger.info("Retrying push after pull...")
+        logger.info("Retrying push...")
+        # Always retry the push after attempting pull (regardless of pull success)
         retry_push_result = git_push(
             cwd=cwd, remote=remote, commit_message=commit_message
         )
 
         if retry_push_result.success:
-            logger.info("Successfully pushed after resolving non-fast-forward error")
+            logger.info(
+                "Successfully pushed after resolving non-fast-forward error"
+            )
             return retry_push_result
         else:
-            logger.warning(f"Push still failed after pull: {retry_push_result.stderr}")
+            logger.warning(
+                f"Push still failed: {retry_push_result.stderr}"
+            )
             # Update push_result for LLM fallback
             push_result = retry_push_result
 

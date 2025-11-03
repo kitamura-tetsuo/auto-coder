@@ -30,6 +30,10 @@ jobs:
         run: |
           uv sync --dev --extra test
 
+      - name: Test CLI entry point
+        run: |
+          uv run auto-coder --help
+
       - name: Run tests with uv
         run: |
           uv run pytest --cov=src/auto_coder --cov-report=html --cov-report=term-missing
