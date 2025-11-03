@@ -137,7 +137,11 @@ def setup_logger(
         )
     else:
         logger.add(
-            stream, format=format_string, level=level, colorize=True, enqueue=use_enqueue
+            stream,
+            format=format_string,
+            level=level,
+            colorize=True,
+            enqueue=use_enqueue,
         )
 
     # Add file handler if specified
