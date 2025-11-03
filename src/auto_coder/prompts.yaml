@@ -32,6 +32,9 @@ pr:
     PR Changes (first $diff_limit chars):
     $pr_diff
 
+    Commit History on Current Branch:
+    $commit_log
+
   merge_conflict_resolution: |-
     There are merge conflicts when trying to merge $base_branch branch into PR #$pr_number: $pr_title
 
@@ -40,6 +43,9 @@ pr:
 
     Merge Conflict Information:
     $conflict_info
+
+    Commit History on Current Branch:
+    $commit_log
 
     Please resolve these merge conflicts by:
     1. Examining the conflicted files
@@ -59,6 +65,9 @@ pr:
 
     GitHub Actions Error Logs (truncated):
     $github_logs
+
+    Commit History on Current Branch:
+    $commit_log
 
     Your task:
     1) Identify the root cause(s) of the failing checks based on the logs.
@@ -82,9 +91,12 @@ pr:
     Local test command used:
     $test_command
 
+    Commit History on Current Branch:
+    $commit_log
+
     Please analyze the test failures and provide specific code fixes.
     Focus on making the tests pass while maintaining code quality.
-    All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes. 
+    All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
 
     After analyzing, apply the necessary fixes to the codebase.
 
@@ -97,6 +109,9 @@ pr:
 
     Changes Summary:
     $changes_summary
+
+    Commit History on Current Branch:
+    $commit_log
 
     Requirements:
     - Title: A clear, concise title (max 72 characters) that describes the changes
@@ -124,6 +139,9 @@ issue:
     Issue Labels: $issue_labels
     Issue State: $issue_state
     Created by: $issue_author
+
+    Commit History on Current Branch:
+    $commit_log
 
     Please analyze this issue and determine the appropriate action:
 
@@ -244,6 +262,9 @@ tests:
     * `git diff` to inspect unstaged changes
     * `git diff --cached` to inspect staged changes
 
+    Commit History on Current Branch:
+    $commit_log
+
     Then, analyze the diff and write a high-quality Git commit message following these rules:
 
     1. **Message Format**:
@@ -281,6 +302,9 @@ tests:
 
     Commit message that was attempted:
     $commit_message
+
+    Commit History on Current Branch:
+    $commit_log
 
     **Your task is to:**
     1. First, review the current state by running:

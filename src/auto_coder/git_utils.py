@@ -79,6 +79,111 @@ def extract_number_from_branch(branch_name: str) -> Optional[int]:
     return None
 
 
+def get_commit_log_from_branch(
+    base_branch: str = "main",
+    max_commits: int = 50,
+    max_chars: int = 8000,
+    cwd: Optional[str] = None,
+) -> str:
+    """
+    Get commit log from work branch since it diverged from base branch.
+
+    This function retrieves the commit history from the current branch since it
+    diverged from the base branch, formatted as a string suitable for LLM context.
+
+    Args:
+        base_branch: Base branch name to compare against (default: 'main')
+        max_commits: Maximum number of commits to include (default: 50)
+        max_chars: Maximum characters to include (default: 8000)
+        cwd: Optional working directory for git command
+
+    Returns:
+        Formatted commit log string or empty string if no commits found or error
+    """
+    cmd = CommandExecutor()
+
+    try:
+        # Get the current branch
+        current_branch_result = cmd.run_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
+        )
+        if not current_branch_result.success:
+            logger.debug("Failed to get current branch for commit log")
+            return ""
+
+        current_branch = current_branch_result.stdout.strip()
+
+        # Check if we're already on the base branch
+        if current_branch == base_branch:
+            logger.debug(f"Current branch is already {base_branch}, no commit log to retrieve")
+            return ""
+
+        # Try to get the merge base (where current branch diverged from base branch)
+        merge_base_result = cmd.run_command(
+            ["git", "merge-base", "HEAD", base_branch], cwd=cwd
+        )
+
+        if not merge_base_result.success:
+            logger.debug(f"Failed to find merge base with {base_branch}")
+            return ""
+
+        merge_base = merge_base_result.stdout.strip()
+
+        # Get the commit log from merge base to HEAD
+        log_result = cmd.run_command(
+            [
+                "git",
+                "log",
+                f"{merge_base}..HEAD",
+                "--oneline",
+                "--decorate",
+                f"-{max_commits}",
+            ],
+            cwd=cwd,
+        )
+
+        if not log_result.success:
+            logger.debug(f"Failed to get commit log: {log_result.stderr}")
+            return ""
+
+        commits = log_result.stdout.strip()
+
+        if not commits:
+            logger.debug("No commits found between current branch and base branch")
+            return ""
+
+        # Get detailed commit information for better context
+        detailed_log_result = cmd.run_command(
+            [
+                "git",
+                "log",
+                f"{merge_base}..HEAD",
+                "--stat",
+                "--date=short",
+                "--pretty=format:%h %ad %s (%an)",
+                f"-{max_commits}",
+            ],
+            cwd=cwd,
+        )
+
+        if not detailed_log_result.success:
+            logger.debug("Failed to get detailed commit log, using oneline format")
+            commit_log = f"Commits on branch '{current_branch}' since diverging from '{base_branch}':\n\n{commits}"
+        else:
+            commit_log = detailed_log_result.stdout.strip()
+            commit_log = f"Commit history on branch '{current_branch}' since diverging from '{base_branch}':\n\n{commit_log}"
+
+        # Truncate if too long
+        if len(commit_log) > max_chars:
+            commit_log = commit_log[:max_chars] + "\n... (truncated)"
+
+        return commit_log
+
+    except Exception as e:
+        logger.debug(f"Error getting commit log: {e}")
+        return ""
+
+
 def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
     """
     Get the GitHub repository name (owner/repo) from the current directory.
@@ -1127,11 +1232,15 @@ def try_llm_commit_push(
             logger.error("No LLM manager available for commit/push resolution")
             return False
 
+        # Get commit log for context
+        commit_log = get_commit_log_from_branch()
+
         # Create prompt for LLM to resolve commit/push failure
         prompt = render_prompt(
             "tests.commit_and_push",
             commit_message=commit_message,
             error_message=error_message,
+            commit_log=commit_log,
         )
 
         # Execute LLM to resolve the issue

@@ -7,7 +7,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry, git_push
+from .git_utils import get_commit_log_from_branch, git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor, CommandResult
@@ -96,6 +96,10 @@ def resolve_merge_conflicts_with_llm(
             or pr_data.get("base", {}).get("ref")
             or config.MAIN_BRANCH
         )
+
+        # Get commit log for context
+        commit_log = get_commit_log_from_branch(base_branch=base_branch)
+
         prompt = render_prompt(
             "pr.merge_conflict_resolution",
             base_branch=base_branch,
@@ -103,6 +107,7 @@ def resolve_merge_conflicts_with_llm(
             pr_title=pr_data.get("title", "Unknown"),
             pr_body=(pr_data.get("body") or "")[:500],
             conflict_info=conflict_info,
+            commit_log=commit_log,
         )
         logger.debug(
             "Generated merge-conflict resolution prompt for PR #%s (preview: %s)",

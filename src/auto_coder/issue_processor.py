@@ -10,6 +10,7 @@ from .automation_config import AutomationConfig
 from .git_utils import (
     commit_and_push_changes,
     ensure_pushed,
+    get_commit_log_from_branch,
     git_checkout_branch,
     git_commit_with_retry,
     git_push,
@@ -405,6 +406,9 @@ def _create_pr_for_issue(
         pr_title = None
         pr_body = None
 
+        # Get commit log for PR message generation
+        commit_log = get_commit_log_from_branch(base_branch=base_branch)
+
         if message_backend_manager:
             try:
                 pr_message_prompt = render_prompt(
@@ -413,6 +417,7 @@ def _create_pr_for_issue(
                     issue_title=issue_title,
                     issue_body=issue_body[:500],
                     changes_summary=llm_response[:500],
+                    commit_log=commit_log,
                 )
                 pr_message_response = message_backend_manager._run_llm_cli(
                     pr_message_prompt
@@ -719,6 +724,9 @@ def _apply_issue_actions_directly(
                     logger.error(error_msg)
                     return actions
 
+        # Get commit log from current branch for LLM context
+        commit_log = get_commit_log_from_branch(base_branch=config.MAIN_BRANCH)
+
         # Create a comprehensive prompt for LLM CLI
         action_prompt = render_prompt(
             "issue.action",
@@ -729,6 +737,7 @@ def _apply_issue_actions_directly(
             issue_labels=", ".join(issue_data.get("labels", [])),
             issue_state=issue_data.get("state", "open"),
             issue_author=issue_data.get("author", "unknown"),
+            commit_log=commit_log,
         )
         logger.debug(
             "Prepared issue-action prompt for #%s (preview: %s)",

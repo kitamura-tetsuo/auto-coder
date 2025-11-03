@@ -27,6 +27,7 @@ from .fix_to_pass_tests_runner import (
 )
 from .git_utils import (
     ensure_pushed_with_fallback,
+    get_commit_log_from_branch,
     git_checkout_branch,
     git_commit_with_retry,
     git_push,
@@ -828,6 +829,12 @@ def _create_pr_analysis_prompt(
 ) -> str:
     """Create a PR prompt that prioritizes direct code changes over comments."""
     body_text = (pr_data.get("body") or "")[: config.MAX_PROMPT_SIZE]
+
+    # Get commit log from PR branch for additional context
+    commit_log = get_commit_log_from_branch(
+        base_branch=pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
+    )
+
     return render_prompt(
         "pr.action",
         repo_name=repo_name,
@@ -840,6 +847,7 @@ def _create_pr_analysis_prompt(
         pr_mergeable=pr_data.get("mergeable", False),
         diff_limit=config.MAX_PR_DIFF_SIZE,
         pr_diff=pr_diff,
+        commit_log=commit_log,
     )
 
 
@@ -1866,6 +1874,11 @@ def _apply_github_actions_fix(
     pr_number = pr_data["number"]
 
     try:
+        # Get commit log for context
+        commit_log = get_commit_log_from_branch(
+            base_branch=pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
+        )
+
         # Create prompt for GitHub Actions error fix (no commit/push by LLM)
         fix_prompt = render_prompt(
             "pr.github_actions_fix",
@@ -1873,6 +1886,7 @@ def _apply_github_actions_fix(
             repo_name=repo_name,
             pr_title=pr_data.get("title", "Unknown"),
             github_logs=(github_logs or "")[: config.MAX_PROMPT_SIZE],
+            commit_log=commit_log,
         )
         logger.debug(
             "Prepared GitHub Actions fix prompt for PR #%s (preview: %s)",
@@ -1968,6 +1982,11 @@ def _apply_local_test_fix(
                 )
                 return actions
 
+            # Get commit log for context
+            commit_log = get_commit_log_from_branch(
+                base_branch=pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
+            )
+
             # Create prompt for local test error fix
             fix_prompt = render_prompt(
                 "pr.local_test_fix",
@@ -1976,6 +1995,7 @@ def _apply_local_test_fix(
                 pr_title=pr_data.get("title", "Unknown"),
                 error_summary=error_summary[: config.MAX_PROMPT_SIZE],
                 test_command=test_result.get("command", "pytest -q --maxfail=1"),
+                commit_log=commit_log,
             )
             logger.debug(
                 "Prepared local test fix prompt for PR #%s (preview: %s)",
