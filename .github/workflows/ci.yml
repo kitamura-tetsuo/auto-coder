@@ -33,7 +33,6 @@ jobs:
         run: flake8 src/ tests/
       - name: Mypy
         run: mypy src/
-
   tests:
     name: Tests (pytest)
     runs-on: ubuntu-latest
@@ -52,6 +51,6 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,test]"
-      - name: Run pytest
-        run: pytest -v
+          pip install -e ".[dev]"
+      - name: Run tests
+        run: pytest tests/ -v

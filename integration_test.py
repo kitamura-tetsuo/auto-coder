@@ -97,7 +97,7 @@ def test_non_fast_forward_detection():
     # Check for non-fast-forward error detection
     expected_patterns = [
         '"non-fast-forward" in push_result.stderr.lower()',
-        '"Updates were rejected because the tip of your current branch is behind"',
+        'or "Updates were rejected because the tip of your current branch is behind"',
     ]
 
     found_patterns = []
