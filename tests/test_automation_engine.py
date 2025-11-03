@@ -1324,9 +1324,21 @@ class TestAutomationEngineExtended:
         git_log_output = "abc1234 Fix bug in user authentication\nabc1235 Update documentation\nabc1236 Add new feature"
         mock_run.side_effect = [
             Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
-            Mock(returncode=0, stdout="test\tsuccess\t2m\thttps://github.com/test/repo/actions/runs/1", stderr=""),  # commit 1
-            Mock(returncode=0, stdout="docs\tcompleted\t1m\thttps://github.com/test/repo/actions/runs/2", stderr=""),  # commit 2
-            Mock(returncode=0, stdout="feature\tpass\t5m\thttps://github.com/test/repo/actions/runs/3", stderr=""),  # commit 3
+            Mock(
+                returncode=0,
+                stdout="test\tsuccess\t2m\thttps://github.com/test/repo/actions/runs/1",
+                stderr="",
+            ),  # commit 1
+            Mock(
+                returncode=0,
+                stdout="docs\tcompleted\t1m\thttps://github.com/test/repo/actions/runs/2",
+                stderr="",
+            ),  # commit 2
+            Mock(
+                returncode=0,
+                stdout="feature\tpass\t5m\thttps://github.com/test/repo/actions/runs/3",
+                stderr="",
+            ),  # commit 3
         ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
@@ -1360,8 +1372,16 @@ class TestAutomationEngineExtended:
         git_log_output = "def5678 Fix test failure\nghi9012 Refactor code"
         mock_run.side_effect = [
             Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
-            Mock(returncode=0, stdout="test\tfailure\t3m\thttps://github.com/test/repo/actions/runs/10", stderr=""),  # commit 1
-            Mock(returncode=0, stdout="ci\tfailed\t4m\thttps://github.com/test/repo/actions/runs/11", stderr=""),  # commit 2
+            Mock(
+                returncode=0,
+                stdout="test\tfailure\t3m\thttps://github.com/test/repo/actions/runs/10",
+                stderr="",
+            ),  # commit 1
+            Mock(
+                returncode=0,
+                stdout="ci\tfailed\t4m\thttps://github.com/test/repo/actions/runs/11",
+                stderr="",
+            ),  # commit 2
         ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
@@ -1374,12 +1394,16 @@ class TestAutomationEngineExtended:
         assert result[0]["commit_hash"] == "def5678"
         assert result[0]["message"] == "Fix test failure"
         assert result[0]["actions_status"] == "failure"
-        assert result[0]["actions_url"] == "https://github.com/test/repo/actions/runs/10"
+        assert (
+            result[0]["actions_url"] == "https://github.com/test/repo/actions/runs/10"
+        )
 
         assert result[1]["commit_hash"] == "ghi9012"
         assert result[1]["message"] == "Refactor code"
         assert result[1]["actions_status"] == "failed"
-        assert result[1]["actions_url"] == "https://github.com/test/repo/actions/runs/11"
+        assert (
+            result[1]["actions_url"] == "https://github.com/test/repo/actions/runs/11"
+        )
 
     @patch("subprocess.run")
     def test_parse_commit_history_with_actions_skips_no_runs(
@@ -1411,7 +1435,9 @@ class TestAutomationEngineExtended:
         git_log_output = "pqr1234 Initial commit"
         mock_run.side_effect = [
             Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
-            Mock(returncode=0, stdout="test\tin_progress\t1m\t", stderr=""),  # commit 1 - in progress
+            Mock(
+                returncode=0, stdout="test\tin_progress\t1m\t", stderr=""
+            ),  # commit 1 - in progress
         ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
@@ -1431,9 +1457,21 @@ class TestAutomationEngineExtended:
         git_log_output = "stu1234 Commit 1\nvwx5678 Commit 2\nyza9012 Commit 3"
         mock_run.side_effect = [
             Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
-            Mock(returncode=0, stdout="test\tpass\t1m\thttps://github.com/test/repo/actions/runs/20", stderr=""),  # commit 1
-            Mock(returncode=0, stdout="ci\tsuccess\t2m\thttps://github.com/test/repo/actions/runs/21", stderr=""),  # commit 2
-            Mock(returncode=0, stdout="build\tcompleted\t3m\thttps://github.com/test/repo/actions/runs/22", stderr=""),  # commit 3
+            Mock(
+                returncode=0,
+                stdout="test\tpass\t1m\thttps://github.com/test/repo/actions/runs/20",
+                stderr="",
+            ),  # commit 1
+            Mock(
+                returncode=0,
+                stdout="ci\tsuccess\t2m\thttps://github.com/test/repo/actions/runs/21",
+                stderr="",
+            ),  # commit 2
+            Mock(
+                returncode=0,
+                stdout="build\tcompleted\t3m\thttps://github.com/test/repo/actions/runs/22",
+                stderr="",
+            ),  # commit 3
         ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
@@ -1448,7 +1486,7 @@ class TestAutomationEngineExtended:
             ["git", "log", "--oneline", "-3"],
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
         )
 
     @patch("subprocess.run")
@@ -1457,12 +1495,22 @@ class TestAutomationEngineExtended:
     ):
         """Test parsing commit history with a mix of commits: some with runs, some without."""
         # Setup
-        git_log_output = "bcd1234 Fix critical bug\n efg5678 Update CHANGELOG\n hij9012 Add feature"
+        git_log_output = (
+            "bcd1234 Fix critical bug\n efg5678 Update CHANGELOG\n hij9012 Add feature"
+        )
         mock_run.side_effect = [
             Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
-            Mock(returncode=0, stdout="test\tfailure\t2m\thttps://github.com/test/repo/actions/runs/30", stderr=""),  # commit 1 - has failed run
+            Mock(
+                returncode=0,
+                stdout="test\tfailure\t2m\thttps://github.com/test/repo/actions/runs/30",
+                stderr="",
+            ),  # commit 1 - has failed run
             Mock(returncode=1, stdout="", stderr="no runs found"),  # commit 2 - no runs
-            Mock(returncode=0, stdout="feature\tsuccess\t5m\thttps://github.com/test/repo/actions/runs/31", stderr=""),  # commit 3 - has success
+            Mock(
+                returncode=0,
+                stdout="feature\tsuccess\t5m\thttps://github.com/test/repo/actions/runs/31",
+                stderr="",
+            ),  # commit 3 - has success
         ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
@@ -1502,7 +1550,9 @@ class TestAutomationEngineExtended:
         """Test handling git log errors."""
         # Setup
         mock_run.side_effect = [
-            Mock(returncode=1, stdout="", stderr="fatal: not a git repository"),  # git log fails
+            Mock(
+                returncode=1, stdout="", stderr="fatal: not a git repository"
+            ),  # git log fails
         ]
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
@@ -1520,7 +1570,10 @@ class TestAutomationEngineExtended:
         """Test handling timeout during commit history parsing."""
         # Setup
         import subprocess
-        mock_run.side_effect = subprocess.TimeoutExpired(["git", "log", "--oneline", "-10"], 30)
+
+        mock_run.side_effect = subprocess.TimeoutExpired(
+            ["git", "log", "--oneline", "-10"], 30
+        )
 
         engine = AutomationEngine(mock_github_client, mock_gemini_client)
 

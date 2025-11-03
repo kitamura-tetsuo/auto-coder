@@ -816,7 +816,18 @@ def generate_commit_message_via_llm(
                     first_line = lines[0].strip()
                     if first_line and len(first_line) < 20 and " " not in first_line:
                         content = "\n".join(lines[1:]).strip()
-                return content
+                    else:
+                        # Take only the first line
+                        content = first_line
+                # Strip quotes and backticks
+                content = content.strip().strip('"').strip("'").strip("`")
+                # Return empty string if content is empty
+                if not content:
+                    return ""
+                # Truncate to 72 characters (same as non-code-block path)
+                if len(content) > 72:
+                    content = content[:72].rstrip()
+                return f"Auto-Coder: {content}"
 
         # Take first non-empty line, sanitize length
         for line in response.splitlines():

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
 from .conflict_resolver import (
+    _get_merge_conflict_info,
     resolve_merge_conflicts_with_llm,
     resolve_pr_merge_conflicts,
 )
@@ -118,9 +119,7 @@ def parse_git_commit_history_for_actions(
             commit_sha = parts[0]
             commit_message = parts[1]
 
-            logger.debug(
-                f"Checking commit {commit_sha[:8]}: {commit_message[:50]}..."
-            )
+            logger.debug(f"Checking commit {commit_sha[:8]}: {commit_message[:50]}...")
 
             try:
                 # Check if this commit triggered GitHub Actions
@@ -142,9 +141,7 @@ def parse_git_commit_history_for_actions(
                         f"✓ Commit {commit_sha[:8]} has {len(action_runs)} Action run(s)"
                     )
                 else:
-                    logger.debug(
-                        f"✗ Commit {commit_sha[:8]} has no GitHub Actions"
-                    )
+                    logger.debug(f"✗ Commit {commit_sha[:8]} has no GitHub Actions")
 
             except Exception as e:
                 logger.warning(
@@ -157,9 +154,7 @@ def parse_git_commit_history_for_actions(
                 f"Found {len(commits_with_actions)} commit(s) with GitHub Actions out of {len(commit_lines)} checked"
             )
         else:
-            logger.info(
-                "No commits with GitHub Actions found in the specified depth"
-            )
+            logger.info("No commits with GitHub Actions found in the specified depth")
 
         return commits_with_actions
 
@@ -230,9 +225,9 @@ def _check_commit_for_github_actions(
                     "created_at": run.get("createdAt"),
                     "display_title": run.get("displayTitle"),
                     "head_branch": run.get("headBranch"),
-                    "head_sha": run.get("headSha", "")[:8]
-                    if run.get("headSha")
-                    else "",
+                    "head_sha": (
+                        run.get("headSha", "")[:8] if run.get("headSha") else ""
+                    ),
                 }
             )
 
@@ -242,9 +237,7 @@ def _check_commit_for_github_actions(
         return action_runs
 
     except Exception as e:
-        logger.debug(
-            f"Error checking Actions for commit {commit_sha[:8]}: {e}"
-        )
+        logger.debug(f"Error checking Actions for commit {commit_sha[:8]}: {e}")
         return []
 
 
@@ -571,7 +564,11 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
 
 
 def _process_pr_for_merge(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool, llm_client=None
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    dry_run: bool,
+    llm_client=None,
 ) -> Dict[str, Any]:
     """Process a PR for quick merging when GitHub Actions are passing."""
     processed_pr = {
@@ -590,7 +587,9 @@ def _process_pr_for_merge(
             return processed_pr
         else:
             # Since Actions are passing, attempt direct merge
-            merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, llm_client)
+            merge_result = _merge_pr(
+                repo_name, pr_data["number"], {}, config, llm_client
+            )
             if merge_result:
                 processed_pr["actions_taken"].append(
                     f"Successfully merged PR #{pr_data['number']}"
@@ -1047,7 +1046,9 @@ def _handle_pr_merge(
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
             if not dry_run:
-                merge_result = _merge_pr(repo_name, pr_number, analysis, config, llm_client)
+                merge_result = _merge_pr(
+                    repo_name, pr_number, analysis, config, llm_client
+                )
                 if merge_result:
                     actions.append(f"Successfully merged PR #{pr_number}")
                 else:
@@ -1237,7 +1238,11 @@ def _force_checkout_pr_manually(
 
 
 def _update_with_base_branch(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig, dry_run: bool, llm_client=None
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    dry_run: bool,
+    llm_client=None,
 ) -> List[str]:
     """Update PR branch with latest base branch commits.
 
@@ -1348,19 +1353,6 @@ def _update_with_base_branch(
     return actions
 
 
-def _get_merge_conflict_info() -> str:
-    """Get information about merge conflicts."""
-    try:
-        result = cmd.run_command(["git", "status", "--porcelain"])
-        return (
-            result.stdout
-            if result.success
-            else "Could not get merge conflict information"
-        )
-    except Exception as e:
-        return f"Error getting conflict info: {e}"
-
-
 def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
     """Extract issue numbers from PR body using GitHub's linking keywords.
 
@@ -1459,7 +1451,11 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
 
 
 def _merge_pr(
-    repo_name: str, pr_number: int, analysis: Dict[str, Any], config: AutomationConfig, llm_client=None
+    repo_name: str,
+    pr_number: int,
+    analysis: Dict[str, Any],
+    config: AutomationConfig,
+    llm_client=None,
 ) -> bool:
     """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
 
@@ -1513,9 +1509,7 @@ def _merge_pr(
                 )
 
                 # Try to resolve merge conflicts using the new function from conflict_resolver
-                if resolve_pr_merge_conflicts(
-                    repo_name, pr_number, config, llm_client
-                ):
+                if resolve_pr_merge_conflicts(repo_name, pr_number, config, llm_client):
                     # Retry merge after conflict resolution
                     retry_result = cmd.run_command(direct_cmd)
                     if retry_result.success:
@@ -2814,9 +2808,7 @@ def _search_github_actions_logs_from_history(
         )
 
         if not run_list.success or not run_list.stdout.strip():
-            logger.warning(
-                f"Failed to get run list or empty result: {run_list.stderr}"
-            )
+            logger.warning(f"Failed to get run list or empty result: {run_list.stderr}")
             return None
 
         try:
@@ -2858,9 +2850,7 @@ def _search_github_actions_logs_from_history(
                 )
 
                 if jobs_res.returncode != 0 or not jobs_res.stdout.strip():
-                    logger.debug(
-                        f"Failed to get jobs for run {run_id}, skipping"
-                    )
+                    logger.debug(f"Failed to get jobs for run {run_id}, skipping")
                     continue
 
                 try:
@@ -2874,7 +2864,11 @@ def _search_github_actions_logs_from_history(
                         job_id = job.get("databaseId")
 
                         # Only attempt to get logs from failed or error jobs
-                        if job_conclusion and job_conclusion.lower() in ["failure", "failed", "error"]:
+                        if job_conclusion and job_conclusion.lower() in [
+                            "failure",
+                            "failed",
+                            "error",
+                        ]:
                             if job_id:
                                 logger.debug(
                                     f"Found failed job {job_id} in run {run_id}, attempting to get logs"
@@ -2886,7 +2880,10 @@ def _search_github_actions_logs_from_history(
                                 # Try to get logs for this job
                                 job_logs = get_github_actions_logs_from_url(url)
 
-                                if job_logs and job_logs != "No detailed logs available":
+                                if (
+                                    job_logs
+                                    and job_logs != "No detailed logs available"
+                                ):
                                     # Add metadata about which run this came from
                                     logs.append(
                                         f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}"
@@ -2899,26 +2896,18 @@ def _search_github_actions_logs_from_history(
                         return "\n\n".join(logs)
 
                 except json.JSONDecodeError as e:
-                    logger.debug(
-                        f"Failed to parse jobs JSON for run {run_id}: {e}"
-                    )
+                    logger.debug(f"Failed to parse jobs JSON for run {run_id}: {e}")
                     continue
 
             except Exception as e:
-                logger.debug(
-                    f"Error processing run {run_id}: {e}"
-                )
+                logger.debug(f"Error processing run {run_id}: {e}")
                 continue
 
-        logger.info(
-            "No historical logs found after searching recent runs"
-        )
+        logger.info("No historical logs found after searching recent runs")
         return None
 
     except Exception as e:
-        logger.error(
-            f"Error during historical search for GitHub Actions logs: {e}"
-        )
+        logger.error(f"Error during historical search for GitHub Actions logs: {e}")
         return None
 
 
@@ -2972,9 +2961,7 @@ def _get_github_actions_logs(
         )
 
         if historical_logs:
-            logger.info(
-                "Historical search succeeded: Found logs from commit history"
-            )
+            logger.info("Historical search succeeded: Found logs from commit history")
             return historical_logs
 
         logger.info(
