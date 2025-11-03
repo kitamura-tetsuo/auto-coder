@@ -45,6 +45,84 @@ class AutomationEngine:
         # Note: レポートディレクトリはリポジトリごとに作成されるため、
         # ここでは作成しない（_save_reportで作成）
 
+    def _get_candidates(self, repo_name: str, max_items: int = 10) -> List[Dict[str, Any]]:
+        """Get PR and issue candidates for processing with priority scoring.
+
+        Priority levels:
+        - Priority 3: Issues and PRs with 'urgent' label (highest priority)
+        - Priority 2: PRs ready for merge (passing checks + mergeable)
+        - Priority 1: PRs that need fixing (failing checks or not mergeable)
+        - Priority 0: Regular issues (default)
+
+        Items are sorted by priority (descending), then by creation date (ascending).
+        """
+        from .pr_processor import (
+            _check_github_actions_status as _pr_check_github_actions_status,
+            _extract_linked_issues_from_pr_body,
+        )
+
+        candidates = []
+
+        # Get PR candidates
+        prs = self.github.get_open_pull_requests(repo_name, limit=max_items)
+        for pr in prs:
+            pr_data = self.github.get_pr_details(pr)
+            current_labels = pr_data.get("labels", [])
+
+            # Skip if already has @auto-coder label
+            if "@auto-coder" in current_labels:
+                continue
+
+            # Calculate priority based on urgent label and status
+            priority = 1  # Default PR priority
+            if "urgent" in current_labels:
+                priority = 3  # Highest priority for urgent PRs
+            else:
+                github_checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
+                mergeable = pr_data.get("mergeable", True)
+                if github_checks["success"] and mergeable:
+                    priority = 2  # Ready for merge
+
+            candidates.append({
+                "type": "pr",
+                "data": pr_data,
+                "priority": priority,
+                "branch_name": pr_data.get("head", {}).get("ref"),
+                "related_issues": _extract_linked_issues_from_pr_body(pr_data.get("body", "")),
+            })
+
+        # Get issue candidates
+        issues = self.github.get_open_issues(repo_name, limit=max_items)
+        for issue in issues:
+            issue_data = self.github.get_issue_details(issue)
+            current_labels = issue_data.get("labels", [])
+
+            # Skip if already has @auto-coder label
+            if "@auto-coder" in current_labels:
+                continue
+
+            # Skip if has open sub-issues or linked PRs
+            if self.github.get_open_sub_issues(repo_name, issue_data["number"]):
+                continue
+            if self.github.has_linked_pr(repo_name, issue_data["number"]):
+                continue
+
+            # Calculate priority
+            priority = 0  # Default issue priority
+            if "urgent" in current_labels:
+                priority = 3  # Highest priority for urgent issues
+
+            candidates.append({
+                "type": "issue",
+                "data": issue_data,
+                "priority": priority,
+                "issue_number": issue_data["number"],
+            })
+
+        # Sort by priority (higher first), then by creation date (older first)
+        candidates.sort(key=lambda x: (x["priority"], x["data"].get("created_at", "")), reverse=True)
+        return candidates
+
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
