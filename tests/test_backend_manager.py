@@ -1,4 +1,4 @@
-from src.auto_coder.backend_manager import BackendManager
+from src.auto_coder.backend_manager import BackendManager, LLMBackendManager
 from src.auto_coder.exceptions import AutoCoderUsageLimitError
 
 
@@ -208,3 +208,267 @@ def test_get_last_backend_and_model_reflects_actual_client_usage():
     backend, model = mgr.get_last_backend_and_model()
     assert backend == "gemini"
     assert model == "m2"
+
+
+def test_llm_backend_manager_singleton_initialization():
+    """Test that LLMBackendManager singleton can be initialized with parameters."""
+    # Reset singleton before test
+    LLMBackendManager.reset_singleton()
+
+    a_client = DummyClient("a", "m1", "ok", [])
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", [])
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", [])
+
+    # Initialize singleton
+    mgr = LLMBackendManager.get_llm_instance(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a, "b": fac_b},
+        order=["a", "b"],
+    )
+
+    # Verify it returns a BackendManager instance
+    assert isinstance(mgr, BackendManager)
+    assert mgr._current_backend_name() == "a"
+
+    # Verify singleton returns the same instance on subsequent calls
+    mgr2 = LLMBackendManager.get_llm_instance()
+    assert mgr2 is mgr
+
+    # Verify is_initialized returns True
+    assert LLMBackendManager.is_initialized() is True
+
+    # Clean up
+    LLMBackendManager.reset_singleton()
+
+
+def test_llm_backend_manager_singleton_error_without_params():
+    """Test that calling get_llm_instance without params before initialization raises error."""
+    # Reset singleton before test
+    LLMBackendManager.reset_singleton()
+
+    # Try to get instance without initialization - should raise error
+    try:
+        LLMBackendManager.get_llm_instance()
+        assert False, "Expected RuntimeError"
+    except RuntimeError as e:
+        assert "must be called with initialization parameters" in str(e)
+
+    # Clean up (in case test failed)
+    try:
+        LLMBackendManager.reset_singleton()
+    except Exception:
+        pass
+
+
+def test_llm_backend_manager_singleton_reset():
+    """Test that reset_singleton properly resets the singleton."""
+    # Reset singleton before test
+    LLMBackendManager.reset_singleton()
+
+    a_client = DummyClient("a", "m1", "ok", [])
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", [])
+
+    # Initialize singleton
+    mgr = LLMBackendManager.get_llm_instance(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a},
+        order=["a"],
+    )
+
+    assert LLMBackendManager.is_initialized() is True
+    assert mgr._current_backend_name() == "a"
+
+    # Reset singleton
+    LLMBackendManager.reset_singleton()
+
+    assert LLMBackendManager.is_initialized() is False
+
+    # Reinitialize with different parameters
+    b_client = DummyClient("b", "m2", "ok", [])
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", [])
+
+    mgr2 = LLMBackendManager.get_llm_instance(
+        default_backend="b",
+        default_client=b_client,
+        factories={"b": fac_b},
+        order=["b"],
+    )
+
+    assert mgr2 is not mgr  # New instance after reset
+    assert mgr2._current_backend_name() == "b"
+    assert LLMBackendManager.is_initialized() is True
+
+    # Clean up
+    LLMBackendManager.reset_singleton()
+
+
+def test_llm_backend_manager_singleton_force_reinitialize():
+    """Test force_reinitialize parameter works correctly."""
+    # Reset singleton before test
+    LLMBackendManager.reset_singleton()
+
+    a_client = DummyClient("a", "m1", "ok", [])
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", [])
+
+    # Initialize with 'a'
+    mgr1 = LLMBackendManager.get_llm_instance(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a},
+        order=["a"],
+    )
+
+    assert mgr1._current_backend_name() == "a"
+
+    # Force reinitialize with 'b'
+    b_client = DummyClient("b", "m2", "ok", [])
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", [])
+
+    mgr2 = LLMBackendManager.get_llm_instance(
+        default_backend="b",
+        default_client=b_client,
+        factories={"b": fac_b},
+        order=["b"],
+        force_reinitialize=True,
+    )
+
+    # Force reinitialize creates a NEW BackendManager instance but keeps it as the singleton
+    # The singleton reference changes because we create a new instance
+    assert isinstance(mgr2, BackendManager)
+    assert mgr2._current_backend_name() == "b"
+
+    # Clean up
+    LLMBackendManager.reset_singleton()
+
+
+def test_llm_backend_manager_singleton_ignores_subsequent_params():
+    """Test that providing parameters after initialization is allowed but ignored."""
+    # Reset singleton before test
+    LLMBackendManager.reset_singleton()
+
+    a_client = DummyClient("a", "m1", "ok", [])
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", [])
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", [])
+
+    # Initialize singleton
+    mgr1 = LLMBackendManager.get_llm_instance(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a},
+        order=["a"],
+    )
+
+    # Call again with different parameters - should return same instance
+    mgr2 = LLMBackendManager.get_llm_instance(
+        default_backend="b",
+        default_client=a_client,
+        factories={"b": fac_b},
+        order=["b"],
+    )
+
+    assert mgr2 is mgr1  # Same instance
+    assert mgr1._current_backend_name() == "a"  # Still using original backend
+
+    # Clean up
+    LLMBackendManager.reset_singleton()
+
+
+def test_llm_backend_manager_singleton_thread_safety():
+    """Test that singleton initialization is thread-safe."""
+    # Reset singleton before test
+    LLMBackendManager.reset_singleton()
+
+    results = []
+
+    def init_singleton():
+        a_client = DummyClient("a", "m1", "ok", [])
+        return LLMBackendManager.get_llm_instance(
+            default_backend="a",
+            default_client=a_client,
+            factories={"a": lambda: DummyClient("a", "m1", "ok", [])},
+            order=["a"],
+        )
+
+    # Multiple threads trying to initialize (only one should succeed)
+    import threading
+
+    threads = []
+    for _ in range(5):
+        t = threading.Thread(target=lambda: results.append(init_singleton()))
+        threads.append(t)
+        t.start()
+
+    for t in threads:
+        t.join()
+
+    # All threads should get the same instance
+    assert len(results) == 5
+    assert all(mgr is results[0] for mgr in results)
+    assert LLMBackendManager.is_initialized() is True
+
+    # Clean up
+    LLMBackendManager.reset_singleton()
+
+
+def test_llm_backend_manager_singleton_works_with_existing_functionality():
+    """Test that the singleton instance works with all existing BackendManager methods."""
+    # Reset singleton before test
+    LLMBackendManager.reset_singleton()
+
+    calls = []
+
+    a_client = DummyClient("a", "m1", "ok", calls)
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", calls)
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", calls)
+
+    # Initialize singleton
+    mgr = LLMBackendManager.get_llm_instance(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a, "b": fac_b},
+        order=["a", "b"],
+    )
+
+    # Test that it works with _run_llm_cli
+    result = mgr._run_llm_cli("test prompt")
+    assert result == "a:test prompt"
+    assert calls == ["a"]
+
+    # Test that it works with run_test_fix_prompt
+    result = mgr.run_test_fix_prompt("test prompt 2", "test_file.py")
+    assert result == "a:test prompt 2"
+    assert calls == ["a", "a"]
+
+    # Test get_last_backend_and_model
+    backend, model = mgr.get_last_backend_and_model()
+    assert backend == "a"
+    assert model == "m1"
+
+    # Test that singleton is the same when accessed again
+    mgr2 = LLMBackendManager.get_llm_instance()
+    assert mgr2 is mgr
+
+    # Clean up
+    LLMBackendManager.reset_singleton()
