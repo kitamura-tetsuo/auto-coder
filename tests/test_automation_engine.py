@@ -60,6 +60,7 @@ def test_apply_pr_actions_directly_does_not_post_comments(
 class TestAutomationEngine:
     """Test cases for AutomationEngine class."""
 
+
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
         engine = AutomationEngine(mock_github_client, mock_gemini_client, dry_run=True)
@@ -72,6 +73,7 @@ class TestAutomationEngine:
     @patch("src.auto_coder.automation_engine.process_pull_requests")
     @patch("src.auto_coder.automation_engine.process_issues")
     @patch("src.auto_coder.automation_engine.datetime")
+
     def test_run_success(
         self,
         mock_datetime,
@@ -132,6 +134,7 @@ class TestAutomationEngine:
     @patch("src.auto_coder.automation_engine.process_pull_requests")
     @patch("src.auto_coder.automation_engine.process_issues")
     @patch("src.auto_coder.automation_engine.datetime")
+
     def test_run_jules_mode_success(
         self,
         mock_datetime,
@@ -193,6 +196,7 @@ class TestAutomationEngine:
         engine._save_report.assert_called_once()
 
     @patch("src.auto_coder.automation_engine.process_issues")
+
     def test_run_with_error(
         self,
         mock_process_issues,
@@ -239,6 +243,7 @@ class TestAutomationEngine:
         assert "Test error" in result["errors"][0]
 
     @patch("src.auto_coder.automation_engine.create_feature_issues")
+
     def test_create_feature_issues_success(
         self,
         mock_create_feature_issues,
@@ -270,6 +275,7 @@ class TestAutomationEngine:
         mock_create_feature_issues.assert_called_once()
 
     @patch("src.auto_coder.automation_engine.create_feature_issues")
+
     def test_create_feature_issues_dry_run(
         self,
         mock_create_feature_issues,
@@ -296,16 +302,20 @@ class TestAutomationEngine:
 
         mock_create_feature_issues.assert_called_once()
 
-    # Note: _process_issues and _process_issues_jules_mode are now functions in issue_processor.py
+    # Note: _process_issues and _process_issues_jules_mode are now functions in
+    # issue_processor.py
     # These tests are covered by test_issue_processor.py
 
     # Note: _resolve_merge_conflicts_with_gemini is now in conflict_resolver.py
     # These tests are covered by test_conflict_resolver.py
 
-    # Note: _process_issues and _process_pull_requests are now functions in issue_processor.py and pr_processor.py
+    # Note: _process_issues and _process_pull_requests are now functions in
+    # issue_processor.py and pr_processor.py
     # These tests are covered by test_issue_processor.py and test_pr_processor.py
 
-    # Note: Dependabot filtering tests and PR processing tests moved to test_pr_processor.py
+    # Note: Dependabot filtering tests and PR processing tests moved to
+    # test_pr_processor.py
+
 
     def test_merge_pr_with_conflict_resolution_success(
         self, mock_github_client, mock_gemini_client
@@ -343,6 +353,7 @@ class TestAutomationEngine:
             assert len(result["errors"]) == 0
             mock_take_actions.assert_called_once()
 
+
     def test_merge_pr_with_conflict_resolution_failure(
         self, mock_github_client, mock_gemini_client
     ):
@@ -376,6 +387,7 @@ class TestAutomationEngine:
             assert len(result["errors"]) == 1
             assert "Processing failed" in result["errors"][0]
             mock_take_actions.assert_called_once()
+
 
     def test_resolve_pr_merge_conflicts_git_cleanup(
         self, mock_github_client, mock_gemini_client
@@ -428,6 +440,7 @@ class TestAutomationEngine:
                 mock_check.assert_called_once()
                 mock_take_actions.assert_called_once()
 
+
     def test_take_issue_actions_dry_run(
         self, mock_github_client, mock_gemini_client, sample_issue_data
     ):
@@ -442,6 +455,7 @@ class TestAutomationEngine:
         assert len(result) == 1
         assert "[DRY RUN]" in result[0]
         assert "123" in result[0]
+
 
     def test_apply_issue_actions_directly(self, mock_github_client, mock_gemini_client):
         """Test direct issue actions application using Gemini CLI."""
@@ -475,7 +489,9 @@ class TestAutomationEngine:
         assert "Added analysis comment" in result[1]
         assert "Committed changes" in result[2]
 
-    # Note: test_take_pr_actions_success removed - _take_pr_actions is now in pr_processor.py
+    # Note: test_take_pr_actions_success removed - _take_pr_actions is now in
+    # pr_processor.py
+
 
     def test_resolve_pr_merge_conflicts_uses_base_branch(
         self, mock_github_client, mock_gemini_client
@@ -512,11 +528,13 @@ class TestAutomationEngine:
         assert ["git", "push"] in calls
 
     @patch("subprocess.run")
+
     def test_update_with_base_branch_uses_provided_base_branch(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
         """_update_with_base_branch should use pr_data.base_branch when provided (even if not main)."""
-        # Setup mocks for git operations: fetch, rev-list (2 commits behind), merge, push
+        # Setup mocks for git operations: fetch, rev-list (2 commits behind), merge,
+# push
         mock_run.side_effect = [
             Mock(returncode=0, stdout="", stderr=""),  # git fetch
             Mock(returncode=0, stdout="2", stderr=""),  # git rev-list
@@ -536,6 +554,7 @@ class TestAutomationEngine:
             "Successfully merged develop branch into PR #999" in a for a in result
         )
         assert any("Pushed updated branch" in a for a in result)
+
 
     def test_get_repository_context_success(
         self, mock_github_client, mock_gemini_client
@@ -567,6 +586,7 @@ class TestAutomationEngine:
         assert result["stars"] == 100
         assert result["forks"] == 20
 
+
     def test_format_feature_issue_body(
         self, mock_github_client, mock_gemini_client, sample_feature_suggestion
     ):
@@ -592,6 +612,7 @@ class TestAutomationEngine:
     @patch("json.dump")
     @patch("os.path.join")
     @patch("os.makedirs")
+
     def test_save_report_success(
         self,
         mock_makedirs,
@@ -623,6 +644,7 @@ class TestAutomationEngine:
     @patch("builtins.open")
     @patch("json.dump")
     @patch("os.makedirs")
+
     def test_save_report_with_repo_name(
         self,
         mock_makedirs,
@@ -653,6 +675,7 @@ class TestAutomationEngine:
             test_data, mock_file, indent=2, ensure_ascii=False
         )
 
+
     def test_should_auto_merge_pr_low_risk_bugfix(
         self, mock_github_client, mock_gemini_client
     ):
@@ -675,6 +698,7 @@ class TestAutomationEngine:
         # Assert
         assert result is True
 
+
     def test_should_auto_merge_pr_high_risk(
         self, mock_github_client, mock_gemini_client
     ):
@@ -694,6 +718,7 @@ class TestAutomationEngine:
 
         # Assert
         assert result is False
+
 
     def test_should_auto_merge_pr_draft(self, mock_github_client, mock_gemini_client):
         """Test PR should not be auto-merged if it's a draft."""
@@ -715,6 +740,7 @@ class TestAutomationEngine:
 
     @patch("subprocess.run")
     @patch("os.path.exists")
+
     def test_run_pr_tests_success(
         self, mock_exists, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -742,6 +768,7 @@ class TestAutomationEngine:
 
     @patch("subprocess.run")
     @patch("os.path.exists")
+
     def test_run_pr_tests_failure(
         self, mock_exists, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -762,6 +789,7 @@ class TestAutomationEngine:
         assert result["success"] is False
         assert result["errors"] == "Test failed: assertion error"
         assert result["return_code"] == 1
+
 
     def test_extract_important_errors(self, mock_github_client, mock_gemini_client):
         """Test error extraction from test output."""
@@ -785,6 +813,7 @@ class TestAutomationEngine:
         assert "ImportError: module not found" in result
 
     @patch("subprocess.run")
+
     def test_check_github_actions_status_all_passed(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -806,6 +835,7 @@ class TestAutomationEngine:
         assert len(result["failed_checks"]) == 0
 
     @patch("subprocess.run")
+
     def test_check_github_actions_status_some_failed(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -831,6 +861,7 @@ class TestAutomationEngine:
         assert result["failed_checks"][1]["conclusion"] == "pending"
 
     @patch("subprocess.run")
+
     def test_check_github_actions_status_tab_format_with_failures(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -861,6 +892,7 @@ class TestAutomationEngine:
         )
 
     @patch("subprocess.run")
+
     def test_check_github_actions_status_tab_format_all_pass(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -885,6 +917,7 @@ class TestAutomationEngine:
         assert len(result["failed_checks"]) == 0  # No failed checks
 
     @patch("subprocess.run")
+
     def test_check_github_actions_status_no_checks_reported(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -905,6 +938,7 @@ class TestAutomationEngine:
         assert result["failed_checks"] == []
 
     @patch("src.auto_coder.pr_processor.cmd.run_command")
+
     def test_checkout_pr_branch_success(
         self, mock_run_command, mock_github_client, mock_gemini_client
     ):
@@ -933,6 +967,7 @@ class TestAutomationEngine:
         calls = [call[0][0] for call in mock_run_command.call_args_list]
         assert calls[0] == ["gh", "pr", "checkout", "123"]
 
+
     def test_checkout_pr_branch_failure(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout failure."""
         # Setup
@@ -959,6 +994,7 @@ class TestAutomationEngine:
             # Assert
             assert result is False
 
+
     def test_apply_github_actions_fixes_directly(
         self, mock_github_client, mock_gemini_client
     ):
@@ -984,6 +1020,7 @@ class TestAutomationEngine:
         assert len(result) == 2
         assert "Gemini CLI applied GitHub Actions fixes" in result[0]
         assert "Committed changes" in result[1]
+
 
     def test_apply_local_test_fixes_directly(
         self, mock_github_client, mock_gemini_client
@@ -1012,9 +1049,11 @@ class TestAutomationEngine:
         assert "Committed changes" in result[1]
 
     # Remove outdated test that doesn't match current implementation
+
     def test_apply_github_actions_fix_no_commit_in_prompt_and_code_commits(self):
         """Test removed - outdated and doesn't match current stub implementation."""
         pass
+
 
     def test_format_direct_fix_comment(self, mock_github_client, mock_gemini_client):
         """Test direct fix comment formatting."""
@@ -1041,6 +1080,7 @@ class TestAutomationEngine:
         assert "Updated dependencies" in result
 
     @patch("subprocess.run")
+
     def test_update_with_base_branch_up_to_date(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1062,6 +1102,7 @@ class TestAutomationEngine:
         assert "up to date with main branch" in result[0]
 
     @patch("subprocess.run")
+
     def test_update_with_base_branch_merge_success(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1092,6 +1133,7 @@ class TestCommandExecutor:
     """Test cases for CommandExecutor class."""
 
     @patch("subprocess.run")
+
     def test_run_command_timeout(self, mock_run):
         """Test command timeout handling."""
         # Setup
@@ -1111,6 +1153,7 @@ class TestCommandExecutor:
 class TestAutomationConfig:
     """Test cases for AutomationConfig class."""
 
+
     def test_get_reports_dir(self):
         """Test get_reports_dir method returns correct path."""
         from pathlib import Path
@@ -1127,6 +1170,7 @@ class TestAutomationConfig:
         expected_path2 = str(Path.home() / ".auto-coder" / "another-owner_another-repo")
         assert config.get_reports_dir(repo_name2) == expected_path2
 
+
     def test_get_llm_backend_info_with_gemini_client(
         self, mock_github_client, mock_gemini_client
     ):
@@ -1138,6 +1182,7 @@ class TestAutomationConfig:
 
         assert info["backend"] == "gemini"
         assert info["model"] == "gemini-2.5-pro"
+
 
     def test_get_llm_backend_info_with_backend_manager(self, mock_github_client):
         """Test _get_llm_backend_info with BackendManager."""
@@ -1154,6 +1199,7 @@ class TestAutomationConfig:
         assert info["backend"] == "codex"
         assert info["model"] == "codex-model"
 
+
     def test_get_llm_backend_info_with_no_client(self, mock_github_client):
         """Test _get_llm_backend_info with no LLM client."""
         engine = AutomationEngine(mock_github_client, None)
@@ -1167,7 +1213,9 @@ class TestAutomationConfig:
 class TestAutomationEngineExtended:
     """Extended test cases for AutomationEngine."""
 
-    # Note: test_take_pr_actions_skips_analysis_when_flag_set removed - _take_pr_actions is now in pr_processor.py
+    # Note: test_take_pr_actions_skips_analysis_when_flag_set removed - _take_pr_actions
+    # is now in pr_processor.py
+
 
     def test_fix_pr_issues_with_testing_success(
         self, mock_github_client, mock_gemini_client
@@ -1209,6 +1257,7 @@ class TestAutomationEngineExtended:
             assert any("Local tests passed on attempt 1" in action for action in result)
             mock_github_fix.assert_called_once()
             mock_test.assert_called_once()
+
 
     def test_fix_pr_issues_with_testing_retry(
         self, mock_github_client, mock_gemini_client
@@ -1254,6 +1303,7 @@ class TestAutomationEngineExtended:
             assert mock_test.call_count == 2
             mock_local_fix.assert_called_once()
 
+
     def test_checkout_pr_branch_force_cleanup(
         self, mock_github_client, mock_gemini_client
     ):
@@ -1284,6 +1334,7 @@ class TestAutomationEngineExtended:
             mock_cmd.assert_any_call(["git", "reset", "--hard", "HEAD"])
             mock_cmd.assert_any_call(["git", "clean", "-fd"])
             mock_cmd.assert_any_call(["gh", "pr", "checkout", "123"])
+
 
     def test_checkout_pr_branch_without_force_clean(
         self, mock_github_client, mock_gemini_client
@@ -1317,6 +1368,7 @@ class TestAutomationEngineExtended:
             mock_cmd.assert_called_once_with(["gh", "pr", "checkout", "123"])
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_with_successful_runs(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1366,6 +1418,7 @@ class TestAutomationEngineExtended:
         assert result[2]["actions_url"] == "https://github.com/test/repo/actions/runs/3"
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_with_failed_runs(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1408,6 +1461,7 @@ class TestAutomationEngineExtended:
         )
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_skips_no_runs(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1429,6 +1483,7 @@ class TestAutomationEngineExtended:
         assert len(result) == 0  # No commits should be returned
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_skips_in_progress(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1451,6 +1506,7 @@ class TestAutomationEngineExtended:
         assert len(result) == 0  # Should skip in-progress runs
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_custom_depth(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1492,6 +1548,7 @@ class TestAutomationEngineExtended:
         )
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_mixed_results(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1528,6 +1585,7 @@ class TestAutomationEngineExtended:
         assert result[1]["actions_status"] == "success"
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_empty_log(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1546,6 +1604,7 @@ class TestAutomationEngineExtended:
         assert len(result) == 0
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_git_error(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
@@ -1566,6 +1625,7 @@ class TestAutomationEngineExtended:
         assert len(result) == 0  # Should return empty list on error
 
     @patch("subprocess.run")
+
     def test_parse_commit_history_with_actions_timeout(
         self, mock_run, mock_github_client, mock_gemini_client
     ):
