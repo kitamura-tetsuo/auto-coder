@@ -433,9 +433,7 @@ def git_checkout_branch(
             ["git", "push", "-u", "origin", branch_name], cwd=cwd
         )
         if not push_result.success:
-            logger.warning(
-                f"Failed to push new branch to remote: {push_result.stderr}"
-            )
+            logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
             # Don't exit on push failure - the branch is still created locally
         else:
             logger.info(f"Successfully published branch '{branch_name}' to remote")

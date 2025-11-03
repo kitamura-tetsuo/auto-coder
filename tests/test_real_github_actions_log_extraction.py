@@ -1,4 +1,4 @@
-"""実際のGitHub Actionsログを使用した統合テスト"""
+"""Integration tests using actual GitHub Actions logs"""
 
 import io
 import json
@@ -14,8 +14,8 @@ from src.auto_coder.pr_processor import (
 
 
 def test_extract_error_context_with_realistic_playwright_log():
-    """実際のPlaywrightログに近い形式でエラーコンテキストを抽出できることを確認"""
-    # 実際のPlaywrightエラーログに非常に近いサンプル
+    """Verify that error context can be extracted in a format close to actual Playwright logs"""
+    # Sample very close to actual Playwright error log
     realistic_log = """2025-10-27T03:25:34.7924026Z Current runner version: '2.327.1'
 2025-10-27T03:25:34.7930495Z Runner name: 'runner-1'
 2025-10-27T03:25:34.7931234Z Machine name: 'test-machine'
@@ -102,7 +102,7 @@ def test_extract_error_context_with_realistic_playwright_log():
 
     result = _extract_error_context(realistic_log)
 
-    # 重要なエラー情報が含まれていることを確認
+    # Verify that important error information is included
     assert "Error: expect(received).toContain(expected)" in result
     assert (
         'Expected substring: "<a href=\\"https://example.com\\""' in result
@@ -115,37 +115,37 @@ def test_extract_error_context_with_realistic_playwright_log():
     assert "fmt-url-label-links-a391b6c2.spec.ts" in result
     assert "URL label links" in result
 
-    # エラーの前後のコンテキストが含まれていることを確認
+    # Verify that context before and after the error is included
     assert "expect(firstItemHtml).toContain" in result
     assert (
         "at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31"
         in result
     )
 
-    # テストサマリが含まれていることを確認
+    # Verify that test summary is included
     assert "1 failed" in result or "147 passed" in result
 
-    # 結果が適切な長さであることを確認
+    # Verify that result is of appropriate length
     result_lines = result.split("\n")
-    assert len(result_lines) >= 20  # 最低でもエラー行の前後10行
-    assert len(result_lines) <= 500  # 最大500行
+    assert len(result_lines) >= 20  # At least 10 lines before and after error line
+    assert len(result_lines) <= 500  # Maximum 500 lines
 
-    # 不要なセットアップ情報が除外されていることを確認（または最小限であること）
-    # セットアップ情報が含まれていても、エラー部分が優先されていることを確認
+    # Verify that unnecessary setup information is excluded (or minimal)
+    # Even if setup information is included, the error part should be prioritized
     error_line_index = None
     for i, line in enumerate(result_lines):
         if "Error: expect(received).toContain(expected)" in line:
             error_line_index = i
             break
 
-    assert error_line_index is not None, "エラー行が見つかりません"
+    assert error_line_index is not None, "Error line not found"
 
 
 def test_get_github_actions_logs_from_url_with_realistic_zip():
-    """実際のGitHub Actions ZIPログに近い形式で処理できることを確認"""
+    """Verify that processing can be done in a format close to actual GitHub Actions ZIP logs"""
     url = "https://github.com/kitamura-tetsuo/outliner/actions/runs/18828609259/job/53715705095"
 
-    # 実際のログに近いZIPファイルを作成
+    # Create a ZIP file close to actual logs
     realistic_step_log = """2025-10-27T03:26:08.0000000Z
 2025-10-27T03:26:09.0000000Z > outliner@1.0.0 test
 2025-10-27T03:26:10.0000000Z > playwright test
@@ -180,7 +180,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 """
 
     def fake_subprocess_run(cmd, capture_output=True, timeout=60, cwd=None):
-        # ジョブ名取得
+        # Get job name
         if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
             jobs_obj = {
                 "jobs": [
@@ -193,7 +193,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
             }
             return Mock(returncode=0, stdout=json.dumps(jobs_obj).encode(), stderr=b"")
 
-        # ジョブ詳細（ステップ情報）
+        # Job details (step information)
         if (
             cmd[:2] == ["gh", "api"]
             and "actions/jobs/53715705095" in cmd[2]
@@ -228,7 +228,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
             }
             return Mock(returncode=0, stdout=json.dumps(job_obj).encode(), stderr=b"")
 
-        # job ZIP -> 成功
+        # job ZIP -> success
         if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/logs"):
             bio = io.BytesIO()
             with zipfile.ZipFile(bio, "w") as zf:
@@ -251,7 +251,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
     def fake_cmd_run(
         cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True
     ):
-        # この関数は使用されないはずだが、念のため定義
+        # This function should not be used, but defined just in case
         from src.auto_coder.utils import CommandResult
 
         return CommandResult(success=False, returncode=1, stdout="", stderr="not used")
@@ -262,20 +262,20 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
         ):
             result = get_github_actions_logs_from_url(url)
 
-    # ジョブ情報が含まれていることを確認
+    # Verify that job information is included
     assert "53715705095" in result
 
-    # エラー情報が含まれていることを確認
+    # Verify that error information is included
     assert "Error: expect(received).toContain(expected)" in result
     assert "fmt-url-label-links-a391b6c2.spec.ts" in result
     assert "Expected substring:" in result
     assert "Received string:" in result
 
-    # 成功したステップは除外されていることを確認
-    assert "Set up job" not in result  # 成功したステップは除外されるべき
-    assert "Checking out code" not in result  # 成功したステップは除外されるべき
-    assert "Installing dependencies" not in result  # 成功したステップは除外されるべき
+    # Verify that successful steps are excluded
+    assert "Set up job" not in result  # Successful steps should be excluded
+    assert "Checking out code" not in result  # Successful steps should be excluded
+    assert "Installing dependencies" not in result  # Successful steps should be excluded
 
-    # テストサマリが含まれていることを確認
+    # Verify that test summary is included
     assert "1 failed" in result
     assert "147 passed" in result

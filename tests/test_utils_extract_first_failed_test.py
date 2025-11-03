@@ -58,7 +58,7 @@ def test_extract_from_playwright_spec(monkeypatch):
 
 
 def test_extract_playwright_candidate_returned_even_if_not_exists():
-    # ANSIカラーや存在しないパスでも候補として返せること
+    # Should return candidate even for ANSI colors and non-existent paths
     stdout = (
         "\x1b[31m  ✘    1 [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \x1b[39m\n"
         "\n  1) [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \n\n"
@@ -70,7 +70,7 @@ def test_extract_playwright_candidate_returned_even_if_not_exists():
 
 
 def test_extract_playwright_from_sample_full_output_excerpt():
-    # ユーザー提供のフォーマットに近い抜粋（ANSIカラーや記号・日本語含む）
+    # Excerpt close to user-provided format (includes ANSI colors, symbols, and Japanese)
     stdout = (
         "TestHelper: UserManager found, attempting authentication\n"
         "  ✘    1 [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › 見出し\n"
@@ -84,7 +84,7 @@ def test_extract_playwright_from_sample_full_output_excerpt():
 
 
 def test_playwright_prefers_fail_over_pass_when_both_present():
-    # 先に成功(\u2713)行があり、その後に失敗(\u2718)行が出るケースでも、失敗側を返す
+    # Even when there's a success (✓) line first and then a failure (✗) line, return the failure side
     stdout = (
         "  \u2713    1 [basic] \u203a e2e/basic/pass-example.spec.ts:10:5 \u203a ok \n"
         "  \u2718   22 [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n"
@@ -138,7 +138,7 @@ def test_vitest_fail_line_extracts_test_ts(monkeypatch):
 
 
 def test_vitest_success_playwright_fail_should_detect_playwright(monkeypatch):
-    """vitestが成功してplaywrightが失敗した場合、playwrightの失敗を検出すること"""
+    """When vitest succeeds and playwright fails, detect the playwright failure"""
     stdout = textwrap.dedent(
         """
         ✓ src/tests/unit/foo.test.ts (5 tests) 125ms
@@ -171,7 +171,7 @@ def test_vitest_success_playwright_fail_should_detect_playwright(monkeypatch):
 
 
 def test_playwright_success_vitest_fail_should_detect_vitest(monkeypatch):
-    """playwrightが成功してvitestが失敗した場合、vitestの失敗を検出すること"""
+    """When playwright succeeds and vitest fails, detect the vitest failure"""
     stdout = textwrap.dedent(
         """
         Running Playwright tests...
@@ -202,7 +202,7 @@ def test_playwright_success_vitest_fail_should_detect_vitest(monkeypatch):
 
 
 def test_pytest_success_playwright_fail_should_detect_playwright(monkeypatch):
-    """pytestが成功してplaywrightが失敗した場合、playwrightの失敗を検出すること"""
+    """When pytest succeeds and playwright fails, detect the playwright failure"""
     stdout = textwrap.dedent(
         """
         ============================= test session starts ==============================

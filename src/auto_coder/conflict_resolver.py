@@ -10,7 +10,7 @@ from .automation_config import AutomationConfig
 from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor, CommandResult
+from .utils import CommandExecutor, CommandResult, get_merge_conflict_info
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -257,7 +257,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             )
 
             # Get conflict information
-            conflict_info = _get_merge_conflict_info()
+            conflict_info = get_merge_conflict_info(cmd)
 
             # Use LLM to resolve conflicts
             if pr_data is None:

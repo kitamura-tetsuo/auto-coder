@@ -12,7 +12,7 @@ from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.github_client import GitHubClient
 
 
-# テストの安定化: 外部環境変数とユーザホームの影響を排除（CLIの挙動を一定にするため）
+# Test stabilization: Eliminate effects of external environment variables and user HOME (to keep CLI behavior consistent)
 @pytest.fixture(autouse=True)
 def _clear_sensitive_env(monkeypatch, request):
     import tempfile
@@ -24,10 +24,10 @@ def _clear_sensitive_env(monkeypatch, request):
             monkeypatch.delenv(key, raising=False)
         return
 
-    # 影響のある環境変数をクリア
+    # Clear influential environment variables
     for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
         monkeypatch.delenv(key, raising=False)
-    # ホームディレクトリを一時ディレクトリに切り替え、~/.config/gh/hosts.yml 等の実ファイル影響を遮断
+    # Switch HOME directory to temporary directory to block influence of real files such as ~/.config/gh/hosts.yml
     tmp_home = tempfile.mkdtemp(prefix="ac_test_home_")
     monkeypatch.setenv("HOME", tmp_home)
 
@@ -189,7 +189,7 @@ def temp_reports_dir(tmp_path):
     return str(reports_dir)
 
 
-# 実際の git/gh コマンドをテスト中に実行しないようにスタブする
+# Stub so that actual git/gh commands are not executed during tests
 @pytest.fixture(autouse=True)
 def stub_git_and_gh_commands(monkeypatch, request):
     import subprocess
@@ -210,7 +210,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
     def _as_text_or_bytes(text_output: str, text: bool):
         if text:
             return text_output, ""
-        # bytes 出力
+        # bytes output
         return text_output.encode("utf-8"), b""
 
     def fake_run(
@@ -322,17 +322,17 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     env=env,
                 )
 
-            # デフォルトの成功レスポンス
+            # Default successful response
             out_text = ""
 
             if program == "git":
-                # 代表的な呼び出しに対する最小限の正常系出力
+                # Minimal normal output for representative calls
                 if (
                     isinstance(cmd, (list, tuple))
                     and "status" in cmd
                     and "--porcelain" in cmd
                 ):
-                    out_text = ""  # 変更なし
+                    out_text = ""  # No changes
                 elif isinstance(cmd, (list, tuple)) and "rev-parse" in cmd:
                     out_text = "main"
                 elif isinstance(cmd, (list, tuple)) and "merge-base" in cmd:
@@ -346,7 +346,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     and cmd[1] == "auth"
                     and cmd[2] == "status"
                 ):
-                    # 認証なしをシミュレーション（トークン未設定のテストを通すため）
+                    # Simulate no authentication (to pass tests without token set)
                     return types.SimpleNamespace(
                         stdout="", stderr="not logged in", returncode=1
                     )
