@@ -46,54 +46,50 @@ class AutomationEngine:
         # so we do not create one here (created in _save_report)
 
     def _get_candidates(
-        self, repo_name: str, max_items: int = 10
+        self, repo_name: str, max_items: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Get PR and issue candidates for processing with priority scoring.
+        """PR/Issue 候補を優先度付きで収集する。
 
-        Priority levels:
-        - Priority 3: Issues and PRs with 'urgent' label (highest priority)
-        - Priority 2: PRs ready for merge (passing checks + mergeable)
-        - Priority 1: PRs that need fixing (failing checks or not mergeable)
-        - Priority 0: Regular issues (default)
+        優先度定義:
+        - 3: 'urgent' ラベルの PR / Issue（最優先）
+        - 2: マージ可能かつ GitHub Actions が成功している PR（自動マージ候補）
+        - 1: 修正が必要な PR（GH Actions 失敗 or mergeable=False）
+        - 0: 通常の Issue
 
-        Items are sorted by priority (descending), then by creation date (ascending).
+        ソート順:
+        - 優先度降順（3 -> 0）
+        - 作成日時昇順（古いものから）
         """
         from .pr_processor import (
             _check_github_actions_status as _pr_check_github_actions_status,
         )
-        from .pr_processor import (
-            _extract_linked_issues_from_pr_body,
-        )
+        from .pr_processor import _extract_linked_issues_from_pr_body
 
-        candidates = []
+        candidates: List[Dict[str, Any]] = []
 
-        # Get PR candidates
-        prs = self.github.get_open_pull_requests(repo_name, limit=max_items)
+        # PR 候補収集
+        prs = self.github.get_open_pull_requests(repo_name)
         for pr in prs:
             pr_data = self.github.get_pr_details(pr)
-            current_labels = pr_data.get("labels", [])
+            labels = pr_data.get("labels", []) or []
 
-            # Skip if already has @auto-coder label
-            if "@auto-coder" in current_labels:
+            # @auto-coder ラベル付きはスキップ
+            if "@auto-coder" in labels:
                 continue
 
-            # Calculate priority based on urgent label and status
-            priority = 1  # Default PR priority
-            if "urgent" in current_labels:
-                priority = 3  # Highest priority for urgent PRs
+            # 優先度計算
+            if "urgent" in labels:
+                pr_priority = 3
             else:
-                github_checks = _pr_check_github_actions_status(
-                    repo_name, pr_data, self.config
-                )
+                checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
                 mergeable = pr_data.get("mergeable", True)
-                if github_checks["success"] and mergeable:
-                    priority = 2  # Ready for merge
+                pr_priority = 2 if (checks.get("success") and mergeable) else 1
 
             candidates.append(
                 {
                     "type": "pr",
                     "data": pr_data,
-                    "priority": priority,
+                    "priority": pr_priority,
                     "branch_name": pr_data.get("head", {}).get("ref"),
                     "related_issues": _extract_linked_issues_from_pr_body(
                         pr_data.get("body", "")
@@ -101,47 +97,78 @@ class AutomationEngine:
                 }
             )
 
-        # Get issue candidates
-        issues = self.github.get_open_issues(repo_name, limit=max_items)
+        # Issue 候補収集
+        issues = self.github.get_open_issues(repo_name)
         for issue in issues:
             issue_data = self.github.get_issue_details(issue)
-            current_labels = issue_data.get("labels", [])
+            labels = issue_data.get("labels", []) or []
 
-            # Skip if already has @auto-coder label
-            if "@auto-coder" in current_labels:
+            # @auto-coder ラベル付きはスキップ
+            if "@auto-coder" in labels:
                 continue
 
-            # Skip if has open sub-issues or linked PRs
-            if self.github.get_open_sub_issues(repo_name, issue_data["number"]):
+            # サブ Issue やリンク済み PR がある場合はスキップ
+            number = issue_data.get("number")
+            if self.github.get_open_sub_issues(repo_name, number):
                 continue
-            if self.github.has_linked_pr(repo_name, issue_data["number"]):
+            if self.github.has_linked_pr(repo_name, number):
                 continue
 
-            # Calculate priority
-            priority = 0  # Default issue priority
-            if "urgent" in current_labels:
-                priority = 3  # Highest priority for urgent issues
+            issue_priority = 3 if "urgent" in labels else 0
 
             candidates.append(
                 {
                     "type": "issue",
                     "data": issue_data,
-                    "priority": priority,
-                    "issue_number": issue_data["number"],
+                    "priority": issue_priority,
+                    "issue_number": number,
                 }
             )
 
-        # Sort by priority (higher first), then by creation date (older first)
+        # 優先度降順、種別（issue優先）、作成日時昇順でソート
+        def _type_order(t: str) -> int:
+            return 0 if t == "issue" else 1
+
         candidates.sort(
-            key=lambda x: (x["priority"], x["data"].get("created_at", "")), reverse=True
+            key=lambda x: (
+                -int(x.get("priority", 0)),
+                _type_order(x.get("type", "pr")),
+                x.get("data", {}).get("created_at", ""),
+            )
         )
+
+        # 上限数指定がある場合はカット
+        if isinstance(max_items, int) and max_items > 0:
+            candidates = candidates[:max_items]
+
         return candidates
 
+    def _has_open_sub_issues(self, repo_name: str, candidate: Dict[str, Any]) -> bool:
+        """対象の課題に未解決のサブ課題が存在するかを確認するフェイルセーフなヘルパー。
+        - candidate は _get_candidates で構成された要素を想定（type: issue）
+        - 例外時は False を返してスキップ抑制を避ける
+        """
+        try:
+            if candidate.get("type") != "issue":
+                return False
+            issue_data = candidate.get("data") or {}
+            issue_number = candidate.get("issue_number") or issue_data.get("number")
+            if not issue_number:
+                return False
+            sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
+            return bool(sub_issues)
+        except Exception as e:
+            logger.warning(
+                f"Failed to check open sub-issues for issue #{candidate.get('issue_number') or issue_data.get('number', 'N/A')}: {e}"
+            )
+            return False
+
+
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
-        """Run the main automation process."""
+        """Run the main automation process using _get_candidates loop."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
-        # Get LLM backend information
+        # LLMバックエンド情報を取得
         llm_backend_info = self._get_llm_backend_info()
 
         results = {
@@ -157,35 +184,90 @@ class AutomationEngine:
         }
 
         try:
-            # Process pull requests (always use normal processing)
-            prs_result = process_pull_requests(
-                self.github, self.config, self.dry_run, repo_name, self.llm
-            )
-            results["prs_processed"] = prs_result
+            # Get initial candidates
+            total_processed = 0
+            
+            while True:
+                # Get candidates
+                candidates = self._get_candidates(repo_name)
+                
+                if not candidates:
+                    logger.info("No more candidates found, ending automation")
+                    break
+                
+                # Check if there are 5 or more open issues without sub-issues
+                open_issues_without_sub_issues = [
+                    candidate for candidate in candidates
+                    if candidate["type"] == "issue" and not self._has_open_sub_issues(repo_name, candidate)
+                ]
+                
+                if len(open_issues_without_sub_issues) >= 5:
+                    logger.warning(
+                        f"Found {len(open_issues_without_sub_issues)} open issues without sub-issues. "
+                        "Skipping issue processing to avoid overwhelming the system."
+                    )
+                    # Filter out issues from candidates
+                    candidates = [c for c in candidates if c["type"] == "pr"]
+                    
+                    # If no PRs remain, end automation
+                    if not candidates:
+                        logger.info("No PR candidates remaining after filtering issues")
+                        break
 
-            # Process issues (with jules_mode parameter)
-            issues_result = process_issues(
-                self.github,
-                self.config,
-                self.dry_run,
-                repo_name,
-                jules_mode,
-                self.llm,
-                self.message_backend_manager,
-            )
-            results["issues_processed"] = issues_result
-
+                # Process all candidates in this batch
+                batch_processed = 0
+                for candidate in candidates:
+                    try:
+                        selected_candidate = self._select_best_candidate([candidate])
+                        if not selected_candidate:
+                            continue
+                        
+                        logger.info(
+                            f"Processing {selected_candidate['type']} #{selected_candidate.get('data', {}).get('number', 'N/A')}"
+                        )
+                        
+                        # Process the candidate
+                        result = self._process_single_candidate(repo_name, selected_candidate, jules_mode)
+                        
+                        # Track results
+                        if selected_candidate["type"] == "issue":
+                            results["issues_processed"].append(result)
+                        elif selected_candidate["type"] == "pr":
+                            results["prs_processed"].append(result)
+                        
+                        batch_processed += 1
+                        total_processed += 1
+                        
+                        logger.info(
+                            f"Successfully processed {selected_candidate['type']} #{selected_candidate.get('data', {}).get('number', 'N/A')}"
+                        )
+                        
+                    except Exception as e:
+                        error_msg = f"Failed to process candidate: {e}"
+                        logger.error(error_msg)
+                        results["errors"].append(error_msg)
+                        continue
+                
+                # If no candidates were processed in this batch, end the loop
+                if batch_processed == 0:
+                    logger.info("No candidates were processed in this batch, ending automation")
+                    break
+            
             # Save results report
             self._save_report(results, "automation_report", repo_name)
 
-            logger.info(f"Automation completed for {repo_name}")
+            logger.info(f"Automation completed")
+            logger.info(
+                f"Processed {total_processed} items total: {len(results['issues_processed'])} issues and {len(results['prs_processed'])} PRs"
+            )
             return results
 
         except Exception as e:
-            error_msg = f"Automation failed for {repo_name}: {e}"
+            error_msg = f"Automation failed: {e}"
             logger.error(error_msg)
             results["errors"].append(error_msg)
             return results
+
 
     def process_single(
         self, repo_name: str, target_type: str, number: int, jules_mode: bool = False
