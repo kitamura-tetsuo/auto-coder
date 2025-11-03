@@ -474,6 +474,39 @@ def stub_git_and_gh_commands(monkeypatch, request):
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
 
+# Backend Manager Test Fixtures
+@pytest.fixture
+def mock_backend_manager(mock_gemini_client):
+    """Initialize LLMBackendManager singleton for testing."""
+    from src.auto_coder.backend_manager import BackendManager, LLMBackendManager
+
+    # Create a simple BackendManager with the mock client
+    def create_mock_client():
+        return mock_gemini_client
+
+    backend_manager = BackendManager(
+        default_backend="gemini",
+        default_client=mock_gemini_client,
+        factories={"gemini": create_mock_client},
+        order=["gemini"],
+    )
+
+    # Initialize the singleton (use same manager for both LLM and message)
+    LLMBackendManager.initialize(backend_manager, backend_manager)
+
+    yield backend_manager
+
+    # Cleanup: reset the singleton after each test
+    LLMBackendManager.reset()
+
+
+@pytest.fixture
+def configured_mock_client(mock_gemini_client):
+    """Configure a mock client with specific behavior."""
+    # Allow tests to configure the mock before it's used
+    return mock_gemini_client
+
+
 # GraphRAG Session Management Test Fixtures
 @pytest.fixture
 def isolated_graphrag_session():

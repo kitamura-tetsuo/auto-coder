@@ -96,11 +96,9 @@ class TestCLICreateFeatureIssues:
         mock_codex_client_class.assert_called_once_with(model_name="codex")
         assert mock_automation_engine_class.call_count == 1
         args, kwargs = mock_automation_engine_class.call_args
+        # With the singleton refactoring, AutomationEngine only takes github_client
         assert args[0] is mock_github_client
-        manager = args[1]
-        assert isinstance(manager, BackendManager)
-        assert manager._default_backend == "codex"
-        assert manager._all_backends == ["codex"]
+        # No longer checking for BackendManager parameter
         mock_automation_engine.create_feature_issues.assert_called_once_with(
             "test/repo"
         )
