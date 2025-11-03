@@ -6,8 +6,12 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _check_github_actions_status_from_history
 
 
-def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):
-    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
+def _cmd_result(
+    success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0
+):
+    return SimpleNamespace(
+        success=success, stdout=stdout, stderr=stderr, returncode=returncode
+    )
 
 
 def test_history_uses_branch_filter_when_commit_runs_empty():
@@ -54,7 +58,9 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
             "headSha": "73cafebabe",
         },
     ]
-    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
+    run_list_result = _cmd_result(
+        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
+    )
 
     # 3) run view (jobs) は、対象PRのRunのみ参照されることを期待
     jobs_payload_target = {
@@ -76,13 +82,22 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         if cmd[:3] == ["gh", "run", "view"]:
             run_id = int(cmd[3])
             if run_id == target_pr_run_id:
-                return _cmd_result(True, stdout=json.dumps(jobs_payload_target), stderr="", returncode=0)
+                return _cmd_result(
+                    True,
+                    stdout=json.dumps(jobs_payload_target),
+                    stderr="",
+                    returncode=0,
+                )
             # 万が一他PRのRunを取りに来ても空で返しておく
-            return _cmd_result(True, stdout=json.dumps({"jobs": []}), stderr="", returncode=0)
+            return _cmd_result(
+                True, stdout=json.dumps({"jobs": []}), stderr="", returncode=0
+            )
         raise AssertionError(f"Unexpected command: {cmd}")
 
     with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
-        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
+        result = _check_github_actions_status_from_history(
+            "owner/repo", pr_data, config
+        )
 
     assert result["success"] is True
     assert result.get("historical_fallback") is True
@@ -91,7 +106,9 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
     # 取得された details_url が対象PRの Run ID を指すこと
     checks = result.get("checks", [])
     assert checks, "checks が空ではいけません"
-    assert f"/actions/runs/{target_pr_run_id}/" in checks[0]["details_url"], checks[0]["details_url"]
+    assert f"/actions/runs/{target_pr_run_id}/" in checks[0]["details_url"], checks[0][
+        "details_url"
+    ]
 
 
 def test_history_filters_to_branch_even_with_head_sha_present():
@@ -131,7 +148,9 @@ def test_history_filters_to_branch_even_with_head_sha_present():
             "headSha": "cafebabe",
         },
     ]
-    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
+    run_list_result = _cmd_result(
+        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
+    )
 
     jobs_payload = {
         "jobs": [
@@ -153,14 +172,17 @@ def test_history_filters_to_branch_even_with_head_sha_present():
             # ブランチで絞られた 3000 のみが参照されるはず
             run_id = int(cmd[3])
             assert run_id == 3000, f"unexpected run viewed: {run_id}"
-            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
+            return _cmd_result(
+                True, stdout=json.dumps(jobs_payload), stderr="", returncode=0
+            )
         raise AssertionError(f"Unexpected command: {cmd}")
 
     with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
-        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
+        result = _check_github_actions_status_from_history(
+            "owner/repo", pr_data, config
+        )
 
     assert result["success"] is True
     assert result.get("total_checks", 0) == 1
     checks = result.get("checks", [])
     assert f"/actions/runs/3000/" in checks[0]["details_url"], checks[0]["details_url"]
-

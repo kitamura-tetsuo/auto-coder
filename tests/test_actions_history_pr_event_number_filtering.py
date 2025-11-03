@@ -6,8 +6,12 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _check_github_actions_status_from_history
 
 
-def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):
-    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
+def _cmd_result(
+    success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0
+):
+    return SimpleNamespace(
+        success=success, stdout=stdout, stderr=stderr, returncode=returncode
+    )
 
 
 def test_history_prefers_pull_request_event_runs():
@@ -53,10 +57,21 @@ def test_history_prefers_pull_request_event_runs():
             "event": "pull_request",
         },
     ]
-    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
+    run_list_result = _cmd_result(
+        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
+    )
 
     # 3) run view の応答: push の方は対象 PR を含まない / pull_request の方は含む
-    jobs_payload = {"jobs": [{"databaseId": 999, "name": "CI", "conclusion": "success", "status": "completed"}]}
+    jobs_payload = {
+        "jobs": [
+            {
+                "databaseId": 999,
+                "name": "CI",
+                "conclusion": "success",
+                "status": "completed",
+            }
+        ]
+    }
 
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "run", "list"] and "--commit" in cmd:
@@ -66,20 +81,41 @@ def test_history_prefers_pull_request_event_runs():
         if cmd[:3] == ["gh", "run", "view"]:
             run_id = int(cmd[3])
             if run_id == pr_run_id:
-                return _cmd_result(True, stdout=json.dumps({"jobs": jobs_payload["jobs"], "pullRequests": [{"number": pr_number}]}), stderr="", returncode=0)
+                return _cmd_result(
+                    True,
+                    stdout=json.dumps(
+                        {
+                            "jobs": jobs_payload["jobs"],
+                            "pullRequests": [{"number": pr_number}],
+                        }
+                    ),
+                    stderr="",
+                    returncode=0,
+                )
             if run_id == push_run_id:
-                return _cmd_result(True, stdout=json.dumps({"jobs": jobs_payload["jobs"], "pullRequests": []}), stderr="", returncode=0)
+                return _cmd_result(
+                    True,
+                    stdout=json.dumps(
+                        {"jobs": jobs_payload["jobs"], "pullRequests": []}
+                    ),
+                    stderr="",
+                    returncode=0,
+                )
         raise AssertionError(f"Unexpected command: {cmd}")
 
     with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
-        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
+        result = _check_github_actions_status_from_history(
+            "owner/repo", pr_data, config
+        )
 
     assert result["success"] is True
     assert result.get("historical_fallback") is True
     assert result.get("total_checks", 0) == 1
     checks = result.get("checks", [])
     assert checks, "checks が空ではいけません"
-    assert f"/actions/runs/{pr_run_id}/" in checks[0]["details_url"], checks[0]["details_url"]
+    assert f"/actions/runs/{pr_run_id}/" in checks[0]["details_url"], checks[0][
+        "details_url"
+    ]
 
 
 def test_history_limits_to_runs_referencing_target_pr():
@@ -123,9 +159,20 @@ def test_history_limits_to_runs_referencing_target_pr():
             "event": "pull_request",
         },
     ]
-    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
+    run_list_result = _cmd_result(
+        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
+    )
 
-    jobs_payload = {"jobs": [{"databaseId": 1001, "name": "CI", "conclusion": "success", "status": "completed"}]}
+    jobs_payload = {
+        "jobs": [
+            {
+                "databaseId": 1001,
+                "name": "CI",
+                "conclusion": "success",
+                "status": "completed",
+            }
+        ]
+    }
 
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "run", "list"] and "--commit" in cmd:
@@ -135,17 +182,40 @@ def test_history_limits_to_runs_referencing_target_pr():
         if cmd[:3] == ["gh", "run", "view"]:
             run_id = int(cmd[3])
             if run_id == run_a:
-                return _cmd_result(True, stdout=json.dumps({"jobs": jobs_payload["jobs"], "pullRequests": [{"number": 999}]}), stderr="", returncode=0)
+                return _cmd_result(
+                    True,
+                    stdout=json.dumps(
+                        {
+                            "jobs": jobs_payload["jobs"],
+                            "pullRequests": [{"number": 999}],
+                        }
+                    ),
+                    stderr="",
+                    returncode=0,
+                )
             if run_id == run_b:
-                return _cmd_result(True, stdout=json.dumps({"jobs": jobs_payload["jobs"], "pullRequests": [{"number": pr_number}]}), stderr="", returncode=0)
+                return _cmd_result(
+                    True,
+                    stdout=json.dumps(
+                        {
+                            "jobs": jobs_payload["jobs"],
+                            "pullRequests": [{"number": pr_number}],
+                        }
+                    ),
+                    stderr="",
+                    returncode=0,
+                )
         raise AssertionError(f"Unexpected command: {cmd}")
 
     with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
-        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
+        result = _check_github_actions_status_from_history(
+            "owner/repo", pr_data, config
+        )
 
     assert result["success"] is True
     assert result.get("total_checks", 0) == 1
     checks = result.get("checks", [])
     assert checks, "checks が空ではいけません"
-    assert f"/actions/runs/{run_b}/" in checks[0]["details_url"], checks[0]["details_url"]
-
+    assert f"/actions/runs/{run_b}/" in checks[0]["details_url"], checks[0][
+        "details_url"
+    ]
