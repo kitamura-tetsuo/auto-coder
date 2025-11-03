@@ -7,6 +7,12 @@ elif [ -f "../venv/bin/activate" ]; then
     source ../venv/bin/activate
 fi
 
+# Install package in development mode if not already installed
+if [ -f "./pyproject.toml" ]; then
+    echo "Installing package in development mode..."
+    python3 -m pip install -e . --quiet
+fi
+
 # Check if a specific test file is provided as an argument
 if [ $# -eq 1 ]; then
     SPECIFIC_TEST_FILE=$1
