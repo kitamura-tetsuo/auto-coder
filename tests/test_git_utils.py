@@ -1316,20 +1316,18 @@ class TestGitCheckoutBranchWithValidation:
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (no changes)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Second call: git branch --list issue-123 (from branch_exists check)
-                CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Third call: git checkout -b issue-123
+                # Second call: git checkout -b issue-123
                 CommandResult(
                     success=True,
                     stdout="Switched to a new branch 'issue-123'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Fourth call: verify current branch
+                # Third call: verify current branch
                 CommandResult(
                     success=True, stdout="issue-123\n", stderr="", returncode=0
                 ),
-                # Fifth call: git push -u origin issue-123
+                # Fourth call: git push -u origin issue-123
                 CommandResult(
                     success=True,
                     stdout="Branch 'issue-123' set up to track remote branch 'issue-123' from 'origin'.\n",
@@ -1352,20 +1350,18 @@ class TestGitCheckoutBranchWithValidation:
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (no changes)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Second call: git branch --list feature-branch (from branch_exists check)
-                CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Third call: git checkout -b feature-branch
+                # Second call: git checkout -b feature-branch
                 CommandResult(
                     success=True,
                     stdout="Switched to a new branch 'feature-branch'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Fourth call: verify current branch
+                # Third call: verify current branch
                 CommandResult(
                     success=True, stdout="feature-branch\n", stderr="", returncode=0
                 ),
-                # Fifth call: git push -u origin feature-branch
+                # Fourth call: git push -u origin feature-branch
                 CommandResult(
                     success=True,
                     stdout="Branch 'feature-branch' set up to track remote branch 'feature-branch' from 'origin'.\n",
