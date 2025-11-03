@@ -25,6 +25,26 @@ from .utils import CommandExecutor, CommandResult
 logger = get_logger(__name__)
 
 
+def _get_merge_conflict_info() -> str:
+    """Get information about merge conflicts.
+
+    Returns:
+        String containing git status output for conflict detection
+    """
+    from .utils import CommandExecutor
+
+    cmd = CommandExecutor()
+    try:
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        return (
+            result.stdout
+            if result.success
+            else "Could not get merge conflict information"
+        )
+    except Exception as e:
+        return f"Error getting conflict info: {e}"
+
+
 def get_current_branch(cwd: Optional[str] = None) -> Optional[str]:
     """
     Get the current git branch name.
@@ -433,9 +453,7 @@ def git_checkout_branch(
             ["git", "push", "-u", "origin", branch_name], cwd=cwd
         )
         if not push_result.success:
-            logger.warning(
-                f"Failed to push new branch to remote: {push_result.stderr}"
-            )
+            logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
             # Don't exit on push failure - the branch is still created locally
         else:
             logger.info(f"Successfully published branch '{branch_name}' to remote")

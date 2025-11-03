@@ -281,9 +281,9 @@ class MCPServerManager:
             )
 
             if result:
-                logger.info(f"✅ Codex設定を更新しました ({server_name})")
+                logger.info(f"✅ Updated Codex configuration ({server_name})")
             else:
-                logger.error(f"Codex設定の更新に失敗しました ({server_name})")
+                logger.error(f"Failed to update Codex configuration ({server_name})")
 
             return result
         except Exception as e:
@@ -318,9 +318,9 @@ class MCPServerManager:
                 )
 
             if result:
-                logger.info(f"✅ Gemini設定を更新しました ({server_name})")
+                logger.info(f"✅ Updated Gemini configuration ({server_name})")
             else:
-                logger.error(f"Gemini設定の更新に失敗しました ({server_name})")
+                logger.error(f"Failed to update Gemini configuration ({server_name})")
 
             return result
         except Exception as e:
@@ -355,9 +355,9 @@ class MCPServerManager:
                 )
 
             if result:
-                logger.info(f"✅ Qwen設定を更新しました ({server_name})")
+                logger.info(f"✅ Updated Qwen configuration ({server_name})")
             else:
-                logger.error(f"Qwen設定の更新に失敗しました ({server_name})")
+                logger.error(f"Failed to update Qwen configuration ({server_name})")
 
             return result
         except Exception as e:
@@ -392,9 +392,9 @@ class MCPServerManager:
                 )
 
             if result:
-                logger.info(f"✅ Windsurf/Claude設定を更新しました ({server_name})")
+                logger.info(f"✅ Updated Windsurf/Claude configuration ({server_name})")
             else:
-                logger.error(f"Windsurf/Claude設定の更新に失敗しました ({server_name})")
+                logger.error(f"Failed to update Windsurf/Claude configuration ({server_name})")
 
             return result
         except Exception as e:
@@ -428,9 +428,9 @@ class MCPServerManager:
                 )
 
             if result:
-                logger.info(f"✅ Claude設定を更新しました ({server_name})")
+                logger.info(f"✅ Updated Claude configuration ({server_name})")
             else:
-                logger.error(f"Claude設定の更新に失敗しました ({server_name})")
+                logger.error(f"Failed to update Claude configuration ({server_name})")
 
             return result
         except Exception as e:

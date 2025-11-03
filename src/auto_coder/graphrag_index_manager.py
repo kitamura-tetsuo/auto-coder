@@ -402,13 +402,13 @@ class GraphRAGIndexManager:
         auto_coder_pkg_dir = Path(__file__).parent
 
         # Check common local directory locations
-        # Priority: パッケージ内 > 対象リポジトリ内 > カレントディレクトリ > ホームディレクトリ
+        # Priority: Package > Target Repository > Current Directory > Home Directory
         candidates = [
             auto_coder_pkg_dir
-            / "graph_builder",  # パッケージ内（開発時・pipxインストール時共通）
-            self.repo_path / "graph-builder",  # 対象リポジトリ内
-            Path.cwd() / "graph-builder",  # カレントディレクトリ
-            Path.home() / "graph-builder",  # ホームディレクトリ
+            / "graph_builder",  # Package (common for development and pipx installation)
+            self.repo_path / "graph-builder",  # Target repository
+            Path.cwd() / "graph-builder",  # Current directory
+            Path.home() / "graph-builder",  # Home directory
         ]
 
         logger.debug(f"Searching for graph-builder in: {[str(c) for c in candidates]}")

@@ -5,6 +5,8 @@ if [ -f "./venv/bin/activate" ]; then
     source ./venv/bin/activate
 elif [ -f "../venv/bin/activate" ]; then
     source ../venv/bin/activate
+elif [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
 fi
 
 # Check if a specific test file is provided as an argument
