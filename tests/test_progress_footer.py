@@ -17,6 +17,57 @@ from auto_coder.progress_footer import (
     push_progress_stage,
     set_progress_item,
 )
+from auto_coder.progress_decorators import progress_stage
+
+
+# Test helper functions using @progress_stage decorator
+@progress_stage("PR", 789, "Global test")
+def helper_global_test():
+    """Helper function for global test operations."""
+    # Get the output
+    import auto_coder.progress_footer as ph
+    output = ph._global_footer._stream.getvalue()
+    assert "PR" in output
+    assert "789" in output
+    assert "Global test" in output
+
+
+@progress_stage("PR", 123, "Checking status")
+def helper_checking_status():
+    """Helper function for checking status operations."""
+    import auto_coder.progress_footer as ph
+    output = ph._global_footer._stream.getvalue()
+    assert "First pass" in output
+    assert "Checking status" in output
+    assert "/" in output
+
+
+@progress_stage("Running LLM")
+def helper_running_llm():
+    """Helper function for LLM operations."""
+    import auto_coder.progress_footer as ph
+    output = ph._global_footer._stream.getvalue()
+    assert "First pass" in output
+    assert "Running LLM" in output
+
+
+@progress_stage("Committing")
+def helper_committing():
+    """Helper function for commit operations."""
+    import auto_coder.progress_footer as ph
+    output = ph._global_footer._stream.getvalue()
+    assert "First pass" in output
+    assert "Committing" in output
+
+
+@progress_stage("PR", 456, "New task")
+def helper_new_task():
+    """Helper function for new task operations."""
+    import auto_coder.progress_footer as ph
+    output = ph._global_footer._stream.getvalue()
+    assert "456" in output
+    assert "New task" in output
+    assert "First pass" not in output
 
 
 def test_progress_footer_format():
@@ -125,15 +176,8 @@ def test_global_progress_footer():
     # Create global footer with mocked stream
     ph._global_footer = ProgressFooter(stream=mock_stream)
 
-    # Test set_item and push_stage
-    set_progress_item("PR", 789)
-    push_progress_stage("Global test")
-
-    # Get the output
-    output = mock_stream.getvalue()
-    assert "PR" in output
-    assert "789" in output
-    assert "Global test" in output
+    # Test set_item and push_stage using helper function
+    helper_global_test()
 
 
 def test_progress_context():
@@ -427,41 +471,43 @@ def test_progress_stage_context_manager():
 
     try:
         # Use ProgressStage context manager with global footer
-        with ProgressStage("First pass"):
-            set_progress_item("PR", 123)
-            push_progress_stage("Checking status")
+        # Using ProgressStage with 3 args (item_type, item_number, stage)
+        with ProgressStage("PR", 123, "First pass"):
+            # Checking status operation
+            with ProgressStage("Checking status"):
+                output = mock_stream.getvalue()
+                assert "PR" in output
+                assert "123" in output
+                assert "First pass" in output
+                assert "Checking status" in output
+                assert "/" in output
 
-            output = mock_stream.getvalue()
-            assert "First pass" in output
-            assert "Checking status" in output
-            assert "/" in output
-
-            # Nested stage
+            # Nested LLM operation - use ProgressStage with 1 arg (just stage)
             with ProgressStage("Running LLM"):
                 output = mock_stream.getvalue()
+                assert "PR" in output
+                assert "123" in output
                 assert "First pass" in output
                 assert "Running LLM" in output
 
-            # After exiting nested context, should be back to "First pass"
-            pop_progress_stage()  # Pop "Checking status"
-            push_progress_stage("Committing")
-
-            output = mock_stream.getvalue()
-            assert "First pass" in output
-            assert "Committing" in output
+            # Commit operation
+            with ProgressStage("Committing"):
+                output = mock_stream.getvalue()
+                assert "PR" in output
+                assert "123" in output
+                assert "First pass" in output
+                assert "Committing" in output
 
         # After exiting context, clear and start fresh
         clear_progress()
         mock_stream.truncate(0)
         mock_stream.seek(0)
 
-        set_progress_item("PR", 456)
-        push_progress_stage("New task")
-
-        output = mock_stream.getvalue()
-        assert "456" in output
-        assert "New task" in output
-        assert "First pass" not in output
+        with ProgressStage("PR", 456, "New task"):
+            output = mock_stream.getvalue()
+            assert "456" in output
+            assert "New task" in output
+            assert "First pass" not in output
 
     finally:
         # Restore original footer
@@ -482,39 +528,35 @@ def test_progress_stage_with_set_and_push():
 
     try:
         # Use ProgressStage with global functions
-        with ProgressStage("First pass"):
-            set_progress_item("PR", 123)
-            push_progress_stage("Checking status")
+        with ProgressStage("PR", 123, "First pass"):
+            # Checking status operation
+            with ProgressStage("Checking status"):
+                output = mock_stream.getvalue()
+                assert "First pass" in output
+                assert "Checking status" in output
 
-            output = mock_stream.getvalue()
-            assert "First pass" in output
-            assert "Checking status" in output
-
+            # Nested LLM operation
             with ProgressStage("Running LLM"):
                 output = mock_stream.getvalue()
                 assert "First pass" in output
                 assert "Running LLM" in output
 
-            # After exiting nested context
-            pop_progress_stage()  # Pop "Checking status"
-            push_progress_stage("Committing")
-
-            output = mock_stream.getvalue()
-            assert "First pass" in output
-            assert "Committing" in output
+            # Commit operation
+            with ProgressStage("Committing"):
+                output = mock_stream.getvalue()
+                assert "First pass" in output
+                assert "Committing" in output
 
         # After exiting all contexts, clear and start fresh
         clear_progress()
         mock_stream.truncate(0)
         mock_stream.seek(0)
 
-        set_progress_item("PR", 456)
-        push_progress_stage("New task")
-
-        output = mock_stream.getvalue()
-        assert "456" in output
-        assert "New task" in output
-        assert "First pass" not in output
+        with ProgressStage("PR", 456, "New task"):
+            output = mock_stream.getvalue()
+            assert "456" in output
+            assert "New task" in output
+            assert "First pass" not in output
 
     finally:
         # Restore original footer
