@@ -1,84 +1,199 @@
----
-# Auto-Coder クライアント機能ドキュメント（日本語）
-# 変更点を優先して記載（継続拡充予定）
+version: "2025.11.3.33+gd77cf97"
+project:
+  name: auto-coder
+  description: 複数バックエンドLLM CLIとGitHub連携による自動アプリ開発
+  python: ">=3.11,<3.12"
+  entry_point: auto-coder
+  repository_paths:
+    - "mcp/graphrag_mcp"  # バンドルされた GraphRAG MCP フォークのパス
 
-application:
-  name: "Auto-Coder"
-  version: "2025.11.3.22+gb4f59f0"
-  description: "AI CLI バックエンド（既定: codex, --backend で gemini/qwen 切替）と GitHub 連携により自動化開発を行うツール"
+cli:
+  binary: auto-coder
+  commands:
+    - name: process-issues
+      purpose: GitHub の Issue/PR をAIで処理。JulesモードではIssueにラベル付与のみ
+      options:
+        - { name: --repo, type: string, default: 現在のgitリポジトリから自動検出 }
+        - { name: --github-token, type: string, env: GITHUB_TOKEN }
+        - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
+        - { name: --message-backend, multiple: true, default: --backendと同じ, choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
+        - { name: --gemini-api-key, env: GEMINI_API_KEY }
+        - { name: --openai-api-key, env: OPENAI_API_KEY }
+        - { name: --openai-base-url, env: OPENAI_BASE_URL }
+        - { name: --qwen-use-env-vars/--qwen-use-cli-options, default: false }
+        - { name: --qwen-preserve-env/--qwen-clear-env, default: false }
+        - { name: --model-gemini }
+        - { name: --model-qwen }
+        - { name: --model-auggie }
+        - { name: --model-claude }
+        - { name: --dry-run, flag: true, default: false }
+        - { name: --jules-mode/--no-jules-mode, default: true }
+        - { name: --disable-labels/--no-disable-labels, default: 自動検出(デバッガ時は無効) }
+        - { name: --skip-main-update/--no-skip-main-update, default: true }
+        - { name: --ignore-dependabot-prs/--no-ignore-dependabot-prs, default: false }
+        - { name: --force-clean-before-checkout/--no-force-clean-before-checkout, default: false }
+        - { name: --enable-graphrag/--disable-graphrag, default: true }
+        - { name: --only, type: string, help: "PR/IssueのURLまたは番号" }
+        - { name: --force-reindex, flag: true, default: false }
+        - { name: --log-level, choices: [DEBUG, INFO, WARNING, ERROR, CRITICAL], default: INFO }
+        - { name: --log-file, type: path }
+        - { name: --verbose, flag: true }
+      behavior:
+        - 有効時はGraphRAGを初期化（自動セットアップ + MCP設定チェック）
+        - main以外のブランチ上では、対応するPR/Issueを検出して作業を自動再開
+        - 候補優先度: urgent(3) > 自動マージ可PR(2) > 失敗PR(1) > Issue(0)
+        - 未サブIssueのオープンIssueが5件以上ある場合、Issue処理を一時スキップ
+        - レポートJSONを ~/.auto-coder/{owner_repo}/ に保存
+        - PR失敗時のベースマージは既定でスキップ（--no-skip-main-updateで無効化）
+    - name: create-feature-issues
+      purpose: リポジトリを解析し、機能追加Issueを構造化して作成
+      options:
+        - { name: --repo, type: string, default: 自動検出 }
+        - { name: --github-token, env: GITHUB_TOKEN }
+        - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
+        - { name: --gemini-api-key, env: GEMINI_API_KEY }
+        - { name: --openai-api-key, env: OPENAI_API_KEY }
+        - { name: --openai-base-url, env: OPENAI_BASE_URL }
+        - { name: --qwen-use-env-vars/--qwen-use-cli-options, default: true }
+        - { name: --qwen-preserve-env/--qwen-clear-env, default: false }
+        - { name: --model-gemini }
+        - { name: --model-qwen }
+        - { name: --model-auggie }
+        - { name: --model-claude }
+        - { name: --enable-graphrag/--disable-graphrag, default: true }
+        - { name: --force-reindex, flag: true, default: false }
+        - { name: --log-level, default: INFO }
+        - { name: --log-file }
+        - { name: --verbose, flag: true }
+      behavior:
+        - GraphRAG初期化（任意）とMCP設定チェックを行い、構造化された提案を生成
+    - name: fix-to-pass-tests
+      purpose: ローカルテストを実行し、合格までLLM修正を反復適用
+      options:
+        - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
+        - { name: --message-backend, multiple: true, default: --backendと同じ }
+        - { name: --gemini-api-key, env: GEMINI_API_KEY }
+        - { name: --openai-api-key, env: OPENAI_API_KEY }
+        - { name: --openai-base-url, env: OPENAI_BASE_URL }
+        - { name: --qwen-use-env-vars/--qwen-use-cli-options, default: true }
+        - { name: --qwen-preserve-env/--qwen-clear-env, default: false }
+        - { name: --model-gemini }
+        - { name: --model-qwen }
+        - { name: --model-auggie }
+        - { name: --model-claude }
+        - { name: --max-attempts, type: int, default: null(エンジン既定を使用) }
+        - { name: --enable-graphrag/--disable-graphrag, default: true }
+        - { name: --dry-run, flag: true, default: false }
+        - { name: --force-reindex, flag: true, default: false }
+        - { name: --log-level, default: INFO }
+        - { name: --log-file }
+        - { name: --verbose, flag: true }
+      behavior:
+        - scripts/test.sh を実行（pytestを直接呼ばない）
+        - 反復中にLLMが一切編集しない場合はエラーで停止
+        - メッセージ生成用バックエンドを別に指定可能
+    - name: get-actions-logs
+      purpose: GitHub ActionsのジョブURLからエラーブロックを抽出して出力
+      options:
+        - { name: --url, required: true }
+        - { name: --github-token, env: GITHUB_TOKEN }
+    - name: auth-status
+      purpose: GitHub / Gemini / Qwen / Auggie の認証・CLI有無を表示
+  groups:
+    - name: graphrag
+      description: Neo4j + Qdrant と GraphRAG MCP サーバーの管理
+      subcommands:
+        - name: start
+          options:
+            - { name: --wait/--no-wait, default: true }
+            - { name: --timeout, type: int, default: 120 }
+        - name: stop
+          options:
+            - { name: --timeout, type: int, default: 60 }
+        - name: status
+        - name: update-index
+          options:
+            - { name: --force, flag: true }
+            - { name: --repo-path, type: path }
+        - name: setup-mcp
+          options:
+            - { name: --install-dir, default: "~/graphrag_mcp" }
+            - { name: --neo4j-uri, default: "bolt://localhost:7687" }
+            - { name: --neo4j-user, default: "neo4j" }
+            - { name: --neo4j-password, default: "password" }
+            - { name: --qdrant-url, default: "http://localhost:6333" }
+            - { name: --skip-clone, flag: true }
+            - { name: --backends, multiple: true, choices: [codex, gemini, qwen, windsurf] }
 
 features:
-  automation_engine:
-    name: "オートメーションエンジンのオーケストレーション"
-    description: "Issues → PR の順に処理し、結果を集約・レポート保存する中核フロー"
-    components:
-      - name: "AutomationEngine"
-        file: "src/auto_coder/automation_engine.py"
-        methods:
-          - name: "run"
-            description: "process_issues() 実行後、エラーが無ければ process_pull_requests() を実行。結果とエラーを集約しレポート保存"
-            behavior:
-              - "非致命例外は results.errors に格納し処理継続"
-              - "最終的に実行レポート（実行バックエンド/結果）を保存"
-            tests:
-              - "tests/test_automation_engine.py::TestAutomationEngine::test_run_success"
-          - name: "_get_candidates"
-            description: "PR/Issue 候補の収集・優先度付け（max_items で件数制限可能）"
-            parameters: ["repo_name", "max_items (optional)"]
-            returns: "候補 dict の配列（{type, data, priority, ...}）"
-            priority_rules:
-              - "3: urgent ラベルの Issue/PR"
-              - "2: Actions 成功 かつ mergeable な PR"
-              - "1: それ以外の PR"
-              - "0: 通常の Issue"
-            filtering:
-              - "@auto-coder ラベル付与項目は除外（排他制御）"
-              - "未解決サブ課題を持つ Issue は除外"
-              - "リンク済み PR を持つ Issue は除外"
-            sorting:
-              - "優先度（降順）→ 種別（Issue 優先）→ created_at（昇順/古い順）"
-            emitted_fields:
-              - "PR: branch_name, related_issues（PR 本文から参照抽出）"
-              - "Issue: issue_number"
-            tests:
-              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_urgent_issue_highest_priority"
-              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_priority_order_prs_and_issues"
-              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_skips_items_with_auto_coder_label"
-              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_skips_issues_with_sub_issues_or_linked_prs"
-              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_extracts_related_issues_from_pr_body"
+  github_automation:
+    - 優先度付き候補収集（urgent PR/Issue > マージ可PR > 失敗PR > Issue）
+    - サブIssueなしのオープンIssueが5件以上ならIssue処理をスキップ
+    - --only（URL/番号）で単体処理
+    - main以外のブランチ上では関連PR/Issueを見つけて自動再開
+  fix_loop:
+    - テスト再実行とLLM修正を成功まで繰り返し
+    - 既定の最大試行回数: 30
+    - 編集が無かった検知時はエラーで停止
+  backends:
+    supported: [codex, codex-mcp, gemini, qwen, auggie, claude]
+    rotation:
+      description: "BackendManagerが構成順にローテーション。同一テストファイルで3連続なら次へ切替"
+    message_backend:
+      description: メッセージ生成用バックエンドを分離可能
+  graphrag_integration:
+    auto_setup: true
+    mcp_config_check: true
+    index_update: CLIで実行可能
+  logging:
+    library: loguru
+    console: カラー表示・プロジェクト相対の file:function:line を表示
+    file: ローテーション10MB・保持7日・zip圧縮
+  reports:
+    path: "~/.auto-coder/{owner_repo}/automation_report_*.json"
 
-  github_actions_logs:
-    name: "GitHub Actions のログ抽出"
-    description: "失敗チェックから十分な文脈を含むエラーログを抽出し、LLM に渡す"
-    components:
-      - name: "履歴参照の最適化（イベントフィルタ + フォールバック）"
-        file: "src/auto_coder/pr_processor.py"
-        details:
-          - "gh run list --event pull_request を優先的に使用"
-          - "失敗/無出力時は非フィルタ（--event 無し）にフォールバック"
-          - "API 呼び出し回数の削減とノイズ低減を両立（冪等性維持）"
-        tests:
-          - "tests/test_actions_history_run_list_event_filter.py::test_commit_run_list_includes_event_filter"
-          - "tests/test_actions_history_run_list_event_filter.py::test_fallback_run_list_includes_event_filter"
-      - name: "pullRequests 欠落時のフェイルセーフ"
-        file: "src/auto_coder/pr_processor.py"
-        details:
-          - "_filter_runs_for_pr / _get_jobs_for_run_filtered_by_pr_number に共通化"
-          - "gh run view の jobs データに pullRequests が無い/空でも動作継続"
-        tests:
-          - "tests/test_actions_history_pr_pullrequests_missing.py::test_history_handles_missing_pullRequests_field_gracefully"
-          - "tests/test_actions_history_pr_pullrequests_missing.py::test_history_handles_empty_pullRequests_list_gracefully"
-      - name: "_get_github_actions_logs の履歴検索分岐"
-        file: "src/auto_coder/pr_processor.py"
-        behavior:
-          - "failed_checks の details_url を最優先で利用"
-          - "必要時のみ gh run list を使用（前述のイベントフィルタ適用）"
-          - "historical search 有効時に引数から pr_data/failed_checks を正しく展開（未束縛エラー修正済み）"
-        returns: "抽出済みエラーログ文字列（最大 500 行の文脈を含む）"
-        related_tests:
-          - "tests/test_github_actions_logs.py::test_get_github_actions_logs_uses_gh_api_and_extracts_errors"
-          - "tests/test_github_actions_logs_details_url.py::test_get_github_actions_logs_uses_details_url_from_failed_checks"
+config:
+  automation_config:
+    REPORTS_DIR: "reports"
+    TEST_SCRIPT_PATH: "scripts/test.sh"
+    MAX_PR_DIFF_SIZE: 2000
+    MAX_PROMPT_SIZE: 1000
+    MAX_RESPONSE_SIZE: 200
+    MAX_FIX_ATTEMPTS: 30
+    MAIN_BRANCH: "main"
+    SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: true
+    IGNORE_DEPENDABOT_PRS: false
+    FORCE_CLEAN_BEFORE_CHECKOUT: false
+    DISABLE_LABELS: false
+    SEARCH_GITHUB_ACTIONS_HISTORY: true
+    ENABLE_ACTIONS_HISTORY_FALLBACK: true
+    MERGE_METHOD: "--squash"
+    MERGE_AUTO: true
 
-notes:
-  - "本ファイルは日本語ドキュメントの開始版です。順次、他機能（GraphRAG/MCP 構成や Graph Builder 等）も追加していきます。"
+env:
+  GITHUB_TOKEN: GitHub APIトークン
+  GEMINI_API_KEY: geminiバックエンド用APIキー
+  OPENAI_API_KEY: qwenバックエンド用(OpenAI互換)APIキー
+  OPENAI_BASE_URL: qwenバックエンド用(OpenAI互換)Base URL
+  AUTO_CODER_QWEN_CONFIG: qwen-providers.toml のフルパス上書き
+  AUTO_CODER_CONFIG_DIR: qwen-providers.toml を含むディレクトリ
+
+external_dependencies:
+  graphrag:
+    services: [neo4j, qdrant]
+    docker_compose_file: docker-compose.graphrag.yml
+  graphrag_mcp:
+    type: "CUSTOMIZED FORK"
+    path: "mcp/graphrag_mcp"
+    specialized_for: "TypeScript/JavaScript のコード分析"
+    tools: [find_symbol, get_call_graph, get_dependencies, impact_analysis, semantic_code_search]
+    notes: "汎用ドキュメント検索の代わりに、コード分析ツール群を提供するフォークを同梱"
+  qwen_providers_config:
+    file: "~/.auto-coder/qwen-providers.toml"
+    defaults:
+      modelstudio: { base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model: "qwen3-coder-plus" }
+      openrouter: { base_url: "https://openrouter.ai/api/v1", model: "qwen/qwen3-coder:free" }
+    env_override:
+      - AUTO_CODER_QWEN_CONFIG
+      - AUTO_CODER_CONFIG_DIR
 

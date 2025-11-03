@@ -1,3 +1,6 @@
+header: |
+  Read AGENTS.md before proceeding if you haven't read it yet.
+
 pr:
   action: |-
     You are operating directly in the repository workspace with write access and the git and gh CLIs available.
