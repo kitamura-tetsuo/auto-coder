@@ -63,7 +63,9 @@ class AutomationEngine:
         from .pr_processor import (
             _check_github_actions_status as _pr_check_github_actions_status,
         )
-        from .pr_processor import _extract_linked_issues_from_pr_body
+        from .pr_processor import (
+            _extract_linked_issues_from_pr_body,
+        )
 
         candidates: List[Dict[str, Any]] = []
 
@@ -214,7 +216,6 @@ class AutomationEngine:
             logger.error(error_msg)
             results["errors"].append(error_msg)
             return results
-
 
     def process_single(
         self, repo_name: str, target_type: str, number: int, jules_mode: bool = False
