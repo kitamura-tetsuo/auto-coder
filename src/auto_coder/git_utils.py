@@ -299,13 +299,11 @@ def git_checkout_branch(
 
     This function centralizes git checkout operations and ensures that after
     switching branches, the current branch matches the expected branch.
-    If create_new is True, it will first check if a branch with the same name exists.
-    If it exists, it will checkout the existing branch instead of creating a new one.
     If creating a new branch, it will automatically push to remote and set up tracking.
 
     Args:
         branch_name: Name of the branch to checkout
-        create_new: If True, creates a new branch with -b flag (if it doesn't exist)
+        create_new: If True, creates a new branch with -b flag
         base_branch: If create_new is True and base_branch is specified, creates
                      the new branch from base_branch (using -B flag)
         cwd: Optional working directory for the git command
@@ -343,25 +341,14 @@ def git_checkout_branch(
 
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
-
     if create_new:
-        # Check if the branch already exists
-        if branch_exists(branch_name, cwd=cwd):
-            logger.info(
-                f"Branch '{branch_name}' already exists, checking out existing branch"
-            )
-            # Checkout existing branch instead of creating new one
-            checkout_cmd = ["git", "checkout", branch_name]
-        else:
+        if base_branch:
             # Create new branch from base_branch (or reset if exists)
-            if base_branch:
-                checkout_cmd.append("-B")
-            else:
-                checkout_cmd.append("-b")
-            checkout_cmd.append(branch_name)
-    else:
-        # Regular checkout (not creating new branch)
-        checkout_cmd.append(branch_name)
+            checkout_cmd.append("-B")
+        else:
+            # Create new branch
+            checkout_cmd.append("-b")
+    checkout_cmd.append(branch_name)
 
     # Execute checkout
     result = cmd.run_command(checkout_cmd, cwd=cwd)
@@ -426,7 +413,7 @@ def git_checkout_branch(
 
     logger.info(f"Successfully checked out branch '{branch_name}'")
 
-    # If creating a new branch and publish is enabled, push to remote and set up tracking
+    # If creating a new branch, push to remote and set up tracking
     if create_new and publish:
         logger.info(f"Publishing new branch '{branch_name}' to remote...")
         push_result = cmd.run_command(
@@ -710,17 +697,21 @@ def ensure_pushed_with_fallback(
             # Note: git_pull function already handles conflict resolution internally
             logger.info("Proceeding to retry push anyway...")
 
-        # Retry the push after pull
-        logger.info("Retrying push after pull...")
+        logger.info("Retrying push...")
+        # Always retry the push after attempting pull (regardless of pull success)
         retry_push_result = git_push(
             cwd=cwd, remote=remote, commit_message=commit_message
         )
 
         if retry_push_result.success:
-            logger.info("Successfully pushed after resolving non-fast-forward error")
+            logger.info(
+                "Successfully pushed after resolving non-fast-forward error"
+            )
             return retry_push_result
         else:
-            logger.warning(f"Push still failed after pull: {retry_push_result.stderr}")
+            logger.warning(
+                f"Push still failed: {retry_push_result.stderr}"
+            )
             # Update push_result for LLM fallback
             push_result = retry_push_result
 
