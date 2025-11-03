@@ -349,16 +349,32 @@ class ProgressContext:
 
     def __enter__(self):
         """Enter the context and display the initial footer."""
-        set_progress_item(
-            self.item_type, self.item_number, self.related_issues, self.branch_name
-        )
-        push_progress_stage(self.initial_stage)
+        if self.item_type and self.item_number:
+            # Use ProgressStage to set item info and push stage
+            self._progress_stage = ProgressStage(
+                self.item_type, self.item_number, self.initial_stage,
+                related_issues=self.related_issues, branch_name=self.branch_name
+            )
+            self._progress_stage.__enter__()
+        else:
+            # Just push stage if no item info
+            push_progress_stage(self.initial_stage)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and clear the footer."""
+        # Call newline before any cleanup to ensure it prints
         newline_progress()
-        clear_progress()
+
+        # Exit ProgressStage if it was used
+        if hasattr(self, '_progress_stage'):
+            self._progress_stage.__exit__(exc_type, exc_val, exc_tb)
+        else:
+            # Just pop stage if no item info
+            pop_progress_stage()
+            # Clear footer for the no-item-info case
+            clear_progress()
+
         return False
 
     def update_stage(self, stage: str) -> None:

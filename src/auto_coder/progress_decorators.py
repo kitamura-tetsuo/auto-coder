@@ -10,6 +10,7 @@ import inspect
 from typing import Any, Callable, Optional, Union
 
 from .progress_footer import (
+    ProgressStage,
     clear_progress,
     get_progress_footer,
     pop_progress_stage,
@@ -77,24 +78,16 @@ def progress_stage(*args, **kwargs) -> Callable:
                     "progress_stage decorator requires 0, 1, 3, 4, or 5 positional arguments"
                 )
 
-            # Push stage and set item info if provided
-            should_clear_on_exit = False
+            # Use ProgressStage context manager for cleaner code
             if item_type and item_number:
-                set_progress_item(item_type, item_number, related_issues, branch_name)
-                push_progress_stage(stage_name)
-                should_clear_on_exit = True
+                with ProgressStage(
+                    item_type, item_number, stage_name,
+                    related_issues=related_issues, branch_name=branch_name
+                ):
+                    return func(*call_args, **call_kwargs)
             else:
-                push_progress_stage(stage_name)
-
-            try:
-                # Execute the original function
-                return func(*call_args, **call_kwargs)
-            finally:
-                # Always pop the stage
-                pop_progress_stage()
-                # Clear item info if we set it
-                if should_clear_on_exit:
-                    clear_progress()
+                with ProgressStage(stage_name):
+                    return func(*call_args, **call_kwargs)
 
         return wrapper
 
@@ -106,11 +99,8 @@ def progress_stage(*args, **kwargs) -> Callable:
 
         @functools.wraps(func)
         def wrapper(*call_args, **call_kwargs):
-            push_progress_stage(stage_name)
-            try:
+            with ProgressStage(stage_name):
                 return func(*call_args, **call_kwargs)
-            finally:
-                pop_progress_stage()
 
         return wrapper
 
@@ -142,11 +132,8 @@ def progress_method(stage_name: Optional[str] = None) -> Callable:
             # Determine actual stage name
             actual_stage_name = stage_name or func.__name__.replace("_", " ").title()
 
-            push_progress_stage(actual_stage_name)
-            try:
+            with ProgressStage(actual_stage_name):
                 return func(*call_args, **call_kwargs)
-            finally:
-                pop_progress_stage()
 
         return wrapper
 
@@ -176,15 +163,12 @@ def progress_context_item(
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
         def wrapper(*call_args, **call_kwargs):
-            # Set item context
-            set_progress_item(item_type, item_number, related_issues, branch_name)
-            push_progress_stage(stage)
-
-            try:
+            # Use ProgressStage context manager for cleaner code
+            with ProgressStage(
+                item_type, item_number, stage,
+                related_issues=related_issues, branch_name=branch_name
+            ):
                 return func(*call_args, **call_kwargs)
-            finally:
-                pop_progress_stage()
-                clear_progress()
 
         return wrapper
 
@@ -240,19 +224,15 @@ class ProgressStageDecorator:
                     "ProgressStageDecorator requires 0, 1, 3, 4, or 5 positional arguments"
                 )
 
-            should_clear_on_exit = False
+            # Use ProgressStage context manager for cleaner code
             if item_type and item_number:
-                set_progress_item(item_type, item_number, related_issues, branch_name)
-                push_progress_stage(stage_name)
-                should_clear_on_exit = True
+                with ProgressStage(
+                    item_type, item_number, stage_name,
+                    related_issues=related_issues, branch_name=branch_name
+                ):
+                    return func(*call_args, **call_kwargs)
             else:
-                push_progress_stage(stage_name)
-
-            try:
-                return func(*call_args, **call_kwargs)
-            finally:
-                pop_progress_stage()
-                if should_clear_on_exit:
-                    clear_progress()
+                with ProgressStage(stage_name):
+                    return func(*call_args, **call_kwargs)
 
         return wrapper
