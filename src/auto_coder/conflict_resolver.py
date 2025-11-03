@@ -16,6 +16,19 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
+def _get_merge_conflict_info() -> str:
+    """Get information about merge conflicts."""
+    try:
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        return (
+            result.stdout
+            if result.success
+            else "Could not get merge conflict information"
+        )
+    except Exception as e:
+        return f"Error getting conflict info: {e}"
+
+
 def scan_conflict_markers() -> List[str]:
     """Scan for conflict markers in the current working directory.
 
@@ -71,7 +84,7 @@ def resolve_merge_conflicts_with_llm(
     conflict_info: str,
     config: AutomationConfig,
     dry_run: bool,
-    llm_client=None,
+    llm_client: Any = None,
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
@@ -161,9 +174,9 @@ def _perform_base_branch_merge_and_conflict_resolution(
     pr_number: int,
     base_branch: str,
     config: AutomationConfig,
-    llm_client=None,
-    repo_name: str = None,
-    pr_data: Dict[str, Any] = None,
+    llm_client: Any = None,
+    repo_name: Optional[str] = None,
+    pr_data: Optional[Dict[str, Any]] = None,
     dry_run: bool = False,
 ) -> bool:
     """Perform base branch merge and resolve conflicts using LLM.
@@ -289,7 +302,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
 
 def resolve_pr_merge_conflicts(
-    repo_name: str, pr_number: int, config: AutomationConfig, llm_client=None
+    repo_name: str, pr_number: int, config: AutomationConfig, llm_client: Any = None
 ) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch.
 

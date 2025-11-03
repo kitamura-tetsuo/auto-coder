@@ -709,11 +709,18 @@ class TestGitCheckoutBranch:
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (has changes, needs commit)
-                CommandResult(success=True, stdout="M  test.py", stderr="", returncode=0),
+                CommandResult(
+                    success=True, stdout="M  test.py", stderr="", returncode=0
+                ),
                 # Second call: git add -A (from git_checkout_branch)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Third call: git commit (from git_commit_with_retry)
-                CommandResult(success=True, stdout="WIP: Auto-commit before branch checkout\n", stderr="", returncode=0),
+                CommandResult(
+                    success=True,
+                    stdout="WIP: Auto-commit before branch checkout\n",
+                    stderr="",
+                    returncode=0,
+                ),
                 # Fourth call: git checkout -b new-feature
                 CommandResult(
                     success=True,

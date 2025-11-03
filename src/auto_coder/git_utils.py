@@ -704,14 +704,10 @@ def ensure_pushed_with_fallback(
         )
 
         if retry_push_result.success:
-            logger.info(
-                "Successfully pushed after resolving non-fast-forward error"
-            )
+            logger.info("Successfully pushed after resolving non-fast-forward error")
             return retry_push_result
         else:
-            logger.warning(
-                f"Push still failed: {retry_push_result.stderr}"
-            )
+            logger.warning(f"Push still failed: {retry_push_result.stderr}")
             # Update push_result for LLM fallback
             push_result = retry_push_result
 

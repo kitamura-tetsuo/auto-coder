@@ -1,6 +1,7 @@
+from typing import Optional
+
 from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
 from mcp.server.fastmcp import Context, FastMCP
-from typing import Optional
 
 # Create an MCP server
 mcp = FastMCP(
@@ -38,6 +39,7 @@ def _get_repo_label_for_session(session_id: str) -> Optional[str]:
         Repository label string or None if session not found
     """
     import hashlib
+
     repo_hash = hashlib.sha256(session_id.encode()).hexdigest()[:8].upper()
     return f"Repo_{repo_hash}"
 
@@ -112,7 +114,9 @@ def find_symbol(fqname: str, session_id: str = None) -> dict:
 
 
 @mcp.tool()
-def get_call_graph(symbol_id: str, direction: str = "both", depth: int = 1, session_id: str = None) -> dict:
+def get_call_graph(
+    symbol_id: str, direction: str = "both", depth: int = 1, session_id: str = None
+) -> dict:
     """Get call graph with backward compatibility.
 
     This tool analyzes the call relationships in the code graph, showing which
@@ -189,7 +193,9 @@ def get_dependencies(file_path: str, session_id: str = None) -> dict:
 
 
 @mcp.tool()
-def impact_analysis(symbol_ids: list, max_depth: int = 2, session_id: str = None) -> dict:
+def impact_analysis(
+    symbol_ids: list, max_depth: int = 2, session_id: str = None
+) -> dict:
     """Analyze impact with backward compatibility.
 
     This tool performs comprehensive impact analysis by traversing the code graph
@@ -232,7 +238,9 @@ def impact_analysis(symbol_ids: list, max_depth: int = 2, session_id: str = None
 
 
 @mcp.tool()
-def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None, session_id: str = None) -> dict:
+def semantic_code_search(
+    query: str, limit: int = 10, kind_filter: list = None, session_id: str = None
+) -> dict:
     """Semantic search with backward compatibility.
 
     This tool uses vector embeddings to find code symbols that are semantically
