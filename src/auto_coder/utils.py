@@ -592,3 +592,16 @@ def log_action(action: str, success: bool = True, details: str = "") -> str:
     else:
         logger.error(message)
     return message
+
+
+def get_merge_conflict_info() -> str:
+    """Get information about merge conflicts."""
+    try:
+        result = CommandExecutor.run_command(["git", "status", "--porcelain"])
+        return (
+            result.stdout
+            if result.success
+            else "Could not get merge conflict information"
+        )
+    except Exception as e:
+        return f"Error getting conflict info: {e}"

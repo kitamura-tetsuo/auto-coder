@@ -371,8 +371,6 @@ class TestPRProcessorExclusiveProcessing:
         )
         assert skipped_count >= 1
 
-
-
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_process_pull_requests_skips_when_label_present_even_if_labels_disabled(
@@ -409,7 +407,9 @@ class TestPRProcessorExclusiveProcessing:
 
 class TestIssueProcessorWithDisabledLabels:
     @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_skips_on_label_even_if_labels_disabled(self, mock_take_actions):
+    def test_process_issues_skips_on_label_even_if_labels_disabled(
+        self, mock_take_actions
+    ):
         """Ensure issues are skipped when @auto-coder label is present
         even if label operations are disabled."""
         mock_github_client = Mock()

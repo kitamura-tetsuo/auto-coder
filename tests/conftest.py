@@ -479,6 +479,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
 def isolated_graphrag_session():
     """Create isolated session for testing."""
     from pathlib import Path
+
     from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
     graphrag_integration = GraphRAGMCPIntegration()
@@ -491,8 +492,8 @@ def isolated_graphrag_session():
 def compatibility_graphrag_setup():
     """Setup for backward compatibility testing."""
     from src.auto_coder.graphrag_mcp_integration import (
-        GraphRAGMCPIntegration,
         BackwardCompatibilityLayer,
+        GraphRAGMCPIntegration,
     )
 
     # Setup existing behavior for compatibility tests
@@ -505,6 +506,7 @@ def compatibility_graphrag_setup():
 def mock_code_tool():
     """Mock CodeAnalysisTool for testing."""
     from unittest.mock import Mock
+
     from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
 
     mock_tool = Mock(spec=CodeAnalysisTool)
