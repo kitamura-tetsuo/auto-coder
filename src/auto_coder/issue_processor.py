@@ -669,9 +669,7 @@ def _apply_issue_actions_directly(
                         )
 
                         base_branch = parent_branch
-                        pr_base_branch = (
-                            parent_branch  # Also set PR merge target to parent issue branch
-                        )
+                        pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
                     else:
                         logger.warning(
                             f"Failed to create parent branch {parent_branch}: {create_parent_result.stderr}"

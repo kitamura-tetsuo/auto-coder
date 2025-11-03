@@ -873,7 +873,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
 
     lines = full_output.split("\n")
 
-    # 0) 期待/受領（Playwright/Jest）の詳細行が含まれていれば、見出しからその周辺を優先抽出
+    # 0) If expectation/reception (Playwright/Jest) detail lines are included, preferentially extract around headings
     if (
         ("Expected substring:" in full_output)
         or ("Received string:" in full_output)
@@ -922,7 +922,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
         for idx, ln in enumerate(lines):
             if header_regex.search(ln):
                 header_indices.append(idx)
-        # 期待/受領の典型
+        # Typical expectation/reception pattern
         expect_regex = re.compile(
             r"expect\(received\).*|Expected substring:|Received string:"
         )

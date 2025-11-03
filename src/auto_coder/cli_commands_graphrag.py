@@ -224,9 +224,9 @@ QDRANT_URL={qdrant_url}
             with open(env_path, "w", encoding="utf-8") as f:
                 f.write(env_content)
             if not silent:
-                logger.info(f"✅ .env ファイルを作成しました: {env_path}")
+                logger.info(f"✅ Created .env file: {env_path}")
         except Exception as e:
-            logger.error(f".env ファイルの作成に失敗しました: {e}")
+            logger.error(f"Failed to create .env file: {e}")
             return False
 
         # Create run_server.sh script
@@ -300,11 +300,9 @@ exec "$UV_CMD" run main.py
 
             os.chmod(run_script_path, 0o755)
             if not silent:
-                logger.info(
-                    f"✅ run_server.sh スクリプトを作成しました: {run_script_path}"
-                )
+                logger.info(f"✅ Created run_server.sh script: {run_script_path}")
         except Exception as e:
-            logger.error(f"run_server.sh スクリプトの作成に失敗しました: {e}")
+            logger.error(f"Failed to create run_server.sh script: {e}")
             return False
 
         # Patch main.py to load .env from script directory
@@ -335,14 +333,14 @@ if __name__ == "__main__":
             with open(main_py_path, "w", encoding="utf-8") as f:
                 f.write(main_py_content)
             if not silent:
-                logger.info(f"✅ main.py を修正しました（.envパスを明示的に指定）")
+                logger.info(f"✅ Modified main.py (explicitly specified .env path)")
         except Exception as e:
-            logger.error(f"main.py の修正に失敗しました: {e}")
+            logger.error(f"Failed to modify main.py: {e}")
             return False
 
         if not silent:
             logger.info("=" * 60)
-            logger.info("✅ GraphRAG MCP サーバーのセットアップが完了しました！")
+            logger.info("✅ GraphRAG MCP server setup completed!")
             logger.info("=" * 60)
 
         # Automatically configure backends
@@ -353,7 +351,9 @@ if __name__ == "__main__":
             backends_to_configure = list(backends)
 
         if not silent:
-            logger.info("各バックエンドの設定ファイルを自動更新しています...")
+            logger.info(
+                "Automatically updating configuration files for each backend..."
+            )
 
         success_count = 0
         total_count = len(backends_to_configure)
@@ -374,19 +374,21 @@ if __name__ == "__main__":
                     success_count += 1
 
         if not silent:
-            logger.info(f"設定完了: {success_count}/{total_count} バックエンド")
+            logger.info(
+                f"Configuration completed: {success_count}/{total_count} backends"
+            )
             logger.info("")
-            logger.info("次のステップ:")
-            logger.info("1. Neo4j と Qdrant を起動:")
+            logger.info("Next steps:")
+            logger.info("1. Start Neo4j and Qdrant:")
             logger.info("   auto-coder graphrag start")
             logger.info("")
-            logger.info("2. GraphRAG を使用してコードを処理:")
+            logger.info("2. Process code using GraphRAG:")
             logger.info("   auto-coder process-issues --repo owner/repo")
 
         return success_count > 0
 
     except Exception as e:
-        logger.error(f"セットアップ中にエラーが発生しました: {e}")
+        logger.error(f"An error occurred during setup: {e}")
         return False
 
 
@@ -408,9 +410,9 @@ def _add_codex_config(install_path: Path) -> bool:
         )
 
         if result:
-            logger.info("✅ Codex設定を更新しました")
+            logger.info("✅ Updated Codex configuration")
         else:
-            logger.error("Codex設定の更新に失敗しました")
+            logger.error("Failed to update Codex configuration")
 
         return result
     except Exception as e:
@@ -440,9 +442,9 @@ def _add_gemini_config(install_path: Path) -> bool:
         )
 
         if result:
-            logger.info("✅ Gemini設定を更新しました")
+            logger.info("✅ Updated Gemini configuration")
         else:
-            logger.error("Gemini設定の更新に失敗しました")
+            logger.error("Failed to update Gemini configuration")
 
         return result
     except Exception as e:
@@ -476,9 +478,9 @@ def _add_qwen_config(install_path: Path) -> bool:
             )
 
         if result:
-            logger.info("✅ Qwen設定を更新しました")
+            logger.info("✅ Updated Qwen configuration")
         else:
-            logger.error("Qwen設定の更新に失敗しました")
+            logger.error("Failed to update Qwen configuration")
 
         return result
     except Exception as e:
@@ -512,9 +514,9 @@ def _add_windsurf_claude_config(install_path: Path) -> bool:
             )
 
         if result:
-            logger.info("✅ Windsurf/Claude設定を更新しました")
+            logger.info("✅ Updated Windsurf/Claude configuration")
         else:
-            logger.error("Windsurf/Claude設定の更新に失敗しました")
+            logger.error("Failed to update Windsurf/Claude configuration")
 
         return result
     except Exception as e:
