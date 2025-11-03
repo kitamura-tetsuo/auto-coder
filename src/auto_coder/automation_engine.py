@@ -223,55 +223,23 @@ class AutomationEngine:
         }
 
         try:
-            # Get initial candidates
-            total_processed = 0
+            # Process pull requests (always use normal processing)
+            from .pr_processor import process_pull_requests
 
-            while True:
-                # Get candidates
-                candidates = self._get_candidates(repo_name)
+            prs_result = process_pull_requests(
+                self.github, self.config, self.dry_run, repo_name
+            )
+            results["prs_processed"] = prs_result
 
-                if not candidates:
-                    logger.info("No more candidates found, ending automation")
-                    break
-
-                # Process all candidates in this batch
-                batch_processed = 0
-                for candidate in candidates:
-                    try:
-                        logger.info(
-                            f"Processing {candidate['type']} #{candidate.get('data', {}).get('number', 'N/A')}"
-                        )
-
-                        # Process the candidate
-                        result = self._process_single_candidate(
-                            repo_name, candidate, jules_mode
-                        )
-
-                        # Track results
-                        if candidate["type"] == "issue":
-                            results["issues_processed"].append(result)
-                        elif candidate["type"] == "pr":
-                            results["prs_processed"].append(result)
-
-                        batch_processed += 1
-                        total_processed += 1
-
-                        logger.info(
-                            f"Successfully processed {candidate['type']} #{candidate.get('data', {}).get('number', 'N/A')}"
-                        )
-                        break
-
-                    except Exception as e:
-                        error_msg = f"Failed to process candidate: {e}"
-                        logger.error(error_msg)
-                        results["errors"].append(error_msg)
-
-                # If no candidates were processed in this batch, end the loop
-                if batch_processed == 0:
-                    logger.info(
-                        "No candidates were processed in this batch, ending automation"
-                    )
-                    break
+            # Process issues (with jules_mode parameter)
+            issues_result = process_issues(
+                self.github,
+                self.config,
+                self.dry_run,
+                repo_name,
+                jules_mode,
+            )
+            results["issues_processed"] = issues_result
             # Save results report
             self._save_report(results, "automation_report", repo_name)
 
