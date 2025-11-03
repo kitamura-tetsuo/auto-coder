@@ -206,10 +206,10 @@ class AutomationEngine:
         return result
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
-        """Run the main automation process using _get_candidates loop."""
+        """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
-        # LLMバックエンド情報を取得
+        # Get LLM backend information
         llm_backend_info = self._get_llm_backend_info()
 
         results = {
@@ -274,18 +274,14 @@ class AutomationEngine:
                         "No candidates were processed in this batch, ending automation"
                     )
                     break
-
             # Save results report
             self._save_report(results, "automation_report", repo_name)
 
-            logger.info(f"Automation completed")
-            logger.info(
-                f"Processed {total_processed} items total: {len(results['issues_processed'])} issues and {len(results['prs_processed'])} PRs"
-            )
+            logger.info(f"Automation completed for {repo_name}")
             return results
 
         except Exception as e:
-            error_msg = f"Automation failed: {e}"
+            error_msg = f"Automation failed for {repo_name}: {e}"
             logger.error(error_msg)
             results["errors"].append(error_msg)
             return results

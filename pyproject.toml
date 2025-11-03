@@ -48,6 +48,40 @@ exclude = [
     "dist/",
 ]
 
+[project]
+name = "auto-coder"
+version = "2025.11.3.52+g04ee944"
+description = "Automated application development using Gemini CLI and GitHub integration"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Auto-Coder Team"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "requests>=2.31.0",
+    "pydantic>=2.0.0,<3.0.0",
+    "pydantic-settings>=2.0.0",
+    "click>=8.1.0",
+    "python-dotenv>=1.0.0",
+    "PyGithub>=1.59.0",
+    "pyyaml>=6.0",
+    "GitPython>=3.1.0",
+    "loguru>=0.7.0",
+    "neo4j>=5.14.0",
+    "qdrant-client>=1.7.0",
+    "sentence-transformers>=2.2.0",
+    "watchdog>=6.0.0",
+    "pathspec>=0.12.0",
+    "playwright>=1.54.0",
+]
+
 # Include specific directories
 include = [
     "src/",
