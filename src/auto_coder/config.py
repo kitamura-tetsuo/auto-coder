@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     model_config = ConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
-        extra="ignore",  # 予期しない環境変数を無視
+        extra="ignore",  # Ignore unexpected environment variables
     )
 
 

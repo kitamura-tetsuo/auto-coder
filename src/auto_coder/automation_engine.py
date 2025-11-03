@@ -42,8 +42,8 @@ class AutomationEngine:
         self.message_backend_manager = message_backend_manager
         self.cmd = CommandExecutor()
 
-        # Note: レポートディレクトリはリポジトリごとに作成されるため、
-        # ここでは作成しない（_save_reportで作成）
+        # Note: Report directories are created per repository,
+        # so we do not create one here (created in _save_report)
 
     def _get_candidates(self, repo_name: str, max_items: int = 10) -> List[Dict[str, Any]]:
         """Get PR and issue candidates for processing with priority scoring.
@@ -304,7 +304,7 @@ class AutomationEngine:
         return _engine_pr_prompt(repo_name, pr_data, pr_diff, self.config)
 
     def get_github_actions_logs_from_url(self, url: str) -> str:
-        """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。"""
+        """Extract error blocks by fetching logs for the given GitHub Actions job URL directly."""
         return get_github_actions_logs_from_url(url)
 
     def _get_github_actions_logs(
@@ -314,16 +314,16 @@ class AutomationEngine:
         failed_checks: List[Dict[str, Any]],
         search_history: Optional[bool] = None,
     ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+        """Fetch logs for failed GitHub Actions jobs via gh api and return only the error sections.
 
         Args:
             repo_name: Repository name
             pr_data: PR data dictionary
             failed_checks: List of failed check dictionaries
-            search_history: Optional parameter to enable historical search.
-                           If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
-                           If True, searches through commit history for logs.
-                           If False, uses current state only.
+            search_history: Optional flag to enable historical search.
+                If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                If True, searches commit history for logs.
+                If False, uses current state only.
 
         Returns:
             String containing GitHub Actions logs
