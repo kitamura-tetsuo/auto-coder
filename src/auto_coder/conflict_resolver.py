@@ -311,7 +311,7 @@ def resolve_pr_merge_conflicts(
     try:
         # Get PR details to determine the target base branch
         pr_details_result = cmd.run_command(
-            ["gh", "pr", "view", str(pr_number), "--json", "base"]
+            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"]
         )
         if not pr_details_result.success:
             logger.error(
@@ -321,7 +321,7 @@ def resolve_pr_merge_conflicts(
 
         try:
             pr_data = json.loads(pr_details_result.stdout)
-            base_branch = pr_data.get("base", {}).get("ref", config.MAIN_BRANCH)
+            base_branch = pr_data.get("baseRefName", config.MAIN_BRANCH)
         except Exception:
             base_branch = config.MAIN_BRANCH
 
