@@ -721,9 +721,7 @@ class TestGitCheckoutBranch:
                     stderr="",
                     returncode=0,
                 ),
-                # Fourth call: git branch --list new-feature (from branch_exists check)
-                CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fifth call: git checkout -b new-feature
+                # Fourth call: git checkout -b new-feature
                 CommandResult(
                     success=True,
                     stdout="Switched to a new branch 'new-feature'\n",
