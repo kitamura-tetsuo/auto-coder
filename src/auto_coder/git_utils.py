@@ -433,9 +433,7 @@ def git_checkout_branch(
             ["git", "push", "-u", "origin", branch_name], cwd=cwd
         )
         if not push_result.success:
-            logger.warning(
-                f"Failed to push new branch to remote: {push_result.stderr}"
-            )
+            logger.warning(f"Failed to push new branch to remote: {push_result.stderr}")
             # Don't exit on push failure - the branch is still created locally
         else:
             logger.info(f"Successfully published branch '{branch_name}' to remote")
@@ -798,7 +796,7 @@ def save_commit_failure_history(
     try:
         # Determine the history directory
         if repo_name:
-            # リポジトリ名から安全なディレクトリ名を生成
+            # Generate safe directory name from repository name
             safe_repo_name = repo_name.replace("/", "_")
             history_dir = Path.home() / ".auto-coder" / safe_repo_name
         else:

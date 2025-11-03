@@ -42,14 +42,14 @@ class AutomationEngine:
         self.message_backend_manager = message_backend_manager
         self.cmd = CommandExecutor()
 
-        # Note: レポートディレクトリはリポジトリごとに作成されるため、
-        # ここでは作成しない（_save_reportで作成）
+        # Note: Report directories are created per repository,
+        # so we don't create them here (created in _save_report)
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
-        # LLMバックエンド情報を取得
+        # Get LLM backend information
         llm_backend_info = self._get_llm_backend_info()
 
         results = {
@@ -160,16 +160,16 @@ class AutomationEngine:
         if self.llm is None:
             return {"backend": None, "model": None}
 
-        # BackendManagerの場合
+        # For BackendManager
         if hasattr(self.llm, "get_last_backend_and_model"):
             backend, model = self.llm.get_last_backend_and_model()
             return {"backend": backend, "model": model}
 
-        # 個別クライアントの場合
+        # For individual clients
         backend = None
         model = getattr(self.llm, "model_name", None)
 
-        # クラス名からバックエンド名を推測
+        # Infer backend name from class name
         class_name = self.llm.__class__.__name__
         if "Gemini" in class_name:
             backend = "gemini"
@@ -197,13 +197,13 @@ class AutomationEngine:
                       ~/.auto-coder/{repository}/ instead of the default reports/ directory.
         """
         try:
-            # リポジトリ名が指定されている場合は、リポジトリごとのディレクトリを使用
+            # If repository name is specified, use repository-specific directory
             if repo_name:
                 reports_dir = self.config.get_reports_dir(repo_name)
             else:
                 reports_dir = self.config.REPORTS_DIR
 
-            # レポートディレクトリが存在しない場合は作成
+            # Create report directory if it doesn't exist
             os.makedirs(reports_dir, exist_ok=True)
 
             filepath = os.path.join(
@@ -226,7 +226,7 @@ class AutomationEngine:
         return _engine_pr_prompt(repo_name, pr_data, pr_diff, self.config)
 
     def get_github_actions_logs_from_url(self, url: str) -> str:
-        """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。"""
+        """Get logs from GitHub Actions job URL and extract error blocks."""
         return get_github_actions_logs_from_url(url)
 
     def _get_github_actions_logs(
@@ -236,7 +236,7 @@ class AutomationEngine:
         failed_checks: List[Dict[str, Any]],
         search_history: Optional[bool] = None,
     ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+        """Get logs from failed GitHub Actions jobs via gh api and return extracted error locations.
 
         Args:
             repo_name: Repository name
@@ -253,6 +253,7 @@ class AutomationEngine:
         return _pr_get_github_actions_logs(
             repo_name, self.config, failed_checks, search_history=search_history
         )
+
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
         return _pr_get_diff(repo_name, pr_number, self.config)
@@ -809,7 +810,7 @@ DO NOT include git commit or push commands in your response."""
                 ["git", "log", "--oneline", f"-{search_depth}"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
 
             if result.returncode != 0:
@@ -819,7 +820,7 @@ DO NOT include git commit or push commands in your response."""
             commits_with_actions = []
 
             # Parse the output to extract commit hashes and messages
-            lines = result.stdout.strip().split('\n')
+            lines = result.stdout.strip().split("\n")
 
             for line in lines:
                 if not line.strip():
@@ -843,61 +844,88 @@ DO NOT include git commit or push commands in your response."""
                 # Use gh CLI to list workflow runs for this commit
                 try:
                     run_result = subprocess.run(
-                        [
-                            "gh", "run", "list",
-                            "--commit", commit_hash,
-                            "--limit", "1"
-                        ],
+                        ["gh", "run", "list", "--commit", commit_hash, "--limit", "1"],
                         capture_output=True,
                         text=True,
-                        timeout=10
+                        timeout=10,
                     )
 
                     # If no runs found for this commit, skip it
-                    if run_result.returncode != 0 or "no runs found" in run_result.stdout.lower():
-                        logger.debug(f"Commit {commit_hash[:8]}: No GitHub Actions runs found")
+                    if (
+                        run_result.returncode != 0
+                        or "no runs found" in run_result.stdout.lower()
+                    ):
+                        logger.debug(
+                            f"Commit {commit_hash[:8]}: No GitHub Actions runs found"
+                        )
                         continue
 
                     # Check if there are any runs (success or failure)
                     # Parse the output to check for completed runs
-                    run_lines = run_result.stdout.strip().split('\n')
+                    run_lines = run_result.stdout.strip().split("\n")
 
                     actions_status = None
                     actions_url = ""
 
                     for run_line in run_lines:
-                        if not run_line.strip() or run_line.startswith("STATUS") or run_line.startswith("WORKFLOW"):
+                        if (
+                            not run_line.strip()
+                            or run_line.startswith("STATUS")
+                            or run_line.startswith("WORKFLOW")
+                        ):
                             continue
 
                         # Parse tab-separated format
-                        if '\t' in run_line:
-                            parts = run_line.split('\t')
+                        if "\t" in run_line:
+                            parts = run_line.split("\t")
                             if len(parts) >= 3:
                                 status = parts[1].strip().lower()
                                 url = parts[3] if len(parts) > 3 else ""
 
                                 # Only include commits with completed runs (success or failure)
                                 # Skip queued or in-progress runs
-                                if status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
+                                if status in [
+                                    "success",
+                                    "completed",
+                                    "failure",
+                                    "failed",
+                                    "cancelled",
+                                    "pass",
+                                ]:
                                     actions_status = status
                                     actions_url = url
                                     break
 
                     # Only add commits that have completed Action runs
-                    if actions_status and actions_status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
-                        commits_with_actions.append({
-                            "commit_hash": commit_hash,
-                            "message": commit_message,
-                            "actions_status": actions_status,
-                            "actions_url": actions_url
-                        })
-                        logger.info(f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'")
+                    if actions_status and actions_status in [
+                        "success",
+                        "completed",
+                        "failure",
+                        "failed",
+                        "cancelled",
+                        "pass",
+                    ]:
+                        commits_with_actions.append(
+                            {
+                                "commit_hash": commit_hash,
+                                "message": commit_message,
+                                "actions_status": actions_status,
+                                "actions_url": actions_url,
+                            }
+                        )
+                        logger.info(
+                            f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'"
+                        )
 
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"Timeout checking Actions for commit {commit_hash[:8]}")
+                    logger.warning(
+                        f"Timeout checking Actions for commit {commit_hash[:8]}"
+                    )
                     continue
 
-            logger.info(f"Found {len(commits_with_actions)} commits with GitHub Actions")
+            logger.info(
+                f"Found {len(commits_with_actions)} commits with GitHub Actions"
+            )
             return commits_with_actions
 
         except Exception as e:
