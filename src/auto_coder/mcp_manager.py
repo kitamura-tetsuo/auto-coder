@@ -394,7 +394,9 @@ class MCPServerManager:
             if result:
                 logger.info(f"✅ Updated Windsurf/Claude configuration ({server_name})")
             else:
-                logger.error(f"Failed to update Windsurf/Claude configuration ({server_name})")
+                logger.error(
+                    f"Failed to update Windsurf/Claude configuration ({server_name})"
+                )
 
             return result
         except Exception as e:

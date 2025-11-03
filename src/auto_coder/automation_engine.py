@@ -45,7 +45,9 @@ class AutomationEngine:
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
 
-    def _get_candidates(self, repo_name: str, max_items: int = 10) -> List[Dict[str, Any]]:
+    def _get_candidates(
+        self, repo_name: str, max_items: int = 10
+    ) -> List[Dict[str, Any]]:
         """Get PR and issue candidates for processing with priority scoring.
 
         Priority levels:
@@ -58,6 +60,8 @@ class AutomationEngine:
         """
         from .pr_processor import (
             _check_github_actions_status as _pr_check_github_actions_status,
+        )
+        from .pr_processor import (
             _extract_linked_issues_from_pr_body,
         )
 
@@ -78,18 +82,24 @@ class AutomationEngine:
             if "urgent" in current_labels:
                 priority = 3  # Highest priority for urgent PRs
             else:
-                github_checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
+                github_checks = _pr_check_github_actions_status(
+                    repo_name, pr_data, self.config
+                )
                 mergeable = pr_data.get("mergeable", True)
                 if github_checks["success"] and mergeable:
                     priority = 2  # Ready for merge
 
-            candidates.append({
-                "type": "pr",
-                "data": pr_data,
-                "priority": priority,
-                "branch_name": pr_data.get("head", {}).get("ref"),
-                "related_issues": _extract_linked_issues_from_pr_body(pr_data.get("body", "")),
-            })
+            candidates.append(
+                {
+                    "type": "pr",
+                    "data": pr_data,
+                    "priority": priority,
+                    "branch_name": pr_data.get("head", {}).get("ref"),
+                    "related_issues": _extract_linked_issues_from_pr_body(
+                        pr_data.get("body", "")
+                    ),
+                }
+            )
 
         # Get issue candidates
         issues = self.github.get_open_issues(repo_name, limit=max_items)
@@ -112,15 +122,19 @@ class AutomationEngine:
             if "urgent" in current_labels:
                 priority = 3  # Highest priority for urgent issues
 
-            candidates.append({
-                "type": "issue",
-                "data": issue_data,
-                "priority": priority,
-                "issue_number": issue_data["number"],
-            })
+            candidates.append(
+                {
+                    "type": "issue",
+                    "data": issue_data,
+                    "priority": priority,
+                    "issue_number": issue_data["number"],
+                }
+            )
 
         # Sort by priority (higher first), then by creation date (older first)
-        candidates.sort(key=lambda x: (x["priority"], x["data"].get("created_at", "")), reverse=True)
+        candidates.sort(
+            key=lambda x: (x["priority"], x["data"].get("created_at", "")), reverse=True
+        )
         return candidates
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:

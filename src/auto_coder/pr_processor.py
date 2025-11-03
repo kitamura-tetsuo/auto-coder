@@ -2212,7 +2212,9 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
     if len(result_lines) > max_lines:
         # 最初の部分と最後の部分を含める
         half = max_lines // 2
-        result_lines = result_lines[:half] + ["... (omitted) ..."] + result_lines[-half:]
+        result_lines = (
+            result_lines[:half] + ["... (omitted) ..."] + result_lines[-half:]
+        )
 
     return "\n".join(result_lines)
 

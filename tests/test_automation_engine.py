@@ -1607,7 +1607,9 @@ class TestGetCandidates:
         mock_github_client.get_open_pull_requests.return_value = []
         mock_github_client.get_open_issues.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
-            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Urgent issue - should be first
+            Mock(
+                number=2, created_at="2024-01-02T00:00:00Z"
+            ),  # Urgent issue - should be first
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),
         ]
 
@@ -1678,14 +1680,22 @@ class TestGetCandidates:
 
         # Mock GitHub client to return various PRs and issues
         mock_github_client.get_open_pull_requests.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),  # PR needs fix (priority 1)
-            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # PR ready for merge (priority 2)
+            Mock(
+                number=1, created_at="2024-01-01T00:00:00Z"
+            ),  # PR needs fix (priority 1)
+            Mock(
+                number=2, created_at="2024-01-02T00:00:00Z"
+            ),  # PR ready for merge (priority 2)
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Urgent PR (priority 3)
         ]
 
         mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-04T00:00:00Z"),  # Regular issue (priority 0)
-            Mock(number=11, created_at="2024-01-05T00:00:00Z"),  # Urgent issue (priority 3)
+            Mock(
+                number=10, created_at="2024-01-04T00:00:00Z"
+            ),  # Regular issue (priority 0)
+            Mock(
+                number=11, created_at="2024-01-05T00:00:00Z"
+            ),  # Urgent issue (priority 3)
         ]
 
         # Mock PR details
@@ -1868,8 +1878,12 @@ class TestGetCandidates:
             }
 
         mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_github_client.get_open_sub_issues.side_effect = lambda repo, num: [1] if num == 11 else []
-        mock_github_client.has_linked_pr.side_effect = lambda repo, num: True if num == 12 else False
+        mock_github_client.get_open_sub_issues.side_effect = lambda repo, num: (
+            [1] if num == 11 else []
+        )
+        mock_github_client.has_linked_pr.side_effect = lambda repo, num: (
+            True if num == 12 else False
+        )
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -1947,7 +1961,9 @@ class TestUrgentLabelPropagation:
 
         # Mock gh pr create to return PR URL
         mock_cmd.side_effect = [
-            Mock(success=True, stdout="https://github.com/test/repo/pull/456"),  # gh pr create
+            Mock(
+                success=True, stdout="https://github.com/test/repo/pull/456"
+            ),  # gh pr create
             Mock(success=True, stdout="", stderr=""),  # gh pr edit
         ]
 
@@ -2003,7 +2019,9 @@ class TestUrgentLabelPropagation:
         }
 
         # Mock gh pr create to return PR URL
-        mock_cmd.return_value = Mock(success=True, stdout="https://github.com/test/repo/pull/456")
+        mock_cmd.return_value = Mock(
+            success=True, stdout="https://github.com/test/repo/pull/456"
+        )
 
         # Mock get_pr_closing_issues to return the issue number
         mock_github_client.get_pr_closing_issues.return_value = [123]
@@ -2058,4 +2076,3 @@ class TestUrgentLabelPropagation:
         # No actual GitHub operations should be performed
         assert mock_cmd.call_count == 0
         mock_github_client.add_labels_to_issue.assert_not_called()
-

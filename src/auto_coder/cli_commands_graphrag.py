@@ -86,9 +86,7 @@ def run_graphrag_setup_mcp_programmatically(
                 if result.returncode != 0:
                     logger.error("Failed to automatically install uv.")
                     logger.error(f"Error: {result.stderr}")
-                    logger.error(
-                        "Please install manually: https://docs.astral.sh/uv/"
-                    )
+                    logger.error("Please install manually: https://docs.astral.sh/uv/")
                     return False
 
                 # Verify installation
@@ -122,9 +120,7 @@ def run_graphrag_setup_mcp_programmatically(
                         logger.error("Please restart your shell and try again.")
                         return False
                 except FileNotFoundError:
-                    logger.error(
-                        "uv was installed, but not found in PATH."
-                    )
+                    logger.error("uv was installed, but not found in PATH.")
                     logger.error("Please restart your shell and try again.")
                     logger.error(
                         f"Alternatively, add the following paths to PATH: {':'.join(uv_bin_paths)}"
@@ -136,9 +132,7 @@ def run_graphrag_setup_mcp_programmatically(
                 return False
             except Exception as e:
                 logger.error(f"Error occurred during uv installation: {e}")
-                logger.error(
-                    "Please install manually: https://docs.astral.sh/uv/"
-                )
+                logger.error("Please install manually: https://docs.astral.sh/uv/")
                 return False
 
         # Copy bundled MCP server if needed
@@ -159,12 +153,8 @@ def run_graphrag_setup_mcp_programmatically(
                     bundled_mcp = package_dir / "mcp_servers" / "graphrag_mcp"
 
                     if not bundled_mcp.exists():
-                        logger.error(
-                            f"Bundled MCP server not found: {bundled_mcp}"
-                        )
-                        logger.error(
-                            "The package may not be installed correctly."
-                        )
+                        logger.error(f"Bundled MCP server not found: {bundled_mcp}")
+                        logger.error("The package may not be installed correctly.")
                         return False
 
                     # Copy the bundled MCP server to install directory
