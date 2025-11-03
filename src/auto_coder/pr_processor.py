@@ -377,7 +377,7 @@ def process_pull_requests(
                                 ) or any("Would merge" in a for a in actions_taken):
                                     merged_pr_numbers.add(pr_number)
                             else:
-                                # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
+                                # LLM single-execution policy: do not call LLM in analysis phase
                                 with ProgressStage("Taking actions"):
                                     actions = _take_pr_actions(
                                         repo_name, pr_data, config, dry_run, llm_client
@@ -580,7 +580,7 @@ def _process_pr_for_merge(
 
     try:
         if dry_run:
-            # 単回実行ポリシーにより、分析フェーズは行わない
+            # Single-execution policy: skip analysis phase
             processed_pr["actions_taken"].append(
                 f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)"
             )
@@ -2037,11 +2037,11 @@ def _clean_log_line(line: str) -> str:
     """
     import re
 
-    # ANSIエスケープシーケンスを削除
+    # Remove ANSI escape sequences
     ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
     line = ansi_escape.sub("", line)
 
-    # タイムスタンプを削除（例: 2025-10-27T03:26:24.5806020Z）
+    # Remove timestamps (e.g., 2025-10-27T03:26:24.5806020Z)
     timestamp_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+")
     line = timestamp_pattern.sub("", line)
 
@@ -2059,23 +2059,23 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
         Concatenated logs for the failed steps
     """
     if not failed_step_names:
-        # 失敗したステップが特定できない場合は、従来の方法を使用
+        # Use conventional method if failed steps cannot be identified
         return _extract_error_context(log_content)
 
     lines = log_content.split("\n")
     result_sections = []
 
     for step_name in failed_step_names:
-        # ステップのログを抽出
+        # Extract step logs
         step_lines = []
         in_step = False
         step_found = False
 
-        # ステップ名からキーワードを抽出
+        # Extract keywords from step name
         step_name_lower = step_name.lower()
         keywords = []
 
-        # 特定のステップ名に対するマッピング
+        # Mapping for specific step names
         if "lint" in step_name_lower and "functions" in step_name_lower:
             keywords = ["cd functions", "npm run lint", "eslint"]
         elif "cat log" in step_name_lower:
@@ -2085,17 +2085,17 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
         elif "test" in step_name_lower:
             keywords = ["test", "vitest", "jest", "playwright"]
         else:
-            # 一般的なケース: ステップ名の単語を使用
+            # General case: use words from step name
             keywords = [word for word in step_name_lower.split() if len(word) > 3]
 
         for i, line in enumerate(lines):
-            # ステップの開始を検出
+            # Detect step start
             if "##[group]Run" in line and not step_found:
-                # 前のステップを終了
+                # End previous step
                 if in_step:
                     break
 
-                # このステップの開始かチェック
+                # Check if this is step start
                 line_lower = line.lower()
                 if any(keyword in line_lower for keyword in keywords):
                     in_step = True
@@ -2103,18 +2103,18 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
                     step_lines.append(line)
                     continue
 
-            # ステップ内の行を収集
+            # Collect lines within step
             if in_step:
                 step_lines.append(line)
 
-                # 次のステップの開始を検出
+                # Detect next step start
                 if i > 0 and "##[group]Run" in line:
-                    # この行は次のステップなので除外
+                    # This line is for next step, exclude
                     step_lines.pop()
                     break
 
         if step_lines:
-            # ANSIエスケープシーケンスとタイムスタンプを削除
+            # Remove ANSI escape sequences and timestamps
             cleaned_lines = [_clean_log_line(line) for line in step_lines]
             section = f"=== Step: {step_name} ===\n" + "\n".join(cleaned_lines)
             result_sections.append(section)
@@ -2122,7 +2122,7 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
     if result_sections:
         return "\n\n".join(result_sections)
     else:
-        # ステップが見つからない場合は、従来の方法を使用
+        # Use conventional method if step not found
         return _extract_error_context(log_content)
 
 
