@@ -1414,13 +1414,17 @@ class TestGitHubActionsLogSearchEdgeCases:
         runs_data = [
             {
                 "databaseId": 1001,
-                "headBranch": "main",  # Using valid value instead of None to avoid implementation bug
+                "headBranch": (
+                    "main"
+                ),  # Using valid value instead of None to avoid implementation bug
                 "conclusion": "failure",
                 "createdAt": "2024-01-15T10:00:00Z",
                 "status": "completed",
                 "displayTitle": "CI Pipeline",
                 "url": "https://github.com/test/repo/actions/runs/1001",
-                "headSha": "abc123def456",  # Using valid value instead of None to avoid implementation bug
+                "headSha": (
+                    "abc123def456"
+                ),  # Using valid value instead of None to avoid implementation bug
             }
         ]
 

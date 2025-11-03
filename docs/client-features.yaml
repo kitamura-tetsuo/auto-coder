@@ -4,7 +4,7 @@
 
 application:
   name: "Auto-Coder"
-  version: "2025.11.3.3+gff18692"
+  version: "2025.11.3.31+g3210bfb"
   description: "Automated application development using AI CLI backends (codex default, switchable to gemini via --backend) and GitHub integration"
 
 features:
@@ -247,6 +247,60 @@ features:
           - "Handles multiple errors in single log"
           - "Preserves important context for debugging"
         impact: "LLM receives focused, relevant error information without noise"
+
+      - name: "Historical Search with PR Event Filter (Two-tier Fallback)"
+        description: "Prefer gh run list --event pull_request; fallback to unfiltered on failure to reduce API calls while keeping compatibility"
+        before: "Queried all runs without event scoping, causing extra API calls and noisy results"
+        after: "Uses --event pull_request when available; falls back to non-filtered run list when first attempt fails"
+        tests:
+          - "tests/test_actions_history_run_list_event_filter.py::test_commit_run_list_includes_event_filter"
+          - "tests/test_actions_history_run_list_event_filter.py::test_fallback_run_list_includes_event_filter"
+      - name: "Failsafe when pullRequests field is missing"
+        description: "Gracefully handles environments where gh run view jobs omit pullRequests"
+        behavior:
+          - "Common helpers _filter_runs_for_pr and _get_jobs_for_run_filtered_by_pr_number absorb missing pullRequests cases"
+        tests:
+          - "tests/test_actions_history_pr_pullrequests_missing.py::test_history_handles_missing_pullRequests_field_gracefully"
+          - "tests/test_actions_history_pr_pullrequests_missing.py::test_history_handles_empty_pullRequests_list_gracefully"
+
+  automation_engine:
+    name: "Automation Engine Orchestration"
+    description: "End-to-endオーケストレーション。Issues処理→PR処理の順で実行し、結果を集約してレポート保存。"
+    components:
+      - name: "AutomationEngine"
+        file: "src/auto_coder/automation_engine.py"
+        methods:
+          - name: "run"
+            description: "メインエントリ。まず process_issues() を実行し、エラーがなければ process_pull_requests() を続けて実行する。"
+            behavior:
+              - "例外はresults['errors']に格納し、致命的でない限り続行"
+              - "最後にレポートを保存（実行バックエンド・結果を含む）"
+            tests:
+              - "tests/test_automation_engine.py::TestAutomationEngine::test_run_success"
+          - name: "_get_candidates"
+            description: "PR/Issue候補の収集と優先度付けを行うヘルパー。max_itemsで件数制限可能。"
+            parameters: ["repo_name", "max_items (optional)"]
+            returns: "List[Dict]（{type, data, priority, ...}を含む）"
+            priority_rules:
+              - "3: urgent ラベルが付与された Issue/PR"
+              - "2: GitHub Actions 成功 かつ mergeable な PR"
+              - "1: その他の PR"
+              - "0: 通常の Issue"
+            filtering:
+              - "@auto-coder ラベルが付与されているものは除外（排他制御）"
+              - "未解決のサブ課題を持つ Issue は除外"
+              - "リンク済みPRを持つ Issue は除外"
+            sorting:
+              - "優先度(降順) → 種別（IssueをPRより優先） → created_at（昇順・古い順）"
+            emitted_fields:
+              - "PR: branch_name, related_issues（PR本文からの参照抽出）"
+              - "Issue: issue_number"
+            tests:
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_urgent_issue_highest_priority"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_priority_order_prs_and_issues"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_skips_items_with_auto_coder_label"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_skips_issues_with_sub_issues_or_linked_prs"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_extracts_related_issues_from_pr_body"
 
   github_integration:
     name: "GitHub API Integration"

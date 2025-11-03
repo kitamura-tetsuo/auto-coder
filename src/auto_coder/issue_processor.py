@@ -479,13 +479,47 @@ def _create_pr_for_issue(
                         f"Failed to extract PR number from URL '{pr_url}': {e}"
                     )
 
-            # Verify that the PR is linked to the issue
+            # Propagate urgent label from issue to PR if present
             if pr_number:
                 import time
 
-                # Wait a moment for GitHub to process the PR body and create the link
+                # Wait a moment for GitHub to process the PR creation
                 time.sleep(2)
 
+                # Check if source issue has urgent label and propagate to PR
+                issue_labels = issue_data.get("labels", [])
+                if "urgent" in issue_labels:
+                    try:
+                        github_client.add_labels_to_issue(
+                            repo_name, pr_number, ["urgent"]
+                        )
+                        logger.info(
+                            f"Propagated 'urgent' label from issue #{issue_number} to PR #{pr_number}"
+                        )
+                        # Add note to PR body about urgent status
+                        try:
+                            pr_body_with_note = (
+                                pr_body + "\n\n*This PR addresses an urgent issue.*"
+                            )
+                            cmd.run_command(
+                                [
+                                    "gh",
+                                    "pr",
+                                    "edit",
+                                    str(pr_number),
+                                    "--body",
+                                    pr_body_with_note,
+                                ]
+                            )
+                            logger.info(f"Added urgent note to PR #{pr_number} body")
+                        except Exception as e:
+                            logger.warning(f"Failed to add urgent note to PR body: {e}")
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to propagate 'urgent' label to PR #{pr_number}: {e}"
+                        )
+
+                # Verify that the PR is linked to the issue
                 closing_issues = github_client.get_pr_closing_issues(
                     repo_name, pr_number
                 )

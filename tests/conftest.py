@@ -475,8 +475,90 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
 
 # GraphRAG Session Management Test Fixtures
+
+
+@pytest.fixture(autouse=True)
+def _apply_graphrag_mock_to_compatibility_tests(request, monkeypatch):
+    """Automatically apply GraphRAGMCPIntegration mock to compatibility tests."""
+    # Only apply to tests in test_graphrag_compatibility.py
+    if "test_graphrag_compatibility.py" in request.node.fspath.strpath:
+        from unittest.mock import Mock
+
+        # Create a mock GraphRAGMCPIntegration class
+        mock_integration_class = Mock()
+
+        # Create a mock instance with the required methods
+        mock_instance = Mock()
+
+        # Use side_effect to return different session IDs for different calls
+        call_count = {"count": 0}
+
+        def create_session_side_effect(repo_path):
+            call_count["count"] += 1
+            return f"session_test_{call_count['count']:03d}"
+
+        mock_instance.create_session.side_effect = create_session_side_effect
+        mock_instance.get_session_context.return_value = {
+            "session_id": "session_test_001",
+            "repo_path": "/test/repo",
+        }
+
+        # Return different repo labels based on session_id
+        def get_repo_label_side_effect(session_id):
+            # Extract number from session_id like "session_test_001" -> "001"
+            if session_id.startswith("session_test_"):
+                num = session_id.split("_")[-1]
+                return f"Repo_TEST{num}"
+            return "Repo_TEST123"
+
+        mock_instance.get_repo_label_for_session.side_effect = (
+            get_repo_label_side_effect
+        )
+        mock_instance.get_repository_label.return_value = "Repo_TEST123"
+        mock_instance.ensure_ready.return_value = True
+
+        mock_integration_class.return_value = mock_instance
+
+        # Patch the GraphRAGMCPIntegration in the module where it's imported
+        import src.auto_coder.graphrag_mcp_integration as grag_module
+
+        monkeypatch.setattr(
+            grag_module, "GraphRAGMCPIntegration", mock_integration_class
+        )
+
+
 @pytest.fixture
-def isolated_graphrag_session():
+def mock_graphrag_integration(monkeypatch):
+    """Mock GraphRAGMCPIntegration to avoid Docker dependency in tests."""
+    from unittest.mock import Mock
+
+    # Create a mock GraphRAGMCPIntegration class
+    mock_integration_class = Mock()
+
+    # Create a mock instance with the required methods
+    mock_instance = Mock()
+    mock_instance.create_session.return_value = "session_test_123"
+    mock_instance.get_session_context.return_value = {
+        "session_id": "session_test_123",
+        "repo_path": "/test/repo",
+    }
+    mock_instance.get_repo_label_for_session.return_value = "Repo_TEST123"
+
+    mock_instance.get_repository_label.return_value = "Repo_TEST123"
+    mock_instance.ensure_ready.return_value = True
+
+    mock_integration_class.return_value = mock_instance
+
+    # Patch the GraphRAGMCPIntegration in the module where it's imported
+    import src.auto_coder.graphrag_mcp_integration as grag_module
+
+    monkeypatch.setattr(grag_module, "GraphRAGMCPIntegration", mock_integration_class)
+
+    return mock_integration_class
+
+
+@pytest.fixture
+def isolated_graphrag_session(mock_graphrag_integration):
     """Create isolated session for testing."""
     from pathlib import Path
 
@@ -491,14 +573,18 @@ def isolated_graphrag_session():
 @pytest.fixture
 def compatibility_graphrag_setup():
     """Setup for backward compatibility testing."""
+    from unittest.mock import Mock
+
     from src.auto_coder.graphrag_mcp_integration import (
         BackwardCompatibilityLayer,
         GraphRAGMCPIntegration,
     )
 
+    # Get the mocked GraphRAGMCPIntegration (already patched by autouse fixture)
+    mock_integration = GraphRAGMCPIntegration()
+
     # Setup existing behavior for compatibility tests
-    graphrag_integration = GraphRAGMCPIntegration()
-    compat_layer = BackwardCompatibilityLayer(graphrag_integration)
+    compat_layer = BackwardCompatibilityLayer(mock_integration)
     return compat_layer
 
 
