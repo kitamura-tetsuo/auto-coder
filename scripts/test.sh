@@ -12,7 +12,7 @@ if [ $# -eq 1 ]; then
     SPECIFIC_TEST_FILE=$1
     if [ -f "$SPECIFIC_TEST_FILE" ]; then
         echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
-        pytest -v --tb=short "$SPECIFIC_TEST_FILE"
+        uv run pytest -v --tb=short "$SPECIFIC_TEST_FILE"
         exit $?
     else
         echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
@@ -23,7 +23,7 @@ fi
 # Run all tests first to see which ones fail
 echo "Running all tests..."
 TEST_OUTPUT_FILE=$(mktemp)
-pytest -v --tb=short > "$TEST_OUTPUT_FILE" 2>&1
+uv run pytest -v --tb=short > "$TEST_OUTPUT_FILE" 2>&1
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
@@ -45,7 +45,7 @@ if [ $EXIT_CODE -ne 0 ]; then
     # If we found a failed test, run only that test
     if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
         echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        pytest -v --tb=short "$FIRST_FAILED_TEST"
+        uv run pytest -v --tb=short "$FIRST_FAILED_TEST"
         RESULT=$?
         rm "$TEST_OUTPUT_FILE"
         exit $RESULT
