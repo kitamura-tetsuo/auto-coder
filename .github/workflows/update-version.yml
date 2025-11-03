@@ -2,6 +2,7 @@ name: Update Version
 
 on:
   push:
+    branches: [ "main" ]
 
 permissions:
   contents: write

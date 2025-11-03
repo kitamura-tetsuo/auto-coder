@@ -493,19 +493,31 @@ def _create_pr_for_issue(
                         github_client.add_labels_to_issue(
                             repo_name, pr_number, ["urgent"]
                         )
-                        logger.info(f"Propagated 'urgent' label from issue #{issue_number} to PR #{pr_number}")
+                        logger.info(
+                            f"Propagated 'urgent' label from issue #{issue_number} to PR #{pr_number}"
+                        )
                         # Add note to PR body about urgent status
                         try:
-                            pr_body_with_note = pr_body + "\n\n*This PR addresses an urgent issue.*"
-                            cmd.run_command([
-                                "gh", "pr", "edit", str(pr_number),
-                                "--body", pr_body_with_note
-                            ])
+                            pr_body_with_note = (
+                                pr_body + "\n\n*This PR addresses an urgent issue.*"
+                            )
+                            cmd.run_command(
+                                [
+                                    "gh",
+                                    "pr",
+                                    "edit",
+                                    str(pr_number),
+                                    "--body",
+                                    pr_body_with_note,
+                                ]
+                            )
                             logger.info(f"Added urgent note to PR #{pr_number} body")
                         except Exception as e:
                             logger.warning(f"Failed to add urgent note to PR body: {e}")
                     except Exception as e:
-                        logger.warning(f"Failed to propagate 'urgent' label to PR #{pr_number}: {e}")
+                        logger.warning(
+                            f"Failed to propagate 'urgent' label to PR #{pr_number}: {e}"
+                        )
 
                 # Verify that the PR is linked to the issue
                 closing_issues = github_client.get_pr_closing_issues(
@@ -976,7 +988,6 @@ def process_single(
                         newline_progress()
                         return result
 
-
                     # Check GitHub Actions status before processing
                     github_checks = _check_github_actions_status(
                         repo_name, pr_data, config
@@ -1037,7 +1048,9 @@ def process_single(
                     push_progress_stage("Checking status")
                     current_labels = issue_data.get("labels", [])
                     if "@auto-coder" in current_labels:
-                        msg = f"Skipping issue #{number} - already has @auto-coder label"
+                        msg = (
+                            f"Skipping issue #{number} - already has @auto-coder label"
+                        )
                         logger.info(msg)
                         result["errors"].append(msg)
                         newline_progress()

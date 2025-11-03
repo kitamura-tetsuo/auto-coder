@@ -711,14 +711,10 @@ def ensure_pushed_with_fallback(
         )
 
         if retry_push_result.success:
-            logger.info(
-                "Successfully pushed after resolving non-fast-forward error"
-            )
+            logger.info("Successfully pushed after resolving non-fast-forward error")
             return retry_push_result
         else:
-            logger.warning(
-                f"Push still failed: {retry_push_result.stderr}"
-            )
+            logger.warning(f"Push still failed: {retry_push_result.stderr}")
             # Update push_result for LLM fallback
             push_result = retry_push_result
 
@@ -794,7 +790,7 @@ def save_commit_failure_history(
     try:
         # Determine the history directory
         if repo_name:
-            # リポジトリ名から安全なディレクトリ名を生成
+            # Generate safe directory name from repository name
             safe_repo_name = repo_name.replace("/", "_")
             history_dir = Path.home() / ".auto-coder" / safe_repo_name
         else:
