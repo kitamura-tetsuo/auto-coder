@@ -574,6 +574,7 @@ def isolated_graphrag_session(mock_graphrag_integration):
 def compatibility_graphrag_setup():
     """Setup for backward compatibility testing."""
     from unittest.mock import Mock
+
     from src.auto_coder.graphrag_mcp_integration import (
         BackwardCompatibilityLayer,
         GraphRAGMCPIntegration,

@@ -42,10 +42,12 @@ class AutomationEngine:
         self.message_backend_manager = message_backend_manager
         self.cmd = CommandExecutor()
 
-        # Note: レポートディレクトリはリポジトリごとに作成されるため、
-        # ここでは作成しない（_save_reportで作成）
+        # Note: Report directories are created per repository,
+        # so we do not create one here (created in _save_report)
 
-    def _get_candidates(self, repo_name: str, max_items: int = 10) -> List[Dict[str, Any]]:
+    def _get_candidates(
+        self, repo_name: str, max_items: int = 10
+    ) -> List[Dict[str, Any]]:
         """Get PR and issue candidates for processing with priority scoring.
 
         Priority levels:
@@ -58,6 +60,8 @@ class AutomationEngine:
         """
         from .pr_processor import (
             _check_github_actions_status as _pr_check_github_actions_status,
+        )
+        from .pr_processor import (
             _extract_linked_issues_from_pr_body,
         )
 
@@ -78,18 +82,24 @@ class AutomationEngine:
             if "urgent" in current_labels:
                 priority = 3  # Highest priority for urgent PRs
             else:
-                github_checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
+                github_checks = _pr_check_github_actions_status(
+                    repo_name, pr_data, self.config
+                )
                 mergeable = pr_data.get("mergeable", True)
                 if github_checks["success"] and mergeable:
                     priority = 2  # Ready for merge
 
-            candidates.append({
-                "type": "pr",
-                "data": pr_data,
-                "priority": priority,
-                "branch_name": pr_data.get("head", {}).get("ref"),
-                "related_issues": _extract_linked_issues_from_pr_body(pr_data.get("body", "")),
-            })
+            candidates.append(
+                {
+                    "type": "pr",
+                    "data": pr_data,
+                    "priority": priority,
+                    "branch_name": pr_data.get("head", {}).get("ref"),
+                    "related_issues": _extract_linked_issues_from_pr_body(
+                        pr_data.get("body", "")
+                    ),
+                }
+            )
 
         # Get issue candidates
         issues = self.github.get_open_issues(repo_name, limit=max_items)
@@ -112,22 +122,26 @@ class AutomationEngine:
             if "urgent" in current_labels:
                 priority = 3  # Highest priority for urgent issues
 
-            candidates.append({
-                "type": "issue",
-                "data": issue_data,
-                "priority": priority,
-                "issue_number": issue_data["number"],
-            })
+            candidates.append(
+                {
+                    "type": "issue",
+                    "data": issue_data,
+                    "priority": priority,
+                    "issue_number": issue_data["number"],
+                }
+            )
 
         # Sort by priority (higher first), then by creation date (older first)
-        candidates.sort(key=lambda x: (x["priority"], x["data"].get("created_at", "")), reverse=True)
+        candidates.sort(
+            key=lambda x: (x["priority"], x["data"].get("created_at", "")), reverse=True
+        )
         return candidates
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
-        # LLMバックエンド情報を取得
+        # Get LLM backend information
         llm_backend_info = self._get_llm_backend_info()
 
         results = {
@@ -238,16 +252,16 @@ class AutomationEngine:
         if self.llm is None:
             return {"backend": None, "model": None}
 
-        # BackendManagerの場合
+        # For BackendManager case
         if hasattr(self.llm, "get_last_backend_and_model"):
             backend, model = self.llm.get_last_backend_and_model()
             return {"backend": backend, "model": model}
 
-        # 個別クライアントの場合
+        # For individual client case
         backend = None
         model = getattr(self.llm, "model_name", None)
 
-        # クラス名からバックエンド名を推測
+        # Infer backend name from class name
         class_name = self.llm.__class__.__name__
         if "Gemini" in class_name:
             backend = "gemini"
@@ -275,13 +289,13 @@ class AutomationEngine:
                       ~/.auto-coder/{repository}/ instead of the default reports/ directory.
         """
         try:
-            # リポジトリ名が指定されている場合は、リポジトリごとのディレクトリを使用
+            # If repository name is specified, use repository-specific directory
             if repo_name:
                 reports_dir = self.config.get_reports_dir(repo_name)
             else:
                 reports_dir = self.config.REPORTS_DIR
 
-            # レポートディレクトリが存在しない場合は作成
+            # Create reports directory if it doesn't exist
             os.makedirs(reports_dir, exist_ok=True)
 
             filepath = os.path.join(
@@ -304,7 +318,7 @@ class AutomationEngine:
         return _engine_pr_prompt(repo_name, pr_data, pr_diff, self.config)
 
     def get_github_actions_logs_from_url(self, url: str) -> str:
-        """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。"""
+        """Extract error blocks by fetching logs for the given GitHub Actions job URL directly."""
         return get_github_actions_logs_from_url(url)
 
     def _get_github_actions_logs(
@@ -314,16 +328,16 @@ class AutomationEngine:
         failed_checks: List[Dict[str, Any]],
         search_history: Optional[bool] = None,
     ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+        """Fetch logs for failed GitHub Actions jobs via gh api and return only the error sections.
 
         Args:
             repo_name: Repository name
             pr_data: PR data dictionary
             failed_checks: List of failed check dictionaries
-            search_history: Optional parameter to enable historical search.
-                           If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
-                           If True, searches through commit history for logs.
-                           If False, uses current state only.
+            search_history: Optional flag to enable historical search.
+                If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                If True, searches commit history for logs.
+                If False, uses current state only.
 
         Returns:
             String containing GitHub Actions logs

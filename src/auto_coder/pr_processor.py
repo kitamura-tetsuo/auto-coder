@@ -2027,13 +2027,13 @@ def _apply_local_test_fix(
 
 
 def _clean_log_line(line: str) -> str:
-    """ログ行からANSIエスケープシーケンスとタイムスタンプを削除する。
+    """Remove ANSI escape sequences and timestamps from a log line.
 
     Args:
-        line: ログ行
+        line: Log line
 
     Returns:
-        クリーンアップされたログ行
+        Cleaned log line
     """
     import re
 
@@ -2049,14 +2049,14 @@ def _clean_log_line(line: str) -> str:
 
 
 def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
-    """ログから失敗したステップのログのみを抽出する。
+    """Extract only the logs for failed steps from the full log content.
 
     Args:
-        log_content: 全体のログ内容
-        failed_step_names: 失敗したステップ名のリスト
+        log_content: Full log content
+        failed_step_names: List of failed step names
 
     Returns:
-        失敗したステップのログ
+        Concatenated logs for the failed steps
     """
     if not failed_step_names:
         # 失敗したステップが特定できない場合は、従来の方法を使用
@@ -2127,14 +2127,14 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
 
 
 def _extract_error_context(content: str, max_lines: int = 500) -> str:
-    """エラーログから重要な情報を抽出する。
+    """Extract important information from error logs.
 
     Args:
-        content: ログの内容
-        max_lines: 最大行数（デフォルト: 500）
+        content: Log content
+        max_lines: Maximum number of lines to include (default: 500)
 
     Returns:
-        抽出されたエラーコンテキスト
+        Extracted error context
     """
     if not content:
         return ""
@@ -2212,15 +2212,17 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
     if len(result_lines) > max_lines:
         # 最初の部分と最後の部分を含める
         half = max_lines // 2
-        result_lines = result_lines[:half] + ["... (中略) ..."] + result_lines[-half:]
+        result_lines = (
+            result_lines[:half] + ["... (omitted) ..."] + result_lines[-half:]
+        )
 
     return "\n".join(result_lines)
 
 
 def get_github_actions_logs_from_url(url: str) -> str:
-    """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。
+    """Extract error blocks by fetching logs for the given GitHub Actions job URL directly.
 
-    受け付けるURL形式:
+    Accepted URL format:
     https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
     """
     try:
