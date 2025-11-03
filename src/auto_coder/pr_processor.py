@@ -999,6 +999,258 @@ def _check_github_actions_status(
         return {"success": False, "error": str(e), "checks": []}
 
 
+def _check_github_actions_status_from_history(
+    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig
+) -> Dict[str, Any]:
+    """Check GitHub Actions status from historical run data when current checks aren't available.
+
+    This function searches through recent GitHub Actions runs to find checks associated with
+    the PR's branch, preferring pull_request event runs over push events, and filtering
+    runs to only include those that reference the target PR.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        pr_data: PR data dictionary containing number, head (ref, sha), etc.
+        config: AutomationConfig instance
+
+    Returns:
+        Dictionary with:
+        - success: Boolean indicating if checks passed
+        - historical_fallback: Boolean (always True for this function)
+        - total_checks: Integer count of checks
+        - checks: List of check dictionaries with details_url, conclusion, etc.
+    """
+    pr_number = pr_data["number"]
+    pr_branch = pr_data.get("head", {}).get("ref", "")
+    pr_sha = pr_data.get("head", {}).get("sha", "")
+
+    try:
+        # First, try to find runs for the specific commit
+        commit_run_list_result = cmd.run_command(
+            [
+                "gh",
+                "run",
+                "list",
+                "--commit",
+                pr_sha,
+                "--json",
+                "databaseId,headBranch,headSha,conclusion,createdAt,status,displayTitle,url,event,pullRequests",
+            ],
+            timeout=60,
+        )
+
+        commit_runs = []
+        if commit_run_list_result.returncode == 0 and commit_run_list_result.stdout.strip():
+            try:
+                commit_runs = json.loads(commit_run_list_result.stdout)
+            except json.JSONDecodeError:
+                commit_runs = []
+
+        # If no commit-specific runs found, search all runs for the PR branch
+        if not commit_runs:
+            branch_run_list_result = cmd.run_command(
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--branch",
+                    pr_branch,
+                    "--limit",
+                    "50",
+                    "--json",
+                    "databaseId,headBranch,headSha,conclusion,createdAt,status,displayTitle,url,event,pullRequests",
+                ],
+                timeout=60,
+            )
+
+            runs = []
+            if branch_run_list_result.returncode == 0 and branch_run_list_result.stdout.strip():
+                try:
+                    runs = json.loads(branch_run_list_result.stdout)
+                except json.JSONDecodeError:
+                    runs = []
+        else:
+            runs = commit_runs
+
+        if not runs:
+            return {
+                "success": False,
+                "historical_fallback": True,
+                "checks": [],
+                "total_checks": 0,
+            }
+
+        # Filter runs by event type (prefer pull_request over push)
+        pull_request_runs = [r for r in runs if r.get("event") == "pull_request"]
+        if pull_request_runs:
+            runs = pull_request_runs
+
+        # Filter to get runs associated with this PR
+        # First, check if runs have pullRequests in the list data
+        runs_with_pr_in_list = []
+        runs_without_pr_in_list = []
+
+        for run in runs:
+            pull_requests_from_list = run.get("pullRequests", [])
+            if pull_requests_from_list:
+                # If pullRequests exists in the run list, check for PR match
+                pr_match = any(pr.get("number") == pr_number for pr in pull_requests_from_list)
+                if pr_match:
+                    runs_with_pr_in_list.append(run)
+            else:
+                # If no pullRequests in run list, we'll check via run view later
+                runs_without_pr_in_list.append(run)
+
+        # Start with runs that have PR match in the list
+        candidate_runs = runs_with_pr_in_list
+
+        # If no runs with PR match in list, check runs without PR field via run view
+        if not candidate_runs and runs_without_pr_in_list:
+            # Sort by creation time (newest first) and check each run's view
+            runs_without_pr_in_list.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+
+            for run in runs_without_pr_in_list:
+                run_id = run.get("databaseId")
+                if not run_id:
+                    continue
+
+                # Check branch/sha match first before calling run view
+                branch_match = run.get("headBranch") == pr_branch
+                sha_match = run.get("headSha", "").startswith(pr_sha[:7]) if pr_sha else False
+
+                # Only check run view if branch or SHA matches
+                if branch_match or sha_match:
+                    # Get run view to check pullRequests
+                    run_view_result = cmd.run_command(
+                        ["gh", "run", "view", str(run_id), "--json", "jobs,pullRequests"],
+                        timeout=60,
+                    )
+
+                    if run_view_result.returncode == 0 and run_view_result.stdout.strip():
+                        try:
+                            run_view_data = json.loads(run_view_result.stdout)
+                            pull_requests_from_view = run_view_data.get("pullRequests", [])
+
+                            # If pullRequests field exists in view, check for PR match
+                            if pull_requests_from_view:
+                                pr_match = any(pr.get("number") == pr_number for pr in pull_requests_from_view)
+                                if pr_match:
+                                    # Add the run data plus jobs to candidate_runs
+                                    jobs = run_view_data.get("jobs", [])
+                                    candidate_runs = [
+                                        {
+                                            "run": run,
+                                            "jobs": jobs,
+                                        }
+                                    ]
+                                    break
+                            else:
+                                # If pullRequests is missing or empty, include based on branch/sha match
+                                jobs = run_view_data.get("jobs", [])
+                                candidate_runs = [
+                                    {
+                                        "run": run,
+                                        "jobs": jobs,
+                                        "url": run.get("url", ""),  # Ensure URL is preserved
+                                    }
+                                ]
+                                break
+                        except json.JSONDecodeError:
+                            continue
+
+        # If we have candidate runs from list data, get their job details
+        if candidate_runs and isinstance(candidate_runs[0], dict) and "run" in candidate_runs[0]:
+            # Already have run view data
+            selected_run_data = candidate_runs[0]
+            selected_run = selected_run_data["run"]
+            jobs = selected_run_data["jobs"]
+        elif candidate_runs:
+            # Get the most recent run's details
+            candidate_runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+            selected_run = candidate_runs[0]
+
+            run_id = selected_run.get("databaseId")
+            run_url = selected_run.get("url", "")
+            # Ensure URL has trailing slash for consistency
+            if run_url and not run_url.endswith("/"):
+                run_url = run_url + "/"
+
+            # Get job details from run view
+            run_view_result = cmd.run_command(
+                ["gh", "run", "view", str(run_id), "--json", "jobs,pullRequests"],
+                timeout=60,
+            )
+
+            jobs = []
+            if run_view_result.returncode == 0 and run_view_result.stdout.strip():
+                try:
+                    run_view_data = json.loads(run_view_result.stdout)
+                    jobs = run_view_data.get("jobs", [])
+                except json.JSONDecodeError:
+                    pass
+        else:
+            # No matching runs found
+            return {
+                "success": False,
+                "historical_fallback": True,
+                "checks": [],
+                "total_checks": 0,
+            }
+
+        # Convert jobs to check format
+        checks = []
+        # Check if candidate_runs[0] has "url" key directly (from run view processing)
+        if isinstance(candidate_runs[0], dict) and "url" in candidate_runs[0]:
+            run_url = candidate_runs[0]["url"]
+        elif isinstance(candidate_runs[0], dict) and "run" in candidate_runs[0]:
+            # Nested structure from run view processing
+            selected_run_data = candidate_runs[0]
+            selected_run = selected_run_data["run"]
+            jobs = selected_run_data["jobs"]
+            run_url = selected_run.get("url", "")
+        else:
+            # Simple run dict
+            selected_run = candidate_runs[0]
+            run_url = selected_run.get("url", "")
+
+        # Ensure URL has trailing slash for consistency
+        if run_url and not run_url.endswith("/"):
+            run_url = run_url + "/"
+
+        for job in jobs:
+            check_info = {
+                "name": job.get("name", "CI"),
+                "conclusion": job.get("conclusion", "unknown"),
+                "details_url": run_url,
+            }
+            checks.append(check_info)
+
+        # Determine overall success
+        all_passed = all(
+            check.get("conclusion") in ["success", "skipped", None]
+            for check in checks
+        )
+
+        return {
+            "success": all_passed,
+            "historical_fallback": True,
+            "checks": checks,
+            "total_checks": len(checks),
+        }
+
+    except Exception as e:
+        logger.error(
+            f"Error checking GitHub Actions history for PR #{pr_number}: {e}"
+        )
+        return {
+            "success": False,
+            "historical_fallback": True,
+            "error": str(e),
+            "checks": [],
+            "total_checks": 0,
+        }
+
+
 def _handle_pr_merge(
     repo_name: str,
     pr_data: Dict[str, Any],
