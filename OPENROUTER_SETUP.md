@@ -1,12 +1,12 @@
-# OpenRouter設定ガイド
+# OpenRouter Setup Guide
 
-## 概要
-Codex CLIでOpenRouter経由でQwen3 Coderを使用するための設定が完了しました。
+## Overview
+Configuration has been completed to use Qwen3 Coder via OpenRouter with the Codex CLI.
 
-## 設定内容
+## Configuration Details
 
-### 1. 環境変数の設定
-以下の環境変数が`~/.bashrc`に追加されました：
+### 1. Environment Variables
+The following environment variables have been added to `~/.bashrc`:
 
 ```bash
 export OPENAI_API_KEY="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"
@@ -14,8 +14,8 @@ export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
 export OPENAI_MODEL="qwen/qwen3-coder:free"
 ```
 
-### 2. Codex設定ファイル（~/.codex/config.toml）
-以下の設定が追加されました：
+### 2. Codex Configuration File (~/.codex/config.toml)
+The following configuration has been added:
 
 ```toml
 model = "qwen/qwen3-coder:free"
@@ -28,14 +28,14 @@ base_url = "https://openrouter.ai/api/v1"
 env_key = "OPENAI_API_KEY"
 ```
 
-## 使用方法
+## Usage
 
-### 現在のセッションで環境変数を有効化
+### Enable Environment Variables in Current Session
 ```bash
 source ~/.bashrc
 ```
 
-または
+Or
 
 ```bash
 export OPENAI_API_KEY="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"
@@ -43,59 +43,59 @@ export OPENAI_BASE_URL="https://openrouter.ai/api/v1"
 export OPENAI_MODEL="qwen/qwen3-coder:free"
 ```
 
-### Codex CLIの実行
-設定が完了したので、通常通りCodexを使用できます：
+### Running Codex CLI
+Now that configuration is complete, you can use Codex normally:
 
 ```bash
 codex "Hello, how are you?"
 ```
 
-または
+Or
 
 ```bash
 codex exec "Write a Python function to calculate fibonacci numbers"
 ```
 
-## 設定の確認
+## Verification
 
-### 環境変数の確認
+### Verify Environment Variables
 ```bash
 env | grep OPENAI
 ```
 
-### Codex設定の確認
+### Verify Codex Configuration
 ```bash
 cat ~/.codex/config.toml
 ```
 
-### Codexバージョンの確認
+### Verify Codex Version
 ```bash
 codex --version
 ```
 
-## バックアップ
-元の設定ファイルは以下にバックアップされています：
+## Backup
+The original configuration file has been backed up to:
 - `~/.codex/config.toml.backup`
 
-## トラブルシューティング
+## Troubleshooting
 
-### 設定が反映されない場合
-1. 新しいターミナルセッションを開く
-2. または `source ~/.bashrc` を実行
+### If Configuration Is Not Applied
+1. Open a new terminal session
+2. Or run `source ~/.bashrc`
 
-### モデルプロバイダーを変更したい場合
-`~/.codex/config.toml`の以下の行を編集：
+### To Change Model Provider
+Edit the following line in `~/.codex/config.toml`:
 ```toml
-model_provider = "openrouter"  # 他のプロバイダーに変更可能
+model_provider = "openrouter"  # Can be changed to other providers
 ```
 
-### 別のモデルを使用したい場合
-`~/.codex/config.toml`の以下の行を編集：
+### To Use a Different Model
+Edit the following line in `~/.codex/config.toml`:
 ```toml
-model = "qwen/qwen3-coder:free"  # 他のOpenRouterモデルに変更可能
+model = "qwen/qwen3-coder:free"  # Can be changed to other OpenRouter models
 ```
 
-## 参考リンク
+## Reference Links
 - [Codex CLI Configuration Documentation](https://developers.openai.com/codex/local-config/)
 - [OpenRouter Models](https://openrouter.ai/models)
 - [Codex GitHub Repository](https://github.com/openai/codex)
