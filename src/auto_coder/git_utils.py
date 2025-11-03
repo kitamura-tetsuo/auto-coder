@@ -339,6 +339,13 @@ def git_checkout_branch(
                 f"Failed to commit changes before checkout: {commit_result.stderr}"
             )
 
+    # Check if branch exists when creating a new branch
+    if create_new:
+        if not branch_exists(branch_name, cwd=cwd):
+            logger.debug(f"Branch '{branch_name}' does not exist, will create it")
+        else:
+            logger.debug(f"Branch '{branch_name}' already exists")
+
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
     if create_new:
