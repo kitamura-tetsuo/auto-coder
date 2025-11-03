@@ -768,3 +768,16 @@ def resolve_package_lock_conflicts(
         actions.append(f"Error resolving package-lock conflicts: {e}")
 
     return actions
+
+
+def _get_merge_conflict_info() -> str:
+    """Get information about merge conflicts."""
+    try:
+        result = cmd.run_command(["git", "status", "--porcelain"])
+        return (
+            result.stdout
+            if result.success
+            else "Could not get merge conflict information"
+        )
+    except Exception as e:
+        return f"Error getting conflict info: {e}"

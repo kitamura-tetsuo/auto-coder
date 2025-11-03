@@ -26,8 +26,14 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
+      - name: Install CPU-only PyTorch (avoid CUDA packages in CI)
+        run: |
+          # Install CPU-only PyTorch to avoid downloading large CUDA packages
+          pip install --no-cache-dir torch==2.9.0+cpu --index-url https://download.pytorch.org/whl/cpu
+
       - name: Sync dependencies with uv
         run: |
+          # Re-sync to install other dependencies while keeping CPU-only torch
           uv sync --dev --extra test
 
       - name: Run tests with uv

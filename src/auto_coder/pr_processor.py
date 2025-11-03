@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from .automation_config import AutomationConfig
 from .conflict_resolver import (
+    _get_merge_conflict_info,
     resolve_merge_conflicts_with_llm,
     resolve_pr_merge_conflicts,
 )
@@ -1346,19 +1347,6 @@ def _update_with_base_branch(
         actions.append(f"Error updating with base branch for PR #{pr_number}: {e}")
 
     return actions
-
-
-def _get_merge_conflict_info() -> str:
-    """Get information about merge conflicts."""
-    try:
-        result = cmd.run_command(["git", "status", "--porcelain"])
-        return (
-            result.stdout
-            if result.success
-            else "Could not get merge conflict information"
-        )
-    except Exception as e:
-        return f"Error getting conflict info: {e}"
 
 
 def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
