@@ -7,12 +7,28 @@ elif [ -f "../venv/bin/activate" ]; then
     source ../venv/bin/activate
 fi
 
+# Install dependencies using uv if available, otherwise use pip
+if command -v uv &> /dev/null; then
+    echo "Installing dependencies with uv..."
+    uv sync --dev --extra test
+elif command -v pip &> /dev/null; then
+    echo "Installing dependencies with pip..."
+    pip install -e ".[dev,test]"
+else
+    echo "Error: Neither uv nor pip found"
+    exit 1
+fi
+
 # Check if a specific test file is provided as an argument
 if [ $# -eq 1 ]; then
     SPECIFIC_TEST_FILE=$1
     if [ -f "$SPECIFIC_TEST_FILE" ]; then
         echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
-        pytest -v --tb=short "$SPECIFIC_TEST_FILE"
+        if command -v uv &> /dev/null; then
+            uv run pytest -v --tb=short "$SPECIFIC_TEST_FILE"
+        else
+            pytest -v --tb=short "$SPECIFIC_TEST_FILE"
+        fi
         exit $?
     else
         echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
@@ -23,7 +39,23 @@ fi
 # Run all tests first to see which ones fail
 echo "Running all tests..."
 TEST_OUTPUT_FILE=$(mktemp)
-pytest -v --tb=short > "$TEST_OUTPUT_FILE" 2>&1
+
+# Install dependencies if not already done (for the "run all tests" path)
+if ! python -c "import auto_coder" &> /dev/null; then
+    if command -v uv &> /dev/null; then
+        echo "Installing dependencies with uv..."
+        uv sync --dev --extra test
+    elif command -v pip &> /dev/null; then
+        echo "Installing dependencies with pip..."
+        pip install -e ".[dev,test]"
+    fi
+fi
+
+if command -v uv &> /dev/null; then
+    uv run pytest -v --tb=short > "$TEST_OUTPUT_FILE" 2>&1
+else
+    pytest -v --tb=short > "$TEST_OUTPUT_FILE" 2>&1
+fi
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
@@ -45,7 +77,11 @@ if [ $EXIT_CODE -ne 0 ]; then
     # If we found a failed test, run only that test
     if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
         echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        pytest -v --tb=short "$FIRST_FAILED_TEST"
+        if command -v uv &> /dev/null; then
+            uv run pytest -v --tb=short "$FIRST_FAILED_TEST"
+        else
+            pytest -v --tb=short "$FIRST_FAILED_TEST"
+        fi
         RESULT=$?
         rm "$TEST_OUTPUT_FILE"
         exit $RESULT
