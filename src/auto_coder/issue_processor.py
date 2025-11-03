@@ -1057,7 +1057,6 @@ def process_single(
                         newline_progress()
                         return result
 
-
                     # Check GitHub Actions status before processing
                     github_checks = _check_github_actions_status(
                         repo_name, pr_data, config
@@ -1118,7 +1117,9 @@ def process_single(
                     push_progress_stage("Checking status")
                     current_labels = issue_data.get("labels", [])
                     if "@auto-coder" in current_labels:
-                        msg = f"Skipping issue #{number} - already has @auto-coder label"
+                        msg = (
+                            f"Skipping issue #{number} - already has @auto-coder label"
+                        )
                         logger.info(msg)
                         result["errors"].append(msg)
                         newline_progress()

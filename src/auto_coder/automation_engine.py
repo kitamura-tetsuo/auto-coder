@@ -304,6 +304,7 @@ class AutomationEngine:
         return _pr_get_github_actions_logs(
             repo_name, self.config, failed_checks, search_history=search_history
         )
+
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
         return _pr_get_diff(repo_name, pr_number, self.config)
@@ -876,7 +877,7 @@ DO NOT include git commit or push commands in your response."""
                 ["git", "log", "--oneline", f"-{search_depth}"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
 
             if result.returncode != 0:
@@ -886,7 +887,7 @@ DO NOT include git commit or push commands in your response."""
             commits_with_actions = []
 
             # Parse the output to extract commit hashes and messages
-            lines = result.stdout.strip().split('\n')
+            lines = result.stdout.strip().split("\n")
 
             for line in lines:
                 if not line.strip():
@@ -910,61 +911,88 @@ DO NOT include git commit or push commands in your response."""
                 # Use gh CLI to list workflow runs for this commit
                 try:
                     run_result = subprocess.run(
-                        [
-                            "gh", "run", "list",
-                            "--commit", commit_hash,
-                            "--limit", "1"
-                        ],
+                        ["gh", "run", "list", "--commit", commit_hash, "--limit", "1"],
                         capture_output=True,
                         text=True,
-                        timeout=10
+                        timeout=10,
                     )
 
                     # If no runs found for this commit, skip it
-                    if run_result.returncode != 0 or "no runs found" in run_result.stdout.lower():
-                        logger.debug(f"Commit {commit_hash[:8]}: No GitHub Actions runs found")
+                    if (
+                        run_result.returncode != 0
+                        or "no runs found" in run_result.stdout.lower()
+                    ):
+                        logger.debug(
+                            f"Commit {commit_hash[:8]}: No GitHub Actions runs found"
+                        )
                         continue
 
                     # Check if there are any runs (success or failure)
                     # Parse the output to check for completed runs
-                    run_lines = run_result.stdout.strip().split('\n')
+                    run_lines = run_result.stdout.strip().split("\n")
 
                     actions_status = None
                     actions_url = ""
 
                     for run_line in run_lines:
-                        if not run_line.strip() or run_line.startswith("STATUS") or run_line.startswith("WORKFLOW"):
+                        if (
+                            not run_line.strip()
+                            or run_line.startswith("STATUS")
+                            or run_line.startswith("WORKFLOW")
+                        ):
                             continue
 
                         # Parse tab-separated format
-                        if '\t' in run_line:
-                            parts = run_line.split('\t')
+                        if "\t" in run_line:
+                            parts = run_line.split("\t")
                             if len(parts) >= 3:
                                 status = parts[1].strip().lower()
                                 url = parts[3] if len(parts) > 3 else ""
 
                                 # Only include commits with completed runs (success or failure)
                                 # Skip queued or in-progress runs
-                                if status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
+                                if status in [
+                                    "success",
+                                    "completed",
+                                    "failure",
+                                    "failed",
+                                    "cancelled",
+                                    "pass",
+                                ]:
                                     actions_status = status
                                     actions_url = url
                                     break
 
                     # Only add commits that have completed Action runs
-                    if actions_status and actions_status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
-                        commits_with_actions.append({
-                            "commit_hash": commit_hash,
-                            "message": commit_message,
-                            "actions_status": actions_status,
-                            "actions_url": actions_url
-                        })
-                        logger.info(f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'")
+                    if actions_status and actions_status in [
+                        "success",
+                        "completed",
+                        "failure",
+                        "failed",
+                        "cancelled",
+                        "pass",
+                    ]:
+                        commits_with_actions.append(
+                            {
+                                "commit_hash": commit_hash,
+                                "message": commit_message,
+                                "actions_status": actions_status,
+                                "actions_url": actions_url,
+                            }
+                        )
+                        logger.info(
+                            f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'"
+                        )
 
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"Timeout checking Actions for commit {commit_hash[:8]}")
+                    logger.warning(
+                        f"Timeout checking Actions for commit {commit_hash[:8]}"
+                    )
                     continue
 
-            logger.info(f"Found {len(commits_with_actions)} commits with GitHub Actions")
+            logger.info(
+                f"Found {len(commits_with_actions)} commits with GitHub Actions"
+            )
             return commits_with_actions
 
         except Exception as e:

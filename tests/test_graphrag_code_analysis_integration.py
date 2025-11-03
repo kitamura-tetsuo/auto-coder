@@ -57,7 +57,7 @@ class TestGraphRAGCodeAnalysisIntegration:
             def path_new(cls, *args, **kwargs):
                 if args and args[0] == "__file__":
                     return Path(fake_manager_file)
-                return Path(*args, **kwargs)
+                return Path.__new__(cls, *args, **kwargs)
 
             mock_path.side_effect = path_new
 

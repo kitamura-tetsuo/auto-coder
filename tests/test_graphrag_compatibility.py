@@ -1,9 +1,10 @@
 """Tests for GraphRAG backward compatibility layer."""
 
-import pytest
-from unittest.mock import Mock, MagicMock
-from pathlib import Path
 import time
+from pathlib import Path
+from unittest.mock import MagicMock, Mock
+
+import pytest
 
 
 class TestBackwardCompatibilityLayer:
