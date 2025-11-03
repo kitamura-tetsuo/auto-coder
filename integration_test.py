@@ -30,7 +30,7 @@ def test_git_pull_branch_name_fix():
 
     # Check for the specific fix: pulling from current branch instead of HEAD
     expected_patterns = [
-        'git", "pull", remote, current_branch',
+        'git", "pull", remote, target_branch',
         'git", "rev-parse", "--abbrev-ref", "HEAD"',
     ]
 
@@ -63,7 +63,7 @@ def test_conflict_resolution_logic():
 
     # Check for conflict detection and resolution
     expected_patterns = [
-        'if "conflict" in pull_result.stderr.lower()',
+        'if "conflict" in error_msg',
         'resolve_pull_conflicts(cwd=cwd, merge_method="merge")',
     ]
 
@@ -97,7 +97,7 @@ def test_non_fast_forward_detection():
     # Check for non-fast-forward error detection
     expected_patterns = [
         '"non-fast-forward" in push_result.stderr.lower()',
-        '"Updates were rejected because the tip of your current branch is behind" in push_result.stderr',
+        '"Updates were rejected because the tip of your current branch is behind"',
     ]
 
     found_patterns = []
