@@ -17,7 +17,7 @@ from auto_coder.backward_compatibility_layer import (
     BackwardCompatibilityLayer,
     CompatibilityConfig,
     CompatibilityMode,
-    get_compatibility_layer
+    get_compatibility_layer,
 )
 
 
@@ -27,8 +27,7 @@ def test_basic_session_id_extraction():
 
     # Test with explicit session_id
     session_id, is_legacy = layer.extract_session_id(
-        session_id="test_repo_123",
-        repo_path="/test/path"
+        session_id="test_repo_123", repo_path="/test/path"
     )
     assert session_id == "test_repo_123"
     assert not is_legacy
@@ -36,8 +35,7 @@ def test_basic_session_id_extraction():
 
     # Test with auto-generated session_id
     session_id, is_legacy = layer.extract_session_id(
-        session_id=None,
-        repo_path="/test/path"
+        session_id=None, repo_path="/test/path"
     )
     assert session_id.startswith("repo_")
     assert is_legacy
@@ -47,8 +45,7 @@ def test_basic_session_id_extraction():
     config = CompatibilityConfig(mode=CompatibilityMode.LEGACY)
     layer = BackwardCompatibilityLayer(config)
     session_id, is_legacy = layer.extract_session_id(
-        session_id=None,
-        repo_path="/test/path"
+        session_id=None, repo_path="/test/path"
     )
     assert session_id == "default"
     assert is_legacy
@@ -139,12 +136,13 @@ if __name__ == "__main__":
         test_environment_configuration()
         test_global_instance()
 
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print("All tests passed! ✓")
-        print("="*50)
+        print("=" * 50)
 
     except Exception as e:
         print(f"\n✗ Test failed: {e}")
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

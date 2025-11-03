@@ -22,7 +22,9 @@ class BuildGraphBuilder:
 
     def build_graph_builder(self) -> None:
         """Build TypeScript graph-builder using npm."""
-        graph_builder_dir = Path(__file__).parent / "src" / "auto_coder" / "graph_builder"
+        graph_builder_dir = (
+            Path(__file__).parent / "src" / "auto_coder" / "graph_builder"
+        )
 
         if not graph_builder_dir.exists():
             print(
@@ -134,4 +136,3 @@ setup(
         "sdist": CustomSdist,
     }
 )
-

@@ -401,6 +401,7 @@ class MCPServerManager:
             return result
         except Exception as e:
             logger.error(f"Failed to add Windsurf/Claude config for {server_name}: {e}")
+            return False
 
     def _add_claude_config(self, server_name: str, install_path: Path) -> bool:
         """Add MCP server configuration to Claude CLI config.

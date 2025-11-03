@@ -30,7 +30,15 @@ class GitHubSubIssueAPI:
         """
         try:
             result = subprocess.run(
-                ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+                [
+                    "gh",
+                    "repo",
+                    "view",
+                    "--json",
+                    "nameWithOwner",
+                    "--jq",
+                    ".nameWithOwner",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -82,7 +90,18 @@ class GitHubSubIssueAPI:
         """
         try:
             result = subprocess.run(
-                ["gh", "issue", "view", str(issue_number), "--repo", repo, "--json", "id", "--jq", ".id"],
+                [
+                    "gh",
+                    "issue",
+                    "view",
+                    str(issue_number),
+                    "--repo",
+                    repo,
+                    "--json",
+                    "id",
+                    "--jq",
+                    ".id",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
@@ -91,9 +110,13 @@ class GitHubSubIssueAPI:
             logger.debug(f"Issue #{issue_number} ID: {issue_id}")
             return issue_id
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to get issue ID for #{issue_number}: {e.stderr}")
+            raise RuntimeError(
+                f"Failed to get issue ID for #{issue_number}: {e.stderr}"
+            )
 
-    def add_sub_issue(self, parent_ref: str, sub_issue_ref: str, replace_parent: bool = False) -> Dict[str, Any]:
+    def add_sub_issue(
+        self, parent_ref: str, sub_issue_ref: str, replace_parent: bool = False
+    ) -> Dict[str, Any]:
         """既存の issue を sub-issue として追加.
 
         Args:
@@ -131,13 +154,23 @@ class GitHubSubIssueAPI:
 
         try:
             result = subprocess.run(
-                ["gh", "api", "graphql", "-H", "GraphQL-Features: sub_issues", "-f", f"query={query}"],
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-H",
+                    "GraphQL-Features: sub_issues",
+                    "-f",
+                    f"query={query}",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
             )
             data = json.loads(result.stdout)
-            logger.info(f"Added sub-issue #{sub_issue_number} to parent #{parent_number}")
+            logger.info(
+                f"Added sub-issue #{sub_issue_number} to parent #{parent_number}"
+            )
             return data
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to add sub-issue: {e.stderr}")
@@ -178,18 +211,30 @@ class GitHubSubIssueAPI:
 
         try:
             result = subprocess.run(
-                ["gh", "api", "graphql", "-H", "GraphQL-Features: sub_issues", "-f", f"query={query}"],
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-H",
+                    "GraphQL-Features: sub_issues",
+                    "-f",
+                    f"query={query}",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
             )
             data = json.loads(result.stdout)
-            logger.info(f"Removed sub-issue #{sub_issue_number} from parent #{parent_number}")
+            logger.info(
+                f"Removed sub-issue #{sub_issue_number} from parent #{parent_number}"
+            )
             return data
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to remove sub-issue: {e.stderr}")
 
-    def list_sub_issues(self, parent_ref: str, state: str = "OPEN") -> List[Dict[str, Any]]:
+    def list_sub_issues(
+        self, parent_ref: str, state: str = "OPEN"
+    ) -> List[Dict[str, Any]]:
         """sub-issue の一覧を取得.
 
         Args:
@@ -236,20 +281,28 @@ class GitHubSubIssueAPI:
 
         try:
             result = subprocess.run(
-                ["gh", "api", "graphql", "-H", "GraphQL-Features: sub_issues", "-f", f"query={query}"],
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-H",
+                    "GraphQL-Features: sub_issues",
+                    "-f",
+                    f"query={query}",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
             )
             data = json.loads(result.stdout)
-            
+
             issue_data = data.get("data", {}).get("repository", {}).get("issue", {})
             sub_issues = issue_data.get("subIssues", {}).get("nodes", [])
-            
+
             # 状態でフィルタリング
             if state != "ALL":
                 sub_issues = [si for si in sub_issues if si.get("state") == state]
-            
+
             logger.debug(f"Found {len(sub_issues)} sub-issues for #{parent_number}")
             return sub_issues
         except subprocess.CalledProcessError as e:
@@ -282,14 +335,14 @@ class GitHubSubIssueAPI:
 
         # まず issue を作成
         cmd = ["gh", "issue", "create", "--repo", parent_repo, "--title", title]
-        
+
         if body:
             cmd.extend(["--body", body])
-        
+
         if labels:
             for label in labels:
                 cmd.extend(["--label", label])
-        
+
         if assignees:
             for assignee in assignees:
                 cmd.extend(["--assignee", assignee])
@@ -305,8 +358,10 @@ class GitHubSubIssueAPI:
             # URL から issue 番号を抽出
             match = re.search(r"/issues/(\d+)", issue_url)
             if not match:
-                raise RuntimeError(f"Failed to extract issue number from URL: {issue_url}")
-            
+                raise RuntimeError(
+                    f"Failed to extract issue number from URL: {issue_url}"
+                )
+
             issue_number = int(match.group(1))
             logger.info(f"Created issue #{issue_number}: {title}")
 
@@ -320,4 +375,3 @@ class GitHubSubIssueAPI:
             }
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Failed to create sub-issue: {e.stderr}")
-

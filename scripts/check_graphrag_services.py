@@ -42,18 +42,12 @@ def run_docker_command(args: list[str]) -> subprocess.CompletedProcess:
     try:
         # まずsudoなしで試行
         return subprocess.run(
-            ["docker"] + args,
-            capture_output=True,
-            text=True,
-            check=True
+            ["docker"] + args, capture_output=True, text=True, check=True
         )
     except (subprocess.CalledProcessError, PermissionError):
         # 失敗したらsudoで試行
         return subprocess.run(
-            ["sudo", "docker"] + args,
-            capture_output=True,
-            text=True,
-            check=True
+            ["sudo", "docker"] + args, capture_output=True, text=True, check=True
         )
 
 
@@ -62,18 +56,18 @@ def get_current_container_network() -> str | None:
     try:
         # ホスト名を取得（コンテナIDまたはコンテナ名）
         hostname = subprocess.run(
-            ["hostname"],
-            capture_output=True,
-            text=True,
-            check=True
+            ["hostname"], capture_output=True, text=True, check=True
         ).stdout.strip()
 
         # コンテナのネットワーク情報を取得
-        result = run_docker_command([
-            "inspect", "-f",
-            "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}",
-            hostname
-        ])
+        result = run_docker_command(
+            [
+                "inspect",
+                "-f",
+                "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}}{{end}}",
+                hostname,
+            ]
+        )
         network = result.stdout.strip()
         return network if network else None
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -84,11 +78,14 @@ def ensure_container_on_network(container_name: str, network: str) -> bool:
     """コンテナが指定されたネットワークに接続されていることを確認し、必要に応じて接続"""
     try:
         # コンテナが既にネットワークに接続されているか確認
-        result = run_docker_command([
-            "inspect", "-f",
-            "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}",
-            container_name
-        ])
+        result = run_docker_command(
+            [
+                "inspect",
+                "-f",
+                "{{range $net, $conf := .NetworkSettings.Networks}}{{$net}} {{end}}",
+                container_name,
+            ]
+        )
         networks = result.stdout.strip().split()
 
         if network in networks:
@@ -140,10 +137,12 @@ def check_neo4j_direct():
         uris.append("bolt://auto-coder-neo4j:7687")
 
     # 通常のlocalhostアクセスも試行
-    uris.extend([
-        "bolt://localhost:7687",
-        "bolt://127.0.0.1:7687",
-    ])
+    uris.extend(
+        [
+            "bolt://localhost:7687",
+            "bolt://127.0.0.1:7687",
+        ]
+    )
 
     # コンテナ外の場合もコンテナ名を試行
     if not in_container:
@@ -160,7 +159,9 @@ def check_neo4j_direct():
         logger.info(f"ユーザー: {user}")
 
         try:
-            driver = GraphDatabase.driver(uri, auth=(user, password), max_connection_lifetime=3600)
+            driver = GraphDatabase.driver(
+                uri, auth=(user, password), max_connection_lifetime=3600
+            )
             # 接続テスト
             driver.verify_connectivity()
             logger.info(f"✅ 接続成功: {uri}")
@@ -181,14 +182,18 @@ def check_neo4j_direct():
         logger.info("2. Neo4j が起動するまで待つ:")
         logger.info("   docker logs auto-coder-neo4j")
         logger.info("3. コンテナ内から接続テスト:")
-        logger.info("   docker exec auto-coder-neo4j cypher-shell -u neo4j -p password 'RETURN 1;'")
+        logger.info(
+            "   docker exec auto-coder-neo4j cypher-shell -u neo4j -p password 'RETURN 1;'"
+        )
         return False
 
     try:
 
         with driver.session() as session:
             # 1. データベースバージョン確認
-            result = session.run("CALL dbms.components() YIELD name, versions RETURN name, versions")
+            result = session.run(
+                "CALL dbms.components() YIELD name, versions RETURN name, versions"
+            )
             for record in result:
                 logger.info(f"✅ Neo4j 接続成功: {record['name']} {record['versions']}")
 
@@ -205,7 +210,7 @@ def check_neo4j_direct():
                 RETURN p
                 """,
                 name="Test User",
-                role="Developer"
+                role="Developer",
             )
             node = result.single()["p"]
             logger.info(f"✅ ノード作成成功: {dict(node)}")
@@ -217,7 +222,7 @@ def check_neo4j_direct():
                 MATCH (p:Person {name: $name})
                 RETURN p
                 """,
-                name="Test User"
+                name="Test User",
             )
             for record in result:
                 logger.info(f"🔍 検索結果: {dict(record['p'])}")
@@ -231,7 +236,7 @@ def check_neo4j_direct():
                 RETURN p, r, proj
                 """,
                 name="Test User",
-                project="GraphRAG Integration"
+                project="GraphRAG Integration",
             )
             record = result.single()
             logger.info(f"✅ リレーションシップ作成成功")
@@ -246,10 +251,12 @@ def check_neo4j_direct():
                 WHERE p.name = $name
                 RETURN p.name as person, type(r) as relationship, proj.name as project
                 """,
-                name="Test User"
+                name="Test User",
             )
             for record in result:
-                logger.info(f"🔍 パス: {record['person']} -{record['relationship']}-> {record['project']}")
+                logger.info(
+                    f"🔍 パス: {record['person']} -{record['relationship']}-> {record['project']}"
+                )
 
             # 7. クリーンアップ
             logger.info("\n--- クリーンアップ ---")
@@ -258,7 +265,7 @@ def check_neo4j_direct():
                 MATCH (p:Person {name: $name})
                 DETACH DELETE p
                 """,
-                name="Test User"
+                name="Test User",
             )
             logger.info("✅ テストデータ削除完了")
 
@@ -269,6 +276,7 @@ def check_neo4j_direct():
     except Exception as e:
         logger.error(f"❌ Neo4j テスト実行エラー: {e}")
         import traceback
+
         logger.error(traceback.format_exc())
         if driver:
             driver.close()
@@ -287,7 +295,7 @@ def check_qdrant_direct(test_mode: bool = False):
 
     try:
         from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, VectorParams, PointStruct
+        from qdrant_client.models import Distance, PointStruct, VectorParams
     except ImportError:
         logger.error("qdrant-client パッケージがインストールされていません")
         logger.info("インストール: pip install qdrant-client")
@@ -314,10 +322,12 @@ def check_qdrant_direct(test_mode: bool = False):
         urls.append("http://auto-coder-qdrant:6333")
 
     # 通常のlocalhostアクセスも試行
-    urls.extend([
-        "http://localhost:6333",
-        "http://127.0.0.1:6333",
-    ])
+    urls.extend(
+        [
+            "http://localhost:6333",
+            "http://127.0.0.1:6333",
+        ]
+    )
 
     # コンテナ外の場合もコンテナ名を試行
     if not in_container:
@@ -349,7 +359,9 @@ def check_qdrant_direct(test_mode: bool = False):
         logger.info("2. Qdrant が起動するまで待つ:")
         logger.info("   docker logs auto-coder-qdrant")
         logger.info("3. コンテナ内から接続テスト:")
-        logger.info("   docker exec auto-coder-qdrant wget -O- http://localhost:6333/collections")
+        logger.info(
+            "   docker exec auto-coder-qdrant wget -O- http://localhost:6333/collections"
+        )
         return False
 
     try:
@@ -368,8 +380,12 @@ def check_qdrant_direct(test_mode: bool = False):
                 col_info = client.get_collection(col.name)
                 logger.info(f"     ベクトル数: {col_info.points_count}")
                 if col_info.points_count > 0:
-                    logger.info(f"     ベクトル次元: {col_info.config.params.vectors.size}")
-                    logger.info(f"     距離関数: {col_info.config.params.vectors.distance}")
+                    logger.info(
+                        f"     ベクトル次元: {col_info.config.params.vectors.size}"
+                    )
+                    logger.info(
+                        f"     距離関数: {col_info.config.params.vectors.distance}"
+                    )
             except Exception as e:
                 logger.warning(f"     コレクション情報取得エラー: {e}")
 
@@ -384,7 +400,7 @@ def check_qdrant_direct(test_mode: bool = False):
                         collection_name="code_embeddings",
                         limit=3,
                         with_payload=True,
-                        with_vectors=False
+                        with_vectors=False,
                     )
 
                     logger.info(f"📊 サンプルデータ (最大3件):")
@@ -421,12 +437,12 @@ def check_qdrant_direct(test_mode: bool = False):
                 PointStruct(
                     id=1,
                     vector=[0.1, 0.2, 0.3, 0.4],
-                    payload={"name": "Test Document 1", "type": "test"}
+                    payload={"name": "Test Document 1", "type": "test"},
                 ),
                 PointStruct(
                     id=2,
                     vector=[0.2, 0.3, 0.4, 0.5],
-                    payload={"name": "Test Document 2", "type": "test"}
+                    payload={"name": "Test Document 2", "type": "test"},
                 ),
             ]
             client.upsert(collection_name=collection_name, points=points)
@@ -443,9 +459,7 @@ def check_qdrant_direct(test_mode: bool = False):
             logger.info("\n--- 類似検索テスト ---")
             search_vector = [0.15, 0.25, 0.35, 0.45]
             search_results = client.search(
-                collection_name=collection_name,
-                query_vector=search_vector,
-                limit=2
+                collection_name=collection_name, query_vector=search_vector, limit=2
             )
             logger.info(f"🔍 検索ベクトル: {search_vector}")
             logger.info(f"検索結果 (上位 {len(search_results)} 件):")
@@ -464,6 +478,7 @@ def check_qdrant_direct(test_mode: bool = False):
     except Exception as e:
         logger.error(f"❌ Qdrant テスト実行エラー: {e}")
         import traceback
+
         logger.error(traceback.format_exc())
         return False
 
@@ -475,8 +490,8 @@ def check_graphrag_mcp():
     logger.info("=" * 80)
 
     try:
-        from auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
         from auto_coder.graphrag_index_manager import GraphRAGIndexManager
+        from auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
     except ImportError as e:
         logger.error(f"GraphRAG MCP モジュールのインポートエラー: {e}")
         return False
@@ -499,7 +514,7 @@ def check_graphrag_mcp():
         logger.info(f"Neo4j: {status['neo4j']}")
         logger.info(f"Qdrant: {status['qdrant']}")
 
-        if status['neo4j'] != 'running' or status['qdrant'] != 'running':
+        if status["neo4j"] != "running" or status["qdrant"] != "running":
             logger.warning("⚠️  コンテナが起動していません。起動を試みます...")
             if not integration.docker_manager.start():
                 logger.error("❌ コンテナの起動に失敗しました")
@@ -519,9 +534,12 @@ def check_graphrag_mcp():
 
         # カレントディレクトリが空の場合はサンプルデータを作成
         if is_empty:
-            logger.info("📝 カレントディレクトリが空です。サンプルデータを作成します...")
+            logger.info(
+                "📝 カレントディレクトリが空です。サンプルデータを作成します..."
+            )
             sample_file = current_dir / "sample.py"
-            sample_file.write_text("""# Sample Python file for GraphRAG indexing test
+            sample_file.write_text(
+                """# Sample Python file for GraphRAG indexing test
 def hello_world():
     \"\"\"A simple hello world function.\"\"\"
     print("Hello, World!")
@@ -534,7 +552,8 @@ class SampleClass:
     def greet(self):
         \"\"\"Greet with the name.\"\"\"
         return f"Hello, {self.name}!"
-""")
+"""
+            )
             logger.info(f"✅ サンプルファイルを作成しました: {sample_file}")
 
         # コレクションが存在するかチェック
@@ -544,7 +563,11 @@ class SampleClass:
 
             # コンテナ内で実行されている場合はコンテナ名を使用
             in_container = is_running_in_container()
-            qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
+            qdrant_url = (
+                "http://auto-coder-qdrant:6333"
+                if in_container
+                else "http://localhost:6333"
+            )
 
             # Qdrantに接続
             qdrant_client = QdrantClient(url=qdrant_url, timeout=5)
@@ -591,7 +614,11 @@ class SampleClass:
 
             # コンテナ内で実行されている場合はコンテナ名を使用
             in_container = is_running_in_container()
-            qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
+            qdrant_url = (
+                "http://auto-coder-qdrant:6333"
+                if in_container
+                else "http://localhost:6333"
+            )
 
             # Qdrantに接続
             qdrant_client = QdrantClient(url=qdrant_url, timeout=5)
@@ -615,7 +642,7 @@ class SampleClass:
                                 collection_name=col.name,
                                 limit=5,
                                 with_payload=True,
-                                with_vectors=False
+                                with_vectors=False,
                             )
 
                             logger.info(f"   サンプルデータ (最大5件):")
@@ -662,6 +689,7 @@ class SampleClass:
     except Exception as e:
         logger.error(f"❌ GraphRAG MCP エラー: {e}")
         import traceback
+
         logger.error(traceback.format_exc())
         return False
 
@@ -683,22 +711,18 @@ def main():
 
   # 接続テスト用コレクションを作成してテスト
   python scripts/check_graphrag_services.py --test
-        """
+        """,
     )
     parser.add_argument(
         "--direct-only",
         action="store_true",
-        help="直接アクセス（Neo4j + Qdrant）のテストのみ実行"
+        help="直接アクセス（Neo4j + Qdrant）のテストのみ実行",
     )
     parser.add_argument(
-        "--mcp-only",
-        action="store_true",
-        help="GraphRAG MCP のテストのみ実行"
+        "--mcp-only", action="store_true", help="GraphRAG MCP のテストのみ実行"
     )
     parser.add_argument(
-        "--test",
-        action="store_true",
-        help="接続テスト用コレクションを作成してテスト"
+        "--test", action="store_true", help="接続テスト用コレクションを作成してテスト"
     )
 
     args = parser.parse_args()
@@ -733,4 +757,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

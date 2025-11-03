@@ -14,4 +14,5 @@ sys.path.insert(0, "/home/node/src/auto-coder/src/auto_coder/mcp_servers/test_wa
 
 # Import and run the MCP server
 from auto_coder.mcp_servers.test_watcher.server import mcp
+
 mcp.run()

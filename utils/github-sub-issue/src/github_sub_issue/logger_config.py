@@ -22,4 +22,3 @@ def setup_logger(verbose: bool = False) -> None:
         level=log_level,
         colorize=True,
     )
-

@@ -4,7 +4,6 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from gh_sub_issue.github_api import GitHubSubIssueAPI
 
 
@@ -38,7 +37,9 @@ class TestGitHubSubIssueAPI:
     def test_parse_issue_reference_url(self) -> None:
         """issue URL を解析できることを確認."""
         api = GitHubSubIssueAPI(repo="owner/repo")
-        repo, number = api._parse_issue_reference("https://github.com/other/repo/issues/456")
+        repo, number = api._parse_issue_reference(
+            "https://github.com/other/repo/issues/456"
+        )
         assert repo == "other/repo"
         assert number == 456
 
@@ -73,16 +74,18 @@ class TestGitHubSubIssueAPI:
         # _get_issue_id の呼び出し (2回)
         mock_run.side_effect = [
             MagicMock(stdout="I_parent\n", returncode=0),  # parent ID
-            MagicMock(stdout="I_child\n", returncode=0),   # child ID
+            MagicMock(stdout="I_child\n", returncode=0),  # child ID
             MagicMock(  # GraphQL mutation
-                stdout=json.dumps({
-                    "data": {
-                        "addSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 456, "title": "Child"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "addSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 456, "title": "Child"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -109,14 +112,16 @@ class TestGitHubSubIssueAPI:
             MagicMock(stdout="I_parent\n", returncode=0),
             MagicMock(stdout="I_child\n", returncode=0),
             MagicMock(
-                stdout=json.dumps({
-                    "data": {
-                        "removeSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 456, "title": "Child"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "removeSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 456, "title": "Child"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -131,39 +136,41 @@ class TestGitHubSubIssueAPI:
     def test_list_sub_issues(self, mock_run: MagicMock) -> None:
         """sub-issue の一覧を取得できることを確認."""
         mock_run.return_value = MagicMock(
-            stdout=json.dumps({
-                "data": {
-                    "repository": {
-                        "issue": {
-                            "number": 123,
-                            "title": "Parent",
-                            "subIssues": {
-                                "nodes": [
-                                    {
-                                        "number": 456,
-                                        "title": "Child 1",
-                                        "state": "OPEN",
-                                        "url": "https://github.com/owner/repo/issues/456",
-                                        "assignees": {"nodes": []},
-                                    },
-                                    {
-                                        "number": 457,
-                                        "title": "Child 2",
-                                        "state": "CLOSED",
-                                        "url": "https://github.com/owner/repo/issues/457",
-                                        "assignees": {"nodes": []},
-                                    },
-                                ]
-                            },
-                            "subIssuesSummary": {
-                                "total": 2,
-                                "completed": 1,
-                                "percentCompleted": 50,
-                            },
+            stdout=json.dumps(
+                {
+                    "data": {
+                        "repository": {
+                            "issue": {
+                                "number": 123,
+                                "title": "Parent",
+                                "subIssues": {
+                                    "nodes": [
+                                        {
+                                            "number": 456,
+                                            "title": "Child 1",
+                                            "state": "OPEN",
+                                            "url": "https://github.com/owner/repo/issues/456",
+                                            "assignees": {"nodes": []},
+                                        },
+                                        {
+                                            "number": 457,
+                                            "title": "Child 2",
+                                            "state": "CLOSED",
+                                            "url": "https://github.com/owner/repo/issues/457",
+                                            "assignees": {"nodes": []},
+                                        },
+                                    ]
+                                },
+                                "subIssuesSummary": {
+                                    "total": 2,
+                                    "completed": 1,
+                                    "percentCompleted": 50,
+                                },
+                            }
                         }
                     }
                 }
-            }),
+            ),
             returncode=0,
         )
 
@@ -179,21 +186,25 @@ class TestGitHubSubIssueAPI:
         """新しい sub-issue を作成できることを確認."""
         mock_run.side_effect = [
             # gh issue create
-            MagicMock(stdout="https://github.com/owner/repo/issues/789\n", returncode=0),
+            MagicMock(
+                stdout="https://github.com/owner/repo/issues/789\n", returncode=0
+            ),
             # _get_issue_id (parent)
             MagicMock(stdout="I_parent\n", returncode=0),
             # _get_issue_id (new issue)
             MagicMock(stdout="I_new\n", returncode=0),
             # addSubIssue mutation
             MagicMock(
-                stdout=json.dumps({
-                    "data": {
-                        "addSubIssue": {
-                            "issue": {"number": 123, "title": "Parent"},
-                            "subIssue": {"number": 789, "title": "New Issue"},
+                stdout=json.dumps(
+                    {
+                        "data": {
+                            "addSubIssue": {
+                                "issue": {"number": 123, "title": "Parent"},
+                                "subIssue": {"number": 789, "title": "New Issue"},
+                            }
                         }
                     }
-                }),
+                ),
                 returncode=0,
             ),
         ]
@@ -225,4 +236,3 @@ class TestGitHubSubIssueAPI:
         assert "bug" in args
         assert "--assignee" in args
         assert "user1" in args
-

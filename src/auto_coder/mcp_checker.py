@@ -136,6 +136,7 @@ def _check_auggie_mcp() -> bool:
         return False
     except Exception as e:
         logger.debug(f"Failed to check Auggie MCP config: {e}")
+        return False
 
 
 def _check_claude_mcp() -> bool:

@@ -4,14 +4,15 @@ MCPサーバー動作確認用の詳細テストクライアント
 """
 
 import json
-import sys
 import subprocess
+import sys
 import time
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 
 def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
     """MCPサーバーを詳細にテストする"""
-    
+
     # MCP初期化メッセージ
     init_message = {
         "jsonrpc": "2.0",
@@ -20,27 +21,16 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": {
-                "name": "test-client",
-                "version": "1.0.0"
-            }
-        }
+            "clientInfo": {"name": "test-client", "version": "1.0.0"},
+        },
     }
-    
+
     # tools/list リクエストメッセージ
-    tools_request = {
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list"
-    }
-    
+    tools_request = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+
     # ping リクエスト
-    ping_request = {
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "ping"
-    }
-    
+    ping_request = {"jsonrpc": "2.0", "id": 3, "method": "ping"}
+
     try:
         process = subprocess.Popen(
             [sys.executable, server_script],
@@ -48,18 +38,18 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=0
+            bufsize=0,
         )
-        
+
         responses = []
-        
+
         # 初期化メッセージ送信
         print("送信: initialize")
         init_json = json.dumps(init_message) + "\n"
         process.stdin.write(init_json)
         process.stdin.flush()
         time.sleep(0.5)
-        
+
         # 初期化応答を待つ
         line = process.stdout.readline()
         if line:
@@ -69,14 +59,14 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
                 print(f"受信: {response}")
             except json.JSONDecodeError:
                 print(f"初期化応答のJSON解析に失敗: {line}")
-        
+
         # ping送信
         print("送信: ping")
         ping_json = json.dumps(ping_request) + "\n"
         process.stdin.write(ping_json)
         process.stdin.flush()
         time.sleep(0.5)
-        
+
         # ping応答を待つ
         line = process.stdout.readline()
         if line:
@@ -86,18 +76,18 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
                 print(f"受信: {response}")
             except json.JSONDecodeError:
                 print(f"ping応答のJSON解析に失敗: {line}")
-        
+
         # tools/list送信
         print("送信: tools/list")
         tools_json = json.dumps(tools_request) + "\n"
         process.stdin.write(tools_json)
         process.stdin.flush()
         time.sleep(1.0)
-        
+
         # 全ての応答を読み取り
         remaining_output = process.stdout.read()
         if remaining_output:
-            lines = remaining_output.strip().split('\n')
+            lines = remaining_output.strip().split("\n")
             for line in lines:
                 if line.strip():
                     try:
@@ -106,32 +96,32 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
                         print(f"受信: {response}")
                     except json.JSONDecodeError:
                         print(f"JSON解析に失敗: {line}")
-        
+
         # プロセス終了
         process.stdin.close()
         process.wait(timeout=5)
-        
-        return {
-            "success": True,
-            "responses": responses
-        }
-        
+
+        return {"success": True, "responses": responses}
+
     except subprocess.TimeoutExpired:
         process.kill()
         return {"success": False, "error": "Timeout"}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+
 def main():
     print("=== MCPサーバー詳細テスト ===")
-    
+
     # Test Watcherサーバー詳細テスト
     print("\n1. Test Watcherサーバー詳細テスト:")
-    result = test_mcp_server_detailed("src/auto_coder/mcp_servers/test_watcher/server.py")
-    
+    result = test_mcp_server_detailed(
+        "src/auto_coder/mcp_servers/test_watcher/server.py"
+    )
+
     if result["success"]:
         print("✓ サーバー起動成功")
-        
+
         # 応答を解析
         for response in result["responses"]:
             if "result" in response:
@@ -141,8 +131,10 @@ def main():
                     for tool in tools:
                         print(f"  - ツール名: {tool.get('name', 'Unknown')}")
                         print(f"    説明: {tool.get('description', 'No description')}")
-                        if 'inputSchema' in tool:
-                            print(f"    パラメーター: {tool['inputSchema'].get('properties', {}).keys()}")
+                        if "inputSchema" in tool:
+                            print(
+                                f"    パラメーター: {tool['inputSchema'].get('properties', {}).keys()}"
+                            )
                         print()
                 elif response["result"] == {}:
                     print("  ping 応答受信")
@@ -150,6 +142,7 @@ def main():
                 print(f"エラー: {response['error']}")
     else:
         print(f"✗ サーバー起動失敗: {result.get('error', 'Unknown error')}")
+
 
 if __name__ == "__main__":
     main()
