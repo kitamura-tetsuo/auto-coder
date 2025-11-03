@@ -857,23 +857,21 @@ def _check_github_actions_status(
         # Note: gh pr checks returns non-zero exit code when some checks fail
         # This is expected behavior, not an error
         if result.returncode != 0 and not result.stdout.strip():
-            stderr_msg = (result.stderr or "").strip().lower()
-            if "no checks reported" in stderr_msg:
-                return {
-                    "success": True,
-                    "checks": [],
-                    "failed_checks": [],
-                    "total_checks": 0,
-                }
             # Only treat as error if there's no output and no known informational message
             log_action(
                 f"Failed to get PR checks for #{pr_number}", False, result.stderr
             )
-            return {
-                "success": False,
-                "error": f"Failed to get PR checks: {result.stderr}",
-                "checks": [],
-            }
+
+            # If current PR checks failed and fallback is enabled, try historical search
+            if getattr(config, 'ENABLE_ACTIONS_HISTORY_FALLBACK', False):
+                logger.info(f"Current PR checks failed for #{pr_number}, attempting historical fallback...")
+                return _check_github_actions_status_from_history(repo_name, pr_data, config)
+            else:
+                return {
+                    "success": False,
+                    "error": f"Failed to get PR checks: {result.stderr}",
+                    "checks": [],
+                }
 
         # Parse text output to extract check information
         checks_output = result.stdout.strip()
@@ -996,7 +994,349 @@ def _check_github_actions_status(
 
     except Exception as e:
         logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
-        return {"success": False, "error": str(e), "checks": []}
+        # If there's an exception and fallback is enabled, try historical search
+        if getattr(config, 'ENABLE_ACTIONS_HISTORY_FALLBACK', False):
+            logger.info(f"Exception during PR checks for #{pr_number}, attempting historical fallback...")
+            return _check_github_actions_status_from_history(repo_name, pr_data, config)
+        else:
+            return {"success": False, "error": str(e), "checks": []}
+
+
+
+# --- Common helpers for historical GitHub Actions processing ---
+from typing import Optional
+
+def _filter_runs_for_pr(runs: List[Dict[str, Any]], branch_name: str) -> List[Dict[str, Any]]:
+    """Sort and filter runs by branch and prefer pull_request events when available.
+    - Sorts by createdAt (newest first)
+    - If branch_name is provided, keeps only runs matching headBranch when possible
+    - If event field exists, prefers runs with event == "pull_request"
+    """
+    if not runs:
+        return []
+    # Sort runs by creation time (newest first)
+    try:
+        runs = sorted(runs, key=lambda r: r.get("createdAt", ""), reverse=True)
+    except Exception as e:
+        logger.debug(f"Could not sort runs by createdAt: {e}")
+    # Filter by branch when available
+    if branch_name:
+        filtered_runs = [r for r in runs if r.get("headBranch") == branch_name]
+        if filtered_runs:
+            runs = filtered_runs
+            logger.info(f"Filtered to {len(runs)} runs for branch '{branch_name}'")
+        else:
+            logger.info(f"No runs found for branch '{branch_name}', using all recent runs")
+    # Prefer pull_request event runs when available
+    runs_with_event = [r for r in runs if "event" in r]
+    pull_request_runs = [r for r in runs if r.get("event") == "pull_request"]
+    if runs_with_event and pull_request_runs:
+        runs = pull_request_runs
+        logger.info(f"Filtered to {len(runs)} runs with event 'pull_request'")
+    return runs
+
+
+def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int]) -> List[Dict[str, Any]]:
+    """Return jobs for a run. If pullRequests are available and pr_number is given,
+    only return jobs if the run references that PR number. Returns empty list on failure.
+    """
+    try:
+        jobs_res = cmd.run_command(["gh", "run", "view", str(run_id), "--json", "jobs,pullRequests"], timeout=60)
+        if jobs_res.returncode != 0 or not jobs_res.stdout.strip():
+            logger.debug(f"Failed to get jobs for run {run_id}, skipping")
+            return []
+        jobs_json = json.loads(jobs_res.stdout)
+        if isinstance(pr_number, int):
+            pr_refs = jobs_json.get("pullRequests")
+            if isinstance(pr_refs, list) and pr_refs:
+                pr_numbers: List[int] = []
+                for pr_ref in pr_refs:
+                    if isinstance(pr_ref, dict):
+                        num = pr_ref.get("number")
+                        if isinstance(num, int):
+                            pr_numbers.append(num)
+                if pr_numbers and pr_number not in pr_numbers:
+                    logger.debug(f"Run {run_id} does not reference PR #{pr_number}; skipping")
+                    return []
+        return jobs_json.get("jobs", [])
+    except json.JSONDecodeError as e:
+        logger.debug(f"Failed to parse jobs JSON for run {run_id}: {e}")
+        return []
+    except Exception as e:
+        logger.debug(f"Error processing run {run_id}: {e}")
+        return []
+
+def _check_github_actions_status_from_history(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+) -> Dict[str, Any]:
+    """Check GitHub Actions status from recent runs when current PR checks are not available.
+
+    This function searches through recent GitHub Actions runs to determine the most recent
+    status for checks on the same branch, similar to _search_github_actions_logs_from_history.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        pr_data: PR data dictionary
+        config: AutomationConfig instance
+
+    Returns:
+        Dictionary with the same structure as _check_github_actions_status, using
+        the most recent available status from historical runs
+    """
+    try:
+        pr_number = pr_data["number"]
+        branch_name = pr_data.get("head", {}).get("ref", "")
+        head_sha = pr_data.get("head", {}).get("sha", "")
+
+        logger.info(
+            f"Checking historical GitHub Actions status for PR #{pr_number} on branch '{branch_name}' (commit {head_sha[:8] if head_sha else 'unknown'})"
+        )
+
+        # First try to get runs for the specific PR commit
+        if head_sha:
+            # Get runs for the specific commit
+            commit_run_list = cmd.run_command(
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--commit",
+                    head_sha,
+                    "--event",
+                    "pull_request",
+                    "--limit",
+                    "20",
+                    "--json",
+                    "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                ],
+                timeout=60,
+            )
+            # Fallback: older GH or no PR-event runs -> try without --event filter
+            if not commit_run_list.success or not commit_run_list.stdout.strip():
+                commit_run_list = cmd.run_command(
+                    [
+                        "gh",
+                        "run",
+                        "list",
+                        "--commit",
+                        head_sha,
+                        "--limit",
+                        "20",
+                        "--json",
+                        "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                    ],
+                    timeout=60,
+                )
+
+            if commit_run_list.success and commit_run_list.stdout.strip():
+                try:
+                    runs = json.loads(commit_run_list.stdout)
+                    if runs:
+                        logger.info(f"Found {len(runs)} runs specifically for PR #{pr_number} commit")
+                        # Sort by creation time
+                        runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+                    else:
+                        logger.info("No runs found for PR commit, falling back to recent runs")
+                        runs = []
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse commit run list JSON: {e}")
+                    runs = []
+            else:
+                runs = []
+        else:
+            runs = []
+
+        # If no commits found for specific PR, fall back to recent runs filtered by branch
+        if not runs:
+            # Get recent GitHub Actions runs
+            run_list = cmd.run_command(
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--event",
+                    "pull_request",
+                    "--limit",
+                    "20",  # Increased limit to find more recent runs
+                    "--json",
+                    "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                ],
+                timeout=60,
+            )
+            if (not run_list.success) or (not run_list.stdout.strip()):
+                run_list = cmd.run_command(
+                    [
+                        "gh",
+                        "run",
+                        "list",
+                        "--limit",
+                        "20",  # Increased limit to find more recent runs
+                        "--json",
+                        "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                    ],
+                    timeout=60,
+                )
+
+            if not run_list.success or not run_list.stdout.strip():
+                logger.warning(f"Failed to get run list for historical check: {run_list.stderr}")
+                return {
+                    "success": False,
+                    "error": f"Failed to get historical runs: {run_list.stderr}",
+                    "checks": [],
+                    "historical_fallback": True,
+                }
+
+            try:
+                runs = json.loads(run_list.stdout)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse run list JSON for historical check: {e}")
+                return {
+                    "success": False,
+                    "error": f"Failed to parse run list: {e}",
+                    "checks": [],
+                    "historical_fallback": True,
+                }
+
+        if not runs:
+            logger.info("No runs found in repository for historical check")
+            return {
+                "success": True,  # Assume success if no runs found
+                "checks": [],
+                "failed_checks": [],
+                "total_checks": 0,
+                "historical_fallback": True,
+            }
+
+        # Apply common sorting and filtering (branch + pull_request event preference)
+        runs = _filter_runs_for_pr(runs, branch_name)
+
+        # Track check results across all recent runs
+        check_results = {}  # {check_name: {latest_conclusion, latest_status, latest_run_id}}
+        has_in_progress_checks = False
+        all_checks_passed = True
+
+        for run in runs:
+            run_id = run.get("databaseId")
+            run_conclusion = run.get("conclusion", "unknown")
+            run_status = run.get("status", "unknown")
+            run_created_at = run.get("createdAt", "")
+
+            if not run_id:
+                continue
+
+            logger.debug(
+                f"Checking run {run_id} (conclusion: {run_conclusion}, status: {run_status})"
+            )
+
+            try:
+                jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_number)
+                if not jobs:
+                    continue
+
+                # Process each job in this run
+                for job in jobs:
+                    job_name = job.get("name", "")
+                    job_conclusion = job.get("conclusion", "")
+                    job_status = job.get("status", "")
+                    job_started_at = job.get("startedAt", "")
+                    job_completed_at = job.get("completedAt", "")
+                    job_database_id = job.get("databaseId")
+
+                    if not job_name:
+                        continue
+
+                    # Create a normalized check name
+                    check_name = job_name
+
+                    # Update our tracking with the most recent result for this check
+                    current_result = check_results.get(check_name, {})
+
+                    # Use run creation time as the primary timestamp
+                    timestamp = run_created_at or job_started_at or ""
+
+                    # Only update if this result is newer or we don't have one yet
+                    if (not current_result.get("timestamp") or
+                        timestamp > current_result.get("timestamp", "")):
+
+                        check_results[check_name] = {
+                            "latest_conclusion": job_conclusion or run_conclusion,
+                            "latest_status": job_status or run_status,
+                            "latest_run_id": run_id,
+                            "latest_job_id": job_database_id,
+                            "timestamp": timestamp,
+                        }
+
+                        # Track overall status
+                        if job_conclusion and job_conclusion.lower() in ["failure", "failed", "error"]:
+                            all_checks_passed = False
+                        elif job_status and job_status.lower() in ["in_progress", "queued", "pending"]:
+                            has_in_progress_checks = True
+                            all_checks_passed = False
+
+            except json.JSONDecodeError as e:
+                logger.debug(f"Failed to parse jobs JSON for run {run_id}: {e}")
+                continue
+            except Exception as e:
+                logger.debug(f"Error processing run {run_id}: {e}")
+                continue
+
+        # Convert our results to the expected format
+        checks = []
+        failed_checks = []
+
+        for check_name, result in check_results.items():
+            conclusion = result.get("latest_conclusion", "").lower()
+            status = result.get("latest_status", "").lower()
+
+            check_info = {
+                "name": check_name,
+                "state": "completed" if conclusion else "pending",
+                "conclusion": conclusion if conclusion else status,
+                "details_url": f"https://github.com/{repo_name}/actions/runs/{result.get('latest_run_id')}/job/{result.get('latest_job_id')}"
+            }
+
+            checks.append(check_info)
+
+            # Add to failed_checks if appropriate
+            if (conclusion and conclusion in ["failure", "failed", "error"]) or \
+               (status and status in ["in_progress", "queued", "pending"]) or \
+               (not conclusion and status in ["failure", "failed", "error"]):
+                failed_check_info = {
+                    "name": check_name,
+                    "conclusion": conclusion or status,
+                    "details_url": check_info["details_url"]
+                }
+                failed_checks.append(failed_check_info)
+
+        # Determine final success status
+        final_success = all_checks_passed and not has_in_progress_checks
+
+        logger.info(
+            f"Historical GitHub Actions check completed: "
+            f"total_checks={len(checks)}, failed_checks={len(failed_checks)}, "
+            f"success={final_success}, has_in_progress={has_in_progress_checks}"
+        )
+
+        return {
+            "success": final_success,
+            "in_progress": has_in_progress_checks,
+            "checks": checks,
+            "failed_checks": failed_checks,
+            "total_checks": len(checks),
+            "historical_fallback": True,
+            "source": "historical_runs"
+        }
+
+    except Exception as e:
+        logger.error(f"Error during historical GitHub Actions status check: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "checks": [],
+            "historical_fallback": True,
+        }
 
 
 def _check_github_actions_status_from_history(
@@ -3017,6 +3357,7 @@ def _search_github_actions_logs_from_history(
     repo_name: str,
     config: AutomationConfig,
     failed_checks: List[Dict[str, Any]],
+    pr_data: Optional[Dict[str, Any]] = None,
     max_runs: int = 10,
 ) -> Optional[str]:
     """Search for GitHub Actions logs from recent runs.
@@ -3029,6 +3370,7 @@ def _search_github_actions_logs_from_history(
         repo_name: Repository name in format 'owner/repo'
         config: AutomationConfig instance
         failed_checks: List of failed check dictionaries with details_url
+        pr_data: Optional PR data dictionary for commit-specific filtering
         max_runs: Maximum number of recent runs to search (default: 10)
 
     Returns:
@@ -3047,29 +3389,107 @@ def _search_github_actions_logs_from_history(
             f"Starting historical search for GitHub Actions logs (searching through {max_runs} recent runs)"
         )
 
-        # Get recent GitHub Actions runs
-        run_list = cmd.run_command(
-            [
-                "gh",
-                "run",
-                "list",
-                "--limit",
-                str(max_runs),
-                "--json",
-                "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha",
-            ],
-            timeout=60,
-        )
+        runs = []
 
-        if not run_list.success or not run_list.stdout.strip():
-            logger.warning(f"Failed to get run list or empty result: {run_list.stderr}")
-            return None
+        # If PR data is available, try to get runs for the specific PR commit first
+        if pr_data:
+            head_sha = pr_data.get("head", {}).get("sha", "")
+            branch_name = pr_data.get("head", {}).get("ref", "")
+            pr_number = pr_data.get("number", "unknown")
 
-        try:
-            runs = json.loads(run_list.stdout)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse run list JSON: {e}")
-            return None
+            logger.info(f"Attempting to find runs for PR #{pr_number} (commit {head_sha[:8] if head_sha else 'unknown'})")
+
+            if head_sha:
+                # Get runs for the specific commit
+                commit_run_list = cmd.run_command(
+                    [
+                        "gh",
+                        "run",
+                        "list",
+                        "--commit",
+                        head_sha,
+                        "--event",
+                        "pull_request",
+                        "--limit",
+                        str(max_runs),
+                        "--json",
+                        "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                    ],
+                    timeout=60,
+                )
+                if not commit_run_list.success or not commit_run_list.stdout.strip():
+                    commit_run_list = cmd.run_command(
+                        [
+                            "gh",
+                            "run",
+                            "list",
+                            "--commit",
+                            head_sha,
+                            "--limit",
+                            str(max_runs),
+                            "--json",
+                            "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                        ],
+                        timeout=60,
+                    )
+
+                if commit_run_list.success and commit_run_list.stdout.strip():
+                    try:
+                        runs = json.loads(commit_run_list.stdout)
+                        if runs:
+                            logger.info(f"Found {len(runs)} runs specifically for PR #{pr_number}")
+                        else:
+                            logger.info("No runs found for PR commit, falling back to recent runs")
+                            runs = []
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse commit run list JSON: {e}")
+                        runs = []
+                else:
+                    runs = []
+            else:
+                runs = []
+
+        # If no commits found for specific PR, fall back to recent runs filtered by branch
+        if not runs:
+            # Get recent GitHub Actions runs
+            run_list = cmd.run_command(
+                [
+                    "gh",
+                    "run",
+                    "list",
+                    "--event",
+                    "pull_request",
+                    "--limit",
+                    str(max_runs),
+                    "--json",
+                    "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                ],
+                timeout=60,
+            )
+            if not run_list.success or not run_list.stdout.strip():
+                run_list = cmd.run_command(
+                    [
+                        "gh",
+                        "run",
+                        "list",
+                        "--limit",
+                        str(max_runs),
+                        "--json",
+                        "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url,headSha,event",
+                    ],
+                    timeout=60,
+                )
+
+            if not run_list.success or not run_list.stdout.strip():
+                logger.warning(f"Failed to get run list or empty result: {run_list.stderr}")
+                return None
+
+            try:
+                runs = json.loads(run_list.stdout)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse run list JSON: {e}")
+                return None
+
 
         if not runs:
             logger.info("No runs found in repository")
@@ -3079,8 +3499,8 @@ def _search_github_actions_logs_from_history(
             f"Searching through {len(runs)} recent GitHub Actions runs for logs"
         )
 
-        # Sort runs by creation time (newest first) and search through them
-        runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
+        # Apply common sorting and filtering (branch + pull_request event preference)
+        runs = _filter_runs_for_pr(runs, pr_data.get("head", {}).get("ref", "") if pr_data else "")
 
         for run in runs:
             run_id = run.get("databaseId")
@@ -3097,61 +3517,47 @@ def _search_github_actions_logs_from_history(
             )
 
             try:
-                # Get jobs for this run
-                jobs_res = cmd.run_command(
-                    ["gh", "run", "view", str(run_id), "--json", "jobs"],
-                    timeout=60,
-                )
-
-                if jobs_res.returncode != 0 or not jobs_res.stdout.strip():
-                    logger.debug(f"Failed to get jobs for run {run_id}, skipping")
+                jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_data.get("number") if pr_data else None)
+                if not jobs:
                     continue
 
-                try:
-                    jobs_json = json.loads(jobs_res.stdout)
-                    jobs = jobs_json.get("jobs", [])
+                # Get logs from failed jobs in this run
+                logs = []
+                for job in jobs:
+                    job_conclusion = job.get("conclusion", "")
+                    job_id = job.get("databaseId")
 
-                    # Get logs from failed jobs in this run
-                    logs = []
-                    for job in jobs:
-                        job_conclusion = job.get("conclusion", "")
-                        job_id = job.get("databaseId")
+                    # Only attempt to get logs from failed or error jobs
+                    if job_conclusion and job_conclusion.lower() in [
+                        "failure",
+                        "failed",
+                        "error",
+                    ]:
+                        if job_id:
+                            logger.debug(
+                                f"Found failed job {job_id} in run {run_id}, attempting to get logs"
+                            )
 
-                        # Only attempt to get logs from failed or error jobs
-                        if job_conclusion and job_conclusion.lower() in [
-                            "failure",
-                            "failed",
-                            "error",
-                        ]:
-                            if job_id:
-                                logger.debug(
-                                    f"Found failed job {job_id} in run {run_id}, attempting to get logs"
+                            # Construct URL for this job
+                            url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
+
+                            # Try to get logs for this job
+                            job_logs = get_github_actions_logs_from_url(url)
+
+                            if (
+                                job_logs
+                                and job_logs != "No detailed logs available"
+                            ):
+                                # Add metadata about which run this came from
+                                logs.append(
+                                    f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}"
                                 )
 
-                                # Construct URL for this job
-                                url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
-
-                                # Try to get logs for this job
-                                job_logs = get_github_actions_logs_from_url(url)
-
-                                if (
-                                    job_logs
-                                    and job_logs != "No detailed logs available"
-                                ):
-                                    # Add metadata about which run this came from
-                                    logs.append(
-                                        f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}"
-                                    )
-
-                    if logs:
-                        logger.info(
-                            f"Successfully retrieved {len(logs)} log(s) from run {run_id}"
-                        )
-                        return "\n\n".join(logs)
-
-                except json.JSONDecodeError as e:
-                    logger.debug(f"Failed to parse jobs JSON for run {run_id}: {e}")
-                    continue
+                if logs:
+                    logger.info(
+                        f"Successfully retrieved {len(logs)} log(s) from run {run_id}"
+                    )
+                    return "\n\n".join(logs)
 
             except Exception as e:
                 logger.debug(f"Error processing run {run_id}: {e}")
@@ -3201,17 +3607,20 @@ def _get_github_actions_logs(
             "Historical search enabled: Searching through commit history for GitHub Actions logs"
         )
 
-        # Extract failed_checks from args
+        # Extract failed_checks and optional pr_data from args
         failed_checks: List[Dict[str, Any]] = []
+        pr_data: Optional[Dict[str, Any]] = None
         if len(args) >= 1 and isinstance(args[0], list):
             failed_checks = args[0]
-        elif len(args) == 0:
+        if len(args) >= 2 and isinstance(args[1], dict):
+            pr_data = args[1]
+        if not failed_checks:
             # No failed_checks provided
             return "No detailed logs available"
 
         # Try historical search first
         historical_logs = _search_github_actions_logs_from_history(
-            repo_name, config, failed_checks, max_runs=10
+            repo_name, config, failed_checks, pr_data, max_runs=10
         )
 
         if historical_logs:
