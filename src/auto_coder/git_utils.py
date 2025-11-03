@@ -469,6 +469,105 @@ def check_unpushed_commits(cwd: Optional[str] = None, remote: str = "origin") ->
     return False
 
 
+def get_branch_commit_logs(base_branch: str = "main", max_commits: int = 20, cwd: Optional[str] = None) -> str:
+    """
+    Get commit logs from the current branch since it diverged from the base branch.
+
+    This function retrieves commit messages from the working branch that are not in the base branch,
+    providing valuable context for LLM processing of issues/PRs.
+
+    Args:
+        base_branch: Base branch to compare against (default: 'main')
+        max_commits: Maximum number of commits to retrieve (default: 20)
+        cwd: Optional working directory for git command
+
+    Returns:
+        String containing commit logs in the format:
+        "Commit <sha>: <message>\n" for each commit,
+        or an empty string if no commits found or error occurred
+    """
+    cmd = CommandExecutor()
+
+    try:
+        # Get the current branch
+        current_branch_result = cmd.run_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd
+        )
+        if not current_branch_result.success:
+            logger.debug(f"Failed to get current branch: {current_branch_result.stderr}")
+            return ""
+
+        current_branch = current_branch_result.stdout.strip()
+
+        # Check if base branch exists locally, if not try to fetch it
+        base_branch_result = cmd.run_command(
+            ["git", "rev-parse", "--verify", f"origin/{base_branch}"], cwd=cwd
+        )
+        if not base_branch_result.success:
+            # Try to fetch the base branch
+            logger.debug(f"Base branch {base_branch} not found, attempting to fetch...")
+            fetch_result = cmd.run_command(["git", "fetch", "origin", base_branch], cwd=cwd)
+            if not fetch_result.success:
+                logger.debug(f"Failed to fetch base branch {base_branch}: {fetch_result.stderr}")
+                # Fall back to using main or master
+                for fallback_branch in ["main", "master"]:
+                    if fallback_branch != current_branch:
+                        base_branch_result = cmd.run_command(
+                            ["git", "rev-parse", "--verify", f"origin/{fallback_branch}"], cwd=cwd
+                        )
+                        if base_branch_result.success:
+                            base_branch = fallback_branch
+                            logger.debug(f"Using fallback base branch: {base_branch}")
+                            break
+                else:
+                    # If no base branch found, get recent commits from current branch
+                    logger.debug(f"No base branch found, getting recent commits from {current_branch}")
+                    log_result = cmd.run_command(
+                        ["git", "log", f"-n {max_commits}", "--oneline"], cwd=cwd
+                    )
+                    if log_result.success:
+                        commits = log_result.stdout.strip().split("\n")
+                        return "\n".join([f"Commit {commit}" for commit in commits if commit])
+                    return ""
+
+        # Get commits that are in current branch but not in base branch
+        # This shows the changes made on this branch since it diverged
+        log_result = cmd.run_command(
+            ["git", "log", f"{base_branch}..HEAD", f"--oneline", f"-n {max_commits}"],
+            cwd=cwd
+        )
+
+        if not log_result.success:
+            # If the branch diverged from base branch but has no unique commits,
+            # or if there's an error, try to get recent commits from current branch
+            logger.debug(f"Failed to get diverged commits, falling back to recent commits: {log_result.stderr}")
+            log_result = cmd.run_command(
+                ["git", "log", f"-n {max_commits}", "--oneline"], cwd=cwd
+            )
+            if log_result.success:
+                commits = log_result.stdout.strip().split("\n")
+                return "\n".join([f"Commit {commit}" for commit in commits if commit])
+            return ""
+
+        commits = log_result.stdout.strip().split("\n")
+        if not commits or not commits[0]:
+            # No commits found between branches
+            logger.debug(f"No commits found between {base_branch} and {current_branch}")
+            return ""
+
+        # Format commit logs
+        commit_logs = []
+        for commit in commits:
+            if commit.strip():
+                commit_logs.append(f"Commit {commit}")
+
+        return "\n".join(commit_logs)
+
+    except Exception as e:
+        logger.debug(f"Error getting branch commit logs: {e}")
+        return ""
+
+
 def git_push(
     cwd: Optional[str] = None,
     remote: str = "origin",

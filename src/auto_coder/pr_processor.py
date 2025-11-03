@@ -27,6 +27,7 @@ from .fix_to_pass_tests_runner import (
 )
 from .git_utils import (
     ensure_pushed_with_fallback,
+    get_branch_commit_logs,
     git_checkout_branch,
     git_commit_with_retry,
     git_push,
@@ -828,6 +829,12 @@ def _create_pr_analysis_prompt(
 ) -> str:
     """Create a PR prompt that prioritizes direct code changes over comments."""
     body_text = (pr_data.get("body") or "")[: config.MAX_PROMPT_SIZE]
+
+    # Get commit logs from the PR branch to provide context to LLM
+    commit_logs = get_branch_commit_logs(
+        base_branch=config.MAIN_BRANCH, max_commits=20
+    )
+
     return render_prompt(
         "pr.action",
         repo_name=repo_name,
@@ -840,6 +847,7 @@ def _create_pr_analysis_prompt(
         pr_mergeable=pr_data.get("mergeable", False),
         diff_limit=config.MAX_PR_DIFF_SIZE,
         pr_diff=pr_diff,
+        commit_logs=commit_logs,
     )
 
 

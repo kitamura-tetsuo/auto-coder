@@ -10,6 +10,7 @@ from .automation_config import AutomationConfig
 from .git_utils import (
     commit_and_push_changes,
     ensure_pushed,
+    get_branch_commit_logs,
     git_checkout_branch,
     git_commit_with_retry,
     git_push,
@@ -719,6 +720,11 @@ def _apply_issue_actions_directly(
                     logger.error(error_msg)
                     return actions
 
+        # Get commit logs from the working branch to provide context to LLM
+        commit_logs = get_branch_commit_logs(
+            base_branch=config.MAIN_BRANCH, max_commits=20
+        )
+
         # Create a comprehensive prompt for LLM CLI
         action_prompt = render_prompt(
             "issue.action",
@@ -729,6 +735,7 @@ def _apply_issue_actions_directly(
             issue_labels=", ".join(issue_data.get("labels", [])),
             issue_state=issue_data.get("state", "open"),
             issue_author=issue_data.get("author", "unknown"),
+            commit_logs=commit_logs,
         )
         logger.debug(
             "Prepared issue-action prompt for #%s (preview: %s)",
