@@ -335,6 +335,7 @@ def _take_issue_actions(
     dry_run: bool,
     github_client,
     llm_client=None,
+    message_backend_manager=None,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
     actions = []
@@ -911,6 +912,7 @@ def process_single(
     number: int,
     jules_mode: bool = False,
     llm_client=None,
+    message_backend_manager=None,
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 

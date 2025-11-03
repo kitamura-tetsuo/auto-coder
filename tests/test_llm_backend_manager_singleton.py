@@ -13,15 +13,35 @@ from src.auto_coder.llm_client_base import LLMBackendManager
 class TestLLMBackendManagerSingleton:
     """Test cases for the LLMBackendManager singleton pattern."""
 
-    def test_singleton_returns_same_instance(self):
+    def setup_method(self):
+        """Reset the singleton state before each test."""
+        # Reset the singleton instance
+        setattr(LLMBackendManager, "_instance", None)
+        # Reset the instance variable for existing instances
+        try:
+            instance = LLMBackendManager()
+            instance._backend_manager = None
+            instance._initialized = False
+        except (AttributeError, TypeError):
+            # Instance might not exist yet, that's ok
+            pass
+
+    @patch("src.auto_coder.llm_client_base.LLMBackendManager._create_message_backend_manager")
+    def test_singleton_returns_same_instance(self, mock_create):
         """Test that multiple calls return the same instance."""
+        # Mock the backend manager
+        mock_backend_manager = MagicMock()
+        mock_create.return_value = mock_backend_manager
+
         instance1 = LLMBackendManager.get_llm_for_message_instance()
         instance2 = LLMBackendManager.get_llm_for_message_instance()
 
         # They should be the same instance
         assert instance1 is instance2
+        assert instance1 is mock_backend_manager
 
-    def test_singleton_is_thread_safe(self):
+    @patch("src.auto_coder.llm_client_base.LLMBackendManager._create_message_backend_manager")
+    def test_singleton_is_thread_safe(self, mock_create):
         """Test that the singleton is thread-safe."""
         instances = []
         errors = []

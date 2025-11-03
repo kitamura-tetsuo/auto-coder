@@ -341,14 +341,25 @@ def git_checkout_branch(
 
     # Build checkout command
     checkout_cmd: List[str] = ["git", "checkout"]
+
     if create_new:
-        if base_branch:
-            # Create new branch from base_branch (or reset if exists)
-            checkout_cmd.append("-B")
+        # Check if the branch already exists
+        if branch_exists(branch_name, cwd=cwd):
+            logger.info(
+                f"Branch '{branch_name}' already exists, checking out existing branch"
+            )
+            # Checkout existing branch instead of creating new one
+            checkout_cmd = ["git", "checkout", branch_name]
         else:
-            # Create new branch
-            checkout_cmd.append("-b")
-    checkout_cmd.append(branch_name)
+            # Create new branch from base_branch (or reset if exists)
+            if base_branch:
+                checkout_cmd.append("-B")
+            else:
+                checkout_cmd.append("-b")
+            checkout_cmd.append(branch_name)
+    else:
+        # Regular checkout (not creating new branch)
+        checkout_cmd.append(branch_name)
 
     # Execute checkout
     result = cmd.run_command(checkout_cmd, cwd=cwd)
