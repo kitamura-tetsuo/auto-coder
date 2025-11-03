@@ -1,0 +1,84 @@
+---
+# Auto-Coder クライアント機能ドキュメント（日本語）
+# 変更点を優先して記載（継続拡充予定）
+
+application:
+  name: "Auto-Coder"
+  version: "2025.11.3.22+gb4f59f0"
+  description: "AI CLI バックエンド（既定: codex, --backend で gemini/qwen 切替）と GitHub 連携により自動化開発を行うツール"
+
+features:
+  automation_engine:
+    name: "オートメーションエンジンのオーケストレーション"
+    description: "Issues → PR の順に処理し、結果を集約・レポート保存する中核フロー"
+    components:
+      - name: "AutomationEngine"
+        file: "src/auto_coder/automation_engine.py"
+        methods:
+          - name: "run"
+            description: "process_issues() 実行後、エラーが無ければ process_pull_requests() を実行。結果とエラーを集約しレポート保存"
+            behavior:
+              - "非致命例外は results.errors に格納し処理継続"
+              - "最終的に実行レポート（実行バックエンド/結果）を保存"
+            tests:
+              - "tests/test_automation_engine.py::TestAutomationEngine::test_run_success"
+          - name: "_get_candidates"
+            description: "PR/Issue 候補の収集・優先度付け（max_items で件数制限可能）"
+            parameters: ["repo_name", "max_items (optional)"]
+            returns: "候補 dict の配列（{type, data, priority, ...}）"
+            priority_rules:
+              - "3: urgent ラベルの Issue/PR"
+              - "2: Actions 成功 かつ mergeable な PR"
+              - "1: それ以外の PR"
+              - "0: 通常の Issue"
+            filtering:
+              - "@auto-coder ラベル付与項目は除外（排他制御）"
+              - "未解決サブ課題を持つ Issue は除外"
+              - "リンク済み PR を持つ Issue は除外"
+            sorting:
+              - "優先度（降順）→ 種別（Issue 優先）→ created_at（昇順/古い順）"
+            emitted_fields:
+              - "PR: branch_name, related_issues（PR 本文から参照抽出）"
+              - "Issue: issue_number"
+            tests:
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_urgent_issue_highest_priority"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_priority_order_prs_and_issues"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_skips_items_with_auto_coder_label"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_skips_issues_with_sub_issues_or_linked_prs"
+              - "tests/test_automation_engine.py::TestGetCandidates::test_get_candidates_extracts_related_issues_from_pr_body"
+
+  github_actions_logs:
+    name: "GitHub Actions のログ抽出"
+    description: "失敗チェックから十分な文脈を含むエラーログを抽出し、LLM に渡す"
+    components:
+      - name: "履歴参照の最適化（イベントフィルタ + フォールバック）"
+        file: "src/auto_coder/pr_processor.py"
+        details:
+          - "gh run list --event pull_request を優先的に使用"
+          - "失敗/無出力時は非フィルタ（--event 無し）にフォールバック"
+          - "API 呼び出し回数の削減とノイズ低減を両立（冪等性維持）"
+        tests:
+          - "tests/test_actions_history_run_list_event_filter.py::test_commit_run_list_includes_event_filter"
+          - "tests/test_actions_history_run_list_event_filter.py::test_fallback_run_list_includes_event_filter"
+      - name: "pullRequests 欠落時のフェイルセーフ"
+        file: "src/auto_coder/pr_processor.py"
+        details:
+          - "_filter_runs_for_pr / _get_jobs_for_run_filtered_by_pr_number に共通化"
+          - "gh run view の jobs データに pullRequests が無い/空でも動作継続"
+        tests:
+          - "tests/test_actions_history_pr_pullrequests_missing.py::test_history_handles_missing_pullRequests_field_gracefully"
+          - "tests/test_actions_history_pr_pullrequests_missing.py::test_history_handles_empty_pullRequests_list_gracefully"
+      - name: "_get_github_actions_logs の履歴検索分岐"
+        file: "src/auto_coder/pr_processor.py"
+        behavior:
+          - "failed_checks の details_url を最優先で利用"
+          - "必要時のみ gh run list を使用（前述のイベントフィルタ適用）"
+          - "historical search 有効時に引数から pr_data/failed_checks を正しく展開（未束縛エラー修正済み）"
+        returns: "抽出済みエラーログ文字列（最大 500 行の文脈を含む）"
+        related_tests:
+          - "tests/test_github_actions_logs.py::test_get_github_actions_logs_uses_gh_api_and_extracts_errors"
+          - "tests/test_github_actions_logs_details_url.py::test_get_github_actions_logs_uses_details_url_from_failed_checks"
+
+notes:
+  - "本ファイルは日本語ドキュメントの開始版です。順次、他機能（GraphRAG/MCP 構成や Graph Builder 等）も追加していきます。"
+
