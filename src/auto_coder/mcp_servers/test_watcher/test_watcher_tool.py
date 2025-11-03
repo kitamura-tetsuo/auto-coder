@@ -447,10 +447,9 @@ class TestWatcherTool:
                         "failed": total_failed,
                         "flaky": total_flaky,
                         "skipped": total_skipped,
-                        "total": total_passed
-                        + total_failed
-                        + total_flaky
-                        + total_skipped,
+                        "total": (
+                            total_passed + total_failed + total_flaky + total_skipped
+                        ),
                     },
                     "failed_tests": {
                         "count": len(all_failed_tests),
@@ -477,7 +476,9 @@ class TestWatcherTool:
                 if test_type not in self.test_results:
                     return {
                         "status": "error",
-                        "error": f"Invalid test type: {test_type}. Must be one of: unit, integration, e2e, all",
+                        "error": (
+                            f"Invalid test type: {test_type}. Must be one of: unit, integration, e2e, all"
+                        ),
                     }
 
                 test_data = self.test_results[test_type]
@@ -486,7 +487,9 @@ class TestWatcherTool:
                     return {
                         "status": "running",
                         "test_type": test_type,
-                        "message": f"{test_type} tests are currently running. Please wait.",
+                        "message": (
+                            f"{test_type} tests are currently running. Please wait."
+                        ),
                     }
 
                 failed_tests = [
@@ -530,8 +533,10 @@ class TestWatcherTool:
         with self.lock:
             return {
                 "file_watcher_running": self.observer is not None,
-                "playwright_running": self.playwright_process is not None
-                and self.playwright_process.poll() is None,
+                "playwright_running": (
+                    self.playwright_process is not None
+                    and self.playwright_process.poll() is None
+                ),
                 "project_root": str(self.project_root),
                 "test_results": {
                     "unit": {
@@ -540,8 +545,8 @@ class TestWatcherTool:
                         "failed": self.test_results["unit"].get("failed", 0),
                     },
                     "integration": {
-                        "status": self.test_results["integration"].get(
-                            "status", "idle"
+                        "status": (
+                            self.test_results["integration"].get("status", "idle")
                         ),
                         "passed": self.test_results["integration"].get("passed", 0),
                         "failed": self.test_results["integration"].get("failed", 0),

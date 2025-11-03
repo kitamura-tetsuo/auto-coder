@@ -6,11 +6,11 @@ import json
 import subprocess
 from typing import Any, Dict, List, Optional
 
-# genai はテストでモックされる。実環境で未インストールでも属性が存在するようにする
+# genai is mocked in tests. Ensure the attribute is available even if the package is not installed at runtime
 try:
     import google.generativeai as genai  # type: ignore
-except Exception:  # ランタイム依存を避けるため
-    genai = None  # テストでは patch により置き換えられる
+except Exception:  # Avoid runtime dependency
+    genai = None  # Replaced via patch in tests
 
 from .exceptions import AutoCoderUsageLimitError
 from .llm_client_base import LLMClientBase

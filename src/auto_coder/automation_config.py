@@ -21,10 +21,10 @@ class AutomationConfig:
         Returns:
             Path to the reports directory: ~/.auto-coder/{repository}/
         """
-        # リポジトリ名から安全なディレクトリ名を生成
+        # Generate safe directory name from repository name
         safe_repo_name = repo_name.replace("/", "_")
 
-        # ホームディレクトリ配下の .auto-coder/{repository}/ を返す
+        # Return .auto-coder/{repository}/ under home directory
         reports_path = Path.home() / ".auto-coder" / safe_repo_name
         return str(reports_path)
 
@@ -62,6 +62,11 @@ class AutomationConfig:
     # Search through commit history for GitHub Actions logs when latest commit doesn't trigger Actions
     # Default: True (search history enabled)
     SEARCH_GITHUB_ACTIONS_HISTORY: bool = True
+
+    # Enable historical fallback for GitHub Actions status checks
+    # When current PR checks fail or are not available, search through recent runs to determine status
+    # Default: True (fallback enabled)
+    ENABLE_ACTIONS_HISTORY_FALLBACK: bool = True
 
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"

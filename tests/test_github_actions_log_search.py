@@ -7,13 +7,14 @@ _get_github_actions_logs functions.
 """
 
 import json
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, MagicMock
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import (
-    _search_github_actions_logs_from_history,
     _get_github_actions_logs,
+    _search_github_actions_logs_from_history,
 )
 
 
@@ -81,7 +82,9 @@ class TestSearchGitHubActionsLogsFromHistory:
             with patch(
                 "src.auto_coder.pr_processor.get_github_actions_logs_from_url"
             ) as mock_get_logs:
-                mock_get_logs.return_value = "=== Job test-job (5001) ===\nTest failed with error"
+                mock_get_logs.return_value = (
+                    "=== Job test-job (5001) ===\nTest failed with error"
+                )
 
                 result = _search_github_actions_logs_from_history(
                     "test/repo", config, failed_checks, max_runs=10
@@ -406,7 +409,11 @@ class TestGetGitHubActionsLogs:
         config.SEARCH_GITHUB_ACTIONS_HISTORY = False
 
         failed_checks = [
-            {"name": "test-job", "conclusion": "failure", "details_url": "https://github.com/test/repo/actions/runs/123/job/456"}
+            {
+                "name": "test-job",
+                "conclusion": "failure",
+                "details_url": "https://github.com/test/repo/actions/runs/123/job/456",
+            }
         ]
 
         with patch(
@@ -448,7 +455,11 @@ class TestGetGitHubActionsLogs:
         config.SEARCH_GITHUB_ACTIONS_HISTORY = True
 
         failed_checks = [
-            {"name": "test-job", "conclusion": "failure", "details_url": "https://github.com/test/repo/actions/runs/123/job/456"}
+            {
+                "name": "test-job",
+                "conclusion": "failure",
+                "details_url": "https://github.com/test/repo/actions/runs/123/job/456",
+            }
         ]
 
         with patch(
@@ -477,7 +488,11 @@ class TestGetGitHubActionsLogs:
         config.SEARCH_GITHUB_ACTIONS_HISTORY = True
 
         failed_checks = [
-            {"name": "test-job", "conclusion": "failure", "details_url": "https://github.com/test/repo/actions/runs/123/job/456"}
+            {
+                "name": "test-job",
+                "conclusion": "failure",
+                "details_url": "https://github.com/test/repo/actions/runs/123/job/456",
+            }
         ]
 
         with patch(
@@ -821,7 +836,7 @@ class TestIntegrationGitHubActionsLogSearch:
                 "headSha": "abc123def456",
                 "conclusion": "failure",
                 "createdAt": "2024-01-15T10:00:00Z",
-                "url": "https://github.com/test/repo/actions/runs/1000"
+                "url": "https://github.com/test/repo/actions/runs/1000",
             },
             {
                 "databaseId": 999,
@@ -830,7 +845,7 @@ class TestIntegrationGitHubActionsLogSearch:
                 "headSha": "789xyz",
                 "conclusion": "success",
                 "createdAt": "2024-01-14T15:30:00Z",
-                "url": "https://github.com/test/repo/actions/runs/999"
+                "url": "https://github.com/test/repo/actions/runs/999",
             },
         ]
 
@@ -1372,8 +1387,8 @@ class TestGitHubActionsLogSearchEdgeCases:
             ) as mock_get_logs:
                 mock_get_logs.side_effect = [
                     "Build failed logs",
-                    "Test timed out logs", 
-                    "Lint was cancelled"
+                    "Test timed out logs",
+                    "Lint was cancelled",
                 ]
 
                 result = _search_github_actions_logs_from_history(
@@ -1383,7 +1398,14 @@ class TestGitHubActionsLogSearchEdgeCases:
                 # Should handle various job conclusions
                 assert result is not None
                 # Should get logs from jobs that have logs
-                assert any(log in result for log in ["Build failed logs", "Test timed out logs", "Lint was cancelled"])
+                assert any(
+                    log in result
+                    for log in [
+                        "Build failed logs",
+                        "Test timed out logs",
+                        "Lint was cancelled",
+                    ]
+                )
 
     def test_with_null_values_in_responses(self):
         """Test handling of null or missing values in API responses."""
@@ -1392,13 +1414,17 @@ class TestGitHubActionsLogSearchEdgeCases:
         runs_data = [
             {
                 "databaseId": 1001,
-                "headBranch": "main",  # Using valid value instead of None to avoid implementation bug
+                "headBranch": (
+                    "main"
+                ),  # Using valid value instead of None to avoid implementation bug
                 "conclusion": "failure",
                 "createdAt": "2024-01-15T10:00:00Z",
                 "status": "completed",
                 "displayTitle": "CI Pipeline",
                 "url": "https://github.com/test/repo/actions/runs/1001",
-                "headSha": "abc123def456",  # Using valid value instead of None to avoid implementation bug
+                "headSha": (
+                    "abc123def456"
+                ),  # Using valid value instead of None to avoid implementation bug
             }
         ]
 
@@ -1438,6 +1464,6 @@ class TestGitHubActionsLogSearchEdgeCases:
                     "test/repo", config, [], max_runs=10
                 )
 
-                # Should handle null values gracefully 
+                # Should handle null values gracefully
                 assert result is not None
                 assert "Logs with null values handled" in result

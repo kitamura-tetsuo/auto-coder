@@ -42,14 +42,134 @@ class AutomationEngine:
         self.message_backend_manager = message_backend_manager
         self.cmd = CommandExecutor()
 
-        # Note: レポートディレクトリはリポジトリごとに作成されるため、
-        # ここでは作成しない（_save_reportで作成）
+        # Note: Report directories are created per repository,
+        # so we do not create one here (created in _save_report)
+
+    def _get_candidates(
+        self, repo_name: str, max_items: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """PR/Issue 候補を優先度付きで収集する。
+
+        優先度定義:
+        - 3: 'urgent' ラベルの PR / Issue（最優先）
+        - 2: マージ可能かつ GitHub Actions が成功している PR（自動マージ候補）
+        - 1: 修正が必要な PR（GH Actions 失敗 or mergeable=False）
+        - 0: 通常の Issue
+
+        ソート順:
+        - 優先度降順（3 -> 0）
+        - 作成日時昇順（古いものから）
+        """
+        from .pr_processor import (
+            _check_github_actions_status as _pr_check_github_actions_status,
+        )
+        from .pr_processor import _extract_linked_issues_from_pr_body
+
+        candidates: List[Dict[str, Any]] = []
+
+        # PR 候補収集
+        prs = self.github.get_open_pull_requests(repo_name)
+        for pr in prs:
+            pr_data = self.github.get_pr_details(pr)
+            labels = pr_data.get("labels", []) or []
+
+            # @auto-coder ラベル付きはスキップ
+            if "@auto-coder" in labels:
+                continue
+
+            # 優先度計算
+            if "urgent" in labels:
+                pr_priority = 3
+            else:
+                checks = _pr_check_github_actions_status(
+                    repo_name, pr_data, self.config
+                )
+                mergeable = pr_data.get("mergeable", True)
+                pr_priority = 2 if (checks.get("success") and mergeable) else 1
+
+            candidates.append(
+                {
+                    "type": "pr",
+                    "data": pr_data,
+                    "priority": pr_priority,
+                    "branch_name": pr_data.get("head", {}).get("ref"),
+                    "related_issues": _extract_linked_issues_from_pr_body(
+                        pr_data.get("body", "")
+                    ),
+                }
+            )
+
+        # Issue 候補収集
+        issues = self.github.get_open_issues(repo_name)
+        for issue in issues:
+            issue_data = self.github.get_issue_details(issue)
+            labels = issue_data.get("labels", []) or []
+
+            # @auto-coder ラベル付きはスキップ
+            if "@auto-coder" in labels:
+                continue
+
+            # サブ Issue やリンク済み PR がある場合はスキップ
+            number = issue_data.get("number")
+            if self.github.get_open_sub_issues(repo_name, number):
+                continue
+            if self.github.has_linked_pr(repo_name, number):
+                continue
+
+            issue_priority = 3 if "urgent" in labels else 0
+
+            candidates.append(
+                {
+                    "type": "issue",
+                    "data": issue_data,
+                    "priority": issue_priority,
+                    "issue_number": number,
+                }
+            )
+
+        # 優先度降順、種別（issue優先）、作成日時昇順でソート
+        def _type_order(t: str) -> int:
+            return 0 if t == "issue" else 1
+
+        candidates.sort(
+            key=lambda x: (
+                -int(x.get("priority", 0)),
+                _type_order(x.get("type", "pr")),
+                x.get("data", {}).get("created_at", ""),
+            )
+        )
+
+        # 上限数指定がある場合はカット
+        if isinstance(max_items, int) and max_items > 0:
+            candidates = candidates[:max_items]
+
+        return candidates
+
+    def _has_open_sub_issues(self, repo_name: str, candidate: Dict[str, Any]) -> bool:
+        """対象の課題に未解決のサブ課題が存在するかを確認するフェイルセーフなヘルパー。
+        - candidate は _get_candidates で構成された要素を想定（type: issue）
+        - 例外時は False を返してスキップ抑制を避ける
+        """
+        try:
+            if candidate.get("type") != "issue":
+                return False
+            issue_data = candidate.get("data") or {}
+            issue_number = candidate.get("issue_number") or issue_data.get("number")
+            if not issue_number:
+                return False
+            sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
+            return bool(sub_issues)
+        except Exception as e:
+            logger.warning(
+                f"Failed to check open sub-issues for issue #{candidate.get('issue_number') or issue_data.get('number', 'N/A')}: {e}"
+            )
+            return False
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
-        # LLMバックエンド情報を取得
+        # Get LLM backend information
         llm_backend_info = self._get_llm_backend_info()
 
         results = {
@@ -94,6 +214,7 @@ class AutomationEngine:
             logger.error(error_msg)
             results["errors"].append(error_msg)
             return results
+
 
     def process_single(
         self, repo_name: str, target_type: str, number: int, jules_mode: bool = False
@@ -160,16 +281,16 @@ class AutomationEngine:
         if self.llm is None:
             return {"backend": None, "model": None}
 
-        # BackendManagerの場合
+        # For BackendManager case
         if hasattr(self.llm, "get_last_backend_and_model"):
             backend, model = self.llm.get_last_backend_and_model()
             return {"backend": backend, "model": model}
 
-        # 個別クライアントの場合
+        # For individual client case
         backend = None
         model = getattr(self.llm, "model_name", None)
 
-        # クラス名からバックエンド名を推測
+        # Infer backend name from class name
         class_name = self.llm.__class__.__name__
         if "Gemini" in class_name:
             backend = "gemini"
@@ -197,13 +318,13 @@ class AutomationEngine:
                       ~/.auto-coder/{repository}/ instead of the default reports/ directory.
         """
         try:
-            # リポジトリ名が指定されている場合は、リポジトリごとのディレクトリを使用
+            # If repository name is specified, use repository-specific directory
             if repo_name:
                 reports_dir = self.config.get_reports_dir(repo_name)
             else:
                 reports_dir = self.config.REPORTS_DIR
 
-            # レポートディレクトリが存在しない場合は作成
+            # Create reports directory if it doesn't exist
             os.makedirs(reports_dir, exist_ok=True)
 
             filepath = os.path.join(
@@ -226,7 +347,7 @@ class AutomationEngine:
         return _engine_pr_prompt(repo_name, pr_data, pr_diff, self.config)
 
     def get_github_actions_logs_from_url(self, url: str) -> str:
-        """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。"""
+        """Extract error blocks by fetching logs for the given GitHub Actions job URL directly."""
         return get_github_actions_logs_from_url(url)
 
     def _get_github_actions_logs(
@@ -236,16 +357,16 @@ class AutomationEngine:
         failed_checks: List[Dict[str, Any]],
         search_history: Optional[bool] = None,
     ) -> str:
-        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+        """Fetch logs for failed GitHub Actions jobs via gh api and return only the error sections.
 
         Args:
             repo_name: Repository name
             pr_data: PR data dictionary
             failed_checks: List of failed check dictionaries
-            search_history: Optional parameter to enable historical search.
-                           If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
-                           If True, searches through commit history for logs.
-                           If False, uses current state only.
+            search_history: Optional flag to enable historical search.
+                If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                If True, searches commit history for logs.
+                If False, uses current state only.
 
         Returns:
             String containing GitHub Actions logs
@@ -253,6 +374,7 @@ class AutomationEngine:
         return _pr_get_github_actions_logs(
             repo_name, self.config, failed_checks, search_history=search_history
         )
+
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
         return _pr_get_diff(repo_name, pr_number, self.config)
@@ -809,7 +931,7 @@ DO NOT include git commit or push commands in your response."""
                 ["git", "log", "--oneline", f"-{search_depth}"],
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=30,
             )
 
             if result.returncode != 0:
@@ -819,7 +941,7 @@ DO NOT include git commit or push commands in your response."""
             commits_with_actions = []
 
             # Parse the output to extract commit hashes and messages
-            lines = result.stdout.strip().split('\n')
+            lines = result.stdout.strip().split("\n")
 
             for line in lines:
                 if not line.strip():
@@ -843,61 +965,88 @@ DO NOT include git commit or push commands in your response."""
                 # Use gh CLI to list workflow runs for this commit
                 try:
                     run_result = subprocess.run(
-                        [
-                            "gh", "run", "list",
-                            "--commit", commit_hash,
-                            "--limit", "1"
-                        ],
+                        ["gh", "run", "list", "--commit", commit_hash, "--limit", "1"],
                         capture_output=True,
                         text=True,
-                        timeout=10
+                        timeout=10,
                     )
 
                     # If no runs found for this commit, skip it
-                    if run_result.returncode != 0 or "no runs found" in run_result.stdout.lower():
-                        logger.debug(f"Commit {commit_hash[:8]}: No GitHub Actions runs found")
+                    if (
+                        run_result.returncode != 0
+                        or "no runs found" in run_result.stdout.lower()
+                    ):
+                        logger.debug(
+                            f"Commit {commit_hash[:8]}: No GitHub Actions runs found"
+                        )
                         continue
 
                     # Check if there are any runs (success or failure)
                     # Parse the output to check for completed runs
-                    run_lines = run_result.stdout.strip().split('\n')
+                    run_lines = run_result.stdout.strip().split("\n")
 
                     actions_status = None
                     actions_url = ""
 
                     for run_line in run_lines:
-                        if not run_line.strip() or run_line.startswith("STATUS") or run_line.startswith("WORKFLOW"):
+                        if (
+                            not run_line.strip()
+                            or run_line.startswith("STATUS")
+                            or run_line.startswith("WORKFLOW")
+                        ):
                             continue
 
                         # Parse tab-separated format
-                        if '\t' in run_line:
-                            parts = run_line.split('\t')
+                        if "\t" in run_line:
+                            parts = run_line.split("\t")
                             if len(parts) >= 3:
                                 status = parts[1].strip().lower()
                                 url = parts[3] if len(parts) > 3 else ""
 
                                 # Only include commits with completed runs (success or failure)
                                 # Skip queued or in-progress runs
-                                if status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
+                                if status in [
+                                    "success",
+                                    "completed",
+                                    "failure",
+                                    "failed",
+                                    "cancelled",
+                                    "pass",
+                                ]:
                                     actions_status = status
                                     actions_url = url
                                     break
 
                     # Only add commits that have completed Action runs
-                    if actions_status and actions_status in ["success", "completed", "failure", "failed", "cancelled", "pass"]:
-                        commits_with_actions.append({
-                            "commit_hash": commit_hash,
-                            "message": commit_message,
-                            "actions_status": actions_status,
-                            "actions_url": actions_url
-                        })
-                        logger.info(f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'")
+                    if actions_status and actions_status in [
+                        "success",
+                        "completed",
+                        "failure",
+                        "failed",
+                        "cancelled",
+                        "pass",
+                    ]:
+                        commits_with_actions.append(
+                            {
+                                "commit_hash": commit_hash,
+                                "message": commit_message,
+                                "actions_status": actions_status,
+                                "actions_url": actions_url,
+                            }
+                        )
+                        logger.info(
+                            f"Commit {commit_hash[:8]}: Found Actions run with status '{actions_status}'"
+                        )
 
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"Timeout checking Actions for commit {commit_hash[:8]}")
+                    logger.warning(
+                        f"Timeout checking Actions for commit {commit_hash[:8]}"
+                    )
                     continue
 
-            logger.info(f"Found {len(commits_with_actions)} commits with GitHub Actions")
+            logger.info(
+                f"Found {len(commits_with_actions)} commits with GitHub Actions"
+            )
             return commits_with_actions
 
         except Exception as e:

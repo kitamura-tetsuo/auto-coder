@@ -855,9 +855,9 @@ def format_commit_message(
 def extract_important_errors(test_result: Dict[str, Any]) -> str:
     """Extract important error information from test output.
 
-    改良点:
-    - Playwright 形式の失敗ブロック（"Error:   1) [suite] › ... .spec.ts ..."）を優先的に広めのコンテキストで抽出
-    - 期待/受領や該当 expect 行、"X failed" サマリを含めやすくする
+    Improvements:
+    - Prefer extracting Playwright-style failure blocks (e.g., "Error: 1) [suite] › ... .spec.ts ...") with broader context
+    - Make it easier to include expectation/received lines, the matching expect line, and the "X failed" summary
     """
     if test_result["success"]:
         return ""
@@ -882,8 +882,8 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
         try:
             import re
 
-            # 見出し候補を後方に向かって探す
-            # Playwright 見出し: 先頭に "Error:" がないケースや、先頭空白/× 記号を許容
+            # Find candidate header by scanning backwards
+            # Playwright header: allow cases without leading "Error:" and allow leading spaces or the × mark
             hdr_pat = re.compile(r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\).*\.spec\.ts:.*")
             idx_expect = None
             for i, ln in enumerate(lines):
@@ -907,13 +907,13 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
         except Exception:
             pass
 
-    # 1) Playwright の典型パターンを優先抽出
+    # 1) Prefer Playwright-typical error pattern extraction
     try:
         import re
 
-        # 失敗見出し: "Error:   1) [suite] › e2e/... .spec.ts:line:col › ..."
+        # Failure header: "Error:   1) [suite] › e2e/... .spec.ts:line:col › ..."
         header_indices = []
-        # Playwright 見出し: 先頭に "Error:" がない/ある両方、先頭空白や × 記号も許容
+        # Playwright header: allow both with/without leading "Error:" and also leading whitespace or the × mark
         header_regex = re.compile(
             r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+\[[^\]]+\]\s+\u203a\s+.*\.spec\.ts:\d+:\d+\s+\u203a\s+.*|"
             r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+.*\.spec\.ts:.*",
@@ -929,8 +929,8 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
 
         blocks = []
         for start_idx in header_indices:
-            end_idx = min(len(lines), start_idx + 120)  # 広めに120行
-            # 次のエラー見出しで打ち切り（空行では打ち切らない）
+            end_idx = min(len(lines), start_idx + 120)  # wider context up to 120 lines
+            # Stop at the next error header (do not stop at empty lines)
             for j in range(start_idx + 1, min(len(lines), start_idx + 300)):
                 if j >= len(lines):
                     break
@@ -939,14 +939,14 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
                     end_idx = j
                     break
             block = lines[start_idx:end_idx]
-            # 期待/受領や該当 expect 行が含まれているかチェック
+            # Check if it includes expectation/received lines or the corresponding expect line
             if any(expect_regex.search(b) for b in block) or any(
                 ".spec.ts" in b for b in block
             ):
                 blocks.append("\n".join(block))
         if blocks:
             result = "\n\n".join(blocks)
-            # 期待/受領の行が含まれていなければ追補する
+            # Append expectation/received lines if not included
             if "Expected substring:" not in result or "Received string:" not in result:
                 extra_lines = []
                 for i, ln in enumerate(lines):
@@ -970,7 +970,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
     except Exception:
         pass
 
-    # 2) キーワードベースのフォールバック抽出（従来ロジックを改善）
+    # 2) Keyword-based fallback extraction (improved over legacy logic)
     important_lines = []
     # Keywords that indicate important error information
     error_keywords = [
@@ -1013,7 +1013,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
     for i, line in enumerate(lines):
         line_lower = line.lower()
         if any(keyword.lower() in line_lower for keyword in error_keywords):
-            # もう少し広めに文脈を抽出
+            # Extract a slightly broader context
             start = max(0, i - 5)
             end = min(len(lines), i + 8)
             context_lines = lines[start:end]

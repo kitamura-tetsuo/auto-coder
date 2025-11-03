@@ -179,11 +179,11 @@ class CommandExecutor:
                         else:
                             stderr_lines.append(chunk)
 
-                        # 空行は無視してログ出力しない
+                        # Skip empty lines and don't log them
                         stripped_chunk = chunk.rstrip("\n")
                         if stripped_chunk:
-                            # stderr も INFO レベルで出力
-                            # depth=2 で _run_with_streaming の呼び出し元を表示
+                            # Also output stderr at INFO level
+                            # depth=2 to show the caller of _run_with_streaming
                             logger.opt(depth=2).info(stripped_chunk)
 
                         # Optional per-chunk callback for early aborts
@@ -319,9 +319,10 @@ class CommandExecutor:
 def change_fraction(old: str, new: str) -> float:
     """Return fraction of change between two strings (0.0..1.0).
 
-    性能最適化のため、比較対象は末尾の「20行」または「1000文字」のうち小さい方。
-    実装: 各文字列に対して末尾ウィンドウを抽出し、そのウィンドウ同士で
-    difflib.SequenceMatcher の類似度を計算して change = 1 - ratio を返す。
+    For performance optimization, the comparison targets the smaller of either
+    the trailing "20 lines" or "1000 characters".
+    Implementation: Extract a trailing window from each string, then calculate
+    the similarity using difflib.SequenceMatcher and return change = 1 - ratio.
     """
     try:
         import difflib
@@ -332,12 +333,12 @@ def change_fraction(old: str, new: str) -> float:
         def tail_window(s: str) -> str:
             if not s:
                 return ""
-            # 末尾20行
+            # Trailing 20 lines
             lines = s.splitlines()
             tail_by_lines = "\n".join(lines[-20:])
-            # 末尾1000文字
+            # Trailing 1000 characters
             tail_by_chars = s[-1000:]
-            # より短い方を採用
+            # Use the shorter one
             return (
                 tail_by_lines
                 if len(tail_by_lines) <= len(tail_by_chars)
@@ -360,15 +361,15 @@ def change_fraction(old: str, new: str) -> float:
 
 
 def slice_relevant_error_window(text: str) -> str:
-    """エラー関連の必要部分のみを返す（プレリュード切捨て＋後半重視・短縮）。
-    方針:
-    - 優先トリガを探索し、最も早い位置から末尾までを返す
-    - 見つからない場合は末尾の数百行に限定
+    """Return only the necessary parts related to errors (discard prelude, emphasize and shorten latter half).
+    Policy:
+    - Search for priority triggers and return from the earliest position to the end
+    - If not found, limit to the last several hundred lines
     """
     if not text:
         return text
     lines = text.split("\n")
-    # 優先度の高い順でグルーピング
+    # Group by priority from highest to lowest
     priority_groups = [
         ["Expected substring:", "Received string:", "expect(received)"],
         ["Error:   ", ".spec.ts", "##[error]", "##[warning]"],
@@ -376,7 +377,7 @@ def slice_relevant_error_window(text: str) -> str:
         ["error was not a part of any test", "Notice:", "##[notice]", "notice"],
     ]
     start_idx = None
-    # 最も早い優先トリガを探索（前方から）
+    # Search for the earliest priority trigger (from front)
     for group in priority_groups:
         for i in range(len(lines)):
             low = lines[i].lower()
@@ -386,9 +387,9 @@ def slice_relevant_error_window(text: str) -> str:
         if start_idx is not None:
             break
     if start_idx is None:
-        # トリガが無ければ、末尾のみ（最大500行）
+        # If no trigger found, use only the end (max 500 lines)
         return "\n".join(lines[-500:])
-    # 末尾はそのまま。さらに最大1500行に制限
+    # Keep the end as-is. Also limit to max 1500 lines
     sliced = lines[start_idx:]
     if len(sliced) > 1500:
         sliced = sliced[:1500]
@@ -396,19 +397,19 @@ def slice_relevant_error_window(text: str) -> str:
 
 
 def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
-    """テスト出力から「最初に失敗したテストファイルのパス」を抽出して返す。
+    """Extract and return the "path of the first failed test file" from test output.
 
-    二段階の検出方法:
-    1. まず、どのテストライブラリが失敗しているかを判定
-    2. 次に、そのテストライブラリ固有のパターンで失敗したテストファイルを抽出
+    Two-stage detection method:
+    1. First, determine which test library failed
+    2. Then, extract the failed test file using patterns specific to that test library
 
-    対応フォーマット:
-    - pytest: 末尾サマリの "FAILED tests/test_x.py::test_y - ..." など
-    - pytest: トレースバック中の "tests/test_x.py:123: in test_y" など
-    - Playwright: 任意ログ中の "e2e/foo/bar.spec.ts:16:5" など
-    - Vitest: "FAIL src/foo.test.ts" など
+    Supported formats:
+    - pytest: End summary "FAILED tests/test_x.py::test_y - ..." etc.
+    - pytest: Traceback "tests/test_x.py:123: in test_y" etc.
+    - Playwright: Any log "e2e/foo/bar.spec.ts:16:5" etc.
+    - Vitest: "FAIL src/foo.test.ts" etc.
 
-    見つかったパスを返す。実在確認に失敗しても候補があれば返すことがある（呼び出し側で解釈するため）。
+    Returns the found path. May return a candidate even if existence check fails (interpreted by caller).
     """
     import re
 
@@ -418,7 +419,7 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         return ansi_escape.sub("", text or "")
 
     def _detect_failed_test_library(text: str) -> Optional[str]:
-        """失敗したテストライブラリを判定する。
+        """Determine which test library failed.
 
         Returns:
             "pytest" | "playwright" | "vitest" | None
@@ -427,18 +428,18 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         if not text:
             return None
 
-        # pytest の失敗パターン
+        # pytest failure patterns
         if re.search(r"^FAILED\s+[^\s:]+\.py", text, re.MULTILINE):
             return "pytest"
         if re.search(r"=+ FAILURES =+", text, re.MULTILINE):
             return "pytest"
         if re.search(r"=+ \d+ failed", text, re.MULTILINE):
             return "pytest"
-        # pytestのトレースバック行（tests/配下の.pyファイル）
+        # pytest traceback lines (tests/ directory .py files)
         if re.search(r"(?:^|\s)(?:tests?/)[^:\s]+\.py:\d+", text, re.MULTILINE):
             return "pytest"
 
-        # Playwright の失敗パターン
+        # Playwright failure patterns
         if re.search(r"^\s*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›", text, re.MULTILINE):
             return "playwright"
         if re.search(
@@ -448,9 +449,9 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         if re.search(r"\d+ failed.*playwright", text, re.IGNORECASE):
             return "playwright"
 
-        # Vitest の失敗パターン
-        # "FAIL  |unit| src/tests/..." のようなパターン
-        # ログ出力の中にも対応するため、行の途中でもマッチするようにする
+        # Vitest failure patterns
+        # Patterns like "FAIL  |unit| src/tests/..."
+        # Match even in the middle of lines to handle log output
         if re.search(r"FAIL\s+(?:\|[^|]+\|\s+)?[^\s>]+\.(?:spec|test)\.ts", text):
             return "vitest"
         if re.search(r"Test Files\s+\d+ failed", text, re.MULTILINE):
@@ -459,14 +460,14 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         return None
 
     def _collect_pytest_candidates(text: str) -> List[str]:
-        """pytest の失敗したテストファイルを抽出する。"""
+        """Extract pytest failed test files."""
         text = _strip_ansi(text)
         if not text:
             return []
 
         found: List[str] = []
 
-        # 1) pytest の FAILED サマリ行から抽出
+        # 1) Extract from pytest FAILED summary lines
         for pat in [
             r"^FAILED\s+([^\s:]+\.py)::",
             r"^FAILED\s+([^\s:]+\.py)\s*[-:]",
@@ -477,7 +478,7 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
                 found.append(m.group(1))
                 break
 
-        # 2) pytest のトレースバック行から tests/ 配下の .py を抽出
+        # 2) Extract .py files under tests/ from pytest traceback lines
         m = re.search(
             r"(^|\s)((?:tests?/|^tests?/)[^:\s]+\.py):\d+", text, re.MULTILINE
         )
@@ -489,7 +490,7 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         return found
 
     def _collect_playwright_candidates(text: str) -> List[str]:
-        """Playwright の失敗したテストファイルを抽出する。"""
+        """Extract Playwright failed test files."""
         text = _strip_ansi(text)
         if not text:
             return []
@@ -522,7 +523,7 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
                 if norm not in found:
                     found.append(norm)
 
-        # フォールバック: .spec.ts を含む行を探す
+        # Fallback: Search for lines containing .spec.ts
         if not found:
             for spec_path in re.findall(r"([^\s:]+\.spec\.ts)", text):
                 norm = _normalize_spec(spec_path)
@@ -532,15 +533,15 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         return found
 
     def _collect_vitest_candidates(text: str) -> List[str]:
-        """Vitest の失敗したテストファイルを抽出する。"""
+        """Extract Vitest failed test files."""
         text = _strip_ansi(text)
         if not text:
             return []
 
         found: List[str] = []
 
-        # Vitest/Jest 形式の FAIL 行から .test.ts / .spec.ts を抽出
-        # ログ出力の中にも対応するため、行の途中でもマッチするようにする
+        # Extract .test.ts / .spec.ts from Vitest/Jest format FAIL lines
+        # Match even in the middle of lines to handle log output
         vitest_fail_re = re.compile(
             r"FAIL\s+(?:\|[^|]+\|\s+)?([^\s>]+\.(?:spec|test)\.ts)(?=\s|>|$)",
         )
@@ -551,12 +552,12 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
 
         return found
 
-    # stderr を最優先で解析し、次に stdout、それでも見つからなければ従来通り結合出力を解析
+    # Analyze stderr first, then stdout, if neither found, analyze combined output as before
     ordered_outputs = [stderr, stdout, f"{stdout}\n{stderr}"]
     candidates: List[str] = []
 
     for output in ordered_outputs:
-        # ステップ1: 失敗したテストライブラリを判定
+        # Step 1: Determine which test library failed
         failed_library = _detect_failed_test_library(output)
 
         if failed_library == "pytest":
@@ -569,12 +570,12 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         if candidates:
             break
 
-    # 実在するファイルを優先して返す
+    # Prefer to return existing files
     for path in candidates:
         if os.path.exists(path):
             return path
 
-    # 実在しなくても候補があれば最初の候補を返す
+    # If candidates exist, return the first candidate even if it doesn't exist
     if candidates:
         return candidates[0]
 
