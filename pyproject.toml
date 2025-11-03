@@ -1,196 +1,54 @@
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+[tool.pyright]
+# Python version
+pythonVersion = "3.11"
 
-[project]
-name = "auto-coder"
-version = "2025.11.3.35+g0d2b76b"
-description = "Automated application development using Gemini CLI and GitHub integration"
-readme = "README.md"
-license = {file = "LICENSE"}
-authors = [
-    {name = "Auto-Coder Team"}
-]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-]
-requires-python = ">=3.11,<3.12"
-dependencies = [
-    "requests>=2.31.0",
-    "pydantic>=2.0.0,<3.0.0",
-    "pydantic-settings>=2.0.0",
-    "click>=8.1.0",
-    "python-dotenv>=1.0.0",
-    "PyGithub>=1.59.0",
-    "pyyaml>=6.0",
-    "GitPython>=3.1.0",
-    "loguru>=0.7.0",
-    "neo4j>=5.14.0",
-    "qdrant-client>=1.7.0",
-    "sentence-transformers>=2.2.0",
-    "watchdog>=6.0.0",
-    "pathspec>=0.12.0",
-    "playwright>=1.54.0",
-]
+# Basic checking
+strictParameterNoneValue = true
+reportGeneralTypeIssues = true
+reportOptionalSubscript = true
+reportOptionalMemberAccess = true
+reportOptionalCall = true
+reportOptionalIndexedValue = true
+reportOptionalIterable = true
+reportOptionalContextManager = true
+reportOptionalOperand = true
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "pytest-timeout>=2.1.0",
-    "black>=23.0.0",
-    "isort>=5.12.0",
-    "flake8>=6.0.0",
-    "mypy>=1.5.0",
-    "pre-commit>=3.3.0",
-]
-test = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "playwright>=1.40.0",
+# Report issues (設定して警告レベルに変更)
+reportUnknownParameterType = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownLambdaType = "warning"
+reportUnknownVariableType = "warning"
+reportUnknownMemberType = "warning"
+reportMissingTypeStubs = "warning"
+reportPossiblyUnboundVariable = "warning"
+
+# Import analysis
+reportImportCycles = "warning"
+reportUnusedImport = "warning"
+reportDuplicateImport = "warning"
+
+# Code quality
+reportUnusedVariable = "warning"
+reportPrivateUsage = "warning"
+reportConstantRedefinition = "warning"
+
+# Type annotations
+reportTypedDictNotRequiredAccess = "warning"
+reportPrivateImportUsage = "warning"
+
+# Advanced checking
+strictListInference = true
+strictDictInference = true
+strictSetInference = true
+
+# Exclude specific files from checking if needed
+exclude = [
+    "tests/",
+    "build/",
+    "dist/",
 ]
 
-[project.scripts]
-auto-coder = "auto_coder.cli:main"
-
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["src"]
-exclude = ["*.tests", "*.tests.*", "tests.*", "tests"]
-
-[tool.setuptools.package-data]
-auto_coder = [
-    "prompts.yaml",
-    "docker-compose.graphrag.yml",
-    "graph_builder/dist/cli.bundle.js",
-    "graph_builder/dist/**/*.js",
-    "graph_builder/dist/**/*.d.ts",
-    "graph_builder/dist/**/*.map",
-    "graph_builder/src/**/*.py",
-    "graph_builder/src/**/*.ts",
-    "graph_builder/package.json",
-    "graph_builder/tsconfig.json",
-    "mcp_servers/graphrag_mcp/**/*.py",
-    "mcp_servers/graphrag_mcp/**/*.md",
-    "mcp_servers/graphrag_mcp/**/*.toml",
-    "mcp_servers/graphrag_mcp/**/*.sh",
-]
-
-[tool.setuptools.exclude-package-data]
-"*" = [
-    "node_modules",
-    "node_modules/**",
-    "test-output",
-    "test-output/**",
-    "test-output-ts",
-    "test-output-ts/**",
-    "sample-repo",
-    "sample-repo/**",
-    "__pycache__",
-    "*.pyc",
-    "*/tests",
-    "*/tests/**",
-    "graph_builder/dist/tests",
-    "graph_builder/dist/tests/**",
-    "graph_builder/src/tests",
-    "graph_builder/src/tests/**",
-]
-
-[tool.black]
-line-length = 88
-target-version = ['py311']
-
-[tool.isort]
-profile = "black"
-line_length = 88
-
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = "-x --tb=short -q --strict-markers --disable-warnings --maxfail=1 -m 'not e2e and not integration and not slow'"
-timeout = 30
-timeout_method = "thread"
-asyncio_mode = "auto"
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
-    "e2e: marks tests as end-to-end tests",
-    "headless: marks tests that run in headless mode",
-    "playwright: marks tests that use Playwright",
-    "github: marks tests that use GitHub API",
-    "docker: marks tests that use Docker",
-    "mcp: marks tests that use MCP servers",
-    "graphrag: marks tests that use GraphRAG",
-]
-minversion = "6.0"
-norecursedirs = [
-    ".git",
-    ".pytest_cache",
-    ".coverage*",
-    "htmlcov",
-    "build",
-    "dist",
-    "*.egg",
-    "node_modules",
-    "test-output*",
-    "__pycache__",
-    "*.pyc",
-    "graph_builder/dist",
-    "graph_builder/src/tests",
-    "mcp_servers/*/tests",
-    "htmlcov*",
-    "graph_builder/node_modules",
-    "graph_builder/test-output*",
-    "src/auto_coder/graph_builder/node_modules",
-    "src/auto_coder/graph_builder/test-output*",
-    ".mypy_cache",
-    ".tox",
-]
-filterwarnings = [
-    "ignore::UserWarning",
-    "ignore::DeprecationWarning",
-    "ignore::pytest.PytestUnraisableExceptionWarning",
-    "ignore::pytest.PytestCollectionWarning",
-]
-junit_family = "xunit2"
-# Memory and performance optimization
-cache_dir = ".pytest_cache"
-log_cli = false
-log_cli_level = "INFO"
-log_cli_format = "%(levelname)s [%(name)s] %(message)s"
-log_cli_date_format = "%Y-%m-%d %H:%M:%S"
-# Test collection optimization - aggressive exclusion
-collect_ignore = [
-    "graph_builder/node_modules",
-    "graph_builder/test-output",
-    "graph_builder/dist",
-    "src/auto_coder/graph_builder/node_modules",
-    "src/auto_coder/graph_builder/test-output",
-    "src/auto_coder/graph_builder/dist",
-    "mcp_servers/*/node_modules",
-    "mcp_servers/*/tests",
-]
-# Reduce memory usage
-tb_short = true
-# Disable expensive features by default
-
-[dependency-groups]
-dev = [
-    "pytest>=8.4.1",
-    "pytest-cov>=6.2.1",
+# Include specific directories
+include = [
+    "src/",
 ]

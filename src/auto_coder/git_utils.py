@@ -639,12 +639,14 @@ def ensure_pushed_with_fallback(
     commit_message: Optional[str] = None,
     issue_number: Optional[int] = None,
     repo_name: Optional[str] = None,
+    branch: Optional[str] = None,
 ) -> CommandResult:
     """
     Ensure all commits are pushed to remote with enhanced error handling.
 
     This function handles non-fast-forward errors by pulling first, then pushing.
-    If push still fails, it falls back to LLM resolution.
+    Includes enhanced dprint formatting error handling and upstream branch setup
+    like git_push, then falls back to LLM resolution if needed.
 
     Args:
         cwd: Optional working directory for git command
@@ -654,6 +656,7 @@ def ensure_pushed_with_fallback(
         commit_message: Commit message for LLM context
         issue_number: Issue number for LLM context
         repo_name: Repository name for history saving
+        branch: Optional branch name. If None, pushes current branch
 
     Returns:
         CommandResult object with success status and output
@@ -667,9 +670,11 @@ def ensure_pushed_with_fallback(
             success=True, stdout="No unpushed commits", stderr="", returncode=0
         )
 
-    # Push unpushed commits
+    # Push unpushed commits using git_push with all its enhanced features
     logger.info("Pushing unpushed commits...")
-    push_result = git_push(cwd=cwd, remote=remote, commit_message=commit_message)
+    push_result = git_push(
+        cwd=cwd, remote=remote, branch=branch, commit_message=commit_message
+    )
 
     # If push succeeded, return the result
     if push_result.success:
@@ -690,7 +695,7 @@ def ensure_pushed_with_fallback(
         )
 
         # Use the centralized git_pull function
-        pull_result = git_pull(remote=remote, branch=None, cwd=cwd)
+        pull_result = git_pull(remote=remote, branch=branch, cwd=cwd)
 
         if not pull_result.success:
             logger.warning(f"Pull failed: {pull_result.stderr}")
@@ -699,8 +704,9 @@ def ensure_pushed_with_fallback(
 
         logger.info("Retrying push...")
         # Always retry the push after attempting pull (regardless of pull success)
+        # Use git_push again to maintain all enhanced features (dprint handling, etc.)
         retry_push_result = git_push(
-            cwd=cwd, remote=remote, commit_message=commit_message
+            cwd=cwd, remote=remote, branch=branch, commit_message=commit_message
         )
 
         if retry_push_result.success:

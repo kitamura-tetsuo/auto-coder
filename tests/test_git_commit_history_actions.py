@@ -54,36 +54,25 @@ jkl3456 Refactor code"""
         mock_git_result.stdout = mock_git_log
         mock_git_result.stderr = ""
 
-        # Setup mock for gh run list (returns different results for different commits)
+        # Setup mock for gh run list: 呼び出し順で各コミット相当の結果を返す
+        list_call = {"i": 0}
+
         def run_command_side_effect(cmd, **kwargs):
             if "git" in cmd and "log" in cmd:
                 return mock_git_result
             elif "gh" in cmd and "run" in cmd and "list" in cmd:
-                # Check which commit is being queried
-                if "abc1234" in " ".join(cmd):
-                    # Return result with Actions
-                    mock_result = Mock()
-                    mock_result.returncode = 0
+                list_call["i"] += 1
+                mock_result = Mock()
+                mock_result.returncode = 0
+                if list_call["i"] == 1:
                     mock_result.stdout = json.dumps(mock_action_runs_commit1)
-                    return mock_result
-                elif "def5678" in " ".join(cmd):
-                    # Return result with Actions
-                    mock_result = Mock()
-                    mock_result.returncode = 0
+                elif list_call["i"] == 2:
                     mock_result.stdout = json.dumps(mock_action_runs_commit2)
-                    return mock_result
-                elif "ghi9012" in " ".join(cmd):
-                    # Return result with no Actions
-                    mock_result = Mock()
-                    mock_result.returncode = 0
+                elif list_call["i"] == 3:
                     mock_result.stdout = "[]"
-                    return mock_result
                 else:
-                    # No Actions for this commit
-                    mock_result = Mock()
-                    mock_result.returncode = 0
                     mock_result.stdout = "[]"
-                    return mock_result
+                return mock_result
 
         mock_run_command.side_effect = run_command_side_effect
 

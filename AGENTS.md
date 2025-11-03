@@ -1,7 +1,3 @@
-Here is the full English translation:
-
----
-
 # Auto-Coder Agent Guidelines
 
 ## Project Overview
@@ -21,6 +17,8 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Do not copy implementation code into test files for testing.
 * Do not use mocks in end-to-end (e2e) tests.
 * Run e2e tests in headless mode.
+* Do not return Dict[str, Any]. Use @dataclass with initial values instead.
+* Write coments and messages in English.
 
 ### Project Structure
 

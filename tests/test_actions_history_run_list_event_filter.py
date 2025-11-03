@@ -3,15 +3,19 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _check_github_actions_status_from_history
+from src.auto_coder.util.github_action import _check_github_actions_status_from_history
 
 
-def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):
-    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
+def _cmd_result(
+    success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0
+):
+    return SimpleNamespace(
+        success=success, stdout=stdout, stderr=stderr, returncode=returncode
+    )
 
 
-def test_commit_run_list_includes_event_filter():
-    """commit に対する gh run list で --event pull_request を付与することを検証"""
+def test_commit_search_prefers_pull_request_runs_without_event_flag():
+    """commit 用の検索は Python 側でフィルタし、--event/--commit フラグ無しでも pull_request の run を優先できること。"""
     config = AutomationConfig()
 
     pr_data = {
@@ -34,31 +38,66 @@ def test_commit_run_list_includes_event_filter():
         }
     ]
 
+    call_count = {"list": 0}
+
     def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "run", "list"] and "--commit" in cmd:
-            # commit用の run list には --event pull_request を付与
-            assert "--event" in cmd and "pull_request" in cmd, f"--event filter missing in commit run list: {cmd}"
-            return _cmd_result(True, stdout=json.dumps(commit_runs_payload), stderr="", returncode=0)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            # PR のコミット情報を返す
+            return _cmd_result(
+                True,
+                stdout=json.dumps(
+                    {
+                        "commits": [
+                            {
+                                "oid": "feedc0ffee",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+                returncode=0,
+            )
+        if cmd[:3] == ["gh", "run", "list"]:
+            call_count["list"] += 1
+            # どの呼び出しでも --event/--commit フラグは使わない
+            assert (
+                "--event" not in cmd and "--commit" not in cmd
+            ), f"unexpected flags in command: {cmd}"
+            # 1回目の list で commit 相当のフィルタ結果を返す
+            return _cmd_result(
+                True, stdout=json.dumps(commit_runs_payload), stderr="", returncode=0
+            )
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_payload = {
                 "jobs": [
-                    {"databaseId": 1, "name": "CI", "conclusion": "failure", "status": "completed"}
+                    {
+                        "databaseId": 1,
+                        "name": "CI",
+                        "conclusion": "failure",
+                        "status": "completed",
+                    }
                 ]
             }
-            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
-        # fallback list should not be called in this case
+            return _cmd_result(
+                True, stdout=json.dumps(jobs_payload), stderr="", returncode=0
+            )
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
-        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
+    with patch(
+        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
+    ):
+        result = _check_github_actions_status_from_history(
+            "owner/repo", pr_data, config
+        )
 
-    assert result["success"] is False
-    checks = result.get("checks", [])
-    assert checks, "checks should not be empty"
+    assert result.success is False
+    # 遅延取得によりchecksは空になっていることを確認
+    assert result.checks == [], "checks は遅延取得により空であるべき"
+    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"
 
 
-def test_fallback_run_list_includes_event_filter():
-    """commit でヒットしない場合のフォールバック run list でも --event pull_request を付与することを検証"""
+def test_fallback_search_works_without_event_flag():
+    """commit 相当の検索でヒットしなくても、フォールバックの run list で --event なしに pull_request を優先できること。"""
     config = AutomationConfig()
 
     pr_data = {
@@ -81,26 +120,62 @@ def test_fallback_run_list_includes_event_filter():
         }
     ]
 
+    call_count = {"list": 0}
+
     def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "run", "list"] and "--commit" in cmd:
-            return _cmd_result(True, stdout="[]", stderr="", returncode=0)
-        if cmd[:3] == ["gh", "run", "list"] and "--commit" not in cmd:
-            # フォールバックの run list にも --event pull_request を付与
-            assert "--event" in cmd and "pull_request" in cmd, f"--event filter missing in fallback run list: {cmd}"
-            return _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            # PR のコミット情報を返す
+            return _cmd_result(
+                True,
+                stdout=json.dumps(
+                    {
+                        "commits": [
+                            {
+                                "oid": "abc123",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+                returncode=0,
+            )
+        if cmd[:3] == ["gh", "run", "list"]:
+            call_count["list"] += 1
+            # どの呼び出しでも --event/--commit フラグは使わない
+            assert (
+                "--event" not in cmd and "--commit" not in cmd
+            ), f"unexpected flags in command: {cmd}"
+            if call_count["list"] == 1:
+                # 1回目（commit 相当）はヒットしない
+                return _cmd_result(True, stdout="[]", stderr="", returncode=0)
+            # 2回目（フォールバック）はヒット
+            return _cmd_result(
+                True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
+            )
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_payload = {
                 "jobs": [
-                    {"databaseId": 2, "name": "CI", "conclusion": "success", "status": "completed"}
+                    {
+                        "databaseId": 2,
+                        "name": "CI",
+                        "conclusion": "success",
+                        "status": "completed",
+                    }
                 ]
             }
-            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
+            return _cmd_result(
+                True, stdout=json.dumps(jobs_payload), stderr="", returncode=0
+            )
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
-        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
+    with patch(
+        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
+    ):
+        result = _check_github_actions_status_from_history(
+            "owner/repo", pr_data, config
+        )
 
-    assert result["success"] is True
-    checks = result.get("checks", [])
-    assert checks, "checks should not be empty"
-
+    assert result.success is True
+    # 遅延取得によりchecksは空になっていることを確認
+    assert result.checks == [], "checks は遅延取得により空であるべき"
+    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"

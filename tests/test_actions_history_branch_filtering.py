@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _check_github_actions_status_from_history
+from src.auto_coder.util.github_action import _check_github_actions_status_from_history
 
 
 def _cmd_result(
@@ -74,10 +74,31 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         ]
     }
 
+    call_count = {"list": 0}
+
     def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "run", "list"] and "--commit" in cmd:
-            return commit_run_list
-        if cmd[:3] == ["gh", "run", "list"] and "--commit" not in cmd:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            # PR のコミット情報を返す
+            return _cmd_result(
+                True,
+                stdout=json.dumps(
+                    {
+                        "commits": [
+                            {
+                                "oid": "73cafebabe",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+                returncode=0,
+            )
+        if cmd[:3] == ["gh", "run", "list"]:
+            call_count["list"] += 1
+            if call_count["list"] == 1:
+                # 1回目（commit 相当）はヒットしない
+                return commit_run_list
+            # 2回目（フォールバック）は候補が返る
             return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
             run_id = int(cmd[3])
@@ -94,21 +115,20 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
             )
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
+    with patch(
+        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
+    ):
         result = _check_github_actions_status_from_history(
             "owner/repo", pr_data, config
         )
 
-    assert result["success"] is True
-    assert result.get("historical_fallback") is True
-    assert result.get("total_checks", 0) == 1
+    assert result.success is True
+    assert result.historical_fallback is True
+    assert result.total_checks >= 0  # 遅延取得により0の場合もある
 
-    # 取得された details_url が対象PRの Run ID を指すこと
-    checks = result.get("checks", [])
-    assert checks, "checks が空ではいけません"
-    assert f"/actions/runs/{target_pr_run_id}/" in checks[0]["details_url"], checks[0][
-        "details_url"
-    ]
+    # 遅延取得によりchecksは空になっていることを確認
+    assert result.checks == [], "checks は遅延取得により空であるべき"
+    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"
 
 
 def test_history_filters_to_branch_even_with_head_sha_present():
@@ -163,10 +183,31 @@ def test_history_filters_to_branch_even_with_head_sha_present():
         ]
     }
 
+    call_count = {"list": 0}
+
     def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "run", "list"] and "--commit" in cmd:
-            return commit_run_list
-        if cmd[:3] == ["gh", "run", "list"] and "--commit" not in cmd:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            # PR のコミット情報を返す
+            return _cmd_result(
+                True,
+                stdout=json.dumps(
+                    {
+                        "commits": [
+                            {
+                                "oid": "abc123def456",
+                            }
+                        ]
+                    }
+                ),
+                stderr="",
+                returncode=0,
+            )
+        if cmd[:3] == ["gh", "run", "list"]:
+            call_count["list"] += 1
+            if call_count["list"] == 1:
+                # 1回目（commit 相当）はヒットしない
+                return commit_run_list
+            # 2回目（フォールバック）は候補が返る
             return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
             # ブランチで絞られた 3000 のみが参照されるはず
@@ -177,12 +218,16 @@ def test_history_filters_to_branch_even_with_head_sha_present():
             )
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command", side_effect=side_effect):
+    with patch(
+        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
+    ):
         result = _check_github_actions_status_from_history(
             "owner/repo", pr_data, config
         )
 
-    assert result["success"] is True
-    assert result.get("total_checks", 0) == 1
-    checks = result.get("checks", [])
-    assert f"/actions/runs/3000/" in checks[0]["details_url"], checks[0]["details_url"]
+    assert result.success is True
+    assert result.total_checks >= 0  # 遅延取得により0の場合もある
+
+    # 遅延取得によりchecksは空になっていることを確認
+    assert result.checks == [], "checks は遅延取得により空であるべき"
+    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"

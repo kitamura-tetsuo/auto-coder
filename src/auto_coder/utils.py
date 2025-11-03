@@ -360,42 +360,6 @@ def change_fraction(old: str, new: str) -> float:
         return 1.0
 
 
-def slice_relevant_error_window(text: str) -> str:
-    """Return only the necessary parts related to errors (discard prelude, emphasize and shorten latter half).
-    Policy:
-    - Search for priority triggers and return from the earliest position to the end
-    - If not found, limit to the last several hundred lines
-    """
-    if not text:
-        return text
-    lines = text.split("\n")
-    # Group by priority from highest to lowest
-    priority_groups = [
-        ["Expected substring:", "Received string:", "expect(received)"],
-        ["Error:   ", ".spec.ts", "##[error]", "##[warning]"],
-        ["Command failed with exit code", "Process completed with exit code"],
-        ["error was not a part of any test", "Notice:", "##[notice]", "notice"],
-    ]
-    start_idx = None
-    # Search for the earliest priority trigger (from front)
-    for group in priority_groups:
-        for i in range(len(lines)):
-            low = lines[i].lower()
-            if any(g.lower() in low for g in group):
-                start_idx = max(0, i - 30)
-                break
-        if start_idx is not None:
-            break
-    if start_idx is None:
-        # If no trigger found, use only the end (max 500 lines)
-        return "\n".join(lines[-500:])
-    # Keep the end as-is. Also limit to max 1500 lines
-    sliced = lines[start_idx:]
-    if len(sliced) > 1500:
-        sliced = sliced[:1500]
-    return "\n".join(sliced)
-
-
 def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
     """Extract and return the "path of the first failed test file" from test output.
 
