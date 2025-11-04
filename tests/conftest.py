@@ -2,6 +2,15 @@
 Pytest configuration and fixtures for Auto-Coder tests.
 """
 
+import sys
+from pathlib import Path
+
+# Ensure 'src' directory is on sys.path so 'auto_coder' package is importable everywhere
+_repo_root = Path(__file__).resolve().parents[1]
+_src_path = _repo_root / "src"
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
+
 import os
 from unittest.mock import Mock
 
@@ -264,7 +273,11 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     f"DEBUG: initial pythonpath = {pythonpath!r}",
                     file=__import__("sys").stderr,
                 )
-                paths_to_add = [user_site, os.getcwd()]
+                paths_to_add = [
+                    user_site,
+                    os.getcwd(),
+                    os.path.join(os.getcwd(), "src"),
+                ]
                 print(
                     f"DEBUG: paths_to_add = {paths_to_add!r}",
                     file=__import__("sys").stderr,
@@ -610,28 +623,29 @@ def mock_code_tool():
 
 # Backend Manager Test Fixtures
 
+
 @pytest.fixture(autouse=True)
 def mock_backend_manager():
     """Mock LLM backend manager for testing."""
     from unittest.mock import Mock
-    
+
     # Reset singleton before setting up mock
     LLMBackendManager.reset_singleton()
-    
+
     # Create a mock gemini client
     mock_gemini_client = Mock()
     mock_gemini_client.model_name = "gemini-2.5-pro"
-    
+
     # Create mock backend manager
     mock_manager = Mock()
     mock_manager.get_last_backend_and_model.return_value = ("gemini", "gemini-2.5-pro")
     mock_manager._run_llm_cli.return_value = "Test response"
-    
+
     # Initialize the singleton with our mock
     get_llm_backend_manager(
         default_backend="gemini",
         default_client=mock_gemini_client,
         factories={"gemini": lambda: mock_gemini_client},
     )
-    
+
     return mock_manager
