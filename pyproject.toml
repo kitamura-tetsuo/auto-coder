@@ -50,7 +50,7 @@ exclude = [
 
 [project]
 name = "auto-coder"
-version = "2025.11.4+g6e1052f"
+version = "2025.11.4.2+g66ac904"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
