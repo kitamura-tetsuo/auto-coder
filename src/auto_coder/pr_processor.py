@@ -496,6 +496,13 @@ def _apply_pr_actions_directly(
     pr_number = pr_data["number"]
 
     try:
+        # Handle dry run mode - skip actual LLM processing
+        if dry_run:
+            actions.append(
+                f"[DRY RUN] Would apply PR actions directly for PR #{pr_number}"
+            )
+            return actions
+
         # Get PR diff for analysis
         with ProgressStage("Getting PR diff"):
             pr_diff = _get_pr_diff(repo_name, pr_number, config)

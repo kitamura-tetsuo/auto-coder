@@ -7,7 +7,11 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
+from auto_coder.backend_manager import (
+    LLMBackendManager,
+    get_llm_backend_manager,
+    run_llm_prompt,
+)
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.util.github_action import get_github_actions_logs_from_url
 
@@ -311,10 +315,30 @@ class AutomationEngine:
         Returns:
             Dictionary with 'backend' and 'model' keys.
         """
+        try:
+            # Try to get the manager using get_llm_backend_manager() to ensure proper initialization
+            try:
+                manager = get_llm_backend_manager()
+                if manager is not None:
+                    backend, model = manager.get_last_backend_and_model()
+                    return {"backend": backend, "model": model}
+            except RuntimeError:
+                # get_llm_backend_manager() fails if not initialized, fall back to direct access
+                manager = LLMBackendManager._instance
+                if manager is not None:
+                    backend, model = manager.get_last_backend_and_model()
+                    return {"backend": backend, "model": model}
 
-        # For BackendManager case
-        backend, model = get_llm_backend_manager().get_last_backend_and_model()
-        return {"backend": backend, "model": model}
+            # Manager not initialized
+            return {"backend": None, "model": None}
+        except RuntimeError as e:
+            # Manager not initialized or other runtime error
+            logger.debug(f"Backend manager not available: {e}")
+            return {"backend": None, "model": None}
+        except Exception as e:
+            # Other exceptions
+            logger.debug(f"Error getting LLM backend info: {e}")
+            return {"backend": None, "model": None}
 
     def _save_report(
         self, data: Dict[str, Any], filename: str, repo_name: Optional[str] = None

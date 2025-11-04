@@ -64,7 +64,6 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client = Mock()
         config = AutomationConfig()
         config.max_issues_per_run = -1
-        mock_llm_client = Mock()
 
         # Create mock issue
         mock_issue = Mock()
@@ -88,16 +87,12 @@ class TestIssueProcessorSkipSubIssues:
         # Mock has_linked_pr to return False
         mock_github_client.has_linked_pr.return_value = False
 
-        # Mock LLM client
-        mock_llm_client.execute_command.return_value = "Fixed the issue"
-
         # Execute
         result = _process_issues_normal(
             mock_github_client,
             config,
             dry_run=False,
             repo_name="owner/repo",
-            llm_client=mock_llm_client,
         )
 
         # Assert - issue should be processed (not skipped)
@@ -118,7 +113,6 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client = Mock()
         config = AutomationConfig()
         config.max_issues_per_run = -1
-        mock_llm_client = Mock()
 
         # Create mock issue
         mock_issue = Mock()
@@ -142,16 +136,12 @@ class TestIssueProcessorSkipSubIssues:
         # Mock has_linked_pr to return False
         mock_github_client.has_linked_pr.return_value = False
 
-        # Mock LLM client
-        mock_llm_client.execute_command.return_value = "Fixed the issue"
-
         # Execute
         result = _process_issues_normal(
             mock_github_client,
             config,
             dry_run=False,
             repo_name="owner/repo",
-            llm_client=mock_llm_client,
         )
 
         # Assert - issue should be processed

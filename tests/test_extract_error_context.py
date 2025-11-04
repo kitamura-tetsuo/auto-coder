@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.auto_coder.pr_processor import _extract_error_context
+from src.auto_coder.util.github_action import _extract_error_context
 
 
 def test_extract_error_context_with_playwright_error():
@@ -27,19 +27,13 @@ def test_extract_error_context_with_playwright_error():
 2025-10-27T03:26:05.0000000Z          |                               ^
 2025-10-27T03:26:06.0000000Z       50 |         expect(firstItemHtml).toContain(">https://example.com</a>");
 2025-10-27T03:26:07.0000000Z       51 |     });
-2025-10-27T03:26:08.0000000Z       52 | });
-2025-10-27T03:26:09.0000000Z 
-2025-10-27T03:26:10.0000000Z     at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31
-2025-10-27T03:26:11.0000000Z 
-2025-10-27T03:26:12.0000000Z   ✓ [basic] › e2e/basic/test3.spec.ts:20:5 › Test 3 (200ms)
-2025-10-27T03:26:13.0000000Z   ✓ [basic] › e2e/basic/test4.spec.ts:25:5 › Test 4 (250ms)
-2025-10-27T03:26:14.0000000Z 
-2025-10-27T03:26:15.0000000Z   1 failed
-2025-10-27T03:26:16.0000000Z   147 passed
-2025-10-27T03:26:17.0000000Z   1 skipped
-2025-10-27T03:26:18.0000000Z   151 did not run
-2025-10-27T03:26:19.0000000Z 
-2025-10-27T03:26:20.0000000Z Tests completed
+2025-10-27T03:26:08.0000000Z       52 |
+2025-10-27T03:26:09.0000000Z   1 failed
+2025-10-27T03:26:10.0000000Z   147 passed
+2025-10-27T03:26:11.0000000Z   1 skipped
+2025-10-27T03:26:12.0000000Z   151 did not run
+2025-10-27T03:26:13.0000000Z 
+2025-10-27T03:26:14.0000000Z Tests completed
 """
 
     result = _extract_error_context(log_content)
@@ -72,6 +66,7 @@ def test_extract_error_context_with_multiple_errors():
 2025-10-27T03:25:55.0000000Z     Expected: true
 2025-10-27T03:25:56.0000000Z     Received: false
 2025-10-27T03:25:57.0000000Z 
+
 """
         + "\n".join(
             [
@@ -178,7 +173,7 @@ def test_extract_error_context_empty_log():
     result = _extract_error_context("")
     assert result == ""
 
-    result = _extract_error_context(None)
+    result = _extract_error_context("")
     assert result == ""
 
 

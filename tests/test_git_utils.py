@@ -159,19 +159,25 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # First call in check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push
+                # Second call in check_unpushed_commits: check unpushed commits
+                CommandResult(
+                    success=True, stdout="2\n", stderr="", returncode=0
+                ),  # 2 unpushed commits
+                # Third call in git_push: get current branch
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # Fourth call: push
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
 
             result = git_push()
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 2
-            # Check the second call was the push command
-            second_call_args = mock_cmd.run_command.call_args_list[1][0][0]
-            assert second_call_args == ["git", "push"]
+            assert mock_cmd.run_command.call_count == 4
+            # Check the last call was the push command
+            last_call_args = mock_cmd.run_command.call_args_list[3][0][0]
+            assert last_call_args == ["git", "push", "origin", "main"]
 
     def test_push_with_branch(self):
         """Test push with specific branch."""

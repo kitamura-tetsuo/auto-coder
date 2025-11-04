@@ -92,8 +92,8 @@ def test_commit_search_prefers_pull_request_runs_without_event_flag():
 
     assert result.success is False
     # 遅延取得によりchecksは空になっていることを確認
-    assert result.checks == [], "checks は遅延取得により空であるべき"
-    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"
+    assert result.ids == [777001], f"expected [777001] but got {result.ids}"
+    # failed_checks is not available in GitHubActionsStatusResult
 
 
 def test_fallback_search_works_without_event_flag():
@@ -145,13 +145,20 @@ def test_fallback_search_works_without_event_flag():
             assert (
                 "--event" not in cmd and "--commit" not in cmd
             ), f"unexpected flags in command: {cmd}"
-            if call_count["list"] == 1:
+            # Check if this is a branch-based call (-b option)
+            if "-b" in cmd:
+                # Branch-based run list - should return the test data
+                return _cmd_result(
+                    True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
+                )
+            elif call_count["list"] == 1:
                 # 1回目（commit 相当）はヒットしない
                 return _cmd_result(True, stdout="[]", stderr="", returncode=0)
-            # 2回目（フォールバック）はヒット
-            return _cmd_result(
-                True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
-            )
+            else:
+                # 2回目（フォールバック）はヒット
+                return _cmd_result(
+                    True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
+                )
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_payload = {
                 "jobs": [
@@ -177,5 +184,5 @@ def test_fallback_search_works_without_event_flag():
 
     assert result.success is True
     # 遅延取得によりchecksは空になっていることを確認
-    assert result.checks == [], "checks は遅延取得により空であるべき"
-    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"
+    assert result.ids == [777002], f"expected [777002] but got {result.ids}"
+    # checks and failed_checks are not available in GitHubActionsStatusResult

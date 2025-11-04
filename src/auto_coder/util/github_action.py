@@ -220,12 +220,18 @@ def _check_commit_for_github_actions(
 
         # Narrow down to the target commit and PR event if available
         try:
+            logger.debug(f"Filtering runs for commit {commit_sha[:7]}")
+            logger.debug(f"Available runs: {[r.get('headSha', '') for r in runs]}")
             runs = [
                 r for r in runs if str(r.get("headSha", "")).startswith(commit_sha[:7])
             ]
             pr_runs = [r for r in runs if r.get("event") == "pull_request"]
             if pr_runs:
                 runs = pr_runs
+            logger.debug(
+                f"After filtering for commit {commit_sha[:7]}: {len(runs)} runs remain"
+            )
+            logger.debug(f"Filtered runs: {[r.get('headSha', '') for r in runs]}")
         except Exception:
             pass
 
@@ -538,7 +544,10 @@ def _check_github_actions_status_from_history(
     """
     try:
         pr_number = pr_data["number"]
-        head_branch = pr_data["head_branch"]
+        head_branch = pr_data.get("head_branch") or pr_data.get("head", {}).get("ref")
+        logger.info(f"PR number: {pr_number}, head_branch: {head_branch}")
+        logger.info(f"pr_data keys: {list(pr_data.keys())}")
+        logger.info(f"pr_data['head'] keys if exists: {list(pr_data.get('head', {}).keys()) if 'head' in pr_data else 'No head key'}")
         assert pr_number
         assert head_branch
 
@@ -623,11 +632,17 @@ def _check_github_actions_status_from_history(
             )
 
         # 3. Find runs with matching headSha for any of the PR commits
-        matching_runs = [
-            run
-            for run in runs
-            if any(str(run.get("headSha", "")) == sha for sha in commit_shas)
-        ]
+        logger.info(f"Looking for runs matching commits: {commit_shas}")
+        logger.info(f"Available runs: {runs}")
+        matching_runs = []
+        for run in runs:
+            run_head_sha = str(run.get("headSha", ""))
+            for sha in commit_shas:
+                if run_head_sha.startswith(sha[:7]):
+                    matching_runs.append(run)
+                    logger.info(f"Match found: run headSha '{run_head_sha}' matches commit '{sha[:7]}'")
+                    break
+        logger.info(f"Matching runs found: {len(matching_runs)}")
 
         if not matching_runs:
             logger.info(
@@ -643,7 +658,7 @@ def _check_github_actions_status_from_history(
         for run in matching_runs:
             run_sha = str(run.get("headSha", ""))
             for i, commit_sha in enumerate(commit_shas):
-                if run_sha == commit_sha:
+                if run_sha.startswith(commit_sha[:7]):
                     runs_with_commit_sha.append((run, i, commit_sha))
                     break
 

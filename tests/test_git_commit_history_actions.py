@@ -3,7 +3,7 @@
 import json
 from unittest.mock import Mock, patch
 
-from src.auto_coder.pr_processor import (
+from src.auto_coder.util.github_action import (
     _check_commit_for_github_actions,
     parse_git_commit_history_for_actions,
 )
@@ -29,6 +29,7 @@ jkl3456 Refactor code"""
             "displayTitle": "CI Build",
             "headBranch": "main",
             "headSha": "abc1234567890abcdef",
+            "event": "push",
         }
     ]
 
@@ -41,13 +42,14 @@ jkl3456 Refactor code"""
             "createdAt": "2025-11-01T09:00:00Z",
             "displayTitle": "CI Build",
             "headBranch": "main",
-            "headSha": "def5674567890abcdef",
+            "headSha": "def56784567890abcdef",
+            "event": "push",
         }
     ]
 
     mock_action_runs_commit3 = []  # No Actions for this commit
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
@@ -112,7 +114,7 @@ def test_parse_git_commit_history_no_actions():
 def5678 Fix typo in docs
 ghi9012 Add comment"""
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
@@ -146,7 +148,7 @@ def test_parse_git_commit_history_no_git_repo():
     # Mock git log failure
     mock_git_log = """fatal: not a git repository"""
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for git log (fails)
         mock_git_result = Mock()
         mock_git_result.success = False
@@ -177,7 +179,7 @@ def test_parse_git_commit_history_depth_limit():
         [f"{hash(f'commit{i:04d}')} Commit message" for i in range(20)]
     )
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
@@ -233,7 +235,7 @@ def test_check_commit_for_github_actions_with_runs():
         },
     ]
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for gh run list
         mock_result = Mock()
         mock_result.returncode = 0
@@ -258,7 +260,7 @@ def test_check_commit_for_github_actions_with_runs():
 def test_check_commit_for_github_actions_no_runs():
     """Test _check_commit_for_github_actions when commit has no runs."""
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for gh run list (no runs)
         mock_result = Mock()
         mock_result.returncode = 0
@@ -277,7 +279,7 @@ def test_check_commit_for_github_actions_no_runs():
 def test_check_commit_for_github_actions_error():
     """Test _check_commit_for_github_actions handles errors gracefully."""
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for gh run list (API error)
         mock_result = Mock()
         mock_result.returncode = 1
@@ -303,7 +305,7 @@ invalid-line-without-space
 def5678 Another valid commit
 ghi9012 Third commit"""
 
-    with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_run_command:
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
@@ -317,10 +319,13 @@ ghi9012 Third commit"""
             if "git" in cmd and "log" in cmd:
                 return mock_git_result
             elif "gh" in cmd and "run" in cmd and "list" in cmd:
-                # Extract commit SHA from command
+                # Extract commit SHA from command using current partial matching logic
                 for arg in cmd:
-                    if len(arg) == 7 and all(c in "0123456789abcdef" for c in arg):
-                        checked_commits.append(arg)
+                    # Look for SHA-like strings (not just 7 chars)
+                    if len(arg) >= 7 and all(c in "0123456789abcdef" for c in arg[:7]):
+                        partial_sha = arg[:7]
+                        checked_commits.append(partial_sha)
+                        break
                 mock_result = Mock()
                 mock_result.returncode = 0
                 mock_result.stdout = "[]"

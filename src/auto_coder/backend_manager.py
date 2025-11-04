@@ -56,9 +56,21 @@ class BackendManager(LLMBackendManagerBase):
 
         # Track recent prompt/model/backend for apply_workspace_test_fix
         self._last_prompt: Optional[str] = None
-        self._last_backend: Optional[str] = None
+        # Initialize _last_backend to current backend for testing purposes
+        self._last_backend: Optional[str] = default_backend
         # Also record the most recently used model name to leave correct information in test CSV
+        # Initialize from default client if available
         self._last_model: Optional[str] = getattr(default_client, "model_name", None)
+        # If model_name is not available from client, try to get it from the client directly
+        if self._last_model is None and hasattr(
+            default_client, "get_last_backend_and_model"
+        ):
+            # Some clients might have this method to get backend info
+            try:
+                backend, model = default_client.get_last_backend_and_model()
+                self._last_model = model
+            except Exception:
+                self._last_model = None
         # Track current_test_file (switch if same file continues 3 times)
         self._last_test_file: Optional[str] = None
         self._same_test_file_count: int = 0
@@ -193,11 +205,16 @@ class BackendManager(LLMBackendManagerBase):
     def get_last_backend_and_model(self) -> Tuple[Optional[str], Optional[str]]:
         """Return the backend/model used for the most recent execution."""
 
+        # Get current backend (last used or current)
         backend = self._last_backend or self._current_backend_name()
+
+        # Get model from last execution or from current client
         model = self._last_model
         if model is None:
             try:
-                cli = self._get_or_create_client(self._current_backend_name())
+                # Get model from current backend client
+                current_backend = self._current_backend_name()
+                cli = self._get_or_create_client(current_backend)
                 model = getattr(cli, "model_name", None)
             except Exception:
                 model = None

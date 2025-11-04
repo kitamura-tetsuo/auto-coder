@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from src.auto_coder.automation_engine import AutomationEngine
+from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.github_client import GitHubClient
 
@@ -605,3 +606,32 @@ def mock_code_tool():
     mock_tool.semantic_code_search = Mock(return_value={"symbols": []})
     mock_tool.semantic_code_search_in_collection = Mock(return_value={"symbols": []})
     return mock_tool
+
+
+# Backend Manager Test Fixtures
+
+@pytest.fixture(autouse=True)
+def mock_backend_manager():
+    """Mock LLM backend manager for testing."""
+    from unittest.mock import Mock
+    
+    # Reset singleton before setting up mock
+    LLMBackendManager.reset_singleton()
+    
+    # Create a mock gemini client
+    mock_gemini_client = Mock()
+    mock_gemini_client.model_name = "gemini-2.5-pro"
+    
+    # Create mock backend manager
+    mock_manager = Mock()
+    mock_manager.get_last_backend_and_model.return_value = ("gemini", "gemini-2.5-pro")
+    mock_manager._run_llm_cli.return_value = "Test response"
+    
+    # Initialize the singleton with our mock
+    get_llm_backend_manager(
+        default_backend="gemini",
+        default_client=mock_gemini_client,
+        factories={"gemini": lambda: mock_gemini_client},
+    )
+    
+    return mock_manager

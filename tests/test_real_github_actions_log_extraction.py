@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.pr_processor import (
+from src.auto_coder.util.github_action import (
     _extract_error_context,
     get_github_actions_logs_from_url,
 )
@@ -83,21 +83,22 @@ def test_extract_error_context_with_realistic_playwright_log():
 2025-10-27T03:26:34.0000000Z          |                               ^
 2025-10-27T03:26:35.0000000Z       50 |         expect(firstItemHtml).toContain(">https://example.com</a>");
 2025-10-27T03:26:36.0000000Z       51 |     });
-2025-10-27T03:26:37.0000000Z       52 | });
-2025-10-27T03:26:38.0000000Z
-2025-10-27T03:26:39.0000000Z     at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31
-2025-10-27T03:26:40.0000000Z
-2025-10-27T03:26:41.0000000Z   ✓  6 [chromium] › e2e/basic/test-006.spec.ts:35:5 › Basic test 6 (1.3s)
-2025-10-27T03:26:42.0000000Z   ✓  7 [chromium] › e2e/basic/test-007.spec.ts:40:5 › Basic test 7 (0.7s)
-2025-10-27T03:26:43.0000000Z   ✓  8 [chromium] › e2e/basic/test-008.spec.ts:45:5 › Basic test 8 (1.4s)
-2025-10-27T03:26:44.0000000Z
-2025-10-27T03:26:45.0000000Z   1 failed
-2025-10-27T03:26:46.0000000Z     [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
-2025-10-27T03:26:47.0000000Z   147 passed (2.5m)
-2025-10-27T03:26:48.0000000Z   1 skipped
-2025-10-27T03:26:49.0000000Z   151 did not run
-2025-10-27T03:26:50.0000000Z
-2025-10-27T03:26:51.0000000Z ##[error]Process completed with exit code 1.
+2025-10-27T03:26:37.0000000Z       52 |
+2025-10-27T03:26:38.0000000Z       53 | });
+2025-10-27T03:26:39.0000000Z
+2025-10-27T03:26:40.0000000Z     at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31
+2025-10-27T03:26:41.0000000Z
+2025-10-27T03:26:42.0000000Z   ✓  6 [chromium] › e2e/basic/test-006.spec.ts:35:5 › Basic test 6 (1.3s)
+2025-10-27T03:26:43.0000000Z   ✓  7 [chromium] › e2e/basic/test-007.spec.ts:40:5 › Basic test 7 (0.7s)
+2025-10-27T03:26:44.0000000Z   ✓  8 [chromium] › e2e/basic/test-008.spec.ts:45:5 › Basic test 8 (1.4s)
+2025-10-27T03:26:45.0000000Z
+2025-10-27T03:26:46.0000000Z   1 failed
+2025-10-27T03:26:47.0000000Z     [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
+2025-10-27T03:26:48.0000000Z   147 passed (2.5m)
+2025-10-27T03:26:49.0000000Z   1 skipped
+2025-10-27T03:26:50.0000000Z   151 did not run
+2025-10-27T03:26:51.0000000Z
+2025-10-27T03:26:52.0000000Z ##[error]Process completed with exit code 1.
 """
 
     result = _extract_error_context(realistic_log)
@@ -168,15 +169,16 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 2025-10-27T03:26:27.0000000Z          |                               ^
 2025-10-27T03:26:28.0000000Z       50 |         expect(firstItemHtml).toContain(">https://example.com</a>");
 2025-10-27T03:26:29.0000000Z       51 |     });
-2025-10-27T03:26:30.0000000Z       52 | });
-2025-10-27T03:26:31.0000000Z
-2025-10-27T03:26:32.0000000Z     at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31
-2025-10-27T03:26:33.0000000Z
-2025-10-27T03:26:34.0000000Z   1 failed
-2025-10-27T03:26:35.0000000Z     [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
-2025-10-27T03:26:36.0000000Z   147 passed (2.5m)
-2025-10-27T03:26:37.0000000Z   1 skipped
-2025-10-27T03:26:38.0000000Z   151 did not run
+2025-10-27T03:26:30.0000000Z       52 |
+2025-10-27T03:26:31.0000000Z   53 | });
+2025-10-27T03:26:32.0000000Z
+2025-10-27T03:26:33.0000000Z     at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31
+2025-10-27T03:26:34.0000000Z
+2025-10-27T03:26:35.0000000Z   1 failed
+2025-10-27T03:26:36.0000000Z     [chromium] › e2e/core/fmt-url-label-links-a391b6c2.spec.ts:34:5 › URL label links › converts plain URL to clickable link
+2025-10-27T03:26:37.0000000Z   147 passed (2.5m)
+2025-10-27T03:26:38.0000000Z   1 skipped
+2025-10-27T03:26:39.0000000Z   151 did not run
 """
 
     def fake_subprocess_run(cmd, capture_output=True, timeout=60, cwd=None):
@@ -258,7 +260,8 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 
     with patch("subprocess.run", side_effect=fake_subprocess_run):
         with patch(
-            "src.auto_coder.pr_processor.cmd.run_command", side_effect=fake_cmd_run
+            "src.auto_coder.util.github_action.cmd.run_command",
+            side_effect=fake_cmd_run,
         ):
             result = get_github_actions_logs_from_url(url)
 

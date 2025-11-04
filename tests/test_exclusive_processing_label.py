@@ -223,9 +223,7 @@ class TestIssueProcessorExclusiveProcessing:
         }
 
         config = AutomationConfig()
-        result = _process_issues_normal(
-            mock_github_client, config, False, "owner/repo", None
-        )
+        result = _process_issues_normal(mock_github_client, config, False, "owner/repo")
 
         assert len(result) == 1
         actions_taken = result[0]["actions_taken"][0]
@@ -259,9 +257,7 @@ class TestIssueProcessorExclusiveProcessing:
         mock_take_actions.return_value = ["Action taken"]
 
         config = AutomationConfig()
-        result = _process_issues_normal(
-            mock_github_client, config, False, "owner/repo", None
-        )
+        result = _process_issues_normal(mock_github_client, config, False, "owner/repo")
 
         assert len(result) == 1
         assert result[0]["actions_taken"] == ["Action taken"]
@@ -293,9 +289,7 @@ class TestIssueProcessorExclusiveProcessing:
         mock_take_actions.side_effect = Exception("Processing failed")
 
         config = AutomationConfig()
-        _ = _process_issues_normal(
-            mock_github_client, config, False, "owner/repo", None
-        )
+        _ = _process_issues_normal(mock_github_client, config, False, "owner/repo")
 
         # Verify label removal was attempted
         mock_github_client.remove_labels_from_issue.assert_called_with(
@@ -356,9 +350,7 @@ class TestPRProcessorExclusiveProcessing:
         mock_github_client.try_add_work_in_progress_label.return_value = False
 
         config = AutomationConfig()
-        result = process_pull_requests(
-            mock_github_client, config, False, "owner/repo", None
-        )
+        result = process_pull_requests(mock_github_client, config, False, "owner/repo")
 
         # Should have skipped entries in both passes
         skipped_count = sum(
@@ -392,9 +384,7 @@ class TestPRProcessorExclusiveProcessing:
         }
 
         config = AutomationConfig()
-        result = process_pull_requests(
-            mock_github_client, config, False, "owner/repo", None
-        )
+        result = process_pull_requests(mock_github_client, config, False, "owner/repo")
 
         assert any(
             any(
@@ -425,9 +415,7 @@ class TestIssueProcessorWithDisabledLabels:
         }
 
         config = AutomationConfig()
-        result = _process_issues_normal(
-            mock_github_client, config, False, "owner/repo", None
-        )
+        result = _process_issues_normal(mock_github_client, config, False, "owner/repo")
 
         assert len(result) == 1
         actions_taken = result[0]["actions_taken"][0]

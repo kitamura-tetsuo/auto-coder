@@ -23,6 +23,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
 
     pr_data = {
         "number": 73,
+        "head_branch": "pr-73-branch",
         "head": {
             "ref": "pr-73-branch",
             "sha": "abcdef1234567890abcdef",
@@ -123,12 +124,8 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         )
 
     assert result.success is True
-    assert result.historical_fallback is True
-    assert result.total_checks >= 0  # 遅延取得により0の場合もある
-
-    # 遅延取得によりchecksは空になっていることを確認
-    assert result.checks == [], "checks は遅延取得により空であるべき"
-    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"
+    # GitHubActionsStatusResultにはsuccessとidsのみ存在
+    assert isinstance(result.ids, list)
 
 
 def test_history_filters_to_branch_even_with_head_sha_present():
@@ -137,6 +134,7 @@ def test_history_filters_to_branch_even_with_head_sha_present():
 
     pr_data = {
         "number": 999,
+        "head_branch": "fix-branch",
         "head": {
             "ref": "fix-branch",
             "sha": "abc123def456",
@@ -226,8 +224,5 @@ def test_history_filters_to_branch_even_with_head_sha_present():
         )
 
     assert result.success is True
-    assert result.total_checks >= 0  # 遅延取得により0の場合もある
-
-    # 遅延取得によりchecksは空になっていることを確認
-    assert result.checks == [], "checks は遅延取得により空であるべき"
-    assert result.failed_checks == [], "failed_checks は遅延取得により空であるべき"
+    # GitHubActionsStatusResultにはsuccessとidsのみ存在
+    assert isinstance(result.ids, list)

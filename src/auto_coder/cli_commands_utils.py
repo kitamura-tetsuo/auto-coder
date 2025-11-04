@@ -10,6 +10,7 @@ from .automation_engine import AutomationEngine
 from .git_utils import get_current_repo_name, is_git_repository
 from .github_client import GitHubClient
 from .logger_config import setup_logger
+from .util.github_action import get_github_actions_logs_from_url
 
 
 def get_github_token_or_fail(provided_token: Optional[str]) -> str:
@@ -70,9 +71,7 @@ def get_actions_logs(actions_url: str, github_token: Optional[str]) -> None:
     # Route log output to stderr to avoid polluting stdout which is piped to file
     setup_logger(stream=sys.stderr)
     github_token_final = get_github_token_or_fail(github_token)
-    github_client = GitHubClient(github_token_final)
-    engine = AutomationEngine(github_client, None, dry_run=True)
-    logs = engine.get_github_actions_logs_from_url(actions_url)
+    logs = get_github_actions_logs_from_url(actions_url)
     click.echo(logs)
 
 

@@ -12,9 +12,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scanner.python_scanner import find_python_project_roots, scan_python_project
-
+# Add the parent directory (graph_builder/src) to path to access scanner module
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from scanner.python_scanner import find_python_project_roots, scan_python_project
 
 
 class TestPythonMonorepo(unittest.TestCase):
