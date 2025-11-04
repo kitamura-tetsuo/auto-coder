@@ -36,7 +36,7 @@ wheels = [
 
 [[package]]
 name = "auto-coder"
-version = "2025.11.4.5+g0842b99"
+version = "2025.11.4.8+gca51c3b"
 source = { virtual = "." }
 dependencies = [
     { name = "click" },
