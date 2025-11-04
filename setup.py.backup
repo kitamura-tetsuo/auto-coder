@@ -158,6 +158,7 @@ setup(
     package_data={
         "auto_coder": ["prompts.yaml", "*.yml", "*.yaml"],
     },
+    # Keep entry_points in setup.py for pipx compatibility
     entry_points={
         "console_scripts": [
             "auto-coder=auto_coder.cli:main",
