@@ -590,24 +590,25 @@ def git_push(
 
         if not pull_result.success:
             logger.warning(f"Pull failed: {pull_result.stderr}")
-            logger.info("Proceeding to retry push anyway...")
-
-        logger.info("Retrying push...")
-        # Retry push using the actual implementation
-        retry_push_result = _perform_git_push(
-            cwd=cwd,
-            remote=remote,
-            branch=branch,
-            skip_unpushed_check=skip_unpushed_check,
-        )
-
-        if retry_push_result.success:
-            logger.info("Successfully pushed after resolving non-fast-forward error")
-            return retry_push_result
+            logger.info("Pull operation unsuccessful, skipping retry push")
+            # Keep original push_result for LLM fallback
         else:
-            logger.warning(f"Push still failed: {retry_push_result.stderr}")
-            # Update push_result for LLM fallback
-            push_result = retry_push_result
+            logger.info("Pull successful, retrying push...")
+            # Retry push using the actual implementation
+            retry_push_result = _perform_git_push(
+                cwd=cwd,
+                remote=remote,
+                branch=branch,
+                skip_unpushed_check=skip_unpushed_check,
+            )
+
+            if retry_push_result.success:
+                logger.info("Successfully pushed after resolving non-fast-forward error")
+                return retry_push_result
+            else:
+                logger.warning(f"Push still failed after pull: {retry_push_result.stderr}")
+                # Update push_result for LLM fallback
+                push_result = retry_push_result
 
     # If push still failed and we have LLM clients, try LLM fallback
     if commit_message:
