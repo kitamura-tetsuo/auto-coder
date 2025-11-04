@@ -90,3 +90,7 @@ auto-coder = "auto_coder.cli:main"
 # Package discovery configuration
 packages = ["auto_coder", "auto_coder.util"]
 package-dir = {"" = "src"}
+
+# Include package data files
+[tool.setuptools.package-data]
+auto_coder = ["prompts.yaml", "*.yml", "*.yaml"]

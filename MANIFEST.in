@@ -3,6 +3,11 @@ include README.md
 include LICENSE
 include AGENTS.md
 
+# Include configuration files
+include src/auto_coder/prompts.yaml
+include src/auto_coder/*.yaml
+include src/auto_coder/*.yml
+
 # Include MCP servers (bundled custom fork)
 recursive-include src/auto_coder/mcp_servers *.py
 recursive-include src/auto_coder/mcp_servers *.md
