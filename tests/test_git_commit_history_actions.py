@@ -305,33 +305,37 @@ invalid-line-without-space
 def5678 Another valid commit
 ghi9012 Third commit"""
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    with (
+        patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command,
+        patch(
+            "src.auto_coder.util.github_action._check_commit_for_github_actions"
+        ) as mock_check,
+    ):
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
         mock_git_result.stdout = mock_git_log
         mock_git_result.stderr = ""
 
-        # Track which commits were checked
+        # Track which commits were checked via the helper function
         checked_commits = []
 
         def run_command_side_effect(cmd, **kwargs):
             if "git" in cmd and "log" in cmd:
                 return mock_git_result
-            elif "gh" in cmd and "run" in cmd and "list" in cmd:
-                # Extract commit SHA from command using current partial matching logic
-                for arg in cmd:
-                    # Look for SHA-like strings (not just 7 chars)
-                    if len(arg) >= 7 and all(c in "0123456789abcdef" for c in arg[:7]):
-                        partial_sha = arg[:7]
-                        checked_commits.append(partial_sha)
-                        break
-                mock_result = Mock()
-                mock_result.returncode = 0
-                mock_result.stdout = "[]"
-                return mock_result
+            # Should not be called for gh run list because we stub _check_commit_for_github_actions
+            mock_result = Mock()
+            mock_result.returncode = 0
+            mock_result.stdout = "[]"
+            return mock_result
 
         mock_run_command.side_effect = run_command_side_effect
+
+        def check_side_effect(commit_sha, cwd=None, timeout=60):
+            checked_commits.append(commit_sha[:7])
+            return []
+
+        mock_check.side_effect = check_side_effect
 
         # Call the function
         result = parse_git_commit_history_for_actions(max_depth=4)

@@ -75,9 +75,13 @@ class TestGitPushUtils:
         mock_executor_class.return_value = mock_executor
 
         mock_executor.run_command.side_effect = [
-            # First call: get current branch
+            # 1) check_unpushed_commits: get current branch
             CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-            # Second call: push
+            # 2) check_unpushed_commits: found unpushed commits
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+            # 3) _perform_git_push: get current branch for push
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+            # 4) _perform_git_push: push succeeds
             CommandResult(
                 success=True, stdout="Everything up-to-date\n", stderr="", returncode=0
             ),
@@ -86,7 +90,7 @@ class TestGitPushUtils:
         result = git_push()
 
         assert result.success is True
-        assert mock_executor.run_command.call_count == 2
+        assert mock_executor.run_command.call_count == 4
 
     @patch("src.auto_coder.git_utils.CommandExecutor")
     def test_git_push_failure(self, mock_executor_class):
@@ -95,9 +99,13 @@ class TestGitPushUtils:
         mock_executor_class.return_value = mock_executor
 
         mock_executor.run_command.side_effect = [
-            # First call: get current branch
+            # 1) check_unpushed_commits: get current branch
             CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-            # Second call: push fails
+            # 2) check_unpushed_commits: found unpushed commits
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+            # 3) _perform_git_push: get current branch for push
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+            # 4) _perform_git_push: push fails
             CommandResult(
                 success=False, stdout="", stderr="error: failed to push", returncode=1
             ),
@@ -107,7 +115,7 @@ class TestGitPushUtils:
 
         assert result.success is False
         assert "failed to push" in result.stderr
-        assert mock_executor.run_command.call_count == 2
+        assert mock_executor.run_command.call_count == 4
 
     @patch("src.auto_coder.git_utils.check_unpushed_commits")
     @patch("src.auto_coder.git_utils.git_push")

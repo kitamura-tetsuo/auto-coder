@@ -221,9 +221,13 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push fails
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 4) _perform_git_push: push fails
                 CommandResult(
                     success=False,
                     stdout="",
@@ -243,19 +247,25 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 4) _perform_git_push: push succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
 
             result = git_push(cwd="/custom/path")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 2
-            # Check that cwd was passed to both calls
+            assert mock_cmd.run_command.call_count == 4
+            # Check that cwd was passed to all calls
             assert mock_cmd.run_command.call_args_list[0][1]["cwd"] == "/custom/path"
             assert mock_cmd.run_command.call_args_list[1][1]["cwd"] == "/custom/path"
+            assert mock_cmd.run_command.call_args_list[2][1]["cwd"] == "/custom/path"
+            assert mock_cmd.run_command.call_args_list[3][1]["cwd"] == "/custom/path"
 
     def test_push_no_upstream_auto_retry(self):
         """Test push automatically retries with --set-upstream when upstream is not set."""
@@ -263,28 +273,38 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(
                     success=True, stdout="issue-733\n", stderr="", returncode=0
                 ),
-                # Second call: push fails with no upstream error
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(
+                    success=True, stdout="issue-733\n", stderr="", returncode=0
+                ),
+                # 4) _perform_git_push: push fails with no upstream error
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="fatal: The current branch issue-733 has no upstream branch.\nTo push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin issue-733\n",
                     returncode=1,
                 ),
-                # Third call: push with --set-upstream succeeds
+                # 5) _retry_with_set_upstream: resolve current branch
+                CommandResult(
+                    success=True, stdout="issue-733\n", stderr="", returncode=0
+                ),
+                # 6) push with --set-upstream succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
 
             result = git_push()
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 3
-            # Check the third call used --set-upstream
-            third_call_args = mock_cmd.run_command.call_args_list[2][0][0]
-            assert third_call_args == [
+            assert mock_cmd.run_command.call_count == 6
+            # Check the final call used --set-upstream
+            final_call_args = mock_cmd.run_command.call_args_list[5][0][0]
+            assert final_call_args == [
                 "git",
                 "push",
                 "--set-upstream",
@@ -329,9 +349,13 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push fails with different error
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 4) _perform_git_push: push fails with different error
                 CommandResult(
                     success=False,
                     stdout="",
@@ -343,7 +367,7 @@ class TestGitPush:
             result = git_push()
 
             assert result.success is False
-            assert mock_cmd.run_command.call_count == 2  # No retry
+            assert mock_cmd.run_command.call_count == 4  # No retry
             assert "failed to push some refs" in result.stderr
 
     def test_push_with_dprint_error_and_retry(self):
@@ -352,32 +376,36 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push fails with dprint error
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 4) _perform_git_push: push fails with dprint error
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="You may want to try using `dprint output-file-paths` to see which files it's finding",
                     returncode=1,
                 ),
-                # Third call: dprint fmt succeeds
+                # 5) dprint fmt succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fourth call: git add -A succeeds
+                # 6) git add -A succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fifth call: push retry succeeds
+                # 7) push retry succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
 
             result = git_push()
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 5
+            assert mock_cmd.run_command.call_count == 7
             # Check that dprint fmt was called
             calls = mock_cmd.run_command.call_args_list
-            assert calls[2][0][0] == ["npx", "dprint", "fmt"]
-            assert calls[3][0][0] == ["git", "add", "-A"]
-            assert calls[4][0][0] == ["git", "push"]
+            assert calls[4][0][0] == ["npx", "dprint", "fmt"]
+            assert calls[5][0][0] == ["git", "add", "-A"]
+            assert calls[6][0][0] == ["git", "push"]
 
     def test_push_with_dprint_error_and_commit_message(self):
         """Test push with dprint formatting error and commit message triggers re-commit."""
@@ -385,35 +413,39 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push fails with dprint error
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 4) _perform_git_push: push fails with dprint error
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="You may want to try using `dprint output-file-paths` to see which files it's finding",
                     returncode=1,
                 ),
-                # Third call: dprint fmt succeeds
+                # 5) dprint fmt succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fourth call: git add -A succeeds
+                # 6) git add -A succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fifth call: git commit --amend --no-edit succeeds
+                # 7) git commit --amend --no-edit succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Sixth call: push retry succeeds
+                # 8) push retry succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
 
             result = git_push(commit_message="Fix: automated changes")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 6
+            assert mock_cmd.run_command.call_count == 8
             # Check that dprint fmt was called
             calls = mock_cmd.run_command.call_args_list
-            assert calls[2][0][0] == ["npx", "dprint", "fmt"]
-            assert calls[3][0][0] == ["git", "add", "-A"]
-            assert calls[4][0][0] == ["git", "commit", "--amend", "--no-edit"]
-            assert calls[5][0][0] == ["git", "push"]
+            assert calls[4][0][0] == ["npx", "dprint", "fmt"]
+            assert calls[5][0][0] == ["git", "add", "-A"]
+            assert calls[6][0][0] == ["git", "commit", "--amend", "--no-edit"]
+            assert calls[7][0][0] == ["git", "push"]
 
     def test_push_with_dprint_error_fmt_fails(self):
         """Test push with dprint error but formatter fails."""
@@ -421,16 +453,20 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push fails with dprint error
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 4) _perform_git_push: push fails with dprint error
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="dprint output-file-paths error detected",
                     returncode=1,
                 ),
-                # Third call: dprint fmt fails
+                # 5) dprint fmt fails
                 CommandResult(
                     success=False,
                     stdout="",
@@ -443,7 +479,7 @@ class TestGitPush:
 
             assert result.success is False
             assert "dprint output-file-paths" in result.stderr
-            assert mock_cmd.run_command.call_count == 3
+            assert mock_cmd.run_command.call_count == 5
 
     def test_push_with_dprint_error_commit_amend_fails(self):
         """Test push with dprint error when commit amend fails, falls back to regular commit."""
@@ -451,41 +487,45 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-                # Second call: push fails with dprint error
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
+                # 4) _perform_git_push: push fails with dprint error
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="dprint output-file-paths error detected",
                     returncode=1,
                 ),
-                # Third call: dprint fmt succeeds
+                # 5) dprint fmt succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fourth call: git add -A succeeds
+                # 6) git add -A succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fifth call: git commit --amend --no-edit fails
+                # 7) git commit --amend --no-edit fails
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="fatal: You are in the middle of a merge -- cannot amend.",
                     returncode=1,
                 ),
-                # Sixth call: git commit -m succeeds
+                # 8) git commit -m succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Seventh call: push retry succeeds
+                # 9) push retry succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
 
             result = git_push(commit_message="Fix: automated changes")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 7
+            assert mock_cmd.run_command.call_count == 9
             # Check that regular commit was called after amend failed
             calls = mock_cmd.run_command.call_args_list
-            assert calls[4][0][0] == ["git", "commit", "--amend", "--no-edit"]
-            assert calls[5][0][0] == ["git", "commit", "-m", "Fix: automated changes"]
-            assert calls[6][0][0] == ["git", "push"]
+            assert calls[6][0][0] == ["git", "commit", "--amend", "--no-edit"]
+            assert calls[7][0][0] == ["git", "commit", "-m", "Fix: automated changes"]
+            assert calls[8][0][0] == ["git", "push"]
 
     def test_push_with_dprint_error_and_upstream_retry(self):
         """Test push with dprint error and then upstream error triggers both retries."""
@@ -493,38 +533,48 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: get current branch
+                # 1) check_unpushed_commits: get current branch
                 CommandResult(
                     success=True, stdout="feature\n", stderr="", returncode=0
                 ),
-                # Second call: push fails with dprint error
+                # 2) check_unpushed_commits: found unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
+                # 3) _perform_git_push: get current branch for push
+                CommandResult(
+                    success=True, stdout="feature\n", stderr="", returncode=0
+                ),
+                # 4) _perform_git_push: push fails with dprint error
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="You may want to try using `dprint output-file-paths` to see which files it's finding",
                     returncode=1,
                 ),
-                # Third call: dprint fmt succeeds
+                # 5) dprint fmt succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fourth call: git add -A succeeds
+                # 6) git add -A succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Fifth call: push retry fails with upstream error
+                # 7) push retry fails with upstream error
                 CommandResult(
                     success=False,
                     stdout="",
                     stderr="fatal: The current branch feature has no upstream branch.\nTo push the current branch and set the remote as upstream, use\n\n    git push --set-upstream origin feature\n",
                     returncode=1,
                 ),
-                # Sixth call: push with --set-upstream succeeds
+                # 8) _retry_with_set_upstream: resolve current branch
+                CommandResult(
+                    success=True, stdout="feature\n", stderr="", returncode=0
+                ),
+                # 9) push with --set-upstream succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
 
             result = git_push()
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 6
+            assert mock_cmd.run_command.call_count == 9
             # Check the final call used --set-upstream
-            final_call_args = mock_cmd.run_command.call_args_list[5][0][0]
+            final_call_args = mock_cmd.run_command.call_args_list[8][0][0]
             assert final_call_args == [
                 "git",
                 "push",

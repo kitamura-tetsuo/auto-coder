@@ -97,10 +97,8 @@ class TestCLICreateFeatureIssues:
         assert mock_automation_engine_class.call_count == 1
         args, kwargs = mock_automation_engine_class.call_args
         assert args[0] is mock_github_client
-        manager = args[1]
-        assert isinstance(manager, BackendManager)
-        assert manager._default_backend == "codex"
-        assert manager._all_backends == ["codex"]
+        # After refactor, AutomationEngine no longer receives the backend manager as a positional arg
+        assert len(args) == 1
         mock_automation_engine.create_feature_issues.assert_called_once_with(
             "test/repo"
         )

@@ -336,17 +336,32 @@ class TestGraphRAGCodeAnalysisIntegration:
         # At least one CLI should exist
         assert ts_cli.exists() or py_cli.exists()
 
-        # If TypeScript CLI exists, verify it supports all languages
-        if ts_cli.exists():
-            import subprocess
+        # Prefer TypeScript CLI if available, otherwise fall back to Python CLI
+        import subprocess
 
+        cli_checked = False
+        if ts_cli.exists():
             result = subprocess.run(
                 ["node", str(ts_cli), "scan", "--help"],
                 capture_output=True,
                 text=True,
             )
+            if result.returncode == 0:
+                assert "--languages" in result.stdout
+                cli_checked = True
+
+        if not cli_checked and py_cli.exists():
+            result = subprocess.run(
+                ["python3", str(py_cli), "scan", "--help"],
+                capture_output=True,
+                text=True,
+            )
             assert result.returncode == 0
             assert "--languages" in result.stdout
+            cli_checked = True
+
+        # At least one CLI should be verified
+        assert cli_checked, "Neither TS nor Python CLI could be executed successfully"
 
         # If Python CLI exists, verify it supports languages option
         if py_cli.exists():

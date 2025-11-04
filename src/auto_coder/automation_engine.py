@@ -354,21 +354,24 @@ class AutomationEngine:
                 if manager is not None:
                     backend, model = manager.get_last_backend_and_model()
                     return {"backend": backend, "model": model}
-            except RuntimeError:
+            except (RuntimeError, AttributeError):
                 # get_llm_backend_manager() fails if not initialized, fall back to direct access
-                manager = LLMBackendManager._instance
-                if manager is not None:
-                    backend, model = manager.get_last_backend_and_model()
-                    return {"backend": backend, "model": model}
+                try:
+                    manager = LLMBackendManager.get_llm_instance()
+                    if manager is not None:
+                        backend, model = manager.get_last_backend_and_model()
+                        return {"backend": backend, "model": model}
+                except (RuntimeError, AttributeError):
+                    # Also try direct instance access
+                    manager = LLMBackendManager._instance
+                    if manager is not None:
+                        backend, model = manager.get_last_backend_and_model()
+                        return {"backend": backend, "model": model}
 
             # Manager not initialized
             return {"backend": None, "model": None}
-        except RuntimeError as e:
-            # Manager not initialized or other runtime error
-            logger.debug(f"Backend manager not available: {e}")
-            return {"backend": None, "model": None}
         except Exception as e:
-            # Other exceptions
+            # Any other exceptions
             logger.debug(f"Error getting LLM backend info: {e}")
             return {"backend": None, "model": None}
 

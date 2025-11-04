@@ -537,6 +537,48 @@ def _perform_git_push(
     return result
 
 
+# --- Helpers for enhanced push error handling ---
+
+
+def _is_no_upstream_error(msg: str) -> bool:
+    if not msg:
+        return False
+    s = msg.lower()
+    return (
+        "no upstream branch" in s
+        or "has no upstream" in s
+        or "set the remote as upstream" in s
+        or "no configured push destination" in s
+    )
+
+
+def _is_dprint_push_error(msg: str) -> bool:
+    if not msg:
+        return False
+    s = msg.lower()
+    # Look for dprint push-hook guidance
+    return ("dprint" in s) and ("output-file-paths" in s)
+
+
+def _retry_with_set_upstream(
+    cmd: CommandExecutor,
+    remote: str,
+    branch: Optional[str],
+    cwd: Optional[str],
+) -> CommandResult:
+    # Resolve branch if not provided
+    if branch is None:
+        branch = get_current_branch(cwd=cwd)
+        if not branch:
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr="Failed to determine current branch for --set-upstream push",
+                returncode=1,
+            )
+    return cmd.run_command(["git", "push", "--set-upstream", remote, branch], cwd=cwd)
+
+
 def git_push(
     cwd: Optional[str] = None,
     remote: str = "origin",
@@ -570,6 +612,52 @@ def git_push(
     # If push succeeded, return the result
     if push_result.success:
         return push_result
+
+    cmd = CommandExecutor()
+
+    # Handle: no upstream/tracking branch -> retry with --set-upstream
+    if _is_no_upstream_error(push_result.stderr):
+        logger.info("Detected no-upstream error, retrying with --set-upstream...")
+        return _retry_with_set_upstream(cmd, remote, branch, cwd)
+
+    # Handle: dprint push-hook error -> format, stage, (amend|commit), and retry push
+    if _is_dprint_push_error(push_result.stderr):
+        logger.info(
+            "Detected dprint-related push hook error, formatting and retrying push..."
+        )
+        fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
+        if not fmt_result.success:
+            logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
+            return push_result
+
+        add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+        if not add_result.success:
+            logger.warning(f"Failed to stage formatted files: {add_result.stderr}")
+            return push_result
+
+        if commit_message:
+            amend_result = cmd.run_command(
+                ["git", "commit", "--amend", "--no-edit"], cwd=cwd
+            )
+            if not amend_result.success:
+                # Fallback to regular commit with provided message
+                commit_result = cmd.run_command(
+                    ["git", "commit", "-m", commit_message], cwd=cwd
+                )
+                if not commit_result.success:
+                    logger.warning(
+                        f"Commit after formatting failed: {commit_result.stderr}"
+                    )
+                    return push_result
+
+        # Retry push (bare push to reuse upstream/remote defaults)
+        retry_result = cmd.run_command(["git", "push"], cwd=cwd)
+        if retry_result.success:
+            return retry_result
+        # If the retry hit a no-upstream case, set upstream and return
+        if _is_no_upstream_error(retry_result.stderr):
+            return _retry_with_set_upstream(cmd, remote, branch, cwd)
+        return retry_result
 
     # Check if this is a non-fast-forward error
     is_non_fast_forward = (
