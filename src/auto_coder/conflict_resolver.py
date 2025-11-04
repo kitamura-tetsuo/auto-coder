@@ -270,7 +270,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             )
 
             # Get conflict information
-            conflict_info = _get_merge_conflict_info()
+            conflict_info = scan_conflict_markers()
 
             # Use LLM to resolve conflicts
             if pr_data is None:

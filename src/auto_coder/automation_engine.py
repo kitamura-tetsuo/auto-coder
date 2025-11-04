@@ -42,8 +42,8 @@ class AutomationEngine:
         self.message_backend_manager = message_backend_manager
         self.cmd = CommandExecutor()
 
-        # Note: Report directories are created per repository,
-        # so we do not create one here (created in _save_report)
+        # Note: レポートディレクトリはリポジトリごとに作成されるため、
+        # ここでは作成しない（_save_reportで作成）
 
     def _get_candidates(
         self, repo_name: str, max_items: int = 10
@@ -141,7 +141,7 @@ class AutomationEngine:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
-        # Get LLM backend information
+        # LLMバックエンド情報を取得
         llm_backend_info = self._get_llm_backend_info()
 
         results = {
@@ -252,16 +252,16 @@ class AutomationEngine:
         if self.llm is None:
             return {"backend": None, "model": None}
 
-        # For BackendManager case
+        # BackendManagerの場合
         if hasattr(self.llm, "get_last_backend_and_model"):
             backend, model = self.llm.get_last_backend_and_model()
             return {"backend": backend, "model": model}
 
-        # For individual client case
+        # 個別クライアントの場合
         backend = None
         model = getattr(self.llm, "model_name", None)
 
-        # Infer backend name from class name
+        # クラス名からバックエンド名を推測
         class_name = self.llm.__class__.__name__
         if "Gemini" in class_name:
             backend = "gemini"
@@ -289,13 +289,13 @@ class AutomationEngine:
                       ~/.auto-coder/{repository}/ instead of the default reports/ directory.
         """
         try:
-            # If repository name is specified, use repository-specific directory
+            # リポジトリ名が指定されている場合は、リポジトリごとのディレクトリを使用
             if repo_name:
                 reports_dir = self.config.get_reports_dir(repo_name)
             else:
                 reports_dir = self.config.REPORTS_DIR
 
-            # Create reports directory if it doesn't exist
+            # レポートディレクトリが存在しない場合は作成
             os.makedirs(reports_dir, exist_ok=True)
 
             filepath = os.path.join(
@@ -318,7 +318,7 @@ class AutomationEngine:
         return _engine_pr_prompt(repo_name, pr_data, pr_diff, self.config)
 
     def get_github_actions_logs_from_url(self, url: str) -> str:
-        """Extract error blocks by fetching logs for the given GitHub Actions job URL directly."""
+        """GitHub Actions のジョブURLから、該当 job のログを直接取得してエラーブロックを抽出する。"""
         return get_github_actions_logs_from_url(url)
 
     def _get_github_actions_logs(
@@ -328,16 +328,16 @@ class AutomationEngine:
         failed_checks: List[Dict[str, Any]],
         search_history: Optional[bool] = None,
     ) -> str:
-        """Fetch logs for failed GitHub Actions jobs via gh api and return only the error sections.
+        """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
 
         Args:
             repo_name: Repository name
             pr_data: PR data dictionary
             failed_checks: List of failed check dictionaries
-            search_history: Optional flag to enable historical search.
-                If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
-                If True, searches commit history for logs.
-                If False, uses current state only.
+            search_history: Optional parameter to enable historical search.
+                           If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
+                           If True, searches through commit history for logs.
+                           If False, uses current state only.
 
         Returns:
             String containing GitHub Actions logs

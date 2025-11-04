@@ -63,6 +63,11 @@ class AutomationConfig:
     # Default: True (search history enabled)
     SEARCH_GITHUB_ACTIONS_HISTORY: bool = True
 
+    # Enable historical fallback for GitHub Actions status checks
+    # When current PR checks fail or are not available, search through recent runs to determine status
+    # Default: True (fallback enabled)
+    ENABLE_ACTIONS_HISTORY_FALLBACK: bool = True
+
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True

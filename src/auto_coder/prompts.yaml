@@ -1,3 +1,6 @@
+header: |
+  Read AGENTS.md before proceeding if you haven't read it yet.
+
 pr:
   action: |-
     You are operating directly in the repository workspace with write access and the git and gh CLIs available.
@@ -43,7 +46,7 @@ pr:
 
     Please resolve these merge conflicts by:
     1. Examining the conflicted files
-    2. Choosing the appropriate resolution for each conflict
+    2. When conflicts occur, prefer the newer code (the changes from the PR branch) over the older code (from the base branch). Choose the resolution that maintains the most recent implementation.
     3. Editing files to fully remove all conflict markers
     4. Do NOT run git add/commit/push; the system will handle committing.
 
