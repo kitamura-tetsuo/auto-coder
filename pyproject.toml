@@ -83,6 +83,9 @@ dependencies = [
     "mcp-server>=0.1.4",
 ]
 
+[project.scripts]
+auto-coder = "auto_coder.cli:main"
+
 [tool.setuptools]
 # Package discovery configuration
 packages = ["auto_coder"]
