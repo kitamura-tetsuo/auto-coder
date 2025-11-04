@@ -83,7 +83,7 @@ dependencies = [
     "mcp-server>=0.1.4",
 ]
 
-# Include specific directories
-include = [
-    "src/",
-]
+[tool.setuptools]
+# Package discovery configuration
+packages = ["auto_coder"]
+package-dir = {"" = "src"}
