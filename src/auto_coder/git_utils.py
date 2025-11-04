@@ -783,7 +783,7 @@ def save_commit_failure_history(
     try:
         # Determine the history directory
         if repo_name:
-            # リポジトリ名から安全なディレクトリ名を生成
+            # Generate safe directory name from repository name
             safe_repo_name = repo_name.replace("/", "_")
             history_dir = Path.home() / ".auto-coder" / safe_repo_name
         else:

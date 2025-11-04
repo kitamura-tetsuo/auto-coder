@@ -27,8 +27,8 @@ def _resolve_path(path: Optional[str] = None) -> Path:
 def load_prompts(path: Optional[str] = None) -> Dict[str, Any]:
     """Load prompts from YAML file, caching the parsed mapping.
 
-    要求: prompts のロードに失敗した場合は以降の処理が成立しないため、直ちに終了する。
-    そのため、本関数では致命的エラーとして SystemExit を送出する。
+    Requirement: If prompts fail to load, subsequent processing cannot continue, so exit immediately.
+    Therefore, this function raises SystemExit as a fatal error.
     """
     resolved = _resolve_path(path)
     cached = _PROMPTS_CACHE.get(resolved)
@@ -76,7 +76,7 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
 def get_prompt_template(key: str, path: Optional[str] = None) -> str:
     """Return the raw prompt template string for the given key.
 
-    未定義キーの参照は以降の処理を継続しても意味がないため、致命的エラーとしてSystemExitで即終了する。
+    Referencing an undefined key has no meaning even if processing continues, so exit immediately with SystemExit as a fatal error.
     """
     prompts = load_prompts(path)
     try:
@@ -112,7 +112,17 @@ def render_prompt(
         name: "" if value is None else str(value) for name, value in params.items()
     }
     try:
-        return template.safe_substitute(safe_params)
+        rendered_prompt = template.safe_substitute(safe_params)
+        
+        # Load prompts to get header
+        prompts = load_prompts(path)
+        header = prompts.get("header", "")
+        
+        # Prepend header to the rendered prompt
+        if header:
+            return f"{header.rstrip()}\n\n{rendered_prompt}"
+        else:
+            return rendered_prompt
     except (
         Exception
     ) as exc:  # pragma: no cover - Template handles placeholders gracefully

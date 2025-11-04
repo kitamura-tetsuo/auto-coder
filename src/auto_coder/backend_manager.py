@@ -1,10 +1,11 @@
 """
-BackendManager: 複数バックエンドを循環的に管理し、使用料制限や
-apply_workspace_test_fix での同一 current_test_file 3連続時の自動切替を行う。
+BackendManager: Manages multiple backends in rotation, handling usage limits and
+automatic switching when the same current_test_file appears 3 consecutive times in apply_workspace_test_fix.
 """
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .exceptions import AutoCoderUsageLimitError
@@ -14,16 +15,21 @@ from .progress_footer import ProgressStage
 
 logger = get_logger(__name__)
 
+# Global singleton instance for general LLM operations
+_llm_instance: Optional[BackendManager] = None
+_instance_lock = threading.Lock()
+_initialization_lock = threading.Lock()
+
 
 class BackendManager(LLMBackendManagerBase):
-    """LLMクライアントを循環的に切替管理するラッパー。
+    """Wrapper for managing LLM clients in circular rotation.
 
-    - _run_llm_cli(prompt) を提供（クライアント互換）
-    - run_test_fix_prompt(prompt, current_test_file) は apply_workspace_test_fix 用の拡張:
-      同一モデル・同一 current_test_file が3回連続で与えられた場合に次のバックエンドへ循環切替。
-      異なる current_test_file が来た場合はデフォルトバックエンドに戻す。
-    - 各クライアントが使用料制限に達した場合、AutoCoderUsageLimitError を投げる前提で
-      これを受けて次のバックエンドに切替して自動リトライする。
+    - Provides _run_llm_cli(prompt) (client compatibility)
+    - run_test_fix_prompt(prompt, current_test_file) is an extension for apply_workspace_test_fix:
+      If the same model and current_test_file are given 3 consecutive times, rotate to the next backend.
+      If a different current_test_file comes, reset to the default backend.
+    - Each client is expected to throw AutoCoderUsageLimitError when reaching usage limits,
+      and this triggers switching to the next backend for automatic retry.
     """
 
     def __init__(
@@ -33,31 +39,31 @@ class BackendManager(LLMBackendManagerBase):
         factories: Dict[str, Callable[[], Any]],
         order: Optional[List[str]] = None,
     ) -> None:
-        # バックエンド順序（循環）
+        # Backend order (circular)
         self._all_backends = order[:] if order else list(factories.keys())
-        # デフォルトを先頭にローテート
+        # Rotate default to front
         if default_backend in self._all_backends:
             while self._all_backends[0] != default_backend:
                 self._all_backends.append(self._all_backends.pop(0))
         else:
             self._all_backends.insert(0, default_backend)
-        # クライアントのキャッシュ（遅延生成）
+        # Client cache (lazy generation)
         self._factories = factories
         self._clients: Dict[str, Optional[Any]] = {k: None for k in self._all_backends}
         self._clients[default_backend] = default_client
         self._current_idx = 0
         self._default_backend = default_backend
 
-        # apply_workspace_test_fix のための直近プロンプト/モデル/バックエンド追跡
+        # Track recent prompt/model/backend for apply_workspace_test_fix
         self._last_prompt: Optional[str] = None
         self._last_backend: Optional[str] = None
-        # 直近で使用したモデル名も記録し、テスト用CSVに正しい情報を残せるようにする
+        # Also record the most recently used model name to leave correct information in test CSV
         self._last_model: Optional[str] = getattr(default_client, "model_name", None)
-        # current_test_file の追跡（3回同じファイルが続いたら切替）
+        # Track current_test_file (switch if same file continues 3 times)
         self._last_test_file: Optional[str] = None
         self._same_test_file_count: int = 0
 
-    # ---------- 基本操作 ----------
+    # ---------- Basic Operations ----------
     def _current_backend_name(self) -> str:
         return self._all_backends[self._current_idx]
 
@@ -65,7 +71,7 @@ class BackendManager(LLMBackendManagerBase):
         cli = self._clients.get(name)
         if cli is not None:
             return cli
-        # 遅延生成
+        # Lazy generation
         fac = self._factories.get(name)
         if fac is None:
             raise RuntimeError(f"No factory for backend: {name}")
@@ -74,13 +80,13 @@ class BackendManager(LLMBackendManagerBase):
             self._clients[name] = cli
             return cli
         except Exception as e:
-            # 生成できない場合はスキップ（次へ）
+            # Skip if unable to generate (proceed to next)
             raise RuntimeError(f"Failed to initialize backend '{name}': {e}")
 
     def _switch_to_index(self, idx: int) -> None:
         self._current_idx = idx % len(self._all_backends)
         try:
-            # モデル切替連動：デフォルト戻し
+            # Model switching linkage: restore to default
             cli = self._get_or_create_client(self._current_backend_name())
             try:
                 cli.switch_to_default_model()
@@ -96,7 +102,7 @@ class BackendManager(LLMBackendManagerBase):
         )
 
     def switch_to_default_backend(self) -> None:
-        # デフォルトの位置へ
+        # To the default position
         try:
             idx = self._all_backends.index(self._default_backend)
         except ValueError:
@@ -106,10 +112,10 @@ class BackendManager(LLMBackendManagerBase):
             f"BackendManager: switched back to default backend -> {self._current_backend_name()}"
         )
 
-    # ---------- 直接互換メソッド ----------
+    # ---------- Direct Compatibility Methods ----------
     @log_calls
     def _run_llm_cli(self, prompt: str) -> str:
-        """通常の実行（使用料制限時は循環的リトライ）。"""
+        """Normal execution (circular retry on usage limit)."""
         attempts = 0
         tried: set[int] = set()
         last_error: Optional[Exception] = None
@@ -123,7 +129,7 @@ class BackendManager(LLMBackendManagerBase):
                 tried.add(self._current_idx)
                 try:
                     cli = self._get_or_create_client(name)
-                    out = cli._run_llm_cli(prompt)
+                    out: str = cli._run_llm_cli(prompt)
                     # 実行に成功した場合のみ、直近利用したバックエンド/モデルを更新する
                     self._last_backend = name
                     self._last_model = getattr(cli, "model_name", None)
@@ -137,48 +143,48 @@ class BackendManager(LLMBackendManagerBase):
                     attempts += 1
                     continue
                 except Exception as e:
-                    # 他の失敗は伝播（使用料制限以外は即エラー）
+                    # Other failures propagate (immediate error except usage limit)
                     last_error = e
                     break
         if last_error:
             raise last_error
         raise RuntimeError("No backend available to run prompt")
 
-    # ---------- apply_workspace_test_fix 専用 ----------
+    # ---------- For apply_workspace_test_fix ----------
     @log_calls
     def run_test_fix_prompt(
         self, prompt: str, current_test_file: Optional[str] = None
     ) -> str:
-        """apply_workspace_test_fix 用の実行。
-        - 同一 current_test_file が3回連続で与えられたら次のバックエンドへ切替
-        - 異なる current_test_file が来たらデフォルトに戻す
-        - その上で _run_llm_cli を呼ぶ（使用料制限時はさらに循環）
+        """Execution for apply_workspace_test_fix.
+        - If the same current_test_file is given 3 consecutive times, switch to the next backend
+        - If a different current_test_file comes, reset to default
+        - Then call _run_llm_cli (further rotation on usage limit)
         """
-        # 現在のバックエンドとモデル名を取得
+        # Get current backend and model name
         current_backend = self._current_backend_name()
 
         if self._last_test_file is None or current_test_file != self._last_test_file:
-            # test_file が変わった → デフォルトに戻す（今回が1回目）
+            # test_file changed -> reset to default (this is the 1st time)
             self.switch_to_default_backend()
             self._same_test_file_count = 1
         else:
-            # 同一 test_file
+            # Same test_file
             if self._last_backend == current_backend:
-                # 直前までに同一バックエンドで2回続いていたら、3回目の実行前に切替
+                # If the same backend continued twice before, switch before the 3rd execution
                 if self._same_test_file_count >= 2:
                     self.switch_to_next_backend()
                     self._same_test_file_count = 1
                 else:
                     self._same_test_file_count += 1
             else:
-                # バックエンドが変わっている場合はカウンタリセット（今回が1回目）
+                # Backend has changed, reset counter (this is the 1st time)
                 self._same_test_file_count = 1
 
-        # 実行
+        # Execute
         with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
-            out = self._run_llm_cli(prompt)
+            out: str = self._run_llm_cli(prompt)
 
-        # 状態更新
+        # Update state
         self._last_prompt = prompt
         self._last_test_file = current_test_file
         self._last_backend = self._current_backend_name()
@@ -197,7 +203,7 @@ class BackendManager(LLMBackendManagerBase):
                 model = None
         return backend, model
 
-    # ---------- 互換補助 ----------
+    # ---------- Compatibility Helpers ----------
     def switch_to_conflict_model(self) -> None:
         try:
             cli = self._get_or_create_client(self._current_backend_name())
@@ -216,7 +222,7 @@ class BackendManager(LLMBackendManagerBase):
             pass
 
     def close(self) -> None:
-        """クライアントの close があれば呼ぶ。"""
+        """Call client's close if available."""
         for _, cli in list(self._clients.items()):
             try:
                 if cli:
@@ -234,7 +240,7 @@ class BackendManager(LLMBackendManagerBase):
             True if the MCP server is configured, False otherwise
         """
         cli = self._get_or_create_client(self._current_backend_name())
-        return cli.check_mcp_server_configured(server_name)
+        return cli.check_mcp_server_configured(server_name)  # type: ignore[no-any-return]
 
     def add_mcp_server_config(
         self, server_name: str, command: str, args: list[str]
@@ -250,7 +256,7 @@ class BackendManager(LLMBackendManagerBase):
             True if configuration was added successfully, False otherwise
         """
         cli = self._get_or_create_client(self._current_backend_name())
-        return cli.add_mcp_server_config(server_name, command, args)
+        return cli.add_mcp_server_config(server_name, command, args)  # type: ignore[no-any-return]
 
     def ensure_mcp_server_configured(
         self, server_name: str, command: str, args: list[str]
@@ -284,3 +290,138 @@ class BackendManager(LLMBackendManagerBase):
                 all_success = False
 
         return all_success
+
+
+class LLMBackendManager:
+    """
+    Singleton manager for general-purpose LLM backend operations.
+
+    This singleton manages the general backend for all LLM operations except
+    commit messages (PR processing, test fixes, code generation, etc.).
+
+    Thread-safe singleton implementation ensures only one instance exists
+    across all threads in the application.
+    """
+
+    _instance: Optional[BackendManager] = None
+    _init_params: Optional[Dict[str, Any]] = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_llm_instance(
+        cls,
+        default_backend: Optional[str] = None,
+        default_client: Optional[Any] = None,
+        factories: Optional[Dict[str, Callable[[], Any]]] = None,
+        order: Optional[List[str]] = None,
+        force_reinitialize: bool = False,
+    ) -> BackendManager:
+        """
+        Get or create the singleton LLM backend manager instance.
+
+        This class method returns the singleton instance for general-purpose LLM operations.
+        On first call, initialization parameters must be provided. Subsequent calls
+        can omit parameters to retrieve the existing instance.
+
+        Args:
+            default_backend: Name of the default backend
+            default_client: Default client instance
+            factories: Dictionary of backend name to factory function
+            order: Optional list specifying backend order
+            force_reinitialize: Force reinitialization with new parameters (default: False)
+
+        Returns:
+            BackendManager: The singleton instance for general LLM operations
+
+        Raises:
+            RuntimeError: If called without initialization parameters on first call
+        """
+        # Fast path: check if instance exists and is initialized
+        with cls._lock:
+            # Check if we need to initialize
+            if cls._instance is None or force_reinitialize:
+                # Validate initialization parameters
+                if (
+                    default_backend is None
+                    or default_client is None
+                    or factories is None
+                ):
+                    if cls._instance is None or force_reinitialize:
+                        raise RuntimeError(
+                            "LLMBackendManager.get_llm_instance() must be called with "
+                            "initialization parameters (default_backend, default_client, factories) "
+                            "on first use or when force_reinitialize=True"
+                        )
+                else:
+                    # If force_reinitialize and instance exists, close it first
+                    if force_reinitialize and cls._instance is not None:
+                        logger.info(
+                            f"Reinitializing LLMBackendManager singleton with default backend: {default_backend}"
+                        )
+                        try:
+                            cls._instance.close()
+                        except Exception:
+                            pass  # Best effort cleanup
+                    elif cls._instance is None:
+                        # Initialize singleton with parameters
+                        logger.info(
+                            f"Initializing LLMBackendManager singleton with default backend: {default_backend}"
+                        )
+
+                    # Create new instance (or reuse if force_reinitialize)
+                    if cls._instance is None or force_reinitialize:
+                        cls._instance = BackendManager(
+                            default_backend=default_backend,
+                            default_client=default_client,
+                            factories=factories,
+                            order=order,
+                        )
+                        cls._init_params = {
+                            "default_backend": default_backend,
+                            "default_client": default_client,
+                            "factories": factories,
+                            "order": order,
+                        }
+            elif (
+                default_backend is not None
+                or default_client is not None
+                or factories is not None
+            ):
+                # Parameters provided but instance already exists (and not forcing reinit)
+                # This is allowed - we just ignore the parameters and return existing instance
+                logger.debug(
+                    "LLMBackendManager singleton already initialized, ignoring new parameters"
+                )
+
+            return cls._instance
+
+    @classmethod
+    def reset_singleton(cls) -> None:
+        """
+        Reset the singleton instance.
+
+        This should only be used in tests or when you need to completely
+        reinitialize the singleton with new parameters.
+
+        Thread-safe: Uses locks to ensure reset happens atomically.
+        """
+        with cls._lock:
+            if cls._instance is not None:
+                logger.info("Resetting LLMBackendManager singleton")
+                try:
+                    cls._instance.close()
+                except Exception:
+                    pass  # Best effort cleanup
+            cls._instance = None
+            cls._init_params = None
+
+    @classmethod
+    def is_initialized(cls) -> bool:
+        """
+        Check if the singleton instance has been initialized.
+
+        Returns:
+            bool: True if instance exists, False otherwise
+        """
+        with cls._lock:
+            return cls._instance is not None

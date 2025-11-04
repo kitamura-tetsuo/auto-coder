@@ -1,54 +1,54 @@
-version: "2025.11.3.52+g04ee944"
+version: "2025.11.3.33+gd77cf97"
 project:
   name: auto-coder
-  description: Automated application development with multi-backend LLM CLI and GitHub integration
+  description: 複数バックエンドLLM CLIとGitHub連携による自動アプリ開発
   python: ">=3.11,<3.12"
   entry_point: auto-coder
   repository_paths:
-    - "mcp/graphrag_mcp"  # path to bundled GraphRAG MCP fork
+    - "mcp/graphrag_mcp"  # バンドルされた GraphRAG MCP フォークのパス
 
 cli:
   binary: auto-coder
   commands:
     - name: process-issues
-      purpose: Process GitHub issues and PRs using AI backends; optionally only label issues in Jules mode
+      purpose: GitHub の Issue/PR をAIで処理。JulesモードではIssueにラベル付与のみ
       options:
-        - { name: --repo, type: string, default: auto-detect from current git repo, env: null }
-        - { name: --github-token, type: string, env: GITHUB_TOKEN, default: null }
+        - { name: --repo, type: string, default: 現在のgitリポジトリから自動検出 }
+        - { name: --github-token, type: string, env: GITHUB_TOKEN }
         - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
-        - { name: --message-backend, multiple: true, default: same as --backend, choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
+        - { name: --message-backend, multiple: true, default: --backendと同じ, choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
         - { name: --openai-api-key, env: OPENAI_API_KEY }
         - { name: --openai-base-url, env: OPENAI_BASE_URL }
         - { name: --qwen-use-env-vars/--qwen-use-cli-options, default: false }
         - { name: --qwen-preserve-env/--qwen-clear-env, default: false }
-        - { name: --model-gemini, type: string }
-        - { name: --model-qwen, type: string }
-        - { name: --model-auggie, type: string }
-        - { name: --model-claude, type: string }
+        - { name: --model-gemini }
+        - { name: --model-qwen }
+        - { name: --model-auggie }
+        - { name: --model-claude }
         - { name: --dry-run, flag: true, default: false }
         - { name: --jules-mode/--no-jules-mode, default: true }
-        - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
+        - { name: --disable-labels/--no-disable-labels, default: 自動検出(デバッガ時は無効) }
         - { name: --skip-main-update/--no-skip-main-update, default: true }
         - { name: --ignore-dependabot-prs/--no-ignore-dependabot-prs, default: false }
         - { name: --force-clean-before-checkout/--no-force-clean-before-checkout, default: false }
         - { name: --enable-graphrag/--disable-graphrag, default: true }
-        - { name: --only, type: string, help: "PR/Issue URL or number" }
+        - { name: --only, type: string, help: "PR/IssueのURLまたは番号" }
         - { name: --force-reindex, flag: true, default: false }
         - { name: --log-level, choices: [DEBUG, INFO, WARNING, ERROR, CRITICAL], default: INFO }
         - { name: --log-file, type: path }
         - { name: --verbose, flag: true }
       behavior:
-        - Initializes GraphRAG when enabled (auto-setup + MCP config check)
-        - Resumes work on current non-main branch by detecting an open PR/issue
-        - Prioritizes candidates: urgent label (3) > auto-mergeable PRs (2) > failing PRs (1) > issues (0)
-        - Skips issues if 5+ open issues without sub-issues are found in a batch
-        - Saves JSON reports under ~/.auto-coder/{owner_repo}/
-        - Honors skip-main-update policy (default: skip merging base branch before fixes)
+        - 有効時はGraphRAGを初期化（自動セットアップ + MCP設定チェック）
+        - main以外のブランチ上では、対応するPR/Issueを検出して作業を自動再開
+        - 候補優先度: urgent(3) > 自動マージ可PR(2) > 失敗PR(1) > Issue(0)
+        - 未サブIssueのオープンIssueが5件以上ある場合、Issue処理を一時スキップ
+        - レポートJSONを ~/.auto-coder/{owner_repo}/ に保存
+        - PR失敗時のベースマージは既定でスキップ（--no-skip-main-updateで無効化）
     - name: create-feature-issues
-      purpose: Analyze repository and create feature enhancement issues via LLM
+      purpose: リポジトリを解析し、機能追加Issueを構造化して作成
       options:
-        - { name: --repo, type: string, default: auto-detect }
+        - { name: --repo, type: string, default: 自動検出 }
         - { name: --github-token, env: GITHUB_TOKEN }
         - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
@@ -66,13 +66,12 @@ cli:
         - { name: --log-file }
         - { name: --verbose, flag: true }
       behavior:
-        - Initializes GraphRAG (optional) and checks MCP configuration
-        - Uses prompts to propose structured feature issues with labels/acceptance criteria
+        - GraphRAG初期化（任意）とMCP設定チェックを行い、構造化された提案を生成
     - name: fix-to-pass-tests
-      purpose: Run local tests and iteratively apply LLM fixes until tests pass
+      purpose: ローカルテストを実行し、合格までLLM修正を反復適用
       options:
         - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
-        - { name: --message-backend, multiple: true, default: same as --backend }
+        - { name: --message-backend, multiple: true, default: --backendと同じ }
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
         - { name: --openai-api-key, env: OPENAI_API_KEY }
         - { name: --openai-base-url, env: OPENAI_BASE_URL }
@@ -82,7 +81,7 @@ cli:
         - { name: --model-qwen }
         - { name: --model-auggie }
         - { name: --model-claude }
-        - { name: --max-attempts, type: int, default: null (engine default applies) }
+        - { name: --max-attempts, type: int, default: null(エンジン既定を使用) }
         - { name: --enable-graphrag/--disable-graphrag, default: true }
         - { name: --dry-run, flag: true, default: false }
         - { name: --force-reindex, flag: true, default: false }
@@ -90,19 +89,19 @@ cli:
         - { name: --log-file }
         - { name: --verbose, flag: true }
       behavior:
-        - Executes scripts/test.sh (never calls pytest directly)
-        - If LLM makes no edits in an iteration, stops with error
-        - Supports separate message backends for summarization/communication
+        - scripts/test.sh を実行（pytestを直接呼ばない）
+        - 反復中にLLMが一切編集しない場合はエラーで停止
+        - メッセージ生成用バックエンドを別に指定可能
     - name: get-actions-logs
-      purpose: Fetch and print error blocks from a GitHub Actions job URL
+      purpose: GitHub ActionsのジョブURLからエラーブロックを抽出して出力
       options:
         - { name: --url, required: true }
         - { name: --github-token, env: GITHUB_TOKEN }
     - name: auth-status
-      purpose: Print authentication and CLI availability status for GitHub, Gemini, Qwen, Auggie
+      purpose: GitHub / Gemini / Qwen / Auggie の認証・CLI有無を表示
   groups:
     - name: graphrag
-      description: Manage Neo4j + Qdrant and the GraphRAG MCP server
+      description: Neo4j + Qdrant と GraphRAG MCP サーバーの管理
       subcommands:
         - name: start
           options:
@@ -125,43 +124,31 @@ cli:
             - { name: --qdrant-url, default: "http://localhost:6333" }
             - { name: --skip-clone, flag: true }
             - { name: --backends, multiple: true, choices: [codex, gemini, qwen, windsurf] }
-    - name: mcp
-      description: Install and inspect MCP servers
-      subcommands:
-        - { name: setup <server_name>, options: [--install-dir, --force] }
-        - { name: list }
-        - { name: status <server_name> }
-        - { name: test <server_name> }
-    - name: mcp-pdb
-      description: Helpers for MCP-PDB setup
-      subcommands:
-        - { name: print-config, options: [--target (windsurf|claude), --write-to] }
-        - { name: status }
 
 features:
   github_automation:
-    - Candidate collection with priority ordering (urgent PR/Issue > mergeable PRs > failing PRs > issues)
-    - Skips issues when 5+ open issues without sub-issues are present
-    - Single-item processing via --only (URL or number)
-    - Auto-resume when on a non-main branch with an associated PR/Issue
+    - 優先度付き候補収集（urgent PR/Issue > マージ可PR > 失敗PR > Issue）
+    - サブIssueなしのオープンIssueが5件以上ならIssue処理をスキップ
+    - --only（URL/番号）で単体処理
+    - main以外のブランチ上では関連PR/Issueを見つけて自動再開
   fix_loop:
-    - Re-run tests and apply LLM fixes until success or max attempts
-    - Default max attempts (engine): 30
-    - No-op edit detection halts the loop with error
+    - テスト再実行とLLM修正を成功まで繰り返し
+    - 既定の最大試行回数: 30
+    - 編集が無かった検知時はエラーで停止
   backends:
     supported: [codex, codex-mcp, gemini, qwen, auggie, claude]
     rotation:
-      description: "BackendManager rotates across configured backends; switches after 3 consecutive runs on same test file"
+      description: "BackendManagerが構成順にローテーション。同一テストファイルで3連続なら次へ切替"
     message_backend:
-      description: Separate backends can be used for message generation
+      description: メッセージ生成用バックエンドを分離可能
   graphrag_integration:
     auto_setup: true
     mcp_config_check: true
-    index_update: available via CLI
+    index_update: CLIで実行可能
   logging:
     library: loguru
-    console: colored, includes file:function:line with trimmed project-relative paths
-    file: rotation 10 MB, retention 7 days, zip compression
+    console: カラー表示・プロジェクト相対の file:function:line を表示
+    file: ローテーション10MB・保持7日・zip圧縮
   reports:
     path: "~/.auto-coder/{owner_repo}/automation_report_*.json"
 
@@ -184,12 +171,12 @@ config:
     MERGE_AUTO: true
 
 env:
-  GITHUB_TOKEN: GitHub API token for API and gh CLI operations
-  GEMINI_API_KEY: API key for Gemini when using gemini backend
-  OPENAI_API_KEY: OpenAI-compatible API key for qwen backend
-  OPENAI_BASE_URL: OpenAI-compatible base URL for qwen backend
-  AUTO_CODER_QWEN_CONFIG: Override path to qwen-providers.toml
-  AUTO_CODER_CONFIG_DIR: Directory that contains qwen-providers.toml
+  GITHUB_TOKEN: GitHub APIトークン
+  GEMINI_API_KEY: geminiバックエンド用APIキー
+  OPENAI_API_KEY: qwenバックエンド用(OpenAI互換)APIキー
+  OPENAI_BASE_URL: qwenバックエンド用(OpenAI互換)Base URL
+  AUTO_CODER_QWEN_CONFIG: qwen-providers.toml のフルパス上書き
+  AUTO_CODER_CONFIG_DIR: qwen-providers.toml を含むディレクトリ
 
 external_dependencies:
   graphrag:
@@ -198,15 +185,15 @@ external_dependencies:
   graphrag_mcp:
     type: "CUSTOMIZED FORK"
     path: "mcp/graphrag_mcp"
-    specialized_for: "TypeScript/JavaScript code analysis"
+    specialized_for: "TypeScript/JavaScript のコード分析"
     tools: [find_symbol, get_call_graph, get_dependencies, impact_analysis, semantic_code_search]
-    notes: "Bundled fork replaces generic documentation search with code analysis tools."
+    notes: "汎用ドキュメント検索の代わりに、コード分析ツール群を提供するフォークを同梱"
   qwen_providers_config:
     file: "~/.auto-coder/qwen-providers.toml"
     defaults:
       modelstudio: { base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model: "qwen3-coder-plus" }
       openrouter: { base_url: "https://openrouter.ai/api/v1", model: "qwen/qwen3-coder:free" }
     env_override:
-      - AUTO_CODER_QWEN_CONFIG  # full path override
-      - AUTO_CODER_CONFIG_DIR   # directory override
+      - AUTO_CODER_QWEN_CONFIG
+      - AUTO_CODER_CONFIG_DIR
 

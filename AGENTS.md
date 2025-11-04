@@ -25,7 +25,8 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 ### Project Structure
 
 * Maintain a standard Python project structure.
-* Document all features in `docs/client-features.yaml`.
+* Document all features in `docs/client-features.yaml` as soon as possible.
+* Document all features in `docs/client-features.ja.yaml` in japanease.
 * Read `docs/client-features.yaml` to comply with specifications and not to degrade.
 * Do not create duplicate functions in multiple locations.
 
