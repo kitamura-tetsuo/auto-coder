@@ -1,66 +1,66 @@
 # MCP Inspector Configuration
 
-このディレクトリには、MCP InspectorでMCPサーバーを視覚化するための設定ファイルが含まれています。
+This directory contains configuration files for visualizing MCP servers with MCP Inspector.
 
-## セットアップ手順
+## Setup Instructions
 
-### 1. MCP Inspectorの起動
+### 1. Starting MCP Inspector
 
-次のコマンドでMCP Inspectorを起動します：
+Start MCP Inspector with the following command:
 
 ```bash
 mcp-inspector /home/node/src/auto-coder/mcp-inspector-config/mcp-servers.json
 ```
 
-### 2. Webブラウザでアクセス
+### 2. Access via Web Browser
 
-Inspectorはデフォルトで http://localhost:5173 で起動します。ブラウザでアクセスしてください。
+Inspector starts by default at http://localhost:5173. Access it via your browser.
 
-## 接続済みMCPサーバー
+## Connected MCP Servers
 
 ### 1. graphrag-mcp
-- **説明**: GraphRAG コード解析サーバー
-- **機能**:
-  - コード閾の検索
-  - コールグラフ分析
-  - 依存関係分析
-  - インパクト分析
-  -  семанティックコード検索
-- **依存関係**: neo4j, qdrant-client, sentence-transformers
+- **Description**: GraphRAG code analysis server
+- **Features**:
+  - Code threshold search
+  - Call graph analysis
+  - Dependency analysis
+  - Impact analysis
+  - Semantic code search
+- **Dependencies**: neo4j, qdrant-client, sentence-transformers
 
 ### 2. test-watcher
-- **説明**: テスト監視サーバー（ファイル変更の監視と自動テスト実行）
-- **機能**:
-  - ファイル監視の開始/停止
-  - テスト結果のクエリ
-  - ステータス取得
-- **依存関係**: loguru, watchdog, pathspec
+- **Description**: Test monitoring server (file change monitoring and automatic test execution)
+- **Features**:
+  - Start/stop file watching
+  - Query test results
+  - Get status
+- **Dependencies**: loguru, watchdog, pathspec
 
-## 環境要件
+## Environment Requirements
 
 ### graphrag-mcp
-- Neo4j データベースが起動している必要
-- Qdrant ベクトルデータベースが起動している必要
-- コードグラフが構築済みであること
+- Neo4j database must be running
+- Qdrant vector database must be running
+- Code graph must be built
 
 ### test-watcher
-- Node.js および npm がインストール済み
-- Playwright がインストール済み: `npm install -D @playwright/test`
-- プロジェクトルートは `/home/node/src/auto-coder`
+- Node.js and npm must be installed
+- Playwright must be installed: `npm install -D @playwright/test`
+- Project root must be `/home/node/src/auto-coder`
 
-## トラブルシューティング
+## Troubleshooting
 
-### サーバーが起動しない場合
-1. 必要な依存関係がインストールされていることを確認
-2. 環境変数が正しく設定されていることを確認
-3. ログを確認してエラーの詳細を調べる
+### Server doesn't start
+1. Ensure required dependencies are installed
+2. Ensure environment variables are correctly set
+3. Check logs for detailed error information
 
-### データベース接続エラー（graphrag-mcp）
-Neo4j または Qdrant が起動していない可能性があります：
+### Database connection error (graphrag-mcp)
+Neo4j or Qdrant might not be running:
 ```bash
-# Neo4j の起動（例）
+# Start Neo4j (example)
 neo4j start
 
-# Qdrant の起動（例）
+# Start Qdrant (example)
 qdrant
 ```
