@@ -22,10 +22,10 @@ if [ "${AC_USE_LOCAL_VENV:-0}" = "1" ]; then
   fi
 fi
 
-# Optional: auto-sync dependencies with uv (opt-in via AC_AUTO_SYNC=1)
-if [ "${AC_AUTO_SYNC:-0}" = "1" ] && [ "$USE_UV" -eq 1 ]; then
-  echo "Syncing dependencies with uv..."
-  uv sync
+# Always sync dependencies with uv when available
+if [ "$USE_UV" -eq 1 ]; then
+  uv sync -q
+  uv pip install -q -e .[test]
 fi
 
 RUN=""
@@ -53,14 +53,20 @@ fi
 # Run all tests first to see which ones fail
 echo "Running all tests..."
 TEST_OUTPUT_FILE=$(mktemp)
-$RUN pytest -v --tb=short > "$TEST_OUTPUT_FILE" 2>&1
-EXIT_CODE=$?
+
+# Don't exit on errors - we want to capture the exit code
+set +e
+
+$RUN pytest -q --tb=short | tee "$TEST_OUTPUT_FILE"
+EXIT_CODE=${PIPESTATUS[0]}
+
+# Re-enable exit on errors
+set -e
+
+echo "Test run completed with exit code: $EXIT_CODE"
 
 if [ $EXIT_CODE -ne 0 ]; then
     echo "Some tests failed. Analyzing failures..."
-    
-    # Show the test output
-    cat "$TEST_OUTPUT_FILE"
     
     # Extract the first failed test file
     # Look for lines that start with "FAILED" and extract the test file path

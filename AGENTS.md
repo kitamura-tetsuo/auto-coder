@@ -85,7 +85,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
     - Preferred uv runner for consistent, reproducible environments
     - Fallback to system Python's pytest when uv is not available
     - Optional local virtualenv activation via AC_USE_LOCAL_VENV=1
-    - Optional auto-syncing of dependencies with uv via AC_AUTO_SYNC=1
+    - Always enables auto-syncing dependencies with uv
 
 ### Git Commit/Push Policy (English)
 * Centralize all `git commit` and `git push` operations through dedicated helper routines.

@@ -94,7 +94,7 @@ cli:
           - Prefers uv runner for consistent, reproducible environments
           - Falls back to system Python's pytest when uv is not available
           - Optionally activates local virtualenv when AC_USE_LOCAL_VENV=1
-          - Supports auto-syncing dependencies with uv when AC_AUTO_SYNC=1
+          - Always enables auto-syncing dependencies with uv
         - If LLM makes no edits in an iteration, stops with error
         - Supports separate message backends for summarization/communication
     - name: get-actions-logs
