@@ -11,7 +11,7 @@ def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", return
 
 
 def test_history_handles_missing_pullRequests_field_gracefully():
-    """run view の pullRequests フィールドが欠落していても、ジョブ情報から評価できること。"""
+    """run view's pullRequests field can be evaluated from job information even if missing."""
     config = AutomationConfig()
 
     pr_data = {
@@ -22,10 +22,10 @@ def test_history_handles_missing_pullRequests_field_gracefully():
         },
     }
 
-    # 1) --commit 側はヒットしない
+    # 1) --commit side will not hit
     commit_run_list = _cmd_result(True, stdout="[]", stderr="", returncode=0)
 
-    # 2) 通常の run list で対象ブランチの PR イベントの run が1件見つかる
+    # 2) Normal run list finds 1 PR event run for target branch
     run_id = 424242
     run_list_payload = [
         {
@@ -42,7 +42,7 @@ def test_history_handles_missing_pullRequests_field_gracefully():
     ]
     run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
-    # 3) run view は pullRequests フィールドを返さない（欠落）
+    # 3) run view does not return pullRequests field (missing)
     jobs_payload = {
         "jobs": [
             {
@@ -72,10 +72,10 @@ def test_history_handles_missing_pullRequests_field_gracefully():
                 # Branch-based run list - should return the test data
                 return run_list_result
             elif call_count["list"] == 1:
-                # 1回目（commit 相当）はヒットしない
+                # 1st time (equivalent to commit) will not hit
                 return commit_run_list
             else:
-                # 2回目（フォールバック）は候補が返る
+                # 2nd time (fallback) returns candidates
                 return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
             return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
@@ -89,7 +89,7 @@ def test_history_handles_missing_pullRequests_field_gracefully():
 
 
 def test_history_handles_empty_pullRequests_list_gracefully():
-    """run view が pullRequests: [] を返しても、ジョブ情報から評価できること。"""
+    """run view can be evaluated from job information even if it returns pullRequests: []."""
     config = AutomationConfig()
 
     pr_data = {
@@ -118,7 +118,7 @@ def test_history_handles_empty_pullRequests_list_gracefully():
     ]
     run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
-    # pullRequests は空配列
+    # pullRequests is empty array
     jobs_payload = {
         "pullRequests": [],
         "jobs": [

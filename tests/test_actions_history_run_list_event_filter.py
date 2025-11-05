@@ -11,7 +11,7 @@ def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", return
 
 
 def test_commit_search_prefers_pull_request_runs_without_event_flag():
-    """commit 用の検索は Python 側でフィルタし、--event/--commit フラグ無しでも pull_request の run を優先できること。"""
+    """Commit search filters on Python side, and can prioritize pull_request runs even without --event/--commit flag."""
     config = AutomationConfig()
 
     pr_data = {
@@ -38,7 +38,7 @@ def test_commit_search_prefers_pull_request_runs_without_event_flag():
 
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
-            # PR のコミット情報を返す
+            # Return PR commit information
             return _cmd_result(
                 True,
                 stdout=json.dumps(
@@ -55,9 +55,9 @@ def test_commit_search_prefers_pull_request_runs_without_event_flag():
             )
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
-            # どの呼び出しでも --event/--commit フラグは使わない
+            # Don't use --event/--commit flags for any call
             assert "--event" not in cmd and "--commit" not in cmd, f"unexpected flags in command: {cmd}"
-            # 1回目の list で commit 相当のフィルタ結果を返す
+            # Return commit-equivalent filter result on 1st list
             return _cmd_result(True, stdout=json.dumps(commit_runs_payload), stderr="", returncode=0)
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_payload = {
@@ -77,13 +77,13 @@ def test_commit_search_prefers_pull_request_runs_without_event_flag():
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is False
-    # 遅延取得によりchecksは空になっていることを確認
+    # Confirm checks are empty due to lazy retrieval
     assert result.ids == [777001], f"expected [777001] but got {result.ids}"
     # failed_checks is not available in GitHubActionsStatusResult
 
 
 def test_fallback_search_works_without_event_flag():
-    """commit 相当の検索でヒットしなくても、フォールバックの run list で --event なしに pull_request を優先できること。"""
+    """Even if commit-equivalent search doesn't hit, can prioritize pull_request in fallback run list without --event."""
     config = AutomationConfig()
 
     pr_data = {
@@ -110,7 +110,7 @@ def test_fallback_search_works_without_event_flag():
 
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
-            # PR のコミット情報を返す
+            # Return PR commit information
             return _cmd_result(
                 True,
                 stdout=json.dumps(
@@ -127,17 +127,17 @@ def test_fallback_search_works_without_event_flag():
             )
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
-            # どの呼び出しでも --event/--commit フラグは使わない
+            # Don't use --event/--commit flags for any call
             assert "--event" not in cmd and "--commit" not in cmd, f"unexpected flags in command: {cmd}"
             # Check if this is a branch-based call (-b option)
             if "-b" in cmd:
                 # Branch-based run list - should return the test data
                 return _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
             elif call_count["list"] == 1:
-                # 1回目（commit 相当）はヒットしない
+                # 1st time (equivalent to commit) will not hit
                 return _cmd_result(True, stdout="[]", stderr="", returncode=0)
             else:
-                # 2回目（フォールバック）はヒット
+                # 2nd time (fallback) will hit
                 return _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_payload = {
@@ -157,6 +157,6 @@ def test_fallback_search_works_without_event_flag():
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
-    # 遅延取得によりchecksは空になっていることを確認
+    # Confirm checks are empty due to lazy retrieval
     assert result.ids == [777002], f"expected [777002] but got {result.ids}"
     # checks and failed_checks are not available in GitHubActionsStatusResult

@@ -142,7 +142,7 @@ class TestAutomationEngine:
             # Assert
             assert result["repository"] == test_repo_name
             assert result["dry_run"] is True
-            assert result["llm_backend"] == "gemini"  # GeminiClientから推測
+            assert result["llm_backend"] == "gemini"  # Inferred from GeminiClient
             assert result["llm_model"] is not None
             assert len(result["issues_processed"]) == 1
             assert len(result["prs_processed"]) == 1
@@ -525,7 +525,7 @@ class TestAutomationEngine:
         engine = AutomationEngine(mock_github_client)
         test_data = {"test": "data"}
 
-        # Execute - repo_name が指定されていない場合は従来の reports/ を使用
+        # Execute - use traditional reports/ if repo_name is not specified
         engine._save_report(test_data, "test_report")
 
         # Assert
@@ -556,7 +556,7 @@ class TestAutomationEngine:
         engine = AutomationEngine(mock_github_client)
         test_data = {"test": "data"}
 
-        # Execute - repo_name が指定されている場合は ~/.auto-coder/{repository}/ を使用
+        # Execute - use ~/.auto-coder/{repository}/ if repo_name is specified
         engine._save_report(test_data, "test_report", repo_name)
 
         # Assert
