@@ -1,29 +1,29 @@
-# Qwen認証情報の渡し方オプション
+# Qwen Credential Passing Options
 
-## 概要
+## Overview
 
-QwenClientは、OpenAI互換のAPIキーとベースURLを2つの方法で渡すことができます：
+QwenClient can accept OpenAI-compatible API keys and base URLs in two ways:
 
-1. **環境変数経由（デフォルト）**: `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`を環境変数として設定
-2. **コマンドラインオプション経由**: `--api-key`、`--base-url`、`-m`をqwen CLIに直接渡す
+1. **Via environment variables (default)**: Set `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL` as environment variables
+2. **Via command-line options**: Pass `--api-key`, `--base-url`, and `-m` directly to the qwen CLI
 
-## CLIオプション
+## CLI Options
 
 ### `--qwen-use-env-vars` / `--qwen-use-cli-options`
 
-認証情報の渡し方を選択します。
+Selects the method for passing credentials.
 
-- `--qwen-use-env-vars`（デフォルト）: 環境変数経由で認証情報を渡す
-- `--qwen-use-cli-options`: コマンドラインオプション経由で認証情報を渡す
+- `--qwen-use-env-vars` (default): Pass credentials via environment variables
+- `--qwen-use-cli-options`: Pass credentials via command-line options
 
-**使用例:**
+**Usage Examples:**
 
 ```bash
-# 環境変数経由（デフォルト）
+# Via environment variables (default)
 auto-coder process-issues --repo owner/repo --backend qwen \
   --openai-api-key sk-xxx --openai-base-url https://api.example.com
 
-# コマンドラインオプション経由
+# Via command-line options
 auto-coder process-issues --repo owner/repo --backend qwen \
   --openai-api-key sk-xxx --openai-base-url https://api.example.com \
   --qwen-use-cli-options
@@ -31,76 +31,76 @@ auto-coder process-issues --repo owner/repo --backend qwen \
 
 ### `--qwen-preserve-env` / `--qwen-clear-env`
 
-既存の`OPENAI_*`環境変数を保持するか、クリアするかを選択します。
+Selects whether to keep or clear existing `OPENAI_*` environment variables.
 
-- `--qwen-clear-env`（デフォルト）: 既存の環境変数をクリアしてから新しい値を設定
-- `--qwen-preserve-env`: 既存の環境変数を保持し、新しい値を追加
+- `--qwen-clear-env` (default): Clear existing environment variables before setting new values
+- `--qwen-preserve-env`: Keep existing environment variables and add new values
 
-**使用例:**
+**Usage Examples:**
 
 ```bash
-# 既存の環境変数をクリア（デフォルト）
+# Clear existing environment variables (default)
 auto-coder process-issues --repo owner/repo --backend qwen \
   --openai-api-key sk-xxx
 
-# 既存の環境変数を保持
+# Keep existing environment variables
 auto-coder process-issues --repo owner/repo --backend qwen \
   --openai-api-key sk-xxx --qwen-preserve-env
 ```
 
-## プログラムからの使用
+## Programmatic Usage
 
-### QwenClientの初期化
+### Initializing QwenClient
 
 ```python
 from auto_coder.qwen_client import QwenClient
 
-# デフォルト（環境変数経由、既存の環境変数をクリア）
+# Default (via environment variables, clear existing environment variables)
 client = QwenClient(
     model_name="qwen3-coder-plus",
     openai_api_key="sk-xxx",
     openai_base_url="https://api.example.com"
 )
 
-# コマンドラインオプション経由
+# Via command-line options
 client = QwenClient(
     model_name="qwen3-coder-plus",
     openai_api_key="sk-xxx",
     openai_base_url="https://api.example.com",
-    use_env_vars=False  # CLIオプションを使用
+    use_env_vars=False  # Use CLI options
 )
 
-# 既存の環境変数を保持
+# Preserve existing environment variables
 client = QwenClient(
     model_name="qwen3-coder-plus",
     openai_api_key="sk-xxx",
     openai_base_url="https://api.example.com",
-    preserve_existing_env=True  # 既存の環境変数を保持
+    preserve_existing_env=True  # Preserve existing environment variables
 )
 ```
 
-## 挙動の違い
+## Behavioral Differences
 
-### 環境変数経由（デフォルト）
+### Via Environment Variables (Default)
 
 ```bash
-# 実行されるコマンド
+# Executed command
 OPENAI_API_KEY=sk-xxx OPENAI_BASE_URL=https://api.example.com OPENAI_MODEL=qwen3-coder-plus \
   qwen -y -m qwen3-coder-plus -p "prompt text"
 ```
 
-### コマンドラインオプション経由
+### Via Command-Line Options
 
 ```bash
-# 実行されるコマンド
+# Executed command
 qwen -y --api-key sk-xxx --base-url https://api.example.com -m qwen3-coder-plus -p "prompt text"
 ```
 
-## トラブルシューティング
+## Troubleshooting
 
-### 環境変数が正しく渡されない場合
+### Environment Variables Not Being Passed Correctly
 
-環境変数経由で認証情報が正しく渡されない場合は、コマンドラインオプション経由を試してください：
+If credentials are not being passed correctly via environment variables, try using command-line options:
 
 ```bash
 auto-coder process-issues --repo owner/repo --backend qwen \
@@ -108,14 +108,14 @@ auto-coder process-issues --repo owner/repo --backend qwen \
   --qwen-use-cli-options
 ```
 
-### 既存の環境変数と競合する場合
+### Conflicts with Existing Environment Variables
 
-既存の`OPENAI_*`環境変数と競合する場合は、`--qwen-clear-env`（デフォルト）を使用して、既存の環境変数をクリアしてから新しい値を設定してください。
+If there are conflicts with existing `OPENAI_*` environment variables, use `--qwen-clear-env` (default) to clear existing environment variables before setting new values.
 
-## 関連ファイル
+## Related Files
 
-- `src/auto_coder/qwen_client.py`: QwenClientの実装
-- `src/auto_coder/cli_commands_main.py`: CLIコマンドの実装
-- `src/auto_coder/cli_helpers.py`: バックエンドマネージャーの構築
-- `tests/test_qwen_client_cli_options.py`: 新しいオプションのテスト
+- `src/auto_coder/qwen_client.py`: QwenClient implementation
+- `src/auto_coder/cli_commands_main.py`: CLI command implementation
+- `src/auto_coder/cli_helpers.py`: Backend manager construction
+- `tests/test_qwen_client_cli_options.py`: Tests for new options
 
