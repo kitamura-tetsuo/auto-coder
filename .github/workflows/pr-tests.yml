@@ -64,6 +64,8 @@ jobs:
         run: |
           # Run auto-coder --help and verify it exits successfully
           set -e
+          # Add .venv/bin to PATH to access installed console scripts
+          export PATH="$PWD/.venv/bin:$PATH"
           OUTPUT=$(auto-coder --help)
           echo "$OUTPUT"
           # Check for expected help content
