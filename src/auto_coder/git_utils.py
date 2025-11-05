@@ -381,19 +381,27 @@ def git_checkout_branch(
         CommandResult with the result of the checkout operation.
         success=True only if checkout succeeded AND current branch matches expected branch.
     """
-    # Validate branch name before proceeding
-    try:
-        validate_branch_name(branch_name)
-    except ValueError as e:
-        logger.error(str(e))
-        return CommandResult(
-            success=False,
-            stdout="",
-            stderr=str(e),
-            returncode=1,
-        )
-
     cmd = CommandExecutor()
+
+    # Check if branch already exists locally (only when create_new is True)
+    branch_exists = False
+    if create_new:
+        list_result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
+        branch_exists = list_result.success and list_result.stdout.strip()
+
+    # Validate branch name only when creating a NEW branch that doesn't exist
+    # Existing branches with pr-<number> pattern can be checked out without validation
+    if create_new and not branch_exists:
+        try:
+            validate_branch_name(branch_name)
+        except ValueError as e:
+            logger.error(str(e))
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=str(e),
+                returncode=1,
+            )
 
     # Check for uncommitted changes before checkout
     status_result = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
