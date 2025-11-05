@@ -42,6 +42,14 @@ def _clear_sensitive_env(monkeypatch, request):
     monkeypatch.setenv("HOME", tmp_home)
 
 
+@pytest.fixture(autouse=True)
+def _reset_github_client_singleton():
+    """Reset GitHubClient singleton between tests to ensure isolation."""
+    GitHubClient.reset_singleton()
+    yield
+    GitHubClient.reset_singleton()
+
+
 @pytest.fixture
 def _use_real_home():
     """Marker fixture to indicate that a test needs the real HOME directory.

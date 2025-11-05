@@ -17,7 +17,7 @@ class TestGitHubClient:
 
     def test_init(self, mock_github_token):
         """Test GitHubClient initialization."""
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
         assert client.token == mock_github_token
         assert isinstance(client.github, Github)
 
@@ -30,7 +30,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_repository("test/repo")
@@ -47,7 +47,7 @@ class TestGitHubClient:
         mock_github.get_repo.side_effect = GithubException(404, "Not Found")
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute & Assert
         with pytest.raises(GithubException):
@@ -70,7 +70,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_open_issues("test/repo", limit=2)
@@ -95,7 +95,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_open_pull_requests("test/repo", limit=1)
@@ -130,7 +130,7 @@ class TestGitHubClient:
             mock_github.get_repo.return_value = mock_repo
             mock_github_class.return_value = mock_github
 
-            client = GitHubClient(mock_github_token)
+            client = GitHubClient.get_instance(mock_github_token)
 
             # Execute
             result = client.get_open_issues("test/repo")
@@ -164,7 +164,7 @@ class TestGitHubClient:
             mock_github.get_repo.return_value = mock_repo
             mock_github_class.return_value = mock_github
 
-            client = GitHubClient(mock_github_token)
+            client = GitHubClient.get_instance(mock_github_token)
 
             # Execute
             result = client.get_open_pull_requests("test/repo")
@@ -195,7 +195,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Mock get_pr_details to return a simple dict
         with patch.object(client, "get_pr_details") as mock_get_details:
@@ -226,7 +226,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.find_pr_by_head_branch("test/repo", "non-existent-branch")
@@ -244,7 +244,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.find_pr_by_head_branch("test/repo", "feature-branch")
@@ -274,7 +274,7 @@ class TestGitHubClient:
         mock_issue.user = Mock(login="author")
         mock_issue.comments = 5
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_issue_details(mock_issue)
@@ -324,7 +324,7 @@ class TestGitHubClient:
         mock_pr.deletions = 10
         mock_pr.changed_files = 2
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_pr_details(mock_pr)
@@ -390,7 +390,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_pr_details_by_number("test/repo", 123)
@@ -428,7 +428,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_issue_details_by_number("test/repo", 456)
@@ -454,7 +454,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         params = ("test/repo", "New Issue", "Issue body", ["bug"])
@@ -476,7 +476,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         client.add_comment_to_issue("test/repo", 123, "Test comment")
@@ -497,7 +497,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         client.close_issue("test/repo", 123, "Closing comment")
@@ -526,7 +526,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         client.add_labels_to_issue("test/repo", 123, ["jules", "enhancement"])
@@ -560,7 +560,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute - try to add "jules" again and "enhancement"
         client.add_labels_to_issue("test/repo", 123, ["jules", "enhancement"])
@@ -591,7 +591,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.has_linked_pr("test/repo", 123)
@@ -617,7 +617,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.has_linked_pr("test/repo", 123)
@@ -650,7 +650,7 @@ class TestGitHubClient:
             mock_github.get_repo.return_value = mock_repo
             mock_github_class.return_value = mock_github
 
-            client = GitHubClient(mock_github_token)
+            client = GitHubClient.get_instance(mock_github_token)
 
             # Execute
             result = client.has_linked_pr("test/repo", 123)
@@ -668,7 +668,7 @@ class TestGitHubClient:
         mock_github.get_repo.return_value = mock_repo
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.has_linked_pr("test/repo", 123)
@@ -701,7 +701,7 @@ class TestGitHubClient:
         mock_result.stderr = ""
         mock_run.return_value = mock_result
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_linked_prs_via_graphql("test/repo", 123)
@@ -728,7 +728,7 @@ class TestGitHubClient:
         mock_result.stderr = ""
         mock_run.return_value = mock_result
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_linked_prs_via_graphql("test/repo", 123)
@@ -746,7 +746,7 @@ class TestGitHubClient:
         mock_result.stderr = "GraphQL error"
         mock_run.return_value = mock_result
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_linked_prs_via_graphql("test/repo", 123)
@@ -770,7 +770,7 @@ class TestGitHubClient:
         mock_github = Mock()
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.has_linked_pr("test/repo", 123)
@@ -815,7 +815,7 @@ class TestGitHubClient:
         mock_github = Mock()
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_pr_closing_issues("test/repo", 456)
@@ -850,7 +850,7 @@ class TestGitHubClient:
         mock_github = Mock()
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_pr_closing_issues("test/repo", 456)
@@ -872,7 +872,7 @@ class TestGitHubClient:
         mock_github = Mock()
         mock_github_class.return_value = mock_github
 
-        client = GitHubClient(mock_github_token)
+        client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
         result = client.get_pr_closing_issues("test/repo", 456)

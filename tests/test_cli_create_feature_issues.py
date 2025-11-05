@@ -73,6 +73,8 @@ class TestCLICreateFeatureIssues:
         """create-feature-issues uses codex by default."""
         mock_github_client = Mock()
         mock_github_client_class.return_value = mock_github_client
+        # Make get_instance return the same object
+        mock_github_client_class.get_instance.return_value = mock_github_client
         mock_codex_client = Mock()
         mock_codex_client_class.return_value = mock_codex_client
         mock_automation_engine = Mock()
@@ -92,7 +94,8 @@ class TestCLICreateFeatureIssues:
         )
 
         assert result.exit_code == 0
-        mock_github_client_class.assert_called_once_with("test_token")
+        # GitHubClient is now a singleton using get_instance()
+        mock_github_client_class.get_instance.assert_called_once_with("test_token")
         mock_codex_client_class.assert_called_once_with(model_name="codex")
         assert mock_automation_engine_class.call_count == 1
         args, kwargs = mock_automation_engine_class.call_args
@@ -149,6 +152,8 @@ class TestCLICreateFeatureIssues:
         mock_automation_engine.create_feature_issues.return_value = []
 
         mock_github_client_class.return_value = mock_github_client
+        # Make get_instance return the same object
+        mock_github_client_class.get_instance.return_value = mock_github_client
         mock_codex_client_class.return_value = mock_codex_client
         mock_automation_engine_class.return_value = mock_automation_engine
         mock_check_cli.return_value = None
@@ -160,7 +165,8 @@ class TestCLICreateFeatureIssues:
 
         # Assert
         assert result.exit_code == 0
-        mock_github_client_class.assert_called_once_with("env_github_token")
+        # GitHubClient is now a singleton using get_instance()
+        mock_github_client_class.get_instance.assert_called_once_with("env_github_token")
         mock_codex_client_class.assert_called_once()
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")

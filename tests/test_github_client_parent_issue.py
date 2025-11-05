@@ -16,7 +16,7 @@ class TestGitHubClientParentIssue:
     @patch("subprocess.run")
     def test_get_parent_issue_exists(self, mock_subprocess_run):
         """Test get_parent_issue when parent issue exists."""
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock GraphQL response
         graphql_response = {
@@ -53,7 +53,7 @@ class TestGitHubClientParentIssue:
     @patch("subprocess.run")
     def test_get_parent_issue_no_parent(self, mock_subprocess_run):
         """Test get_parent_issue when issue has no parent."""
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock GraphQL response with no parent issue
         graphql_response = {
@@ -80,7 +80,7 @@ class TestGitHubClientParentIssue:
         """Test get_parent_issue when GraphQL query fails."""
         import subprocess
 
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock subprocess error
         mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")
@@ -92,7 +92,7 @@ class TestGitHubClientParentIssue:
     @patch("subprocess.run")
     def test_get_parent_issue_closed_parent(self, mock_subprocess_run):
         """Test get_parent_issue when parent issue is closed."""
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock GraphQL response with closed parent
         graphql_response = {

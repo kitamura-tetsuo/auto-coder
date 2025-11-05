@@ -27,7 +27,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token")
+        client = GitHubClient.get_instance("fake-token")
         client.github = mock_github
 
         result = client.try_add_work_in_progress_label("owner/repo", 123)
@@ -52,7 +52,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token")
+        client = GitHubClient.get_instance("fake-token")
         client.github = mock_github
 
         result = client.try_add_work_in_progress_label("owner/repo", 123)
@@ -74,7 +74,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token")
+        client = GitHubClient.get_instance("fake-token")
         client.github = mock_github
 
         client.remove_labels_from_issue("owner/repo", 123, ["@auto-coder"])
@@ -98,7 +98,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token")
+        client = GitHubClient.get_instance("fake-token")
         client.github = mock_github
 
         result = client.has_label("owner/repo", 123, "@auto-coder")
@@ -117,7 +117,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token")
+        client = GitHubClient.get_instance("fake-token")
         client.github = mock_github
 
         result = client.has_label("owner/repo", 123, "@auto-coder")
@@ -133,7 +133,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token", disable_labels=True)
+        client = GitHubClient.get_instance("fake-token", disable_labels=True)
         client.github = mock_github
 
         client.add_labels_to_issue("owner/repo", 123, ["test-label"])
@@ -151,7 +151,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token", disable_labels=True)
+        client = GitHubClient.get_instance("fake-token", disable_labels=True)
         client.github = mock_github
 
         client.remove_labels_from_issue("owner/repo", 123, ["test-label"])
@@ -169,7 +169,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token", disable_labels=True)
+        client = GitHubClient.get_instance("fake-token", disable_labels=True)
         client.github = mock_github
 
         result = client.has_label("owner/repo", 123, "@auto-coder")
@@ -187,7 +187,7 @@ class TestGitHubClientExclusiveLabels:
         mock_repo.get_issue.return_value = mock_issue
         mock_github.get_repo.return_value = mock_repo
 
-        client = GitHubClient("fake-token", disable_labels=True)
+        client = GitHubClient.get_instance("fake-token", disable_labels=True)
         client.github = mock_github
 
         result = client.try_add_work_in_progress_label("owner/repo", 123)

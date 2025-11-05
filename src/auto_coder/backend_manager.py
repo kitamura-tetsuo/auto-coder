@@ -119,7 +119,7 @@ class BackendManager(LLMBackendManagerBase):
         logger.info(f"BackendManager: switched back to default backend -> {self._current_backend_name()}")
 
     # ---------- Direct Compatibility Methods ----------
-    @log_calls
+    @log_calls  # type: ignore[misc]
     def _run_llm_cli(self, prompt: str) -> str:
         """Normal execution (circular retry on usage limit)."""
         attempts = 0
@@ -155,7 +155,7 @@ class BackendManager(LLMBackendManagerBase):
         raise RuntimeError("No backend available to run prompt")
 
     # ---------- For apply_workspace_test_fix ----------
-    @log_calls
+    @log_calls  # type: ignore[misc]
     def run_test_fix_prompt(self, prompt: str, current_test_file: Optional[str] = None) -> str:
         """Execution for apply_workspace_test_fix.
         - If the same current_test_file is given 3 consecutive times, switch to the next backend
@@ -300,6 +300,42 @@ class LLMBackendManager:
 
     Thread-safe singleton implementation ensures only one instance exists
     across all threads in the application.
+
+    Usage Pattern:
+    -----------
+    1. First call: Provide initialization parameters (default_backend, default_client, factories)
+       ```python
+       manager = LLMBackendManager.get_llm_instance(
+           default_backend="gemini",
+           default_client=client,
+           factories={"gemini": lambda: client}
+       )
+       ```
+
+    2. Subsequent calls: Call without parameters to get the same instance
+       ```python
+       manager = LLMBackendManager.get_llm_instance()
+       # Returns the same instance created above
+       ```
+
+    3. Using convenience functions (recommended):
+       ```python
+       from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
+
+       manager = get_llm_backend_manager(
+           default_backend="codex",
+           default_client=client,
+           factories={"codex": lambda: client}
+       )
+       response = run_llm_prompt("Your prompt here")
+       ```
+
+    Important Notes:
+    --------------
+    - Initialization parameters are required ONLY on the first call
+    - The singleton is thread-safe and can be accessed from multiple threads
+    - Use force_reinitialize=True to reconfigure with new parameters
+    - Call manager.close() during application shutdown for cleanup
     """
 
     _instance: Optional[BackendManager] = None
@@ -500,7 +536,7 @@ def run_message_prompt(prompt: str) -> str:
     manager = LLMBackendManager.get_message_instance()
     if manager is None:
         raise RuntimeError("Message backend manager not initialized. " "Call get_message_backend_manager() with initialization parameters first.")
-    return manager._run_llm_cli(prompt)
+    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
 
 
 def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
@@ -512,7 +548,7 @@ def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     """
     manager = LLMBackendManager.get_message_instance()
     if manager is None:
-        return None, None
+        return None, None  # type: ignore[unreachable]
     return manager.get_last_backend_and_model()
 
 
@@ -573,7 +609,7 @@ def run_llm_prompt(prompt: str) -> str:
     manager = LLMBackendManager.get_llm_instance()
     if manager is None:
         raise RuntimeError("LLM backend manager not initialized. " "Call get_llm_backend_manager() with initialization parameters first.")
-    return manager._run_llm_cli(prompt)
+    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
 
 
 def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
@@ -585,5 +621,5 @@ def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     """
     manager = LLMBackendManager.get_llm_instance()
     if manager is None:
-        return None, None
+        return None, None  # type: ignore[unreachable]
     return manager.get_last_backend_and_model()

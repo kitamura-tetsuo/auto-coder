@@ -4,6 +4,7 @@ GitHub API client for Auto-Coder.
 
 import json
 import subprocess
+import threading
 from typing import Any, Dict, List, Optional
 
 from github import Github, Issue, PullRequest, Repository
@@ -15,7 +16,46 @@ logger = get_logger(__name__)
 
 
 class GitHubClient:
-    """GitHub API client for managing issues and pull requests."""
+    """GitHub API client for managing issues and pull requests.
+
+    Implements a thread-safe singleton pattern. Use get_instance() to get the singleton,
+    or use the constructor for backward compatibility (which creates the singleton lazily).
+
+    Usage Pattern:
+    -------------
+    1. First call: Provide token and optional parameters
+       ```python
+       from auto_coder.github_client import GitHubClient
+
+       client = GitHubClient.get_instance("your-token", disable_labels=False)
+       ```
+
+    2. Subsequent calls: Call without parameters to get the same instance
+       ```python
+       # Parameters are ignored on subsequent calls
+       client2 = GitHubClient.get_instance("different-token", disable_labels=True)
+       # client is client2  # True, uses first instance
+       ```
+
+    3. Backward compatibility: Constructor also creates singleton
+       ```python
+       client = GitHubClient("your-token")
+       # Equivalent to get_instance("your-token")
+       ```
+
+    Important Notes:
+    ---------------
+    - Thread-safe: Can be called from multiple threads simultaneously
+    - Parameters are only used on first call; subsequent calls return the same instance
+    - Use reset_singleton() in tests to clear the instance
+    - The constructor is kept for backward compatibility but behaves as a singleton
+    """
+
+    # Class variable to hold the singleton instance
+    _instance = None
+
+    # Class variable to hold the lock for thread-safety
+    _lock = threading.Lock()
 
     def __init__(self, token: str, disable_labels: bool = False):
         """Initialize GitHub client with API token.
@@ -24,9 +64,54 @@ class GitHubClient:
             token: GitHub API token
             disable_labels: If True, all label operations are no-ops
         """
+        # Thread-safe: __new__ ensures only one instance is created
+        # So __init__ is only called once for the singleton
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
+        """Implement thread-safe singleton pattern.
+
+        This method is called when creating a new instance. It ensures only one
+        instance is created across all threads.
+
+        Note: This method should NOT acquire cls._lock since it's called from
+        get_instance which already holds the lock. Acquiring the lock here
+        would cause a deadlock.
+        """
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    @classmethod
+    def get_instance(cls, token: str, disable_labels: bool = False) -> "GitHubClient":
+        """Get the singleton instance of GitHubClient.
+
+        On the first call, this creates and returns the singleton instance.
+        Subsequent calls return the same instance, ignoring the parameters.
+
+        Args:
+            token: GitHub API token (used only for first call)
+            disable_labels: If True, all label operations are no-ops (used only for first call)
+
+        Returns:
+            The singleton instance of GitHubClient
+        """
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls(token, disable_labels)
+            return cls._instance
+
+    @classmethod
+    def reset_singleton(cls) -> None:
+        """Reset the singleton instance.
+
+        This method is primarily for testing purposes to ensure tests don't
+        interfere with each other. Use with caution in production code.
+        """
+        with cls._lock:
+            cls._instance = None
 
     def get_repository(self, repo_name: str) -> Repository.Repository:
         """Get repository object by name (owner/repo)."""
@@ -49,11 +134,11 @@ class GitHubClient:
                 from unittest.mock import MagicMock as _UMagicMock
                 from unittest.mock import Mock as _UMock
 
-                _mock_types = (_UMock, _UMagicMock)
+                _mock_types: tuple = (_UMock, _UMagicMock)
             except Exception:
                 _mock_types = tuple()
 
-            def _is_pr(it):
+            def _is_pr(it: Any) -> bool:
                 try:
                     if not hasattr(it, "pull_request"):
                         return False
@@ -121,7 +206,7 @@ class GitHubClient:
             "labels": [label.name for label in pr.labels],
             "assignees": [assignee.login for assignee in pr.assignees],
             "created_at": pr.created_at.isoformat(),
-            "updated_at": pr.updated_at.isoformat(),
+            "updated_at": pr.updated_at.isoformat() if pr.updated_at else None,
             "url": pr.html_url,
             "author": pr.user.login if pr.user else None,
             "head_branch": pr.head.ref,
@@ -499,7 +584,7 @@ class GitHubClient:
             if parent_issue:
                 parent_number = parent_issue.get("number")
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_number}: {parent_issue.get('title')}")
-                return parent_number
+                return int(parent_number) if parent_number is not None else None
 
             return None
 

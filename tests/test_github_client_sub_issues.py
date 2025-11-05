@@ -16,7 +16,7 @@ class TestGitHubClientSubIssues:
     @patch("subprocess.run")
     def test_get_open_sub_issues_all_open(self, mock_subprocess_run):
         """Test get_open_sub_issues when all sub-issues are open."""
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock GraphQL response
         graphql_response = {
@@ -69,7 +69,7 @@ class TestGitHubClientSubIssues:
     @patch("subprocess.run")
     def test_get_open_sub_issues_some_closed(self, mock_subprocess_run):
         """Test get_open_sub_issues when some sub-issues are closed."""
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock GraphQL response with mixed states
         graphql_response = {
@@ -115,7 +115,7 @@ class TestGitHubClientSubIssues:
     @patch("subprocess.run")
     def test_get_open_sub_issues_all_closed(self, mock_subprocess_run):
         """Test get_open_sub_issues when all sub-issues are closed."""
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock GraphQL response with all closed
         graphql_response = {
@@ -155,7 +155,7 @@ class TestGitHubClientSubIssues:
     @patch("subprocess.run")
     def test_get_open_sub_issues_no_sub_issues(self, mock_subprocess_run):
         """Test get_open_sub_issues when issue has no sub-issues."""
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock GraphQL response with no sub-issues
         graphql_response = {
@@ -182,7 +182,7 @@ class TestGitHubClientSubIssues:
         """Test get_open_sub_issues when GraphQL query fails."""
         import subprocess
 
-        client = GitHubClient("test_token")
+        client = GitHubClient.get_instance("test_token")
 
         # Mock subprocess error
         mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")
