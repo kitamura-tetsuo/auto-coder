@@ -6,12 +6,8 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.util.github_action import _check_github_actions_status_from_history
 
 
-def _cmd_result(
-    success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0
-):
-    return SimpleNamespace(
-        success=success, stdout=stdout, stderr=stderr, returncode=returncode
-    )
+def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):
+    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
 
 
 def test_history_handles_missing_pullRequests_field_gracefully():
@@ -44,9 +40,7 @@ def test_history_handles_missing_pullRequests_field_gracefully():
             "event": "pull_request",
         }
     ]
-    run_list_result = _cmd_result(
-        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
-    )
+    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
     # 3) run view は pullRequests フィールドを返さない（欠落）
     jobs_payload = {
@@ -67,15 +61,9 @@ def test_history_handles_missing_pullRequests_field_gracefully():
             # Handle gh pr view command for commits
             return _cmd_result(
                 True,
-                stdout=json.dumps({
-                    "commits": [
-                        {
-                            "oid": "abc123def456"
-                        }
-                    ]
-                }),
+                stdout=json.dumps({"commits": [{"oid": "abc123def456"}]}),
                 stderr="",
-                returncode=0
+                returncode=0,
             )
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
@@ -90,17 +78,11 @@ def test_history_handles_missing_pullRequests_field_gracefully():
                 # 2回目（フォールバック）は候補が返る
                 return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
-            return _cmd_result(
-                True, stdout=json.dumps(jobs_payload), stderr="", returncode=0
-            )
+            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch(
-        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
-    ):
-        result = _check_github_actions_status_from_history(
-            "owner/repo", pr_data, config
-        )
+    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
     assert run_id in result.ids
@@ -134,9 +116,7 @@ def test_history_handles_empty_pullRequests_list_gracefully():
             "event": "pull_request",
         }
     ]
-    run_list_result = _cmd_result(
-        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
-    )
+    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
     # pullRequests は空配列
     jobs_payload = {
@@ -158,15 +138,9 @@ def test_history_handles_empty_pullRequests_list_gracefully():
             # Handle gh pr view command for commits
             return _cmd_result(
                 True,
-                stdout=json.dumps({
-                    "commits": [
-                        {
-                            "oid": "cafebabefeed"
-                        }
-                    ]
-                }),
+                stdout=json.dumps({"commits": [{"oid": "cafebabefeed"}]}),
                 stderr="",
-                returncode=0
+                returncode=0,
             )
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
@@ -179,17 +153,11 @@ def test_history_handles_empty_pullRequests_list_gracefully():
             else:
                 return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
-            return _cmd_result(
-                True, stdout=json.dumps(jobs_payload), stderr="", returncode=0
-            )
+            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch(
-        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
-    ):
-        result = _check_github_actions_status_from_history(
-            "owner/repo", pr_data, config
-        )
+    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
     assert run_id in result.ids

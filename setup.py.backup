@@ -128,6 +128,42 @@ class CustomSdist(sdist, BuildGraphBuilder):
 
 # Use setup() with cmdclass to override build commands
 setup(
+    name="auto-coder",
+    version="2025.11.4.12+g7b21653",
+    description="Automated application development using Gemini CLI and GitHub integration",
+    readme="README.md",
+    license_file="LICENSE",
+    author="Auto-Coder Team",
+    python_requires=">=3.11,<3.12",
+    install_requires=[
+        "requests>=2.31.0",
+        "pydantic>=2.0.0,<3.0.0",
+        "pydantic-settings>=2.0.0",
+        "click>=8.1.0",
+        "python-dotenv>=1.0.0",
+        "PyGithub>=1.59.0",
+        "pyyaml>=6.0",
+        "GitPython>=3.1.0",
+        "loguru>=0.7.0",
+        "neo4j>=5.14.0",
+        "qdrant-client>=1.7.0",
+        "sentence-transformers>=2.2.0",
+        "watchdog>=6.0.0",
+        "pathspec>=0.12.0",
+        "playwright>=1.54.0",
+        "mcp-server>=0.1.4",
+    ],
+    packages=["auto_coder", "auto_coder.util"],
+    package_dir={"": "src"},
+    package_data={
+        "auto_coder": ["prompts.yaml", "*.yml", "*.yaml"],
+    },
+    # Keep entry_points in setup.py for pipx compatibility
+    entry_points={
+        "console_scripts": [
+            "auto-coder=auto_coder.cli:main",
+        ],
+    },
     cmdclass={
         "build_py": CustomBuildPy,
         "develop": CustomDevelop,

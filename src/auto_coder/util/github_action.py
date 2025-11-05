@@ -88,9 +88,7 @@ def parse_git_commit_history_for_actions(
     commits_with_actions = []
 
     try:
-        logger.info(
-            f"Parsing git commit history to identify commits with GitHub Actions (depth: {max_depth})"
-        )
+        logger.info(f"Parsing git commit history to identify commits with GitHub Actions (depth: {max_depth})")
 
         # Get recent commit history using git log --oneline
         log_result = cmd.run_command(
@@ -130,9 +128,7 @@ def parse_git_commit_history_for_actions(
 
             try:
                 # Check if this commit triggered GitHub Actions
-                action_runs = _check_commit_for_github_actions(
-                    commit_sha, cwd=cwd, timeout=60
-                )
+                action_runs = _check_commit_for_github_actions(commit_sha, cwd=cwd, timeout=60)
 
                 if action_runs:
                     # Commit has Action runs
@@ -144,22 +140,16 @@ def parse_git_commit_history_for_actions(
                         "has_logs": len(action_runs) > 0,
                     }
                     commits_with_actions.append(commit_info)
-                    logger.info(
-                        f"✓ Commit {commit_sha[:8]} has {len(action_runs)} Action run(s)"
-                    )
+                    logger.info(f"✓ Commit {commit_sha[:8]} has {len(action_runs)} Action run(s)")
                 else:
                     logger.debug(f"✗ Commit {commit_sha[:8]} has no GitHub Actions")
 
             except Exception as e:
-                logger.warning(
-                    f"Error checking Actions for commit {commit_sha[:8]}: {e}"
-                )
+                logger.warning(f"Error checking Actions for commit {commit_sha[:8]}: {e}")
                 continue
 
         if commits_with_actions:
-            logger.info(
-                f"Found {len(commits_with_actions)} commit(s) with GitHub Actions out of {len(commit_lines)} checked"
-            )
+            logger.info(f"Found {len(commits_with_actions)} commit(s) with GitHub Actions out of {len(commit_lines)} checked")
         else:
             logger.info("No commits with GitHub Actions found in the specified depth")
 
@@ -170,9 +160,7 @@ def parse_git_commit_history_for_actions(
         return []
 
 
-def _check_commit_for_github_actions(
-    commit_sha: str, cwd: Optional[str] = None, timeout: int = 60
-) -> List[Dict[str, Any]]:
+def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None, timeout: int = 60) -> List[Dict[str, Any]]:
     """Check if a specific commit triggered GitHub Actions.
 
     Args:
@@ -210,9 +198,7 @@ def _check_commit_for_github_actions(
         try:
             runs = json.loads(run_list_result.stdout)
         except json.JSONDecodeError as e:
-            logger.warning(
-                f"Failed to parse run list JSON for commit {commit_sha[:8]}: {e}"
-            )
+            logger.warning(f"Failed to parse run list JSON for commit {commit_sha[:8]}: {e}")
             return []
 
         if not runs:
@@ -222,15 +208,11 @@ def _check_commit_for_github_actions(
         try:
             logger.debug(f"Filtering runs for commit {commit_sha[:7]}")
             logger.debug(f"Available runs: {[r.get('headSha', '') for r in runs]}")
-            runs = [
-                r for r in runs if str(r.get("headSha", "")).startswith(commit_sha[:7])
-            ]
+            runs = [r for r in runs if str(r.get("headSha", "")).startswith(commit_sha[:7])]
             pr_runs = [r for r in runs if r.get("event") == "pull_request"]
             if pr_runs:
                 runs = pr_runs
-            logger.debug(
-                f"After filtering for commit {commit_sha[:7]}: {len(runs)} runs remain"
-            )
+            logger.debug(f"After filtering for commit {commit_sha[:7]}: {len(runs)} runs remain")
             logger.debug(f"Filtered runs: {[r.get('headSha', '') for r in runs]}")
         except Exception:
             pass
@@ -246,15 +228,11 @@ def _check_commit_for_github_actions(
                     "created_at": run.get("createdAt"),
                     "display_title": run.get("displayTitle"),
                     "head_branch": run.get("headBranch"),
-                    "head_sha": (
-                        run.get("headSha", "")[:8] if run.get("headSha") else ""
-                    ),
+                    "head_sha": (run.get("headSha", "")[:8] if run.get("headSha") else ""),
                 }
             )
 
-        logger.debug(
-            f"Found {len(action_runs)} Action run(s) for commit {commit_sha[:8]}"
-        )
+        logger.debug(f"Found {len(action_runs)} Action run(s) for commit {commit_sha[:8]}")
         return action_runs
 
     except Exception as e:
@@ -263,9 +241,7 @@ def _check_commit_for_github_actions(
 
 
 @progress_stage("Checking GitHub Actions")
-def _check_github_actions_status(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig
-) -> GitHubActionsStatusResult:
+def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> GitHubActionsStatusResult:
     """Check GitHub Actions status for a PR."""
     pr_number = pr_data["number"]
 
@@ -277,18 +253,12 @@ def _check_github_actions_status(
         # This is expected behavior, not an error
         if result.returncode != 0 and not result.stdout.strip():
             # Only treat as error if there's no output and no known informational message
-            log_action(
-                f"Failed to get PR checks for #{pr_number}", False, result.stderr
-            )
+            log_action(f"Failed to get PR checks for #{pr_number}", False, result.stderr)
 
             # If current PR checks failed and fallback is enabled, try historical search
             if getattr(config, "ENABLE_ACTIONS_HISTORY_FALLBACK", False):
-                logger.info(
-                    f"Current PR checks failed for #{pr_number}, attempting historical fallback..."
-                )
-                return _check_github_actions_status_from_history(
-                    repo_name, pr_data, config
-                )
+                logger.info(f"Current PR checks failed for #{pr_number}, attempting historical fallback...")
+                return _check_github_actions_status_from_history(repo_name, pr_data, config)
             else:
                 return GitHubActionsStatusResult(
                     success=False,
@@ -341,9 +311,7 @@ def _check_github_actions_status(
                             "conclusion": "failure",
                         }
                         checks.append(check_info)
-                        failed_checks.append(
-                            {"name": name, "conclusion": "failure", "details_url": url}
-                        )
+                        failed_checks.append({"name": name, "conclusion": "failure", "details_url": url})
                     elif status in ["skipping", "skipped", "pending", "in_progress"]:
                         # Check for in-progress status
                         if status in ["pending", "in_progress"]:
@@ -354,26 +322,18 @@ def _check_github_actions_status(
                             all_passed = False
                         check_info = {
                             "name": name,
-                            "state": (
-                                "pending"
-                                if status in ["pending", "in_progress"]
-                                else "skipped"
-                            ),
+                            "state": ("pending" if status in ["pending", "in_progress"] else "skipped"),
                             "conclusion": status,
                         }
                         checks.append(check_info)
                         if status in ["pending", "in_progress"]:
-                            failed_checks.append(
-                                {"name": name, "conclusion": status, "details_url": url}
-                            )
+                            failed_checks.append({"name": name, "conclusion": status, "details_url": url})
             else:
                 # Legacy format: "✓ check-name" or "✗ check-name" or "- check-name"
                 if line.startswith("✓"):
                     # Successful check
                     name = line[2:].strip()
-                    checks.append(
-                        {"name": name, "state": "completed", "conclusion": "success"}
-                    )
+                    checks.append({"name": name, "state": "completed", "conclusion": "success"})
                 elif line.startswith("✗"):
                     # Failed check
                     name = line[2:].strip()
@@ -384,14 +344,10 @@ def _check_github_actions_status(
                         "conclusion": "failure",
                     }
                     checks.append(check_info)
-                    failed_checks.append(
-                        {"name": name, "conclusion": "failure", "details_url": ""}
-                    )
+                    failed_checks.append({"name": name, "conclusion": "failure", "details_url": ""})
                 elif line.startswith("-") or line.startswith("○"):
                     # Pending/in-progress check
-                    name = (
-                        line[2:].strip() if line.startswith("-") else line[2:].strip()
-                    )
+                    name = line[2:].strip() if line.startswith("-") else line[2:].strip()
                     has_in_progress = True
                     all_passed = False
                     check_info = {
@@ -400,9 +356,7 @@ def _check_github_actions_status(
                         "conclusion": "pending",
                     }
                     checks.append(check_info)
-                    failed_checks.append(
-                        {"name": name, "conclusion": "pending", "details_url": ""}
-                    )
+                    failed_checks.append({"name": name, "conclusion": "pending", "details_url": ""})
 
         # Extract run IDs from URLs if available
         run_ids = []
@@ -438,9 +392,7 @@ def _check_github_actions_status(
         logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
         # If there's an exception and fallback is enabled, try historical search
         if getattr(config, "ENABLE_ACTIONS_HISTORY_FALLBACK", False):
-            logger.info(
-                f"Exception during PR checks for #{pr_number}, attempting historical fallback..."
-            )
+            logger.info(f"Exception during PR checks for #{pr_number}, attempting historical fallback...")
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
         else:
             return GitHubActionsStatusResult(
@@ -452,9 +404,7 @@ def _check_github_actions_status(
 # --- Common helpers for historical GitHub Actions processing ---
 
 
-def _filter_runs_for_pr(
-    runs: List[Dict[str, Any]], branch_name: str
-) -> List[Dict[str, Any]]:
+def _filter_runs_for_pr(runs: List[Dict[str, Any]], branch_name: str) -> List[Dict[str, Any]]:
     """Sort and filter runs by branch and prefer pull_request events when available.
     - Sorts by createdAt (newest first)
     - If branch_name is provided, keeps only runs matching headBranch when possible
@@ -474,9 +424,7 @@ def _filter_runs_for_pr(
             runs = filtered_runs
             logger.info(f"Filtered to {len(runs)} runs for branch '{branch_name}'")
         else:
-            logger.info(
-                f"No runs found for branch '{branch_name}', using all recent runs"
-            )
+            logger.info(f"No runs found for branch '{branch_name}', using all recent runs")
     # Prefer pull_request event runs when available
     runs_with_event = [r for r in runs if "event" in r]
     pull_request_runs = [r for r in runs if r.get("event") == "pull_request"]
@@ -486,9 +434,7 @@ def _filter_runs_for_pr(
     return runs
 
 
-def _get_jobs_for_run_filtered_by_pr_number(
-    run_id: int, pr_number: Optional[int]
-) -> List[Dict[str, Any]]:
+def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int]) -> List[Dict[str, Any]]:
     """Return jobs for a run. If pullRequests are available and pr_number is given,
     only return jobs if the run references that PR number. Returns empty list on failure.
     """
@@ -511,9 +457,7 @@ def _get_jobs_for_run_filtered_by_pr_number(
                         if isinstance(num, int):
                             pr_numbers.append(num)
                 if pr_numbers and pr_number not in pr_numbers:
-                    logger.debug(
-                        f"Run {run_id} does not reference PR #{pr_number}; skipping"
-                    )
+                    logger.debug(f"Run {run_id} does not reference PR #{pr_number}; skipping")
                     return []
         return jobs_json.get("jobs", [])
     except json.JSONDecodeError as e:
@@ -551,14 +495,10 @@ def _check_github_actions_status_from_history(
         assert pr_number
         assert head_branch
 
-        logger.info(
-            f"Checking historical GitHub Actions status for PR #{pr_number} on branch '{head_branch}'"
-        )
+        logger.info(f"Checking historical GitHub Actions status for PR #{pr_number} on branch '{head_branch}'")
 
         # 1. Get all PR commits/oid
-        pr_view_result = cmd.run_command(
-            ["gh", "pr", "view", str(pr_number), "--json", "commits"], timeout=60
-        )
+        pr_view_result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--json", "commits"], timeout=60)
 
         if not pr_view_result.success or not pr_view_result.stdout.strip():
             logger.warning(f"Failed to get PR #{pr_number} commits")
@@ -578,9 +518,7 @@ def _check_github_actions_status_from_history(
                 )
 
             # Get all commit SHAs
-            commit_shas = [
-                commit.get("oid", "") for commit in commits if commit.get("oid")
-            ]
+            commit_shas = [commit.get("oid", "") for commit in commits if commit.get("oid")]
             if not commit_shas:
                 logger.warning(f"No oid found in commits for PR #{pr_number}")
                 return GitHubActionsStatusResult(
@@ -588,9 +526,7 @@ def _check_github_actions_status_from_history(
                     ids=[],
                 )
 
-            logger.info(
-                f"Found {len(commit_shas)} commits in PR, latest: {commit_shas[-1][:8]}"
-            )
+            logger.info(f"Found {len(commit_shas)} commits in PR, latest: {commit_shas[-1][:8]}")
 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse PR view JSON: {e}")
@@ -645,9 +581,7 @@ def _check_github_actions_status_from_history(
         logger.info(f"Matching runs found: {len(matching_runs)}")
 
         if not matching_runs:
-            logger.info(
-                f"No runs found matching any PR commit for branch {head_branch}"
-            )
+            logger.info(f"No runs found matching any PR commit for branch {head_branch}")
             return GitHubActionsStatusResult(
                 success=True,  # Assume success if no matching runs found
                 ids=[],
@@ -663,33 +597,21 @@ def _check_github_actions_status_from_history(
                     break
 
         # Sort by commit index (latest first) then by run creation time
-        runs_with_commit_sha.sort(
-            key=lambda x: (x[1], x[0].get("createdAt", "")), reverse=True
-        )
+        runs_with_commit_sha.sort(key=lambda x: (x[1], x[0].get("createdAt", "")), reverse=True)
 
         # Get the latest commit index that has matching runs
         latest_commit_index = max(idx for _, idx, _ in runs_with_commit_sha)
         latest_commit_sha = commit_shas[latest_commit_index]
 
         # Get all runs that match the latest commit
-        latest_commit_runs = [
-            run for run, idx, sha in runs_with_commit_sha if idx == latest_commit_index
-        ]
+        latest_commit_runs = [run for run, idx, sha in runs_with_commit_sha if idx == latest_commit_index]
 
-        logger.info(
-            f"Found {len(latest_commit_runs)} runs matching latest commit {latest_commit_sha[:8]}"
-        )
+        logger.info(f"Found {len(latest_commit_runs)} runs matching latest commit {latest_commit_sha[:8]}")
 
         # 5. Determine overall status and count potential checks (without detailed checks)
-        has_in_progress = any(
-            run.get("status", "").lower() in ["in_progress", "queued", "pending"]
-            for run in latest_commit_runs
-        )
+        has_in_progress = any(run.get("status", "").lower() in ["in_progress", "queued", "pending"] for run in latest_commit_runs)
 
-        any_failed = any(
-            run.get("conclusion", "").lower() in ["failure", "failed", "error"]
-            for run in latest_commit_runs
-        )
+        any_failed = any(run.get("conclusion", "").lower() in ["failure", "failed", "error"] for run in latest_commit_runs)
 
         # Estimate total checks count based on runs found
         total_checks = len(latest_commit_runs)
@@ -697,11 +619,7 @@ def _check_github_actions_status_from_history(
         # Success if no failures and no in-progress runs
         final_success = not any_failed and not has_in_progress
 
-        logger.info(
-            f"Historical GitHub Actions check completed: "
-            f"total_checks={total_checks}, failed_checks=0 (lazy loaded), "
-            f"success={final_success}, has_in_progress={has_in_progress}"
-        )
+        logger.info(f"Historical GitHub Actions check completed: " f"total_checks={total_checks}, failed_checks=0 (lazy loaded), " f"success={final_success}, has_in_progress={has_in_progress}")
 
         # Extract run IDs from matching runs
         run_ids = []
@@ -759,9 +677,7 @@ def get_detailed_checks_from_history(
             processed_run_ids.append(run_id)
 
             # Get jobs for this run using gh run view
-            jobs_result = cmd.run_command(
-                ["gh", "run", "view", str(run_id), "--json", "jobs"], timeout=60
-            )
+            jobs_result = cmd.run_command(["gh", "run", "view", str(run_id), "--json", "jobs"], timeout=60)
 
             if jobs_result.success and jobs_result.stdout.strip():
                 try:
@@ -783,11 +699,7 @@ def get_detailed_checks_from_history(
                         check_info = {
                             "name": f"{job_name} (run {run_id})",
                             "conclusion": conclusion if conclusion else status,
-                            "details_url": (
-                                f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
-                                if job_id
-                                else ""
-                            ),
+                            "details_url": (f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}" if job_id else ""),
                             "run_id": run_id,
                             "job_id": job_id,
                             "status": status,
@@ -825,9 +737,7 @@ def get_detailed_checks_from_history(
 
                         check_info = {
                             "name": f"Run {run_id}",
-                            "conclusion": (
-                                run_conclusion if run_conclusion else run_status
-                            ),
+                            "conclusion": (run_conclusion if run_conclusion else run_status),
                             "details_url": f"https://github.com/{repo_name}/actions/runs/{run_id}",
                             "run_id": run_id,
                             "job_id": None,
@@ -845,17 +755,10 @@ def get_detailed_checks_from_history(
                         pass
 
         # Determine final success status - must be ALL checks passed
-        all_passed = all(
-            check.get("conclusion") in ["success", "skipped", ""]
-            for check in all_checks
-        )
+        all_passed = all(check.get("conclusion") in ["success", "skipped", ""] for check in all_checks)
         final_success = all_passed and not has_in_progress
 
-        logger.info(
-            f"Detailed checks loaded: "
-            f"total_checks={len(all_checks)}, failed_checks={len(all_failed_checks)}, "
-            f"success={final_success}, has_in_progress={has_in_progress}"
-        )
+        logger.info(f"Detailed checks loaded: " f"total_checks={len(all_checks)}, failed_checks={len(all_failed_checks)}, " f"success={final_success}, has_in_progress={has_in_progress}")
 
         return DetailedChecksResult(
             success=final_success,
@@ -914,19 +817,13 @@ def get_github_actions_logs_from_url(url: str) -> str:
         # 1.5) 失敗ステップ名の特定（可能なら）
         failing_step_names: set = set()
         try:
-            job_detail = cmd.run_command(
-                ["gh", "api", f"repos/{owner_repo}/actions/jobs/{job_id}"], timeout=60
-            )
+            job_detail = cmd.run_command(["gh", "api", f"repos/{owner_repo}/actions/jobs/{job_id}"], timeout=60)
             if job_detail.returncode == 0 and job_detail.stdout.strip():
                 job_json = json.loads(job_detail.stdout)
                 steps = job_json.get("steps", []) or []
                 for st in steps:
                     # steps[].conclusion: success|failure|cancelled|skipped|None
-                    if (st.get("conclusion") == "failure") or (
-                        st.get("conclusion") is None
-                        and st.get("status") == "completed"
-                        and job_json.get("conclusion") == "failure"
-                    ):
+                    if (st.get("conclusion") == "failure") or (st.get("conclusion") is None and st.get("status") == "completed" and job_json.get("conclusion") == "failure"):
                         nm = st.get("name")
                         if nm:
                             failing_step_names.add(nm)
@@ -972,28 +869,19 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 if name.lower().endswith(".txt"):
                                     with zf.open(name, "r") as fp:
                                         try:
-                                            content = fp.read().decode(
-                                                "utf-8", errors="ignore"
-                                            )
+                                            content = fp.read().decode("utf-8", errors="ignore")
                                         except Exception:
                                             content = ""
                                     if not content:
                                         continue
-                                    step_file_label = os.path.splitext(
-                                        os.path.basename(name)
-                                    )[0]
+                                    step_file_label = os.path.splitext(os.path.basename(name))[0]
                                     # ステップフィルタ：失敗ステップのファイルのみ対象
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
                                     # ジョブ全体のサマリ候補を収集（順序保持）
                                     for ln in content.split("\n"):
                                         ll = ln.lower()
-                                        if (
-                                            (" failed" in ll)
-                                            or (" passed" in ll)
-                                            or (" skipped" in ll)
-                                            or (" did not run" in ll)
-                                        ) and any(ch.isdigit() for ch in ln):
+                                        if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
                                             job_summary_lines.append(ln)
                                     step_name = step_file_label
                                     # エラー関連の重要な情報を抽出
@@ -1001,26 +889,15 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     # 期待/受領の原文行を補強（厳密一致のため）
                                     exp_lines = []
                                     for ln in content.split("\n"):
-                                        if ("Expected substring:" in ln) or (
-                                            "Received string:" in ln
-                                        ):
+                                        if ("Expected substring:" in ln) or ("Received string:" in ln):
                                             exp_lines.append(ln)
                                     if exp_lines:
                                         # バックスラッシュエスケープを除去した正規化行も付加
-                                        norm_lines = [
-                                            ln.replace('\\"', '"') for ln in exp_lines
-                                        ]
+                                        norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
                                         if "--- Expectation Details ---" not in snippet:
-                                            snippet = (
-                                                snippet
-                                                + "\n\n--- Expectation Details ---\n"
-                                                if snippet
-                                                else ""
-                                            ) + "\n".join(norm_lines)
+                                            snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                         else:
-                                            snippet = (
-                                                snippet + "\n" + "\n".join(norm_lines)
-                                            )
+                                            snippet = snippet + "\n" + "\n".join(norm_lines)
                                     # エラーがないステップは出力しない（さらに厳格化）
                                     if snippet and snippet.strip():
                                         s = snippet
@@ -1036,9 +913,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             or "failed" in s_lower
                                             or "##[error]" in s
                                         ):
-                                            step_snippets.append(
-                                                f"--- Step {step_name} ---\n{s}"
-                                            )
+                                            step_snippets.append(f"--- Step {step_name} ---\n{s}")
                             if step_snippets:
                                 # ジョブ全体のサマリを末尾に追加（最後に出現した順で最大数行）
                                 summary_block = ""
@@ -1069,25 +944,13 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             ],
                                             timeout=120,
                                         )
-                                        if (
-                                            job_txt2.returncode == 0
-                                            and job_txt2.stdout.strip()
-                                        ):
+                                        if job_txt2.returncode == 0 and job_txt2.stdout.strip():
                                             # 失敗ステップ名でフィルタした行のみからサマリ抽出
                                             for ln in job_txt2.stdout.split("\n"):
                                                 parts = ln.split("\t", 2)
                                                 if len(parts) >= 3:
-                                                    step_field = (
-                                                        parts[1].strip().lower()
-                                                    )
-                                                    if any(
-                                                        n
-                                                        and (
-                                                            n in step_field
-                                                            or step_field in n
-                                                        )
-                                                        for n in norm_fail_names
-                                                    ):
+                                                    step_field = parts[1].strip().lower()
+                                                    if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
                                                         ll = ln.lower()
                                                         if (
                                                             (" failed" in ll)
@@ -1095,18 +958,9 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                                             or (" skipped" in ll)
                                                             or (" did not run" in ll)
                                                             or ("notice" in ll)
-                                                            or (
-                                                                "error was not a part of any test"
-                                                                in ll
-                                                            )
-                                                            or (
-                                                                "command failed with exit code"
-                                                                in ll
-                                                            )
-                                                            or (
-                                                                "process completed with exit code"
-                                                                in ll
-                                                            )
+                                                            or ("error was not a part of any test" in ll)
+                                                            or ("command failed with exit code" in ll)
+                                                            or ("process completed with exit code" in ll)
                                                         ):
                                                             summary_lines.append(ln)
                                     except Exception:
@@ -1114,16 +968,8 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 body_str = "\n\n".join(step_snippets)
                                 if summary_lines:
                                     # 本文に含まれる行はサマリから除外
-                                    filtered = [
-                                        ln
-                                        for ln in summary_lines[-15:]
-                                        if ln not in body_str
-                                    ]
-                                    summary_block = (
-                                        ("\n\n--- Summary ---\n" + "\n".join(filtered))
-                                        if filtered
-                                        else ""
-                                    )
+                                    filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
+                                    summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
                                 else:
                                     summary_block = ""
                                 body = body_str + summary_block
@@ -1135,9 +981,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 if name.lower().endswith(".txt"):
                                     with zf.open(name, "r") as fp:
                                         try:
-                                            content = fp.read().decode(
-                                                "utf-8", errors="ignore"
-                                            )
+                                            content = fp.read().decode("utf-8", errors="ignore")
                                         except Exception:
                                             content = ""
                                         all_text.append(content)
@@ -1155,13 +999,9 @@ def get_github_actions_logs_from_url(url: str) -> str:
                             content = result.stdout.decode("utf-8", errors="ignore")
                             if content and content.strip():
                                 # 失敗したステップのログのみを抽出
-                                snippet = _extract_failed_step_logs(
-                                    content, list(failing_step_names)
-                                )
+                                snippet = _extract_failed_step_logs(content, list(failing_step_names))
                                 if snippet and snippet.strip():
-                                    return (
-                                        f"=== Job {job_name} ({job_id}) ===\n{snippet}"
-                                    )
+                                    return f"=== Job {job_name} ({job_id}) ===\n{snippet}"
                                 else:
                                     # 失敗したステップが見つからない場合は、従来の方法を使用
                                     snippet = _extract_error_context(content)
@@ -1206,10 +1046,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                             if len(parts) >= 3:
                                 parsed += 1
                                 step_field = parts[1].strip().lower()
-                                if any(
-                                    n and (n in step_field or step_field in n)
-                                    for n in norm_fail_names
-                                ):
+                                if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
                                     kept.append(ln)
                         # ある程度の行がタブ形式でパースでき、かつフィルタ結果が得られた場合のみ適用
                         if parsed > 10 and kept:
@@ -1238,35 +1075,18 @@ def get_github_actions_logs_from_url(url: str) -> str:
                             body_text = "\n".join(body_lines)
                             # blk_imp = _extract_important_errors({'success': False, 'output': body_text, 'errors': ''})
                             blk_imp = body_text[:500]  # Simplified for now
-                            if (
-                                ("Expected substring:" in body_text)
-                                or ("Received string:" in body_text)
-                                or ("expect(received)" in body_text)
-                            ):
+                            if ("Expected substring:" in body_text) or ("Received string:" in body_text) or ("expect(received)" in body_text):
                                 extra = []
                                 src_lines = body_text.split("\n")
                                 for i, ln2 in enumerate(src_lines):
-                                    if (
-                                        ("Expected substring:" in ln2)
-                                        or ("Received string:" in ln2)
-                                        or ("expect(received)" in ln2)
-                                    ):
+                                    if ("Expected substring:" in ln2) or ("Received string:" in ln2) or ("expect(received)" in ln2):
                                         s2 = max(0, i - 2)
                                         e2 = min(len(src_lines), i + 8)
                                         extra.extend(src_lines[s2:e2])
                                 if extra:
-                                    norm_extra = [
-                                        ln2.replace('"', '"') for ln2 in extra
-                                    ]
+                                    norm_extra = [ln2.replace('"', '"') for ln2 in extra]
                                     if "--- Expectation Details ---" not in blk_imp:
-                                        blk_imp = (
-                                            blk_imp
-                                            + (
-                                                "\n\n--- Expectation Details ---\n"
-                                                if blk_imp
-                                                else ""
-                                            )
-                                        ) + "\n".join(norm_extra)
+                                        blk_imp = (blk_imp + ("\n\n--- Expectation Details ---\n" if blk_imp else "")) + "\n".join(norm_extra)
                                     else:
                                         blk_imp = blk_imp + "\n" + "\n".join(norm_extra)
                                 if blk_imp and blk_imp.strip():
@@ -1277,33 +1097,18 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 # 期待/受領行を欠落させない
                 # important = _extract_important_errors({'success': False, 'output': text_for_extract, 'errors': ''})
                 important = text_for_extract[:1000]  # Simplified for now
-                if (
-                    ("Expected substring:" in text_for_extract)
-                    or ("Received string:" in text_for_extract)
-                    or ("expect(received)" in text_for_extract)
-                ):
+                if ("Expected substring:" in text_for_extract) or ("Received string:" in text_for_extract) or ("expect(received)" in text_for_extract):
                     extra = []
                     src_lines = text_for_extract.split("\n")
                     for i, ln in enumerate(src_lines):
-                        if (
-                            ("Expected substring:" in ln)
-                            or ("Received string:" in ln)
-                            or ("expect(received)" in ln)
-                        ):
+                        if ("Expected substring:" in ln) or ("Received string:" in ln) or ("expect(received)" in ln):
                             s = max(0, i - 2)
                             e = min(len(src_lines), i + 8)
                             extra.extend(src_lines[s:e])
                     if extra:
                         norm_extra = [ln.replace('\\"', '"') for ln in extra]
                         if "--- Expectation Details ---" not in important:
-                            important = (
-                                important
-                                + (
-                                    "\n\n--- Expectation Details ---\n"
-                                    if important
-                                    else ""
-                                )
-                            ) + "\n".join(norm_extra)
+                            important = (important + ("\n\n--- Expectation Details ---\n" if important else "")) + "\n".join(norm_extra)
                         else:
                             important = important + "\n" + "\n".join(norm_extra)
                 else:
@@ -1313,16 +1118,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 summary_lines = []
                 for ln in text_output.split("\n"):
                     ll = ln.lower()
-                    if (
-                        (" failed" in ll)
-                        or (" passed" in ll)
-                        or (" skipped" in ll)
-                        or (" did not run" in ll)
-                        or ("notice:" in ll)
-                        or ("error was not a part of any test" in ll)
-                        or ("command failed with exit code" in ll)
-                        or ("process completed with exit code" in ll)
-                    ):
+                    if (" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll) or ("notice:" in ll) or ("error was not a part of any test" in ll) or ("command failed with exit code" in ll) or ("process completed with exit code" in ll):
                         summary_lines.append(ln)
                 if summary_lines:
                     # 末尾にプレイライトの集計（数行）を補足（失敗ステップ行のみ、本文に含まれる行は除外）
@@ -1331,37 +1127,15 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         parts = ln.split("\t", 2)
                         if len(parts) >= 3:
                             step_field = parts[1].strip().lower()
-                            if any(
-                                n and (n in step_field or step_field in n)
-                                for n in norm_fail_names
-                            ):
+                            if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
                                 ll = ln.lower()
-                                if (
-                                    (" failed" in ll)
-                                    or (" passed" in ll)
-                                    or (" skipped" in ll)
-                                    or (" did not run" in ll)
-                                    or ("notice:" in ll)
-                                    or ("error was not a part of any test" in ll)
-                                    or ("command failed with exit code" in ll)
-                                    or ("process completed with exit code" in ll)
-                                ):
+                                if (" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll) or ("notice:" in ll) or ("error was not a part of any test" in ll) or ("command failed with exit code" in ll) or ("process completed with exit code" in ll):
                                     summary_lines.append(ln)
                     if summary_lines:
                         body_now = important
-                        filtered = [
-                            ln for ln in summary_lines[-15:] if ln not in body_now
-                        ]
+                        filtered = [ln for ln in summary_lines[-15:] if ln not in body_now]
                         if filtered:
-                            important = (
-                                important
-                                + (
-                                    "\n\n--- Summary ---\n"
-                                    if "--- Summary ---" not in important
-                                    else "\n"
-                                )
-                                + "\n".join(filtered)
-                            )
+                            important = important + ("\n\n--- Summary ---\n" if "--- Summary ---" not in important else "\n") + "\n".join(filtered)
                 # プレリュード切り捨て（最終整形）
                 important = slice_relevant_error_window(important)
                 return f"=== Job {job_name} ({job_id}) ===\n{important}"
@@ -1401,9 +1175,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                             if nm.lower().endswith(".txt"):
                                 with zf2.open(nm, "r") as fp2:
                                     try:
-                                        texts.append(
-                                            fp2.read().decode("utf-8", errors="ignore")
-                                        )
+                                        texts.append(fp2.read().decode("utf-8", errors="ignore"))
                                     except Exception:
                                         pass
                         # imp = _extract_important_errors({'success': False, 'output': '\n'.join(texts), 'errors': ''})
@@ -1452,9 +1224,7 @@ def _search_github_actions_logs_from_history(
         additional metadata that may not always be available.
     """
     try:
-        logger.info(
-            f"Starting historical search for GitHub Actions logs (searching through {max_runs} recent runs)"
-        )
+        logger.info(f"Starting historical search for GitHub Actions logs (searching through {max_runs} recent runs)")
 
         runs = []
 
@@ -1464,9 +1234,7 @@ def _search_github_actions_logs_from_history(
             branch_name = pr_data["head_branch"]
             pr_number = pr_data.get("number", "unknown")
 
-            logger.info(
-                f"Attempting to find runs for PR #{pr_number} (commit {head_sha[:8] if head_sha else 'unknown'})"
-            )
+            logger.info(f"Attempting to find runs for PR #{pr_number} (commit {head_sha[:8] if head_sha else 'unknown'})")
 
             if head_sha:
                 # Get recent runs and filter by commit SHA and event in Python
@@ -1486,25 +1254,13 @@ def _search_github_actions_logs_from_history(
                 if commit_run_list.success and commit_run_list.stdout.strip():
                     try:
                         all_runs = json.loads(commit_run_list.stdout)
-                        candidate_runs = [
-                            r
-                            for r in all_runs
-                            if str(r.get("headSha", "")).startswith(head_sha[:7])
-                        ]
-                        pr_candidate_runs = [
-                            r
-                            for r in candidate_runs
-                            if r.get("event") == "pull_request"
-                        ]
+                        candidate_runs = [r for r in all_runs if str(r.get("headSha", "")).startswith(head_sha[:7])]
+                        pr_candidate_runs = [r for r in candidate_runs if r.get("event") == "pull_request"]
                         runs = pr_candidate_runs or candidate_runs
                         if runs:
-                            logger.info(
-                                f"Found {len(runs)} runs matching PR #{pr_number} commit from recent history"
-                            )
+                            logger.info(f"Found {len(runs)} runs matching PR #{pr_number} commit from recent history")
                         else:
-                            logger.info(
-                                "No runs found matching PR commit, falling back to recent runs"
-                            )
+                            logger.info("No runs found matching PR commit, falling back to recent runs")
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse commit run list JSON: {e}")
                         runs = []
@@ -1543,9 +1299,7 @@ def _search_github_actions_logs_from_history(
                 )
 
             if not run_list.success or not run_list.stdout.strip():
-                logger.warning(
-                    f"Failed to get run list or empty result: {run_list.stderr}"
-                )
+                logger.warning(f"Failed to get run list or empty result: {run_list.stderr}")
                 return None
 
             try:
@@ -1558,9 +1312,7 @@ def _search_github_actions_logs_from_history(
             logger.info("No runs found in repository")
             return None
 
-        logger.info(
-            f"Searching through {len(runs)} recent GitHub Actions runs for logs"
-        )
+        logger.info(f"Searching through {len(runs)} recent GitHub Actions runs for logs")
 
         # Apply common sorting and filtering (branch + pull_request event preference)
         runs = _filter_runs_for_pr(runs, pr_data["head_branch"] if pr_data else "")
@@ -1575,14 +1327,10 @@ def _search_github_actions_logs_from_history(
             if not run_id:
                 continue
 
-            logger.debug(
-                f"Checking run {run_id} on branch {run_branch} (commit {run_commit}): {run_conclusion}/{run_status}"
-            )
+            logger.debug(f"Checking run {run_id} on branch {run_branch} (commit {run_commit}): {run_conclusion}/{run_status}")
 
             try:
-                jobs = _get_jobs_for_run_filtered_by_pr_number(
-                    run_id, pr_data.get("number") if pr_data else None
-                )
+                jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_data.get("number") if pr_data else None)
                 if not jobs:
                     continue
 
@@ -1599,9 +1347,7 @@ def _search_github_actions_logs_from_history(
                         "error",
                     ]:
                         if job_id:
-                            logger.debug(
-                                f"Found failed job {job_id} in run {run_id}, attempting to get logs"
-                            )
+                            logger.debug(f"Found failed job {job_id} in run {run_id}, attempting to get logs")
 
                             # Construct URL for this job
                             url = f"https://github.com/{repo_name}/actions/runs/{run_id}/job/{job_id}"
@@ -1611,14 +1357,10 @@ def _search_github_actions_logs_from_history(
 
                             if job_logs and job_logs != "No detailed logs available":
                                 # Add metadata about which run this came from
-                                logs.append(
-                                    f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}"
-                                )
+                                logs.append(f"[From run {run_id} on {run_branch} at {run.get('createdAt', 'unknown')} (commit {run_commit})]\n{job_logs}")
 
                 if logs:
-                    logger.info(
-                        f"Successfully retrieved {len(logs)} log(s) from run {run_id}"
-                    )
+                    logger.info(f"Successfully retrieved {len(logs)} log(s) from run {run_id}")
                     return "\n\n".join(logs)
 
             except Exception as e:
@@ -1665,9 +1407,7 @@ def _get_github_actions_logs(
 
     # Handle the case where historical search is explicitly enabled
     if search_history:
-        logger.info(
-            "Historical search enabled: Searching through commit history for GitHub Actions logs"
-        )
+        logger.info("Historical search enabled: Searching through commit history for GitHub Actions logs")
 
         # Extract failed_checks and optional pr_data from args
         failed_checks: List[Dict[str, Any]] = []
@@ -1681,17 +1421,13 @@ def _get_github_actions_logs(
             return "No detailed logs available"
 
         # Try historical search first
-        historical_logs = _search_github_actions_logs_from_history(
-            repo_name, config, failed_checks, pr_data, max_runs=10
-        )
+        historical_logs = _search_github_actions_logs_from_history(repo_name, config, failed_checks, pr_data, max_runs=10)
 
         if historical_logs:
             logger.info("Historical search succeeded: Found logs from commit history")
             return historical_logs
 
-        logger.info(
-            "Historical search failed or found no logs, falling back to current behavior"
-        )
+        logger.info("Historical search failed or found no logs, falling back to current behavior")
 
     # Default behavior (or fallback from historical search)
     # 引数パターンを解決
@@ -1714,11 +1450,7 @@ def _get_github_actions_logs(
         url_to_fetch: List[str] = []
         for check in failed_checks:
             details_url = check.get("details_url", "")
-            if (
-                details_url
-                and "github.com" in details_url
-                and "/actions/runs/" in details_url
-            ):
+            if details_url and "github.com" in details_url and "/actions/runs/" in details_url:
                 # 正しい形式の URL が含まれている場合は直接使用
                 url_to_fetch.append(details_url)
                 logger.debug(f"Using details_url from failed_checks: {details_url}")
@@ -1730,9 +1462,7 @@ def _get_github_actions_logs(
                 logs.append(unified)
         else:
             # 3) details_url が使えない場合は、従来の方法（PR ブランチの失敗した run を取得）
-            logger.debug(
-                "No valid details_url found in failed_checks, falling back to gh run list"
-            )
+            logger.debug("No valid details_url found in failed_checks, falling back to gh run list")
             # PR ブランチを取得して、そのブランチの run のみを取得する（コミット履歴を検索）
             branch_name = None
             if pr_data:
@@ -1760,9 +1490,7 @@ def _get_github_actions_logs(
                 try:
                     runs = json.loads(run_list.stdout)
                     # 失敗のみ抽出し、createdAt 降順
-                    failed_runs = [
-                        r for r in runs if (r.get("conclusion") == "failure")
-                    ]
+                    failed_runs = [r for r in runs if (r.get("conclusion") == "failure")]
                     failed_runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
                     if failed_runs:
                         run_id = str(failed_runs[0].get("databaseId"))
@@ -1772,9 +1500,7 @@ def _get_github_actions_logs(
             # 4) run の失敗ジョブを抽出
             failed_jobs: List[Dict[str, Any]] = []
             if run_id:
-                jobs_res = cmd.run_command(
-                    ["gh", "run", "view", run_id, "--json", "jobs"], timeout=60
-                )
+                jobs_res = cmd.run_command(["gh", "run", "view", run_id, "--json", "jobs"], timeout=60)
                 if jobs_res.returncode == 0 and jobs_res.stdout.strip():
                     try:
                         jobs_json = json.loads(jobs_res.stdout)
@@ -1809,9 +1535,7 @@ def _get_github_actions_logs(
             for check in failed_checks:
                 check_name = check.get("name", "Unknown")
                 conclusion = check.get("conclusion", "unknown")
-                logs.append(
-                    f"=== {check_name} ===\nStatus: {conclusion}\nNo detailed logs available"
-                )
+                logs.append(f"=== {check_name} ===\nStatus: {conclusion}\nNo detailed logs available")
 
     except Exception as e:
         logger.error(f"Error getting GitHub Actions logs: {e}")
@@ -1944,10 +1668,7 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
             # ESLintエラーの終わりを探す（"✖ N problems"まで）
             eslint_end = i
             for j in range(i + 1, min(len(lines), i + 50)):
-                if (
-                    "problems" in lines[j].lower()
-                    or "##[error]process completed" in lines[j].lower()
-                ):
+                if "problems" in lines[j].lower() or "##[error]process completed" in lines[j].lower():
                     eslint_end = j
                     break
             eslint_blocks.append((eslint_start, eslint_end))
@@ -1984,9 +1705,7 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
     if len(result_lines) > max_lines:
         # 最初の部分と最後の部分を含める
         half = max_lines // 2
-        result_lines = (
-            result_lines[:half] + ["... (omitted) ..."] + result_lines[-half:]
-        )
+        result_lines = result_lines[:half] + ["... (omitted) ..."] + result_lines[-half:]
 
     return "\n".join(result_lines)
 

@@ -5,11 +5,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.mcp_manager import (
-    MCPServerConfig,
-    MCPServerManager,
-    get_mcp_manager,
-)
+from src.auto_coder.mcp_manager import MCPServerConfig, MCPServerManager, get_mcp_manager
 
 
 class TestMCPServerConfig:
@@ -264,9 +260,7 @@ class TestMCPServerManagerClaude:
 
     def test_add_backend_config_claude_failure(self, tmp_path):
         manager = MCPServerManager()
-        with patch.object(
-            manager, "_add_claude_config", return_value=False
-        ) as mock_add:
+        with patch.object(manager, "_add_claude_config", return_value=False) as mock_add:
             ok = manager.add_backend_config("graphrag", "claude", tmp_path)
             assert ok is False
             mock_add.assert_called_once()

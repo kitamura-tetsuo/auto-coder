@@ -4,10 +4,7 @@ from unittest.mock import Mock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.issue_processor import (
-    _process_issues_jules_mode,
-    _process_issues_normal,
-)
+from src.auto_coder.issue_processor import _process_issues_jules_mode, _process_issues_normal
 from src.auto_coder.pr_processor import process_pull_requests
 
 
@@ -263,9 +260,7 @@ class TestIssueProcessorExclusiveProcessing:
         assert result[0]["actions_taken"] == ["Action taken"]
         mock_take_actions.assert_called_once()
         # Verify label was removed after processing
-        mock_github_client.remove_labels_from_issue.assert_called_once_with(
-            "owner/repo", 123, ["@auto-coder"]
-        )
+        mock_github_client.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
 
     @patch("src.auto_coder.issue_processor._take_issue_actions")
     def test_process_issues_normal_removes_label_on_error(self, mock_take_actions):
@@ -292,9 +287,7 @@ class TestIssueProcessorExclusiveProcessing:
         _ = _process_issues_normal(mock_github_client, config, False, "owner/repo")
 
         # Verify label removal was attempted
-        mock_github_client.remove_labels_from_issue.assert_called_with(
-            "owner/repo", 123, ["@auto-coder"]
-        )
+        mock_github_client.remove_labels_from_issue.assert_called_with("owner/repo", 123, ["@auto-coder"])
 
     def test_process_issues_jules_mode_skips_when_label_exists(self):
         """Test that Jules mode skips issues
@@ -313,9 +306,7 @@ class TestIssueProcessorExclusiveProcessing:
         }
 
         config = AutomationConfig()
-        result = _process_issues_jules_mode(
-            mock_github_client, config, False, "owner/repo"
-        )
+        result = _process_issues_jules_mode(mock_github_client, config, False, "owner/repo")
 
         assert len(result) == 1
         actions_taken = result[0]["actions_taken"][0]
@@ -331,9 +322,7 @@ class TestPRProcessorExclusiveProcessing:
 
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
-    def test_process_pull_requests_skips_when_label_exists(
-        self, mock_check_updates, mock_check_actions
-    ):
+    def test_process_pull_requests_skips_when_label_exists(self, mock_check_updates, mock_check_actions):
         """Test that PRs with @auto-coder label are skipped."""
         mock_github_client = Mock()
         mock_github_client.disable_labels = False  # Labels enabled
@@ -353,21 +342,12 @@ class TestPRProcessorExclusiveProcessing:
         result = process_pull_requests(mock_github_client, config, False, "owner/repo")
 
         # Should have skipped entries in both passes
-        skipped_count = sum(
-            1
-            for pr in result
-            if any(
-                "Skipped - already being processed" in action
-                for action in pr.get("actions_taken", [])
-            )
-        )
+        skipped_count = sum(1 for pr in result if any("Skipped - already being processed" in action for action in pr.get("actions_taken", [])))
         assert skipped_count >= 1
 
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
-    def test_process_pull_requests_skips_when_label_present_even_if_labels_disabled(
-        self, mock_check_updates, mock_check_actions
-    ):
+    def test_process_pull_requests_skips_when_label_present_even_if_labels_disabled(self, mock_check_updates, mock_check_actions):
         """Ensure PRs are skipped when @auto-coder label is present
         even if label operations are disabled."""
         mock_github_client = Mock()
@@ -386,20 +366,12 @@ class TestPRProcessorExclusiveProcessing:
         config = AutomationConfig()
         result = process_pull_requests(mock_github_client, config, False, "owner/repo")
 
-        assert any(
-            any(
-                "Skipped - already being processed" in action
-                for action in pr.get("actions_taken", [])
-            )
-            for pr in result
-        )
+        assert any(any("Skipped - already being processed" in action for action in pr.get("actions_taken", [])) for pr in result)
 
 
 class TestIssueProcessorWithDisabledLabels:
     @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_skips_on_label_even_if_labels_disabled(
-        self, mock_take_actions
-    ):
+    def test_process_issues_skips_on_label_even_if_labels_disabled(self, mock_take_actions):
         """Ensure issues are skipped when @auto-coder label is present
         even if label operations are disabled."""
         mock_github_client = Mock()

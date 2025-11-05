@@ -108,23 +108,19 @@ def render_prompt(
         params.update(data)
     params.update(kwargs)
 
-    safe_params = {
-        name: "" if value is None else str(value) for name, value in params.items()
-    }
+    safe_params = {name: "" if value is None else str(value) for name, value in params.items()}
     try:
         rendered_prompt = template.safe_substitute(safe_params)
-        
+
         # Load prompts to get header
         prompts = load_prompts(path)
         header = prompts.get("header", "")
-        
+
         # Prepend header to the rendered prompt
         if header:
             return f"{header.rstrip()}\n\n{rendered_prompt}"
         else:
             return rendered_prompt
-    except (
-        Exception
-    ) as exc:  # pragma: no cover - Template handles placeholders gracefully
+    except Exception as exc:  # pragma: no cover - Template handles placeholders gracefully
         logger.error(f"Failed to render prompt '{key}': {exc}")
         raise

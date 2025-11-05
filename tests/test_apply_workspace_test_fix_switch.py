@@ -53,15 +53,9 @@ def test_apply_workspace_test_fix_switch_after_three_same_test_files(mock_extrac
     }
 
     # Call three times with same current_test_file
-    apply_workspace_test_fix(
-        cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py"
-    )
-    apply_workspace_test_fix(
-        cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py"
-    )
-    apply_workspace_test_fix(
-        cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py"
-    )
+    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
+    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
+    apply_workspace_test_fix(cfg, test_result, mgr, dry_run=False, current_test_file="test_a.py")
 
     # First two on codex, third switched to gemini
     assert calls == ["codex", "codex", "gemini"]

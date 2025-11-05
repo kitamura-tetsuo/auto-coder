@@ -130,9 +130,7 @@ class TestGeminiClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = GeminiClient()
-            result = client.ensure_mcp_server_configured(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
+            result = client.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
             self.assertTrue(result)
 
             # Verify it's now configured
@@ -153,9 +151,7 @@ class TestQwenClientMCP(unittest.TestCase):
     def test_check_mcp_server_not_configured(self, mock_run):
         """Test checking for MCP server when not configured."""
         # Mock qwen mcp list to return no servers
-        mock_run.return_value = MagicMock(
-            returncode=0, stdout="No MCP servers configured.\n"
-        )
+        mock_run.return_value = MagicMock(returncode=0, stdout="No MCP servers configured.\n")
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = QwenClient()
@@ -176,17 +172,13 @@ class TestQwenClientMCP(unittest.TestCase):
                 if call_count["check"] == 1:
                     mock_result.stdout = "No MCP servers configured.\n"
                 else:
-                    mock_result.stdout = (
-                        "✓ mcp-pdb: uv run mcp-pdb (stdio) - Connected\n"
-                    )
+                    mock_result.stdout = "✓ mcp-pdb: uv run mcp-pdb (stdio) - Connected\n"
                 return mock_result
             elif "mcp" in cmd and "add" in cmd:
                 call_count["add"] += 1
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = (
-                    'MCP server "mcp-pdb" added to user settings. (stdio)\n'
-                )
+                mock_result.stdout = 'MCP server "mcp-pdb" added to user settings. (stdio)\n'
                 return mock_result
             elif "--version" in cmd:
                 mock_result = MagicMock()
@@ -224,17 +216,13 @@ class TestQwenClientMCP(unittest.TestCase):
                 if call_count["check"] == 1:
                     mock_result.stdout = "No MCP servers configured.\n"
                 else:
-                    mock_result.stdout = (
-                        "✓ mcp-pdb: uv run mcp-pdb (stdio) - Connected\n"
-                    )
+                    mock_result.stdout = "✓ mcp-pdb: uv run mcp-pdb (stdio) - Connected\n"
                 return mock_result
             elif "mcp" in cmd and "add" in cmd:
                 call_count["add"] += 1
                 mock_result = MagicMock()
                 mock_result.returncode = 0
-                mock_result.stdout = (
-                    'MCP server "mcp-pdb" added to user settings. (stdio)\n'
-                )
+                mock_result.stdout = 'MCP server "mcp-pdb" added to user settings. (stdio)\n'
                 return mock_result
             else:
                 raise FileNotFoundError()
@@ -243,9 +231,7 @@ class TestQwenClientMCP(unittest.TestCase):
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
             client = QwenClient()
-            result = client.ensure_mcp_server_configured(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
+            result = client.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
             self.assertTrue(result)
 
             # Verify qwen mcp add was called
@@ -445,9 +431,7 @@ class TestBackendManagerMCP(unittest.TestCase):
 
             result = manager.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
             self.assertTrue(result)
-            mock_client.add_mcp_server_config.assert_called_once_with(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
+            mock_client.add_mcp_server_config.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
 
     def test_ensure_mcp_server_configured_all_backends(self):
         """Test ensuring MCP server is configured for all backends."""
@@ -487,23 +471,15 @@ class TestBackendManagerMCP(unittest.TestCase):
             )
 
             # Ensure MCP server is configured for all backends
-            result = manager.ensure_mcp_server_configured(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
+            result = manager.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
 
             # Should succeed for all backends
             self.assertTrue(result)
 
             # Verify ensure_mcp_server_configured was called for all backends
-            mock_gemini.ensure_mcp_server_configured.assert_called_once_with(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
-            mock_qwen.ensure_mcp_server_configured.assert_called_once_with(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
-            mock_codex.ensure_mcp_server_configured.assert_called_once_with(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
+            mock_gemini.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            mock_qwen.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            mock_codex.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
 
     def test_ensure_mcp_server_configured_partial_failure(self):
         """Test ensuring MCP server when one backend fails."""
@@ -528,20 +504,14 @@ class TestBackendManagerMCP(unittest.TestCase):
             )
 
             # Ensure MCP server is configured
-            result = manager.ensure_mcp_server_configured(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
+            result = manager.ensure_mcp_server_configured("mcp-pdb", "uv", ["run", "mcp-pdb"])
 
             # Should fail because gemini failed
             self.assertFalse(result)
 
             # Verify both backends were attempted
-            mock_gemini.ensure_mcp_server_configured.assert_called_once_with(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
-            mock_qwen.ensure_mcp_server_configured.assert_called_once_with(
-                "mcp-pdb", "uv", ["run", "mcp-pdb"]
-            )
+            mock_gemini.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
+            mock_qwen.ensure_mcp_server_configured.assert_called_once_with("mcp-pdb", "uv", ["run", "mcp-pdb"])
 
 
 if __name__ == "__main__":
@@ -655,7 +625,5 @@ class TestClaudeClientMCP(unittest.TestCase):
             from src.auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
-            ok = client.ensure_mcp_server_configured(
-                "graphrag", "uv", ["run", "main.py"]
-            )
+            ok = client.ensure_mcp_server_configured("graphrag", "uv", ["run", "main.py"])
             self.assertTrue(ok)

@@ -12,9 +12,7 @@ from tests.support.env import patch_environment
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_prefers_configured_api_keys_before_oauth(
-    mock_run_command, mock_run, tmp_path
-) -> None:
+def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
     config_path.write_text(
@@ -54,10 +52,7 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(
 
     # Verify environment variables are set
     assert first_env["OPENAI_API_KEY"] == "dashscope-xyz"
-    assert (
-        first_env["OPENAI_BASE_URL"]
-        == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
-    )
+    assert first_env["OPENAI_BASE_URL"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
     # After a successful call the active provider index should remain at zero.
     assert client._active_provider_index == 0
@@ -66,9 +61,7 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_fallback_to_openrouter(
-    mock_run_command, mock_run, tmp_path
-) -> None:
+def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
     config_path.write_text(
@@ -119,9 +112,7 @@ def test_qwen_client_fallback_to_openrouter(
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_fallbacks_to_oauth_after_api_keys(
-    mock_run_command, mock_run, tmp_path
-) -> None:
+def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
     config_path.write_text(

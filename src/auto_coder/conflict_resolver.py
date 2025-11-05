@@ -22,11 +22,7 @@ def _get_merge_conflict_info() -> str:
     """Get information about merge conflicts."""
     try:
         result = cmd.run_command(["git", "status", "--porcelain"])
-        return (
-            result.stdout
-            if result.success
-            else "Could not get merge conflict information"
-        )
+        return result.stdout if result.success else "Could not get merge conflict information"
     except Exception as e:
         return f"Error getting conflict info: {e}"
 
@@ -44,30 +40,20 @@ def scan_conflict_markers() -> List[str]:
         result = cmd.run_command(["git", "diff", "--name-only", "--diff-filter=U"])
 
         if result.success:
-            conflict_files = [
-                f.strip() for f in result.stdout.splitlines() if f.strip()
-            ]
+            conflict_files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
             flagged.extend(conflict_files)
 
         # Also check for actual conflict markers in files
         status_result = cmd.run_command(["git", "status", "--porcelain"])
         if status_result.success:
             for line in status_result.stdout.splitlines():
-                if line.strip() and line.startswith(
-                    "UU "
-                ):  # Both modified (merge conflict)
+                if line.strip() and line.startswith("UU "):  # Both modified (merge conflict)
                     filename = line[3:].strip()
                     # Read the file and check for conflict markers
                     try:
-                        with open(
-                            filename, "r", encoding="utf-8", errors="ignore"
-                        ) as f:
+                        with open(filename, "r", encoding="utf-8", errors="ignore") as f:
                             content = f.read()
-                            if (
-                                "<<<<<<< " in content
-                                or "=======" in content
-                                or ">>>>>>> " in content
-                            ):
+                            if "<<<<<<< " in content or "=======" in content or ">>>>>>> " in content:
                                 flagged.append(filename)
                     except Exception:
                         # If we can't read the file, still flag it
@@ -92,11 +78,7 @@ def resolve_merge_conflicts_with_llm(
 
     try:
         # Create a prompt for LLM to resolve conflicts
-        base_branch = (
-            pr_data.get("base_branch")
-            or pr_data.get("baseRefName")
-            or config.MAIN_BRANCH
-        )
+        base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
         prompt = render_prompt(
             "pr.merge_conflict_resolution",
             base_branch=base_branch,
@@ -111,9 +93,7 @@ def resolve_merge_conflicts_with_llm(
             prompt[:160].replace("\n", " "),
         )
 
-        logger.info(
-            f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}"
-        )
+        logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}")
 
         # Call LLM to resolve conflicts
         response = run_llm_prompt(prompt)
@@ -131,21 +111,15 @@ def resolve_merge_conflicts_with_llm(
             # Verify no conflict markers remain before committing
             flagged = scan_conflict_markers()
             if flagged:
-                actions.append(
-                    f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing"
-                )
+                actions.append(f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing")
                 return actions
 
             # Commit via helper and push
-            commit_res = git_commit_with_retry(
-                f"Resolve merge conflicts for PR #{pr_data['number']}"
-            )
+            commit_res = git_commit_with_retry(f"Resolve merge conflicts for PR #{pr_data['number']}")
             if commit_res.success:
                 actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
             else:
-                actions.append(
-                    f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}"
-                )
+                actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
                 return actions
 
             push_res = git_push()
@@ -155,9 +129,7 @@ def resolve_merge_conflicts_with_llm(
             else:
                 actions.append(f"Failed to push resolved merge: {push_res.stderr}")
         else:
-            actions.append(
-                "LLM did not provide a clear response for merge conflict resolution"
-            )
+            actions.append("LLM did not provide a clear response for merge conflict resolution")
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts with LLM: {e}")
@@ -187,9 +159,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             return True
 
         # Step 0: Clean up any existing git state
-        logger.info(
-            f"Cleaning up git state before resolving conflicts for PR #{pr_number}"
-        )
+        logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
 
         # Reset any uncommitted changes
         reset_result = cmd.run_command(["git", "reset", "--hard"])
@@ -211,9 +181,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
         checkout_result = cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
 
         if not checkout_result.success:
-            logger.error(
-                f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}"
-            )
+            logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
             return False
 
         # Step 2: Fetch the latest base branch
@@ -230,9 +198,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
         if merge_result.success:
             # No conflicts, push the updated branch using centralized helper with retry
-            logger.info(
-                f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes"
-            )
+            logger.info(f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes")
             push_result = git_push()
 
             if push_result.success:
@@ -240,29 +206,19 @@ def _perform_base_branch_merge_and_conflict_resolution(
                 return True
             else:
                 # Push failed - try one more time after a brief pause
-                logger.warning(
-                    f"First push attempt failed: {push_result.stderr}, retrying..."
-                )
+                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
                 time.sleep(2)
                 retry_push_result = git_push()
                 if retry_push_result.success:
-                    logger.info(
-                        f"Successfully pushed updated branch for PR #{pr_number} (after retry)"
-                    )
+                    logger.info(f"Successfully pushed updated branch for PR #{pr_number} (after retry)")
                     return True
                 else:
-                    logger.error(
-                        f"Failed to push updated branch after retry: {retry_push_result.stderr}"
-                    )
-                    logger.error(
-                        "Push failure detected during merge conflict resolution"
-                    )
+                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
+                    logger.error("Push failure detected during merge conflict resolution")
                     return False
         else:
             # Merge conflicts detected, use LLM to resolve them
-            logger.info(
-                f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve"
-            )
+            logger.info(f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve")
 
             # Get conflict information
             conflict_info = scan_conflict_markers()
@@ -273,9 +229,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             else:
                 pr_data = {**pr_data, "base_branch": base_branch}
 
-            resolve_actions = resolve_merge_conflicts_with_llm(
-                pr_data, conflict_info, config, False
-            )
+            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config, False)
 
             # Log the resolution actions
             for action in resolve_actions:
@@ -296,22 +250,16 @@ def _perform_base_branch_merge_and_conflict_resolution(
         return False
 
 
-def resolve_pr_merge_conflicts(
-    repo_name: str, pr_number: int, config: AutomationConfig, llm_client=None
-) -> bool:
+def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig, llm_client=None) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch.
 
     This function has been moved from pr_processor.py to conflict_resolver.py for better organization.
     """
     try:
         # Get PR details to determine the target base branch
-        pr_details_result = cmd.run_command(
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"]
-        )
+        pr_details_result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
         if not pr_details_result.success:
-            logger.error(
-                f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}"
-            )
+            logger.error(f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}")
             return False
 
         try:
@@ -321,9 +269,7 @@ def resolve_pr_merge_conflicts(
             base_branch = config.MAIN_BRANCH
 
         # Use the common subroutine
-        return _perform_base_branch_merge_and_conflict_resolution(
-            pr_number, base_branch, config, llm_client, repo_name, pr_data
-        )
+        return _perform_base_branch_merge_and_conflict_resolution(pr_number, base_branch, config, llm_client, repo_name, pr_data)
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
@@ -348,10 +294,7 @@ def is_package_lock_only_conflict(conflict_info: str) -> bool:
             return False
 
         dependency_files = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
-        return all(
-            any(dep_file in file for dep_file in dependency_files)
-            for file in conflicted_files
-        )
+        return all(any(dep_file in file for dep_file in dependency_files) for file in conflicted_files)
 
     except Exception as e:
         logger.error(f"Error checking package-lock conflict: {e}")
@@ -505,9 +448,7 @@ def compare_semver(a: str, b: str) -> int:
     return 0
 
 
-def merge_dep_maps(
-    ours: Dict[str, str], theirs: Dict[str, str], prefer_side: str
-) -> Dict[str, str]:
+def merge_dep_maps(ours: Dict[str, str], theirs: Dict[str, str], prefer_side: str) -> Dict[str, str]:
     """Merge two dependency maps choosing newer version when conflict.
     prefer_side: 'ours' or 'theirs' used as tie-breaker when versions equal/unknown.
     """
@@ -555,9 +496,7 @@ def resolve_package_json_dependency_conflicts(
     actions: List[str] = []
     try:
         pr_number = pr_data["number"]
-        actions.append(
-            f"Detected package.json dependency-only conflicts for PR #{pr_number}"
-        )
+        actions.append(f"Detected package.json dependency-only conflicts for PR #{pr_number}")
 
         conflicted_paths: List[str] = []
         if eligible_paths is not None:
@@ -646,9 +585,7 @@ def resolve_package_json_dependency_conflicts(
     return actions
 
 
-def resolve_package_lock_conflicts(
-    pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool
-) -> List[str]:
+def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool) -> List[str]:
     """Resolve package-lock.json conflicts by deleting and regenerating the file.
 
     Monorepo-friendly: for each conflicted lockfile, if a sibling package.json exists,
@@ -657,12 +594,8 @@ def resolve_package_lock_conflicts(
     actions = []
 
     try:
-        logger.info(
-            f"Resolving package-lock.json conflicts for PR #{pr_data['number']}"
-        )
-        actions.append(
-            f"Detected package-lock.json only conflicts for PR #{pr_data['number']}"
-        )
+        logger.info(f"Resolving package-lock.json conflicts for PR #{pr_data['number']}")
+        actions.append(f"Detected package-lock.json only conflicts for PR #{pr_data['number']}")
 
         # Parse conflicted files
         conflicted_files = []
@@ -695,11 +628,7 @@ def resolve_package_lock_conflicts(
         # For each directory, if package.json exists there, try to regenerate lock files
         any_regenerated = False
         for d in unique_dirs:
-            pkg_path = (
-                os.path.join(d, "package.json")
-                if d not in ("", ".")
-                else "package.json"
-            )
+            pkg_path = os.path.join(d, "package.json") if d not in ("", ".") else "package.json"
             if os.path.exists(pkg_path):
                 # Try npm install first in that directory
                 if d in ("", "."):
@@ -707,42 +636,28 @@ def resolve_package_lock_conflicts(
                 else:
                     npm_result = cmd.run_command(["npm", "install"], timeout=300, cwd=d)
                 if npm_result.success:
-                    actions.append(
-                        f"Successfully ran npm install in {d or '.'} to regenerate lock file"
-                    )
+                    actions.append(f"Successfully ran npm install in {d or '.'} to regenerate lock file")
                     any_regenerated = True
                 else:
                     # Try yarn if npm fails
                     if d in ("", "."):
                         yarn_result = cmd.run_command(["yarn", "install"], timeout=300)
                     else:
-                        yarn_result = cmd.run_command(
-                            ["yarn", "install"], timeout=300, cwd=d
-                        )
+                        yarn_result = cmd.run_command(["yarn", "install"], timeout=300, cwd=d)
                     if yarn_result.success:
-                        actions.append(
-                            f"Successfully ran yarn install in {d or '.'} to regenerate lock file"
-                        )
+                        actions.append(f"Successfully ran yarn install in {d or '.'} to regenerate lock file")
                         any_regenerated = True
                     else:
-                        actions.append(
-                            f"Failed to regenerate lock file in {d or '.'} with npm or yarn: {npm_result.stderr}"
-                        )
+                        actions.append(f"Failed to regenerate lock file in {d or '.'} with npm or yarn: {npm_result.stderr}")
             else:
                 if d in ("", "."):
-                    actions.append(
-                        "No package.json found, skipping dependency installation"
-                    )
+                    actions.append("No package.json found, skipping dependency installation")
                 else:
-                    actions.append(
-                        f"No package.json found in {d or '.'}, skipping dependency installation for this path"
-                    )
+                    actions.append(f"No package.json found in {d or '.'}, skipping dependency installation for this path")
 
         if not any_regenerated and not unique_dirs:
             # Fallback message when no lockfile dirs were identified (shouldn't happen)
-            actions.append(
-                "No lockfile directories identified, skipping dependency installation"
-            )
+            actions.append("No lockfile directories identified, skipping dependency installation")
 
         # Stage the regenerated files
         add_result = cmd.run_command(["git", "add", "."])

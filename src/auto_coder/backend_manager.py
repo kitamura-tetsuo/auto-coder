@@ -62,9 +62,7 @@ class BackendManager(LLMBackendManagerBase):
         # Initialize from default client if available
         self._last_model: Optional[str] = getattr(default_client, "model_name", None)
         # If model_name is not available from client, try to get it from the client directly
-        if self._last_model is None and hasattr(
-            default_client, "get_last_backend_and_model"
-        ):
+        if self._last_model is None and hasattr(default_client, "get_last_backend_and_model"):
             # Some clients might have this method to get backend info
             try:
                 backend, model = default_client.get_last_backend_and_model()
@@ -109,9 +107,7 @@ class BackendManager(LLMBackendManagerBase):
 
     def switch_to_next_backend(self) -> None:
         self._switch_to_index(self._current_idx + 1)
-        logger.info(
-            f"BackendManager: switched to next backend -> {self._current_backend_name()}"
-        )
+        logger.info(f"BackendManager: switched to next backend -> {self._current_backend_name()}")
 
     def switch_to_default_backend(self) -> None:
         # To the default position
@@ -120,9 +116,7 @@ class BackendManager(LLMBackendManagerBase):
         except ValueError:
             idx = 0
         self._switch_to_index(idx)
-        logger.info(
-            f"BackendManager: switched back to default backend -> {self._current_backend_name()}"
-        )
+        logger.info(f"BackendManager: switched back to default backend -> {self._current_backend_name()}")
 
     # ---------- Direct Compatibility Methods ----------
     @log_calls
@@ -147,9 +141,7 @@ class BackendManager(LLMBackendManagerBase):
                     self._last_model = getattr(cli, "model_name", None)
                     return out
                 except AutoCoderUsageLimitError as e:
-                    logger.warning(
-                        f"Backend '{name}' hit usage limit: {e}. Rotating to next backend."
-                    )
+                    logger.warning(f"Backend '{name}' hit usage limit: {e}. Rotating to next backend.")
                     last_error = e
                     self.switch_to_next_backend()
                     attempts += 1
@@ -164,9 +156,7 @@ class BackendManager(LLMBackendManagerBase):
 
     # ---------- For apply_workspace_test_fix ----------
     @log_calls
-    def run_test_fix_prompt(
-        self, prompt: str, current_test_file: Optional[str] = None
-    ) -> str:
+    def run_test_fix_prompt(self, prompt: str, current_test_file: Optional[str] = None) -> str:
         """Execution for apply_workspace_test_fix.
         - If the same current_test_file is given 3 consecutive times, switch to the next backend
         - If a different current_test_file comes, reset to default
@@ -224,9 +214,7 @@ class BackendManager(LLMBackendManagerBase):
     def switch_to_conflict_model(self) -> None:
         try:
             cli = self._get_or_create_client(self._current_backend_name())
-            if hasattr(cli, "switch_to_conflict_model") and callable(
-                getattr(cli, "switch_to_conflict_model")
-            ):
+            if hasattr(cli, "switch_to_conflict_model") and callable(getattr(cli, "switch_to_conflict_model")):
                 cli.switch_to_conflict_model()
         except Exception:
             pass
@@ -259,9 +247,7 @@ class BackendManager(LLMBackendManagerBase):
         cli = self._get_or_create_client(self._current_backend_name())
         return cli.check_mcp_server_configured(server_name)  # type: ignore[no-any-return]
 
-    def add_mcp_server_config(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration for the current backend.
 
         Args:
@@ -275,9 +261,7 @@ class BackendManager(LLMBackendManagerBase):
         cli = self._get_or_create_client(self._current_backend_name())
         return cli.add_mcp_server_config(server_name, command, args)  # type: ignore[no-any-return]
 
-    def ensure_mcp_server_configured(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def ensure_mcp_server_configured(self, server_name: str, command: str, args: list[str]) -> bool:
         """Ensure a specific MCP server is configured for all backends, adding it if necessary.
 
         This method checks if the server is configured for each backend,
@@ -301,9 +285,7 @@ class BackendManager(LLMBackendManagerBase):
                     all_success = False
 
             except Exception as e:
-                logger.error(
-                    f"Error configuring MCP server '{server_name}' for backend '{backend_name}': {e}"
-                )
+                logger.error(f"Error configuring MCP server '{server_name}' for backend '{backend_name}': {e}")
                 all_success = False
 
         return all_success
@@ -358,32 +340,20 @@ class LLMBackendManager:
             # Check if we need to initialize
             if cls._instance is None or force_reinitialize:
                 # Validate initialization parameters
-                if (
-                    default_backend is None
-                    or default_client is None
-                    or factories is None
-                ):
+                if default_backend is None or default_client is None or factories is None:
                     if cls._instance is None or force_reinitialize:
-                        raise RuntimeError(
-                            "LLMBackendManager.get_llm_instance() must be called with "
-                            "initialization parameters (default_backend, default_client, factories) "
-                            "on first use or when force_reinitialize=True"
-                        )
+                        raise RuntimeError("LLMBackendManager.get_llm_instance() must be called with " "initialization parameters (default_backend, default_client, factories) " "on first use or when force_reinitialize=True")
                 else:
                     # If force_reinitialize and instance exists, close it first
                     if force_reinitialize and cls._instance is not None:
-                        logger.info(
-                            f"Reinitializing LLMBackendManager singleton with default backend: {default_backend}"
-                        )
+                        logger.info(f"Reinitializing LLMBackendManager singleton with default backend: {default_backend}")
                         try:
                             cls._instance.close()
                         except Exception:
                             pass  # Best effort cleanup
                     elif cls._instance is None:
                         # Initialize singleton with parameters
-                        logger.info(
-                            f"Initializing LLMBackendManager singleton with default backend: {default_backend}"
-                        )
+                        logger.info(f"Initializing LLMBackendManager singleton with default backend: {default_backend}")
 
                     # Create new instance (or reuse if force_reinitialize)
                     if cls._instance is None or force_reinitialize:
@@ -399,16 +369,10 @@ class LLMBackendManager:
                             "factories": factories,
                             "order": order,
                         }
-            elif (
-                default_backend is not None
-                or default_client is not None
-                or factories is not None
-            ):
+            elif default_backend is not None or default_client is not None or factories is not None:
                 # Parameters provided but instance already exists (and not forcing reinit)
                 # This is allowed - we just ignore the parameters and return existing instance
-                logger.debug(
-                    "LLMBackendManager singleton already initialized, ignoring new parameters"
-                )
+                logger.debug("LLMBackendManager singleton already initialized, ignoring new parameters")
 
             return cls._instance
 
@@ -535,10 +499,7 @@ def run_message_prompt(prompt: str) -> str:
     """
     manager = LLMBackendManager.get_message_instance()
     if manager is None:
-        raise RuntimeError(
-            "Message backend manager not initialized. "
-            "Call get_message_backend_manager() with initialization parameters first."
-        )
+        raise RuntimeError("Message backend manager not initialized. " "Call get_message_backend_manager() with initialization parameters first.")
     return manager._run_llm_cli(prompt)
 
 
@@ -611,10 +572,7 @@ def run_llm_prompt(prompt: str) -> str:
     """
     manager = LLMBackendManager.get_llm_instance()
     if manager is None:
-        raise RuntimeError(
-            "LLM backend manager not initialized. "
-            "Call get_llm_backend_manager() with initialization parameters first."
-        )
+        raise RuntimeError("LLM backend manager not initialized. " "Call get_llm_backend_manager() with initialization parameters first.")
     return manager._run_llm_cli(prompt)
 
 

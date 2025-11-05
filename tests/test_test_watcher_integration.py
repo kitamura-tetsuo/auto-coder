@@ -15,9 +15,7 @@ class TestTestWatcherIntegration:
         """Test initialization with default values."""
         integration = TestWatcherIntegration()
 
-        assert integration.mcp_server_path is None or isinstance(
-            integration.mcp_server_path, str
-        )
+        assert integration.mcp_server_path is None or isinstance(integration.mcp_server_path, str)
         assert integration.project_root == str(Path.cwd())
         assert integration.mcp_process is None
 

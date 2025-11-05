@@ -24,21 +24,14 @@ logger = get_logger(__name__)
 class GeminiClient(LLMClientBase):
     """Gemini client that uses google.generativeai SDK primarily in tests and a CLI fallback."""
 
-    def __init__(
-        self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-pro"
-    ):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-pro"):
         """Initialize Gemini client.
 
         In tests, genai is patched and used. In production, we still verify gemini CLI presence
         for the CLI-based paths used elsewhere in the tool.
         """
         # Allow single positional argument to be treated as model_name when it looks like a model id
-        if (
-            api_key
-            and isinstance(api_key, str)
-            and api_key.lower().startswith("gemini-")
-            and model_name == "gemini-2.5-pro"
-        ):
+        if api_key and isinstance(api_key, str) and api_key.lower().startswith("gemini-") and model_name == "gemini-2.5-pro":
             model_name, api_key = api_key, None
 
         self.api_key = api_key
@@ -60,9 +53,7 @@ class GeminiClient(LLMClientBase):
 
         # Check if gemini CLI is available for CLI-based flows
         try:
-            result = subprocess.run(
-                ["gemini", "--version"], capture_output=True, text=True, timeout=10
-            )
+            result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 raise RuntimeError("Gemini CLI not available or not working")
         except (
@@ -75,17 +66,13 @@ class GeminiClient(LLMClientBase):
     def switch_to_conflict_model(self) -> None:
         """Switch to faster model for conflict resolution."""
         if self.model_name != self.conflict_model:
-            logger.info(
-                f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution"
-            )
+            logger.info(f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution")
             self.model_name = self.conflict_model
 
     def switch_to_default_model(self) -> None:
         """Switch back to default model."""
         if self.model_name != self.default_model:
-            logger.info(
-                f"Switching back from {self.model_name} to {self.default_model}"
-            )
+            logger.info(f"Switching back from {self.model_name} to {self.default_model}")
             self.model_name = self.default_model
 
     def _escape_prompt(self, prompt: str) -> str:
@@ -110,15 +97,9 @@ class GeminiClient(LLMClientBase):
             ]
 
             # Warn that we are invoking an LLM (keep calls minimized)
-            logger.warning(
-                "LLM invocation: gemini CLI is being called. Keep LLM calls minimized."
-            )
-            logger.debug(
-                f"Running gemini CLI with prompt length: {len(prompt)} characters"
-            )
-            logger.info(
-                f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]"
-            )
+            logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
+            logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
+            logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
             logger.info("=" * 60)
 
             # Streaming-time usage limit detection via callback
@@ -146,11 +127,7 @@ class GeminiClient(LLMClientBase):
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
             combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = (
-                "\n".join(combined_parts)
-                if combined_parts
-                else (result.stderr or result.stdout or "")
-            )
+            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
 
@@ -166,9 +143,7 @@ class GeminiClient(LLMClientBase):
             if result.returncode != 0:
                 if any(m in low for m in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
-                raise RuntimeError(
-                    f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
-                )
+                raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
 
             # Even with 0, detect soft limit messages (some CLIs log 429 but exit 0)
             if any(m in low for m in usage_markers):
@@ -299,26 +274,18 @@ class GeminiClient(LLMClientBase):
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if server_name.lower() in output:
-                    logger.info(
-                        f"Found MCP server '{server_name}' via 'gemini mcp list'"
-                    )
+                    logger.info(f"Found MCP server '{server_name}' via 'gemini mcp list'")
                     return True
-                logger.debug(
-                    f"MCP server '{server_name}' not found via 'gemini mcp list'"
-                )
+                logger.debug(f"MCP server '{server_name}' not found via 'gemini mcp list'")
                 return False
             else:
-                logger.debug(
-                    f"'gemini mcp list' command failed with return code {result.returncode}"
-                )
+                logger.debug(f"'gemini mcp list' command failed with return code {result.returncode}")
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Gemini MCP config: {e}")
             return False
 
-    def add_mcp_server_config(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration to Gemini CLI config.
 
         Args:

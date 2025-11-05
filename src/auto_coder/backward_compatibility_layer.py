@@ -91,8 +91,7 @@ class BackwardCompatibilityLayer:
 
             if warn and self.config.warn_on_missing_session_id:
                 self._warn(
-                    f"No session_id provided. Auto-generated session_id: {session_id}. "
-                    f"Consider explicitly passing session_id for better isolation.",
+                    f"No session_id provided. Auto-generated session_id: {session_id}. " f"Consider explicitly passing session_id for better isolation.",
                     category=UserWarning,
                 )
         else:
@@ -127,9 +126,7 @@ class BackwardCompatibilityLayer:
         # Session IDs should be alphanumeric with underscores and hyphens
         return all(c.isalnum() or c in "_-" for c in session_id)
 
-    def _warn(
-        self, message: str, category: type = DeprecationWarning, stacklevel: int = 2
-    ) -> None:
+    def _warn(self, message: str, category: type = DeprecationWarning, stacklevel: int = 2) -> None:
         """
         Emit a deprecation warning.
 
@@ -238,9 +235,7 @@ class BackwardCompatibilityLayer:
         warn_str = os.environ.get("GRAPHRAG_WARN_ON_LEGACY", "true").lower()
         config.warn_on_legacy = warn_str in ["true", "1", "yes"]
 
-        warn_missing_str = os.environ.get(
-            "GRAPHRAG_WARN_ON_MISSING_SESSION_ID", "false"
-        ).lower()
+        warn_missing_str = os.environ.get("GRAPHRAG_WARN_ON_MISSING_SESSION_ID", "false").lower()
         config.warn_on_missing_session_id = warn_missing_str in ["true", "1", "yes"]
 
         # Read default session ID

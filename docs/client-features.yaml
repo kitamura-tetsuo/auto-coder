@@ -1,4 +1,4 @@
-version: "2025.11.4.12+g7b21653"
+version: "2025.11.5.17+ge5ce7a5"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -91,6 +91,10 @@ cli:
         - { name: --verbose, flag: true }
       behavior:
         - Executes scripts/test.sh (never calls pytest directly)
+          - Prefers uv runner for consistent, reproducible environments
+          - Falls back to system Python's pytest when uv is not available
+          - Optionally activates local virtualenv when AC_USE_LOCAL_VENV=1
+          - Always enables auto-syncing dependencies with uv
         - If LLM makes no edits in an iteration, stops with error
         - Supports separate message backends for summarization/communication
     - name: get-actions-logs

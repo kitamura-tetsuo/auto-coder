@@ -66,9 +66,7 @@ def main():
                     {
                         "jsonrpc": "2.0",
                         "id": mid,
-                        "result": {
-                            "content": [{"type": "text", "text": f"PROMPT: {text}"}]
-                        },
+                        "result": {"content": [{"type": "text", "text": f"PROMPT: {text}"}]},
                     }
                 )
             else:
@@ -154,9 +152,7 @@ def main():
                     {
                         "jsonrpc": "2.0",
                         "id": mid,
-                        "result": {
-                            "content": [{"type": "text", "text": f"RUN: {text}"}]
-                        },
+                        "result": {"content": [{"type": "text", "text": f"RUN: {text}"}]},
                     }
                 )
             elif name == "echo":
@@ -165,9 +161,7 @@ def main():
                     {
                         "jsonrpc": "2.0",
                         "id": mid,
-                        "result": {
-                            "content": [{"type": "text", "text": f"ECHO: {text}"}]
-                        },
+                        "result": {"content": [{"type": "text", "text": f"ECHO: {text}"}]},
                     }
                 )
             else:

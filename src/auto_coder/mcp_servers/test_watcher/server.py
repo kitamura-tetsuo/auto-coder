@@ -113,12 +113,8 @@ def get_overall_status() -> str:
     output = ["# Test Watcher Status\n"]
 
     output.append(f"Project Root: {status['project_root']}")
-    output.append(
-        f"File Watcher: {'Running' if status['file_watcher_running'] else 'Stopped'}"
-    )
-    output.append(
-        f"Playwright: {'Running' if status['playwright_running'] else 'Idle'}"
-    )
+    output.append(f"File Watcher: {'Running' if status['file_watcher_running'] else 'Stopped'}")
+    output.append(f"Playwright: {'Running' if status['playwright_running'] else 'Idle'}")
 
     output.append("\n## Test Results\n")
 

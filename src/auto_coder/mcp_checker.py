@@ -54,9 +54,7 @@ def _check_gemini_mcp() -> bool:
         mcp_servers = config.get("mcpServers", {})
         for server_name in mcp_servers.keys():
             if "graphrag" in server_name.lower():
-                logger.info(
-                    f"Found graphrag MCP server in Gemini config: {server_name}"
-                )
+                logger.info(f"Found graphrag MCP server in Gemini config: {server_name}")
                 return True
 
         logger.debug("No graphrag MCP server found in Gemini config")
@@ -108,28 +106,18 @@ def _check_auggie_mcp() -> bool:
             mcp_servers = config.get("mcpServers", {})
             for server_name in mcp_servers.keys():
                 if "graphrag" in server_name.lower():
-                    logger.info(
-                        f"Found graphrag MCP server in Windsurf config: {server_name}"
-                    )
+                    logger.info(f"Found graphrag MCP server in Windsurf config: {server_name}")
                     return True
 
         # Check Claude Desktop config
-        claude_config = (
-            Path.home()
-            / "Library"
-            / "Application Support"
-            / "Claude"
-            / "claude_desktop_config.json"
-        )
+        claude_config = Path.home() / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
         if claude_config.exists():
             with open(claude_config, "r", encoding="utf-8") as f:
                 config = json.load(f)
             mcp_servers = config.get("mcpServers", {})
             for server_name in mcp_servers.keys():
                 if "graphrag" in server_name.lower():
-                    logger.info(
-                        f"Found graphrag MCP server in Claude config: {server_name}"
-                    )
+                    logger.info(f"Found graphrag MCP server in Claude config: {server_name}")
                     return True
 
         logger.debug("No graphrag MCP server found in Auggie/Windsurf/Claude config")
@@ -155,9 +143,7 @@ def _check_claude_mcp() -> bool:
         mcp_servers = config.get("mcpServers", {})
         for server_name in mcp_servers.keys():
             if "graphrag" in server_name.lower():
-                logger.info(
-                    f"Found graphrag MCP server in Claude config: {server_name}"
-                )
+                logger.info(f"Found graphrag MCP server in Claude config: {server_name}")
                 return True
 
         logger.debug("No graphrag MCP server found in Claude config")
@@ -189,9 +175,7 @@ def _check_codex_mcp() -> bool:
             mcp_servers = config.get("mcpServers", {})
             for server_name in mcp_servers.keys():
                 if "graphrag" in server_name.lower():
-                    logger.info(
-                        f"Found graphrag MCP server in Codex config: {server_name}"
-                    )
+                    logger.info(f"Found graphrag MCP server in Codex config: {server_name}")
                     return True
 
         logger.debug("No graphrag MCP server found in Codex config")
@@ -303,15 +287,10 @@ def _add_gemini_mcp_config() -> bool:
     default_mcp_dir = Path.home() / "graphrag_mcp"
 
     if not default_mcp_dir.exists():
-        logger.warning(
-            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
-            "It should be automatically set up by ensure_graphrag_mcp_configured()."
-        )
+        logger.warning(f"GraphRAG MCP server directory not found at {default_mcp_dir}. " "It should be automatically set up by ensure_graphrag_mcp_configured().")
         return False
 
-    logger.info(
-        "GraphRAG MCP server directory exists, but configuration not found in Gemini config"
-    )
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Gemini config")
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -328,15 +307,10 @@ def _add_claude_mcp_config() -> bool:
     default_mcp_dir = Path.home() / "graphrag_mcp"
 
     if not default_mcp_dir.exists():
-        logger.warning(
-            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
-            "It should be automatically set up by ensure_graphrag_mcp_configured()."
-        )
+        logger.warning(f"GraphRAG MCP server directory not found at {default_mcp_dir}. " "It should be automatically set up by ensure_graphrag_mcp_configured().")
         return False
 
-    logger.info(
-        "GraphRAG MCP server directory exists, but configuration not found in Claude config"
-    )
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Claude config")
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -353,15 +327,10 @@ def _add_qwen_mcp_config() -> bool:
     default_mcp_dir = Path.home() / "graphrag_mcp"
 
     if not default_mcp_dir.exists():
-        logger.warning(
-            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
-            "It should be automatically set up by ensure_graphrag_mcp_configured()."
-        )
+        logger.warning(f"GraphRAG MCP server directory not found at {default_mcp_dir}. " "It should be automatically set up by ensure_graphrag_mcp_configured().")
         return False
 
-    logger.info(
-        "GraphRAG MCP server directory exists, but configuration not found in Qwen config"
-    )
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Qwen config")
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -378,15 +347,10 @@ def _add_auggie_mcp_config() -> bool:
     default_mcp_dir = Path.home() / "graphrag_mcp"
 
     if not default_mcp_dir.exists():
-        logger.warning(
-            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
-            "It should be automatically set up by ensure_graphrag_mcp_configured()."
-        )
+        logger.warning(f"GraphRAG MCP server directory not found at {default_mcp_dir}. " "It should be automatically set up by ensure_graphrag_mcp_configured().")
         return False
 
-    logger.info(
-        "GraphRAG MCP server directory exists, but configuration not found in Windsurf config"
-    )
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Windsurf config")
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -403,15 +367,10 @@ def _add_codex_mcp_config() -> bool:
     default_mcp_dir = Path.home() / "graphrag_mcp"
 
     if not default_mcp_dir.exists():
-        logger.warning(
-            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
-            "It should be automatically set up by ensure_graphrag_mcp_configured()."
-        )
+        logger.warning(f"GraphRAG MCP server directory not found at {default_mcp_dir}. " "It should be automatically set up by ensure_graphrag_mcp_configured().")
         return False
 
-    logger.info(
-        "GraphRAG MCP server directory exists, but configuration not found in Codex config"
-    )
+    logger.info("GraphRAG MCP server directory exists, but configuration not found in Codex config")
     logger.info("Run 'auto-coder graphrag setup-mcp' to configure automatically")
     return False
 
@@ -532,9 +491,7 @@ def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> boo
             logger.info(f"✅ GraphRAG MCP server successfully configured for {backend}")
             return True
         else:
-            logger.warning(
-                f"Configuration was added but verification failed for {backend}"
-            )
+            logger.warning(f"Configuration was added but verification failed for {backend}")
             return False
     else:
         logger.error(f"Failed to add GraphRAG MCP configuration for {backend}")
@@ -552,10 +509,7 @@ def check_and_warn_graphrag_mcp(backend: str) -> None:
         backend: Backend name (gemini, qwen, auggie, codex, codex-mcp)
     """
     if not check_graphrag_mcp_for_backend(backend):
-        logger.warning(
-            f"GraphRAG MCP server not found for {backend}. "
-            f"GraphRAG integration may not be available."
-        )
+        logger.warning(f"GraphRAG MCP server not found for {backend}. " f"GraphRAG integration may not be available.")
         logger.info(suggest_graphrag_mcp_setup(backend))
     else:
         logger.info(f"GraphRAG MCP server is configured for {backend}")

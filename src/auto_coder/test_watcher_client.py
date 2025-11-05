@@ -15,9 +15,7 @@ logger = get_logger(__name__)
 class TestWatcherClient:
     """Client for querying test_watcher MCP server."""
 
-    def __init__(
-        self, mcp_server_path: Optional[str] = None, project_root: Optional[str] = None
-    ):
+    def __init__(self, mcp_server_path: Optional[str] = None, project_root: Optional[str] = None):
         """
         Initialize Test Watcher Client.
 
@@ -25,9 +23,7 @@ class TestWatcherClient:
             mcp_server_path: Path to test_watcher MCP server
             project_root: Project root directory
         """
-        self.mcp_server_path = mcp_server_path or str(
-            Path.home() / "mcp_servers" / "test_watcher"
-        )
+        self.mcp_server_path = mcp_server_path or str(Path.home() / "mcp_servers" / "test_watcher")
         self.project_root = project_root or str(Path.cwd())
         self.process: Optional[subprocess.Popen] = None
 
@@ -82,9 +78,7 @@ class TestWatcherClient:
                 self.process.kill()
             logger.info("Stopped test_watcher MCP server")
 
-    def _call_tool(
-        self, tool_name: str, arguments: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+    def _call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Call an MCP tool.
 

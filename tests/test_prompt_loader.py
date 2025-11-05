@@ -3,12 +3,7 @@
 import pytest
 
 from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
-    DEFAULT_PROMPTS_PATH,
-    clear_prompt_cache,
-    get_prompt_template,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import DEFAULT_PROMPTS_PATH, clear_prompt_cache, get_prompt_template, render_prompt
 
 
 @pytest.fixture

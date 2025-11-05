@@ -30,9 +30,7 @@ class _FakeStream:
 
 
 class _FakePopen:
-    def __init__(
-        self, cmd, stdout=None, stderr=None, text=True, bufsize=1, cwd=None, env=None
-    ):
+    def __init__(self, cmd, stdout=None, stderr=None, text=True, bufsize=1, cwd=None, env=None):
         # Provide a few lines to simulate Gemini streaming 429/RESOURCE_EXHAUSTED
         self.stdout = _FakeStream(
             [

@@ -79,9 +79,7 @@ def _iter_provider_entries(
 
         api_key = entry.get("api_key")
         if not api_key:
-            logger.info(
-                "Skipping Qwen provider '%s' because no api_key was provided", name
-            )
+            logger.info("Skipping Qwen provider '%s' because no api_key was provided", name)
             continue
 
         defaults = _PROVIDER_DEFAULTS.get(name.lower(), {})

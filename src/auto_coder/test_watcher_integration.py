@@ -86,10 +86,7 @@ class TestWatcherIntegration:
             return False
 
         # Check for main.py or server.py
-        if (
-            not (server_path / "main.py").exists()
-            and not (server_path / "server.py").exists()
-        ):
+        if not (server_path / "main.py").exists() and not (server_path / "server.py").exists():
             return False
 
         return True
@@ -144,9 +141,7 @@ class TestWatcherIntegration:
                 env=env,
             )
 
-            logger.info(
-                f"Started Test Watcher MCP server with PID {self.mcp_process.pid}"
-            )
+            logger.info(f"Started Test Watcher MCP server with PID {self.mcp_process.pid}")
 
             # Start stderr pump for diagnostics
             if self.mcp_process.stderr:

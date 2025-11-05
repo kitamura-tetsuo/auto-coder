@@ -73,21 +73,15 @@ class QwenClient(LLMClientBase):
 
         if needs_codex:
             try:
-                result = subprocess.run(
-                    ["codex", "--version"], capture_output=True, text=True, timeout=10
-                )
+                result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
                 if result.returncode != 0:
                     raise RuntimeError("codex CLI not available or not working")
             except Exception as e:
-                raise RuntimeError(
-                    f"codex CLI not available (required for providers): {e}"
-                )
+                raise RuntimeError(f"codex CLI not available (required for providers): {e}")
 
         if needs_qwen:
             try:
-                result = subprocess.run(
-                    ["qwen", "--version"], capture_output=True, text=True, timeout=10
-                )
+                result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
                 if result.returncode != 0:
                     raise RuntimeError("qwen CLI not available or not working")
             except Exception as e:
@@ -97,16 +91,12 @@ class QwenClient(LLMClientBase):
     def switch_to_conflict_model(self) -> None:
         # Keep same model by default. In future, allow switching to a lighter model.
         self.model_name = self.conflict_model
-        logger.debug(
-            "QwenClient.switch_to_conflict_model: active model -> %s", self.model_name
-        )
+        logger.debug("QwenClient.switch_to_conflict_model: active model -> %s", self.model_name)
 
     def switch_to_default_model(self) -> None:
         # Restore to the initially configured default model.
         self.model_name = self.default_model
-        logger.debug(
-            "QwenClient.switch_to_default_model: active model -> %s", self.model_name
-        )
+        logger.debug("QwenClient.switch_to_default_model: active model -> %s", self.model_name)
 
     # ----- Helpers -----
     def _escape_prompt(self, prompt: str) -> str:
@@ -147,9 +137,7 @@ class QwenClient(LLMClientBase):
 
         if usage_errors:
             aggregated = " | ".join(usage_errors)
-            raise AutoCoderUsageLimitError(
-                f"All Qwen providers reached usage limits: {aggregated}"
-            )
+            raise AutoCoderUsageLimitError(f"All Qwen providers reached usage limits: {aggregated}")
 
         raise RuntimeError("Qwen providers exhausted without usable response")
 
@@ -231,11 +219,7 @@ class QwenClient(LLMClientBase):
             cmd.extend(["-p", escaped_prompt])
 
             cli_name = "qwen"
-            display_cmd = (
-                f"qwen -m {model_to_use} -p [prompt]"
-                if model_to_use
-                else "qwen -p [prompt]"
-            )
+            display_cmd = f"qwen -m {model_to_use} -p [prompt]" if model_to_use else "qwen -p [prompt]"
 
         logger.warning(
             "LLM invocation: %s CLI is being called. Keep LLM calls minimized.",
@@ -263,20 +247,14 @@ class QwenClient(LLMClientBase):
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         combined_parts = [part for part in (stdout, stderr) if part]
-        full_output = (
-            "\n".join(combined_parts)
-            if combined_parts
-            else (result.stderr or result.stdout or "")
-        )
+        full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
         full_output = full_output.strip()
 
         if self._is_usage_limit(full_output, result.returncode):
             raise AutoCoderUsageLimitError(full_output)
 
         if result.returncode != 0:
-            raise RuntimeError(
-                f"{cli_name} CLI failed with return code {result.returncode}\n{full_output}"
-            )
+            raise RuntimeError(f"{cli_name} CLI failed with return code {result.returncode}\n{full_output}")
 
         return full_output
 
@@ -402,22 +380,16 @@ class QwenClient(LLMClientBase):
                 if server_name.lower() in output:
                     logger.info(f"Found MCP server '{server_name}' via 'qwen mcp list'")
                     return True
-                logger.debug(
-                    f"MCP server '{server_name}' not found via 'qwen mcp list'"
-                )
+                logger.debug(f"MCP server '{server_name}' not found via 'qwen mcp list'")
                 return False
             else:
-                logger.debug(
-                    f"'qwen mcp list' command failed with return code {result.returncode}"
-                )
+                logger.debug(f"'qwen mcp list' command failed with return code {result.returncode}")
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Qwen MCP config: {e}")
             return False
 
-    def add_mcp_server_config(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration to Qwen Code CLI config.
 
         Args:
@@ -446,18 +418,10 @@ class QwenClient(LLMClientBase):
                 return True
             else:
                 # Check if it's already configured (qwen mcp add may fail if already exists)
-                if (
-                    "already" in result.stderr.lower()
-                    or "exists" in result.stderr.lower()
-                ):
-                    logger.info(
-                        f"MCP server '{server_name}' already configured in Qwen"
-                    )
+                if "already" in result.stderr.lower() or "exists" in result.stderr.lower():
+                    logger.info(f"MCP server '{server_name}' already configured in Qwen")
                     return True
-                logger.error(
-                    f"Failed to add MCP server '{server_name}': "
-                    f"returncode={result.returncode}, stderr={result.stderr}"
-                )
+                logger.error(f"Failed to add MCP server '{server_name}': " f"returncode={result.returncode}, stderr={result.stderr}")
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.error(f"Failed to add Qwen MCP config: {e}")

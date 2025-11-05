@@ -5,11 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import (
-    _close_linked_issues,
-    _extract_linked_issues_from_pr_body,
-    _merge_pr,
-)
+from src.auto_coder.pr_processor import _close_linked_issues, _extract_linked_issues_from_pr_body, _merge_pr
 
 
 class TestExtractLinkedIssues:
@@ -258,9 +254,7 @@ class TestMergePRWithIssueClosing:
         config.MERGE_METHOD = "--squash"
 
         # Mock successful merge
-        mock_cmd.run_command.return_value = Mock(
-            success=True, stdout="", stderr="", returncode=0
-        )
+        mock_cmd.run_command.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
         result = _merge_pr("test/repo", 123, {}, config)
 
@@ -269,18 +263,14 @@ class TestMergePRWithIssueClosing:
 
     @patch("src.auto_coder.pr_processor._close_linked_issues")
     @patch("src.auto_coder.pr_processor.cmd")
-    def test_merge_pr_does_not_close_issues_on_failure(
-        self, mock_cmd, mock_close_issues
-    ):
+    def test_merge_pr_does_not_close_issues_on_failure(self, mock_cmd, mock_close_issues):
         """Test that failed merge does not trigger issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = False
         config.MERGE_METHOD = "--squash"
 
         # Mock failed merge
-        mock_cmd.run_command.return_value = Mock(
-            success=False, stdout="", stderr="Merge failed", returncode=1
-        )
+        mock_cmd.run_command.return_value = Mock(success=False, stdout="", stderr="Merge failed", returncode=1)
 
         result = _merge_pr("test/repo", 123, {}, config)
 
@@ -296,9 +286,7 @@ class TestMergePRWithIssueClosing:
         config.MERGE_METHOD = "--squash"
 
         # Mock successful auto-merge
-        mock_cmd.run_command.return_value = Mock(
-            success=True, stdout="", stderr="", returncode=0
-        )
+        mock_cmd.run_command.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
         result = _merge_pr("test/repo", 123, {}, config)
 

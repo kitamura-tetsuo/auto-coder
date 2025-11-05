@@ -2,6 +2,15 @@
 Pytest configuration and fixtures for Auto-Coder tests.
 """
 
+import sys
+from pathlib import Path
+
+# Ensure 'src' directory is on sys.path so 'auto_coder' package is importable everywhere
+_repo_root = Path(__file__).resolve().parents[1]
+_src_path = _repo_root / "src"
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
+
 import os
 from unittest.mock import Mock
 
@@ -247,9 +256,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
                 # Get user site-packages path
                 user_site = site.getusersitepackages()
-                print(
-                    f"DEBUG: user_site = {user_site!r}", file=__import__("sys").stderr
-                )
+                print(f"DEBUG: user_site = {user_site!r}", file=__import__("sys").stderr)
                 print(f"DEBUG: cwd = {os.getcwd()!r}", file=__import__("sys").stderr)
 
                 # Build environment with proper PYTHONPATH
@@ -264,7 +271,11 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     f"DEBUG: initial pythonpath = {pythonpath!r}",
                     file=__import__("sys").stderr,
                 )
-                paths_to_add = [user_site, os.getcwd()]
+                paths_to_add = [
+                    user_site,
+                    os.getcwd(),
+                    os.path.join(os.getcwd(), "src"),
+                ]
                 print(
                     f"DEBUG: paths_to_add = {paths_to_add!r}",
                     file=__import__("sys").stderr,
@@ -275,9 +286,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                         file=__import__("sys").stderr,
                     )
                     if path and path not in pythonpath.split(os.pathsep):
-                        env["PYTHONPATH"] = (
-                            f"{path}:{pythonpath}" if pythonpath else path
-                        )
+                        env["PYTHONPATH"] = f"{path}:{pythonpath}" if pythonpath else path
                         pythonpath = env["PYTHONPATH"]
                         print(
                             f"DEBUG: updated pythonpath to {pythonpath!r}",
@@ -328,11 +337,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
             if program == "git":
                 # 代表的な呼び出しに対する最小限の正常系出力
-                if (
-                    isinstance(cmd, (list, tuple))
-                    and "status" in cmd
-                    and "--porcelain" in cmd
-                ):
+                if isinstance(cmd, (list, tuple)) and "status" in cmd and "--porcelain" in cmd:
                     out_text = ""  # 変更なし
                 elif isinstance(cmd, (list, tuple)) and "rev-parse" in cmd:
                     out_text = "main"
@@ -341,42 +346,17 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 else:
                     out_text = ""
             elif program == "gh":
-                if (
-                    isinstance(cmd, (list, tuple))
-                    and len(cmd) >= 3
-                    and cmd[1] == "auth"
-                    and cmd[2] == "status"
-                ):
+                if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "auth" and cmd[2] == "status":
                     # 認証なしをシミュレーション（トークン未設定のテストを通すため）
-                    return types.SimpleNamespace(
-                        stdout="", stderr="not logged in", returncode=1
-                    )
-                if (
-                    isinstance(cmd, (list, tuple))
-                    and len(cmd) >= 3
-                    and cmd[1] == "pr"
-                    and cmd[2] == "checks"
-                ):
+                    return types.SimpleNamespace(stdout="", stderr="not logged in", returncode=1)
+                if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "pr" and cmd[2] == "checks":
                     # タブ区切り形式の一例（PASS）
                     out_text = "CI / build\tPASS\t1m\thttps://example/check\n"
-                elif (
-                    isinstance(cmd, (list, tuple))
-                    and len(cmd) >= 3
-                    and cmd[1] == "run"
-                    and cmd[2] == "list"
-                ):
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "list":
                     out_text = "[]"
-                elif (
-                    isinstance(cmd, (list, tuple))
-                    and len(cmd) >= 3
-                    and cmd[1] == "run"
-                    and cmd[2] == "view"
-                    and "--json" in cmd
-                ):
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "view" and "--json" in cmd:
                     out_text = '{"jobs":[]}'
-                elif (
-                    isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "api"
-                ):
+                elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "api":
                     # zip ログ取得など。text=False の呼び出しにも対応
                     pass  # 出力は下で text フラグに応じて生成
                 else:
@@ -385,12 +365,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 # --version チェックや exec をダミー成功
                 out_text = ""
 
-            if (
-                isinstance(cmd, (list, tuple))
-                and len(cmd) >= 2
-                and cmd[0] == "gh"
-                and cmd[1] == "api"
-            ):
+            if isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == "gh" and cmd[1] == "api":
                 # API 呼び出しはバイナリ or テキスト空出力でOK
                 if text:
                     stdout, stderr = _as_text_or_bytes("", True)
@@ -512,9 +487,7 @@ def _apply_graphrag_mock_to_compatibility_tests(request, monkeypatch):
                 return f"Repo_TEST{num}"
             return "Repo_TEST123"
 
-        mock_instance.get_repo_label_for_session.side_effect = (
-            get_repo_label_side_effect
-        )
+        mock_instance.get_repo_label_for_session.side_effect = get_repo_label_side_effect
         mock_instance.get_repository_label.return_value = "Repo_TEST123"
         mock_instance.ensure_ready.return_value = True
 
@@ -523,9 +496,7 @@ def _apply_graphrag_mock_to_compatibility_tests(request, monkeypatch):
         # Patch the GraphRAGMCPIntegration in the module where it's imported
         import src.auto_coder.graphrag_mcp_integration as grag_module
 
-        monkeypatch.setattr(
-            grag_module, "GraphRAGMCPIntegration", mock_integration_class
-        )
+        monkeypatch.setattr(grag_module, "GraphRAGMCPIntegration", mock_integration_class)
 
 
 @pytest.fixture
@@ -576,10 +547,7 @@ def compatibility_graphrag_setup():
     """Setup for backward compatibility testing."""
     from unittest.mock import Mock
 
-    from src.auto_coder.graphrag_mcp_integration import (
-        BackwardCompatibilityLayer,
-        GraphRAGMCPIntegration,
-    )
+    from src.auto_coder.graphrag_mcp_integration import BackwardCompatibilityLayer, GraphRAGMCPIntegration
 
     # Get the mocked GraphRAGMCPIntegration (already patched by autouse fixture)
     mock_integration = GraphRAGMCPIntegration()
@@ -600,9 +568,7 @@ def mock_code_tool():
     mock_tool.find_symbol = Mock(return_value={"symbol": {"id": "test"}})
     mock_tool.get_call_graph = Mock(return_value={"nodes": [], "edges": []})
     mock_tool.get_dependencies = Mock(return_value={"imports": [], "imported_by": []})
-    mock_tool.impact_analysis = Mock(
-        return_value={"affected_symbols": [], "affected_files": []}
-    )
+    mock_tool.impact_analysis = Mock(return_value={"affected_symbols": [], "affected_files": []})
     mock_tool.semantic_code_search = Mock(return_value={"symbols": []})
     mock_tool.semantic_code_search_in_collection = Mock(return_value={"symbols": []})
     return mock_tool
@@ -610,28 +576,29 @@ def mock_code_tool():
 
 # Backend Manager Test Fixtures
 
+
 @pytest.fixture(autouse=True)
 def mock_backend_manager():
     """Mock LLM backend manager for testing."""
     from unittest.mock import Mock
-    
+
     # Reset singleton before setting up mock
     LLMBackendManager.reset_singleton()
-    
+
     # Create a mock gemini client
     mock_gemini_client = Mock()
     mock_gemini_client.model_name = "gemini-2.5-pro"
-    
+
     # Create mock backend manager
     mock_manager = Mock()
     mock_manager.get_last_backend_and_model.return_value = ("gemini", "gemini-2.5-pro")
     mock_manager._run_llm_cli.return_value = "Test response"
-    
+
     # Initialize the singleton with our mock
     get_llm_backend_manager(
         default_backend="gemini",
         default_client=mock_gemini_client,
         factories={"gemini": lambda: mock_gemini_client},
     )
-    
+
     return mock_manager

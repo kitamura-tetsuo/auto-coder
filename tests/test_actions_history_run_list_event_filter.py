@@ -6,12 +6,8 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.util.github_action import _check_github_actions_status_from_history
 
 
-def _cmd_result(
-    success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0
-):
-    return SimpleNamespace(
-        success=success, stdout=stdout, stderr=stderr, returncode=returncode
-    )
+def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):
+    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
 
 
 def test_commit_search_prefers_pull_request_runs_without_event_flag():
@@ -60,13 +56,9 @@ def test_commit_search_prefers_pull_request_runs_without_event_flag():
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
             # どの呼び出しでも --event/--commit フラグは使わない
-            assert (
-                "--event" not in cmd and "--commit" not in cmd
-            ), f"unexpected flags in command: {cmd}"
+            assert "--event" not in cmd and "--commit" not in cmd, f"unexpected flags in command: {cmd}"
             # 1回目の list で commit 相当のフィルタ結果を返す
-            return _cmd_result(
-                True, stdout=json.dumps(commit_runs_payload), stderr="", returncode=0
-            )
+            return _cmd_result(True, stdout=json.dumps(commit_runs_payload), stderr="", returncode=0)
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_payload = {
                 "jobs": [
@@ -78,17 +70,11 @@ def test_commit_search_prefers_pull_request_runs_without_event_flag():
                     }
                 ]
             }
-            return _cmd_result(
-                True, stdout=json.dumps(jobs_payload), stderr="", returncode=0
-            )
+            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch(
-        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
-    ):
-        result = _check_github_actions_status_from_history(
-            "owner/repo", pr_data, config
-        )
+    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is False
     # 遅延取得によりchecksは空になっていることを確認
@@ -142,23 +128,17 @@ def test_fallback_search_works_without_event_flag():
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
             # どの呼び出しでも --event/--commit フラグは使わない
-            assert (
-                "--event" not in cmd and "--commit" not in cmd
-            ), f"unexpected flags in command: {cmd}"
+            assert "--event" not in cmd and "--commit" not in cmd, f"unexpected flags in command: {cmd}"
             # Check if this is a branch-based call (-b option)
             if "-b" in cmd:
                 # Branch-based run list - should return the test data
-                return _cmd_result(
-                    True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
-                )
+                return _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
             elif call_count["list"] == 1:
                 # 1回目（commit 相当）はヒットしない
                 return _cmd_result(True, stdout="[]", stderr="", returncode=0)
             else:
                 # 2回目（フォールバック）はヒット
-                return _cmd_result(
-                    True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
-                )
+                return _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
         if cmd[:3] == ["gh", "run", "view"]:
             jobs_payload = {
                 "jobs": [
@@ -170,17 +150,11 @@ def test_fallback_search_works_without_event_flag():
                     }
                 ]
             }
-            return _cmd_result(
-                True, stdout=json.dumps(jobs_payload), stderr="", returncode=0
-            )
+            return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch(
-        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
-    ):
-        result = _check_github_actions_status_from_history(
-            "owner/repo", pr_data, config
-        )
+    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
     # 遅延取得によりchecksは空になっていることを確認

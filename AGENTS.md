@@ -18,14 +18,13 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * Do not use mocks in end-to-end (e2e) tests.
 * Run e2e tests in headless mode.
 * Do not return Dict[str, Any]. Use @dataclass with initial values instead.
-* Write coments and messages in English.
+* Write comments and messages in English.
 * Remove backwards compatibility code and unused code and dependencies.
 
 ### Project Structure
 
 * Maintain a standard Python project structure.
 * Document all features in `docs/client-features.yaml` as soon as possible.
-* Document all features in `docs/client-features.ja.yaml` in japanease.
 * Read `docs/client-features.yaml` to comply with specifications and not to degrade.
 * Do not create duplicate functions in multiple locations.
 
@@ -49,14 +48,17 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 ### CI/PR Checks
 
 * Make PR checks via GitHub Actions mandatory.
-* Workflow file: `.github/workflows/ci.yml` (name: `CI`)
-* Required jobs:
+* Workflow files:
+  * `.github/workflows/pr-tests.yml` (name: `PR Tests`)
+  * `.github/workflows/update-version.yml` (name: `Update Version`)
+* Required jobs in `PR Tests`:
   * **Lint & Type Check** (black / isort / flake8 / mypy)
-  * **Tests (pytest)** (Python 3.11 / 3.12 matrix)
+  * **Tests with Coverage** (pytest with coverage reports)
+  * Target Python version: 3.11
 * Branch protection should include the following required status checks:
-  * `CI / Lint & Type Check`
-  * `CI / Tests (pytest) (3.11)`
-  * `CI / Tests (pytest) (3.12)`
+  * `PR Tests / Lint & Type Check`
+  * `PR Tests / Tests with Coverage`
+  * `Update Version / update-version` (for main branch)
 
 ### LLM Execution Policy (Important)
 
@@ -81,6 +83,11 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
   * Check for the existence of `TEST_SCRIPT_PATH` only *once at startup*.
     If missing, immediately terminate with an error.
     No fallback checks should occur afterward.
+  * The `scripts/test.sh` script now supports:
+    - Preferred uv runner for consistent, reproducible environments
+    - Fallback to system Python's pytest when uv is not available
+    - Optional local virtualenv activation via AC_USE_LOCAL_VENV=1
+    - Always enables auto-syncing dependencies with uv
 
 ### Git Commit/Push Policy (English)
 * Centralize all `git commit` and `git push` operations through dedicated helper routines.

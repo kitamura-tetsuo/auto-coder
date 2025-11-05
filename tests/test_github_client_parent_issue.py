@@ -83,9 +83,7 @@ class TestGitHubClientParentIssue:
         client = GitHubClient("test_token")
 
         # Mock subprocess error
-        mock_subprocess_run.side_effect = subprocess.CalledProcessError(
-            1, "gh api graphql", stderr="GraphQL error"
-        )
+        mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")
 
         result = client.get_parent_issue("owner/repo", 1)
         # Should return None on error

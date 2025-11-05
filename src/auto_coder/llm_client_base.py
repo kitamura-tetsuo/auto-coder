@@ -37,9 +37,7 @@ class LLMClientBase(ABC):
         pass
 
     @abstractmethod
-    def add_mcp_server_config(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration for this LLM client.
 
         Args:
@@ -52,9 +50,7 @@ class LLMClientBase(ABC):
         """
         pass
 
-    def ensure_mcp_server_configured(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def ensure_mcp_server_configured(self, server_name: str, command: str, args: list[str]) -> bool:
         """Ensure a specific MCP server is configured, adding it if necessary.
 
         This is a convenience method that checks if the server is configured,
@@ -103,9 +99,7 @@ class LLMBackendManagerBase(LLMClientBase):
     """
 
     @abstractmethod
-    def run_test_fix_prompt(
-        self, prompt: str, current_test_file: Optional[str] = None
-    ) -> str:
+    def run_test_fix_prompt(self, prompt: str, current_test_file: Optional[str] = None) -> str:
         """Execute LLM for test fix with optional test file tracking.
 
         Args:

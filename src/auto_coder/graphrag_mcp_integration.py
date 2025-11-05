@@ -61,9 +61,7 @@ class GraphRAGMCPIntegration:
         else:
             repo_path = Path(repo_path)
 
-        repo_hash = (
-            hashlib.sha256(str(repo_path.resolve()).encode()).hexdigest()[:8].upper()
-        )
+        repo_hash = hashlib.sha256(str(repo_path.resolve()).encode()).hexdigest()[:8].upper()
         return f"Repo_{repo_hash}"
 
     def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
@@ -92,9 +90,7 @@ class GraphRAGMCPIntegration:
                         logger.info("Docker containers started successfully")
                         break
                     else:
-                        logger.warning(
-                            f"Failed to start Docker containers (attempt {attempt + 1}/{max_retries})"
-                        )
+                        logger.warning(f"Failed to start Docker containers (attempt {attempt + 1}/{max_retries})")
                         if attempt < max_retries - 1:
                             logger.info("Retrying after cleanup...")
                             # Try to stop containers before retry
@@ -103,9 +99,7 @@ class GraphRAGMCPIntegration:
 
                             time.sleep(2)
                 except Exception as e:
-                    logger.error(
-                        f"Error starting Docker containers (attempt {attempt + 1}/{max_retries}): {e}"
-                    )
+                    logger.error(f"Error starting Docker containers (attempt {attempt + 1}/{max_retries}): {e}")
                     if attempt < max_retries - 1:
                         logger.info("Retrying after cleanup...")
                         try:
@@ -116,10 +110,7 @@ class GraphRAGMCPIntegration:
 
                         time.sleep(2)
             else:
-                logger.error(
-                    "Failed to start Docker containers after all retries. "
-                    "Please check Docker installation and docker-compose.graphrag.yml configuration."
-                )
+                logger.error("Failed to start Docker containers after all retries. " "Please check Docker installation and docker-compose.graphrag.yml configuration.")
                 return False
         else:
             logger.info("Docker containers are already running")
@@ -138,10 +129,7 @@ class GraphRAGMCPIntegration:
                     logger.error("Failed to force update index.")
                     return False
             elif indexed_path is not None and not path_matches:
-                logger.warning(
-                    f"Indexed path mismatch: indexed={indexed_path}, "
-                    f"current={self.index_manager.repo_path.resolve()}"
-                )
+                logger.warning(f"Indexed path mismatch: indexed={indexed_path}, " f"current={self.index_manager.repo_path.resolve()}")
                 logger.info("Updating index for current directory...")
                 # Force update when path changes
                 if not self.index_manager.update_index(force=True):
@@ -161,10 +149,7 @@ class GraphRAGMCPIntegration:
             logger.info("Starting GraphRAG MCP server...")
             try:
                 if not self.start_mcp_server():
-                    logger.error(
-                        "Failed to start MCP server. "
-                        "Check GRAPHRAG_MCP_SERVER_PATH environment variable."
-                    )
+                    logger.error("Failed to start MCP server. " "Check GRAPHRAG_MCP_SERVER_PATH environment variable.")
                     return False
             except Exception as e:
                 logger.error(f"Error starting MCP server: {e}")
@@ -235,9 +220,7 @@ class GraphRAGMCPIntegration:
 
         # Check if any MCP server process is running (started by another terminal)
         try:
-            result = subprocess.run(
-                ["ps", "aux"], capture_output=True, text=True, timeout=5
-            )
+            result = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
             # Look for graphrag_mcp main.py process
             for line in result.stdout.splitlines():
                 if "graphrag_mcp" in line and "main.py" in line and "grep" not in line:
