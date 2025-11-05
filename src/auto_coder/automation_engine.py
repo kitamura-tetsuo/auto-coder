@@ -71,6 +71,15 @@ class AutomationEngine:
             if "@auto-coder" in labels:
                 continue
 
+            # ボット作成した PR をスキップ（dependabot, renovate, etc.）
+            author = pr_data.get("author")
+            if author and isinstance(author, dict):
+                author_login = author.get("login", "")
+                # 一般的なボット名をリスト化
+                bot_authors = ["app/dependabot", "dependabot-preview", "renovate-bot", "dependabot[bot]"]
+                if author_login in bot_authors or author_login.endswith("[bot]"):
+                    continue
+
             # 優先度計算
             checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
             mergeable = pr_data.get("mergeable", True)
