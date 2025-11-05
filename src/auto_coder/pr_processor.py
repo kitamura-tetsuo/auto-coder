@@ -574,7 +574,7 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
 
     try:
         # Get PR branch information
-        branch_name = pr_data.get("head", {}).get("ref", f"pr-{pr_number}")
+        branch_name = pr_data.get("head", {}).get("ref", f"issue-{pr_number}")
 
         log_action(f"Attempting manual checkout of branch '{branch_name}' for PR #{pr_number}")
 
