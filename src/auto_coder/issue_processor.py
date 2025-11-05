@@ -117,7 +117,7 @@ def _process_issues_normal(
                 }
 
                 try:
-                    # 単回実行での直接アクション（CLI）
+                    # Direct action for single execution (CLI)
                     with ProgressStage("Processing"):
                         actions = _take_issue_actions(
                             repo_name,
@@ -461,57 +461,57 @@ def _apply_issue_actions_directly(
                 logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
                 actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
 
-        # ブランチ切り替え: PRで指定されているブランチがあればそこへ、なければ作業用ブランチを作成
+        # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
         target_branch = None
-        pr_base_branch = config.MAIN_BRANCH  # PRのマージ先ブランチ（親issueがある場合は親issueブランチ）
+        pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
         if "head_branch" in issue_data:
-            # PRの場合はhead_branchに切り替え
+            # For PRs, switch to head_branch
             target_branch = issue_data.get("head_branch")
             logger.info(f"Switching to PR branch: {target_branch}")
 
-            # ブランチを切り替え
+            # Switch to branch
             checkout_result = git_checkout_branch(target_branch)
             if checkout_result.success:
                 actions.append(f"Switched to branch: {target_branch}")
                 logger.info(f"Successfully switched to branch: {target_branch}")
             else:
-                # ブランチ切り替えに失敗した場合は処理を終了
+                # Exit if branch switching fails
                 error_msg = f"Failed to switch to branch {target_branch}: {checkout_result.stderr}"
                 actions.append(error_msg)
                 logger.error(error_msg)
                 return actions
         else:
-            # 通常のissueの場合は作業用ブランチを作成
+            # For regular issues, create a work branch
             work_branch = f"issue-{issue_number}"
             logger.info(f"Creating work branch for issue: {work_branch}")
 
-            # 親issueを確認
+            # Check for parent issue
             parent_issue_number = github_client.get_parent_issue(repo_name, issue_number)
 
             base_branch = config.MAIN_BRANCH
             if parent_issue_number:
-                # 親issueが存在する場合、親issueのブランチを基準にする
+                # If parent issue exists, use parent issue branch as base
                 parent_branch = f"issue-{parent_issue_number}"
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
 
-                # 親issueのブランチが存在するか確認
+                # Check if parent issue branch exists
                 check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
 
                 if check_parent_branch.returncode == 0:
-                    # 親issueのブランチが存在する場合はそれを使用
+                    # Use parent issue branch if it exists
                     base_branch = parent_branch
-                    pr_base_branch = parent_branch  # PRのマージ先も親issueブランチに設定
+                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
                     logger.info(f"Parent branch {parent_branch} exists, using it as base")
 
-                    # ブランチを最新状態へ更新
+                    # Update branch to latest state
                     switch_result = switch_to_branch(parent_branch, pull_after_switch=True)
                     if not switch_result.success:
                         logger.warning(f"Failed to pull latest changes from {parent_branch}: {switch_result.stderr}")
                 else:
-                    # 親issueのブランチが存在しない場合は作成
+                    # Create parent issue branch if it doesn't exist
                     logger.info(f"Parent branch {parent_branch} does not exist, creating it")
 
-                    # まずデフォルトブランチに切り替え
+                    # First switch to default branch
                     switch_main_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
                     if not switch_main_result.success:
                         error_msg = f"Failed to switch to main branch {config.MAIN_BRANCH}: {switch_main_result.stderr}"
@@ -519,24 +519,24 @@ def _apply_issue_actions_directly(
                         logger.error(error_msg)
                         return actions
 
-                    # 親issueのブランチを作成（自動的にリモートにプッシュされる）
+                    # Create parent issue branch (automatically pushed to remote)
                     create_parent_result = git_checkout_branch(parent_branch, create_new=True)
                     if create_parent_result.success:
                         actions.append(f"Created and published parent branch: {parent_branch}")
                         logger.info(f"Successfully created and published parent branch: {parent_branch}")
 
                         base_branch = parent_branch
-                        pr_base_branch = parent_branch  # PRのマージ先も親issueブランチに設定
+                        pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
                     else:
                         logger.warning(f"Failed to create parent branch {parent_branch}: {create_parent_result.stderr}")
-                        # 親ブランチの作成に失敗した場合はデフォルトブランチを使用
+                        # Use default branch if parent branch creation fails
                         base_branch = config.MAIN_BRANCH
 
-            # 作業用ブランチが既に存在するかチェック
+            # Check if work branch already exists
             check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])
 
             if check_work_branch.returncode == 0:
-                # 作業用ブランチが既に存在する場合は、それに切り替え
+                # If work branch exists, switch to it
                 logger.info(f"Work branch {work_branch} already exists, switching to it")
                 checkout_existing_result = git_checkout_branch(work_branch)
                 if checkout_existing_result.success:
@@ -549,10 +549,10 @@ def _apply_issue_actions_directly(
                     logger.error(error_msg)
                     return actions
             else:
-                # 作業用ブランチが存在しない場合は、ベースブランチから新規作成
+                # If work branch doesn't exist, create new from base branch
                 logger.info(f"Work branch {work_branch} does not exist, creating from {base_branch}")
 
-                # ベースブランチに切り替え
+                # Switch to base branch
                 switch_base_result = switch_to_branch(base_branch, pull_after_switch=True)
                 if not switch_base_result.success:
                     error_msg = f"Failed to switch to base branch {base_branch}: {switch_base_result.stderr}"
@@ -560,7 +560,7 @@ def _apply_issue_actions_directly(
                     logger.error(error_msg)
                     return actions
 
-                # 作業用ブランチを作成して切り替え
+                # Create and switch to work branch
                 checkout_new_result = git_checkout_branch(work_branch, create_new=True)
                 if checkout_new_result.success:
                     actions.append(f"Created and switched to work branch: {work_branch} from {base_branch}")

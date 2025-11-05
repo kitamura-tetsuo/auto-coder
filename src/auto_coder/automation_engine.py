@@ -44,42 +44,42 @@ class AutomationEngine:
         # so we do not create one here (created in _save_report)
 
     def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
-        """PR/Issue 候補を優先度付きで収集する。
+        """Collect PR/Issue candidates with priority.
 
-        優先度定義:
-        - 3: 'urgent' ラベルの PR / Issue（最優先）
-        - 2: マージ可能かつ GitHub Actions が成功している PR（自動マージ候補）
-        - 1: 修正が必要な PR（GH Actions 失敗 or mergeable=False）
-        - 0: 通常の Issue
+        Priority definitions:
+        - 3: PR/Issue with 'urgent' label (highest priority)
+        - 2: Mergeable PR with successful GitHub Actions (auto-merge candidate)
+        - 1: PR requiring fixes (GH Actions failed or mergeable=False)
+        - 0: Regular issues
 
-        ソート順:
-        - 優先度降順（3 -> 0）
-        - 作成日時昇順（古いものから）
+        Sort order:
+        - Priority descending (3 -> 0)
+        - Creation time ascending (oldest first)
         """
         from .pr_processor import _check_github_actions_status as _pr_check_github_actions_status
         from .pr_processor import _extract_linked_issues_from_pr_body
 
         candidates: List[Dict[str, Any]] = []
 
-        # PR 候補収集
+        # Collect PR candidates
         prs = self.github.get_open_pull_requests(repo_name)
         for pr in prs:
             pr_data = self.github.get_pr_details(pr)
             labels = pr_data.get("labels", []) or []
 
-            # @auto-coder ラベル付きはスキップ
+            # Skip if has @auto-coder label
             if "@auto-coder" in labels:
                 continue
 
-            # ボット作成した PR をスキップ（dependabot, renovate, etc.）
+            # Skip PRs created by bots (dependabot, renovate, etc.)
             author = pr_data.get("author")
             if author:
-                # 一般的なボット名をリスト化
+                # List common bot author names
                 bot_authors = ["app/dependabot", "dependabot-preview", "renovate-bot", "dependabot[bot]"]
                 if author in bot_authors or author.endswith("[bot]"):
                     continue
 
-            # 優先度計算
+            # Calculate priority
             checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
             mergeable = pr_data.get("mergeable", True)
             pr_priority = 3 if (checks.success and mergeable) else 2
@@ -98,17 +98,17 @@ class AutomationEngine:
             )
 
         if len(candidates) < 5:
-            # Issue 候補収集
+            # Collect issue candidates
             issues = self.github.get_open_issues(repo_name)
             for issue in issues:
                 issue_data = self.github.get_issue_details(issue)
                 labels = issue_data.get("labels", []) or []
 
-                # @auto-coder ラベル付きはスキップ
+                # Skip if has @auto-coder label
                 if "@auto-coder" in labels:
                     continue
 
-                # サブ Issue やリンク済み PR がある場合はスキップ
+                # Skip if has sub-issues or linked PR
                 number = issue_data.get("number")
                 if self.github.get_open_sub_issues(repo_name, number):
                     continue
@@ -126,7 +126,7 @@ class AutomationEngine:
                     }
                 )
 
-        # 優先度降順、種別（issue優先）、作成日時昇順でソート
+        # Sort by priority descending, type (issue first), creation time ascending
         def _type_order(t: str) -> int:
             return 0 if t == "issue" else 1
 
@@ -138,16 +138,16 @@ class AutomationEngine:
             )
         )
 
-        # 上限数指定がある場合はカット
+        # Trim if max items specified
         if isinstance(max_items, int) and max_items > 0:
             candidates = candidates[:max_items]
 
         return candidates
 
     def _has_open_sub_issues(self, repo_name: str, candidate: Dict[str, Any]) -> bool:
-        """対象の課題に未解決のサブ課題が存在するかを確認するフェイルセーフなヘルパー。
-        - candidate は _get_candidates で構成された要素を想定（type: issue）
-        - 例外時は False を返してスキップ抑制を避ける
+        """Fail-safe helper to check if target issue has unresolved sub-issues.
+        - candidate is expected to be an element from _get_candidates (type: issue)
+        - Returns False on exception to avoid skip suppression
         """
         try:
             if candidate.get("type") != "issue":
@@ -163,15 +163,15 @@ class AutomationEngine:
             return False
 
     def _process_single_candidate(self, repo_name: str, candidate: Dict[str, Any], jules_mode: bool = False) -> Dict[str, Any]:
-        """単一の候補者（issue/PR）を処理する。
+        """Process a single candidate (issue/PR).
 
         Args:
-            repo_name: リポジトリ名
-            candidate: 処理対象候補者
-            jules_mode: Jules モードかどうか
+            repo_name: Repository name
+            candidate: Target candidate to process
+            jules_mode: Whether Jules mode is enabled
 
         Returns:
-            処理結果
+            Processing result
         """
         result = {
             "type": candidate.get("type"),
@@ -184,11 +184,11 @@ class AutomationEngine:
 
         try:
             if candidate.get("type") == "issue":
-                # Issue処理
+                # Issue processing
                 result["actions"] = self._take_issue_actions(repo_name, candidate["data"])
                 result["success"] = True
             elif candidate.get("type") == "pr":
-                # PR処理
+                # PR processing
                 result["actions"] = process_pull_request(self.github, self.config, self.dry_run, repo_name, candidate["data"])
                 result["success"] = True
         except Exception as e:
