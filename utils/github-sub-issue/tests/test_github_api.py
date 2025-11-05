@@ -1,4 +1,4 @@
-"""GitHub API のテスト."""
+"""Tests for GitHub API."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -9,11 +9,11 @@ from gh_sub_issue.github_api import GitHubSubIssueAPI
 
 
 class TestGitHubSubIssueAPI:
-    """GitHubSubIssueAPI のテストクラス."""
+    """Test class for GitHubSubIssueAPI."""
 
     @patch("subprocess.run")
     def test_get_current_repo(self, mock_run: MagicMock) -> None:
-        """現在のリポジトリ名を取得できることを確認."""
+        """Verify that current repository name can be obtained."""
         mock_run.return_value = MagicMock(
             stdout="owner/repo\n",
             returncode=0,
@@ -29,28 +29,28 @@ class TestGitHubSubIssueAPI:
         assert args[2] == "view"
 
     def test_parse_issue_reference_number(self) -> None:
-        """issue 番号を解析できることを確認."""
+        """Verify that issue number can be parsed."""
         api = GitHubSubIssueAPI(repo="owner/repo")
         repo, number = api._parse_issue_reference("123")
         assert repo == "owner/repo"
         assert number == 123
 
     def test_parse_issue_reference_url(self) -> None:
-        """issue URL を解析できることを確認."""
+        """Verify that issue URL can be parsed."""
         api = GitHubSubIssueAPI(repo="owner/repo")
         repo, number = api._parse_issue_reference("https://github.com/other/repo/issues/456")
         assert repo == "other/repo"
         assert number == 456
 
     def test_parse_issue_reference_invalid(self) -> None:
-        """無効な issue 参照でエラーになることを確認."""
+        """Verify that error occurs with invalid issue reference."""
         api = GitHubSubIssueAPI(repo="owner/repo")
         with pytest.raises(ValueError, match="Invalid issue reference"):
             api._parse_issue_reference("invalid")
 
     @patch("subprocess.run")
     def test_get_issue_id(self, mock_run: MagicMock) -> None:
-        """issue ID を取得できることを確認."""
+        """Verify that issue ID can be obtained."""
         mock_run.return_value = MagicMock(
             stdout="I_kwDOOakzpM6yyU6H\n",
             returncode=0,
@@ -69,8 +69,8 @@ class TestGitHubSubIssueAPI:
 
     @patch("subprocess.run")
     def test_add_sub_issue(self, mock_run: MagicMock) -> None:
-        """sub-issue を追加できることを確認."""
-        # _get_issue_id の呼び出し (2回)
+        """Verify that sub-issue can be added."""
+        # _get_issue_id call (2 times)
         mock_run.side_effect = [
             MagicMock(stdout="I_parent\n", returncode=0),  # parent ID
             MagicMock(stdout="I_child\n", returncode=0),   # child ID
@@ -93,7 +93,7 @@ class TestGitHubSubIssueAPI:
         assert result["data"]["addSubIssue"]["issue"]["number"] == 123
         assert result["data"]["addSubIssue"]["subIssue"]["number"] == 456
 
-        # GraphQL mutation の呼び出しを確認
+        # Verify GraphQL mutation call
         graphql_call = mock_run.call_args_list[2]
         args = graphql_call[0][0]
         assert args[0] == "gh"
@@ -104,7 +104,7 @@ class TestGitHubSubIssueAPI:
 
     @patch("subprocess.run")
     def test_remove_sub_issue(self, mock_run: MagicMock) -> None:
-        """sub-issue を削除できることを確認."""
+        """Verify that sub-issue can be removed."""
         mock_run.side_effect = [
             MagicMock(stdout="I_parent\n", returncode=0),
             MagicMock(stdout="I_child\n", returncode=0),
@@ -129,7 +129,7 @@ class TestGitHubSubIssueAPI:
 
     @patch("subprocess.run")
     def test_list_sub_issues(self, mock_run: MagicMock) -> None:
-        """sub-issue の一覧を取得できることを確認."""
+        """Verify that list of sub-issues can be obtained."""
         mock_run.return_value = MagicMock(
             stdout=json.dumps({
                 "data": {
@@ -211,7 +211,7 @@ class TestGitHubSubIssueAPI:
         assert result["title"] == "New Issue"
         assert "https://github.com/owner/repo/issues/789" in result["url"]
 
-        # gh issue create の呼び出しを確認
+        # Verify gh issue create call
         create_call = mock_run.call_args_list[0]
         args = create_call[0][0]
         assert args[0] == "gh"
