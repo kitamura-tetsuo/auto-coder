@@ -8,13 +8,9 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 from src.auto_coder.utils import CommandExecutor
 
 
-def test_create_pr_prompt_is_action_oriented_no_comments(
-    mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name
-):
+def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
     engine = AutomationEngine(mock_github_client, dry_run=True)
-    prompt = engine._create_pr_analysis_prompt(
-        test_repo_name, sample_pr_data, pr_diff="diff..."
-    )
+    prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
 
     assert "Do NOT post any comments" in prompt
     # Should NOT ask LLM to commit/push or merge

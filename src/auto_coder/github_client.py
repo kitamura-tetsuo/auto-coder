@@ -36,9 +36,7 @@ class GitHubClient:
             logger.error(f"Failed to get repository {repo_name}: {e}")
             raise
 
-    def get_open_issues(
-        self, repo_name: str, limit: Optional[int] = None
-    ) -> List[Issue.Issue]:
+    def get_open_issues(self, repo_name: str, limit: Optional[int] = None) -> List[Issue.Issue]:
         """Get open issues from repository, sorted by creation date (oldest first)."""
         try:
             repo = self.get_repository(repo_name)
@@ -72,18 +70,14 @@ class GitHubClient:
             if isinstance(limit, int) and limit > 0:
                 issue_list = issue_list[:limit]
 
-            logger.info(
-                f"Retrieved {len(issue_list)} open issues from {repo_name} (oldest first)"
-            )
+            logger.info(f"Retrieved {len(issue_list)} open issues from {repo_name} (oldest first)")
             return issue_list
 
         except GithubException as e:
             logger.error(f"Failed to get issues from {repo_name}: {e}")
             raise
 
-    def get_open_pull_requests(
-        self, repo_name: str, limit: Optional[int] = None
-    ) -> List[PullRequest.PullRequest]:
+    def get_open_pull_requests(self, repo_name: str, limit: Optional[int] = None) -> List[PullRequest.PullRequest]:
         """Get open pull requests from repository, sorted by creation date (oldest first)."""
         try:
             repo = self.get_repository(repo_name)
@@ -94,9 +88,7 @@ class GitHubClient:
             if isinstance(limit, int) and limit > 0:
                 pr_list = pr_list[:limit]
 
-            logger.info(
-                f"Retrieved {len(pr_list)} open pull requests from {repo_name} (oldest first)"
-            )
+            logger.info(f"Retrieved {len(pr_list)} open pull requests from {repo_name} (oldest first)")
             return pr_list
 
         except GithubException as e:
@@ -144,9 +136,7 @@ class GitHubClient:
             "changed_files": pr.changed_files,
         }
 
-    def get_pr_details_by_number(
-        self, repo_name: str, pr_number: int
-    ) -> Dict[str, Any]:
+    def get_pr_details_by_number(self, repo_name: str, pr_number: int) -> Dict[str, Any]:
         """Get PR details by repository name and PR number."""
         try:
             repo = self.get_repository(repo_name)
@@ -156,9 +146,7 @@ class GitHubClient:
             logger.error(f"Failed to get PR #{pr_number} from {repo_name}: {e}")
             raise
 
-    def get_issue_details_by_number(
-        self, repo_name: str, issue_number: int
-    ) -> Dict[str, Any]:
+    def get_issue_details_by_number(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
         """Get Issue details by repository name and issue number."""
         try:
             repo = self.get_repository(repo_name)
@@ -168,9 +156,7 @@ class GitHubClient:
             logger.error(f"Failed to get Issue #{issue_number} from {repo_name}: {e}")
             raise
 
-    def find_pr_by_head_branch(
-        self, repo_name: str, branch_name: str
-    ) -> Optional[Dict[str, Any]]:
+    def find_pr_by_head_branch(self, repo_name: str, branch_name: str) -> Optional[Dict[str, Any]]:
         """Find an open PR by its head branch name.
 
         Args:
@@ -184,21 +170,15 @@ class GitHubClient:
             prs = self.get_open_pull_requests(repo_name)
             for pr in prs:
                 if pr.head.ref == branch_name:
-                    logger.info(
-                        f"Found PR #{pr.number} with head branch '{branch_name}'"
-                    )
+                    logger.info(f"Found PR #{pr.number} with head branch '{branch_name}'")
                     return self.get_pr_details(pr)
             logger.debug(f"No open PR found with head branch '{branch_name}'")
             return None
         except Exception as e:
-            logger.warning(
-                f"Failed to search for PR with head branch '{branch_name}': {e}"
-            )
+            logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
 
-    def get_linked_prs_via_graphql(
-        self, repo_name: str, issue_number: int
-    ) -> List[int]:
+    def get_linked_prs_via_graphql(self, repo_name: str, issue_number: int) -> List[int]:
         """Get linked PRs for an issue using GitHub GraphQL API.
 
         Uses gh CLI to query GraphQL API for PRs that have this issue in their
@@ -249,19 +229,11 @@ class GitHubClient:
             )
 
             if result.returncode != 0:
-                logger.warning(
-                    f"GraphQL query failed for issue #{issue_number}: {result.stderr}"
-                )
+                logger.warning(f"GraphQL query failed for issue #{issue_number}: {result.stderr}")
                 return []
 
             data = json.loads(result.stdout)
-            timeline_items = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("issue", {})
-                .get("timelineItems", {})
-                .get("nodes", [])
-            )
+            timeline_items = data.get("data", {}).get("repository", {}).get("issue", {}).get("timelineItems", {}).get("nodes", [])
 
             pr_numbers = []
             for item in timeline_items:
@@ -273,16 +245,12 @@ class GitHubClient:
                             pr_numbers.append(source["number"])
 
             if pr_numbers:
-                logger.info(
-                    f"Found {len(pr_numbers)} linked PR(s) for issue #{issue_number} via GraphQL: {pr_numbers}"
-                )
+                logger.info(f"Found {len(pr_numbers)} linked PR(s) for issue #{issue_number} via GraphQL: {pr_numbers}")
 
             return pr_numbers
 
         except Exception as e:
-            logger.warning(
-                f"Failed to get linked PRs via GraphQL for issue #{issue_number}: {e}"
-            )
+            logger.warning(f"Failed to get linked PRs via GraphQL for issue #{issue_number}: {e}")
             return []
 
     def has_linked_pr(self, repo_name: str, issue_number: int) -> bool:
@@ -314,9 +282,7 @@ class GitHubClient:
             for pr in prs:
                 pr_text = f"{pr.title} {pr.body or ''}".lower()
                 if any(pattern.lower() in pr_text for pattern in issue_ref_patterns):
-                    logger.info(
-                        f"Found linked PR #{pr.number} for issue #{issue_number} (via text search)"
-                    )
+                    logger.info(f"Found linked PR #{pr.number} for issue #{issue_number} (via text search)")
                     return True
 
             return False
@@ -382,34 +348,22 @@ class GitHubClient:
 
             # Extract open sub-issues
             open_sub_issues = []
-            sub_issues = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("issue", {})
-                .get("subIssues", {})
-                .get("nodes", [])
-            )
+            sub_issues = data.get("data", {}).get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
 
             for sub_issue in sub_issues:
                 if sub_issue.get("state") == "OPEN":
                     open_sub_issues.append(sub_issue.get("number"))
 
             if open_sub_issues:
-                logger.info(
-                    f"Issue #{issue_number} has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}"
-                )
+                logger.info(f"Issue #{issue_number} has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
 
             return open_sub_issues
 
         except subprocess.CalledProcessError as e:
-            logger.error(
-                f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}"
-            )
+            logger.error(f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}")
             return []
         except Exception as e:
-            logger.error(
-                f"Failed to get open sub-issues for issue #{issue_number}: {e}"
-            )
+            logger.error(f"Failed to get open sub-issues for issue #{issue_number}: {e}")
             return []
 
     def get_pr_closing_issues(self, repo_name: str, pr_number: int) -> List[int]:
@@ -466,28 +420,18 @@ class GitHubClient:
 
             # Extract closing issues
             closing_issues = []
-            issues = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("pullRequest", {})
-                .get("closingIssuesReferences", {})
-                .get("nodes", [])
-            )
+            issues = data.get("data", {}).get("repository", {}).get("pullRequest", {}).get("closingIssuesReferences", {}).get("nodes", [])
 
             for issue in issues:
                 closing_issues.append(issue.get("number"))
 
             if closing_issues:
-                logger.info(
-                    f"PR #{pr_number} will close {len(closing_issues)} issue(s): {closing_issues}"
-                )
+                logger.info(f"PR #{pr_number} will close {len(closing_issues)} issue(s): {closing_issues}")
 
             return closing_issues
 
         except subprocess.CalledProcessError as e:
-            logger.error(
-                f"Failed to execute gh GraphQL query for PR #{pr_number}: {e.stderr}"
-            )
+            logger.error(f"Failed to execute gh GraphQL query for PR #{pr_number}: {e.stderr}")
             return []
         except Exception as e:
             logger.error(f"Failed to get closing issues for PR #{pr_number}: {e}")
@@ -550,34 +494,23 @@ class GitHubClient:
             data = json.loads(result.stdout)
 
             # Extract parent issue
-            parent_issue = (
-                data.get("data", {})
-                .get("repository", {})
-                .get("issue", {})
-                .get("parent")
-            )
+            parent_issue = data.get("data", {}).get("repository", {}).get("issue", {}).get("parent")
 
             if parent_issue:
                 parent_number = parent_issue.get("number")
-                logger.info(
-                    f"Issue #{issue_number} has parent issue #{parent_number}: {parent_issue.get('title')}"
-                )
+                logger.info(f"Issue #{issue_number} has parent issue #{parent_number}: {parent_issue.get('title')}")
                 return parent_number
 
             return None
 
         except subprocess.CalledProcessError as e:
-            logger.error(
-                f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}"
-            )
+            logger.error(f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}")
             return None
         except Exception as e:
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
 
-    def create_issue(
-        self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None
-    ) -> Issue.Issue:
+    def create_issue(self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None) -> Issue.Issue:
         """Create a new issue in the repository."""
         try:
             repo = self.get_repository(repo_name)
@@ -589,9 +522,7 @@ class GitHubClient:
             logger.error(f"Failed to create issue in {repo_name}: {e}")
             raise
 
-    def add_comment_to_issue(
-        self, repo_name: str, issue_number: int, comment: str
-    ) -> None:
+    def add_comment_to_issue(self, repo_name: str, issue_number: int, comment: str) -> None:
         """Add a comment to an existing issue."""
         try:
             repo = self.get_repository(repo_name)
@@ -603,9 +534,7 @@ class GitHubClient:
             logger.error(f"Failed to add comment to issue #{issue_number}: {e}")
             raise
 
-    def close_issue(
-        self, repo_name: str, issue_number: int, comment: Optional[str] = None
-    ) -> None:
+    def close_issue(self, repo_name: str, issue_number: int, comment: Optional[str] = None) -> None:
         """Close an issue with optional comment."""
         try:
             repo = self.get_repository(repo_name)
@@ -621,14 +550,10 @@ class GitHubClient:
             logger.error(f"Failed to close issue #{issue_number}: {e}")
             raise
 
-    def add_labels_to_issue(
-        self, repo_name: str, issue_number: int, labels: List[str]
-    ) -> None:
+    def add_labels_to_issue(self, repo_name: str, issue_number: int, labels: List[str]) -> None:
         """Add labels to an existing issue."""
         if self.disable_labels:
-            logger.debug(
-                f"Labels disabled - skipping add labels {labels} to issue #{issue_number}"
-            )
+            logger.debug(f"Labels disabled - skipping add labels {labels} to issue #{issue_number}")
             return
 
         try:
@@ -649,14 +574,10 @@ class GitHubClient:
             logger.error(f"Failed to add labels to issue #{issue_number}: {e}")
             raise
 
-    def remove_labels_from_issue(
-        self, repo_name: str, issue_number: int, labels: List[str]
-    ) -> None:
+    def remove_labels_from_issue(self, repo_name: str, issue_number: int, labels: List[str]) -> None:
         """Remove labels from an existing issue."""
         if self.disable_labels:
-            logger.debug(
-                f"Labels disabled - skipping remove labels {labels} from issue #{issue_number}"
-            )
+            logger.debug(f"Labels disabled - skipping remove labels {labels} from issue #{issue_number}")
             return
 
         try:
@@ -667,9 +588,7 @@ class GitHubClient:
             current_labels = [label.name for label in issue.labels]
 
             # Remove specified labels
-            remaining_labels = [
-                label for label in current_labels if label not in labels
-            ]
+            remaining_labels = [label for label in current_labels if label not in labels]
 
             # Update issue with remaining labels
             issue.edit(labels=remaining_labels)
@@ -682,9 +601,7 @@ class GitHubClient:
     def has_label(self, repo_name: str, issue_number: int, label: str) -> bool:
         """Check if an issue has a specific label."""
         if self.disable_labels:
-            logger.debug(
-                f"Labels disabled - skipping check for label '{label}' on issue #{issue_number}"
-            )
+            logger.debug(f"Labels disabled - skipping check for label '{label}' on issue #{issue_number}")
             return False
 
         try:
@@ -700,18 +617,14 @@ class GitHubClient:
             logger.error(f"Failed to check labels for issue #{issue_number}: {e}")
             raise
 
-    def try_add_work_in_progress_label(
-        self, repo_name: str, issue_number: int, label: str = "@auto-coder"
-    ) -> bool:
+    def try_add_work_in_progress_label(self, repo_name: str, issue_number: int, label: str = "@auto-coder") -> bool:
         """Try to add work-in-progress label to an issue.
 
         Returns True if the label was successfully added (issue was not already being processed).
         Returns False if the label already exists (issue is being processed by another instance).
         """
         if self.disable_labels:
-            logger.debug(
-                f"Labels disabled - skipping add '{label}' label to issue #{issue_number}"
-            )
+            logger.debug(f"Labels disabled - skipping add '{label}' label to issue #{issue_number}")
             return True  # Return True to allow processing to continue
 
         try:
@@ -723,9 +636,7 @@ class GitHubClient:
 
             # Check if label already exists
             if label in current_labels:
-                logger.info(
-                    f"Issue #{issue_number} already has '{label}' label - skipping"
-                )
+                logger.info(f"Issue #{issue_number} already has '{label}' label - skipping")
                 return False
 
             # Add the label
@@ -735,7 +646,5 @@ class GitHubClient:
             return True
 
         except GithubException as e:
-            logger.error(
-                f"Failed to add work-in-progress label to issue #{issue_number}: {e}"
-            )
+            logger.error(f"Failed to add work-in-progress label to issue #{issue_number}: {e}")
             raise

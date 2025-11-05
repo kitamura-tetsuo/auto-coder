@@ -84,9 +84,7 @@ class TestWatcherTool:
         # Failed tests tracking for --last-failed
         self.last_failed_tests: Set[str] = set()
 
-        logger.info(
-            f"TestWatcherTool initialized with project root: {self.project_root}"
-        )
+        logger.info(f"TestWatcherTool initialized with project root: {self.project_root}")
 
     def _load_gitignore(self) -> pathspec.PathSpec:
         """Load .gitignore patterns."""
@@ -131,9 +129,7 @@ class TestWatcherTool:
                 }
 
             try:
-                handler = GitIgnoreFileHandler(
-                    self.project_root, self.gitignore_spec, self._on_file_changed
-                )
+                handler = GitIgnoreFileHandler(self.project_root, self.gitignore_spec, self._on_file_changed)
 
                 self.observer = Observer()
                 self.observer.schedule(handler, str(self.project_root), recursive=True)
@@ -253,20 +249,12 @@ class TestWatcherTool:
                     logger.info("All failed tests passed, running full test suite")
                     self.last_failed_tests.clear()
                     # Schedule full test run
-                    threading.Thread(
-                        target=self._run_playwright_tests, args=(False,), daemon=True
-                    ).start()
+                    threading.Thread(target=self._run_playwright_tests, args=(False,), daemon=True).start()
                 elif report["failed"] > 0:
                     # Update failed tests list
-                    self.last_failed_tests = {
-                        test["file"]
-                        for test in report["tests"]
-                        if test["status"] == "failed"
-                    }
+                    self.last_failed_tests = {test["file"] for test in report["tests"] if test["status"] == "failed"}
 
-            logger.info(
-                f"Playwright tests completed: {report['passed']} passed, {report['failed']} failed"
-            )
+            logger.info(f"Playwright tests completed: {report['passed']} passed, {report['failed']} failed")
 
         except Exception as e:
             logger.error(f"Error running Playwright tests: {e}")
@@ -340,9 +328,7 @@ class TestWatcherTool:
                                 if r.get("status") == "failed":
                                     error = r.get("error", {})
                                     if error:
-                                        test_info["error"] = error.get(
-                                            "message", str(error)
-                                        )
+                                        test_info["error"] = error.get("message", str(error))
                                     break
 
                         tests.append(test_info)
@@ -394,28 +380,13 @@ class TestWatcherTool:
         with self.lock:
             if test_type == "all":
                 # Aggregate all test types
-                total_passed = sum(
-                    self.test_results[t].get("passed", 0)
-                    for t in ["unit", "integration", "e2e"]
-                )
-                total_failed = sum(
-                    self.test_results[t].get("failed", 0)
-                    for t in ["unit", "integration", "e2e"]
-                )
-                total_flaky = sum(
-                    self.test_results[t].get("flaky", 0)
-                    for t in ["unit", "integration", "e2e"]
-                )
-                total_skipped = sum(
-                    self.test_results[t].get("skipped", 0)
-                    for t in ["unit", "integration", "e2e"]
-                )
+                total_passed = sum(self.test_results[t].get("passed", 0) for t in ["unit", "integration", "e2e"])
+                total_failed = sum(self.test_results[t].get("failed", 0) for t in ["unit", "integration", "e2e"])
+                total_flaky = sum(self.test_results[t].get("flaky", 0) for t in ["unit", "integration", "e2e"])
+                total_skipped = sum(self.test_results[t].get("skipped", 0) for t in ["unit", "integration", "e2e"])
 
                 # Check if any tests are running
-                running = any(
-                    self.test_results[t].get("status") == "running"
-                    for t in ["unit", "integration", "e2e"]
-                )
+                running = any(self.test_results[t].get("status") == "running" for t in ["unit", "integration", "e2e"])
 
                 if running:
                     return {
@@ -427,17 +398,13 @@ class TestWatcherTool:
                 all_failed_tests = []
                 for test_type_key in ["unit", "integration", "e2e"]:
                     tests = self.test_results[test_type_key].get("tests", [])
-                    all_failed_tests.extend(
-                        [t for t in tests if t.get("status") == "failed"]
-                    )
+                    all_failed_tests.extend([t for t in tests if t.get("status") == "failed"])
 
                 # Collect all flaky tests
                 all_flaky_tests = []
                 for test_type_key in ["unit", "integration", "e2e"]:
                     tests = self.test_results[test_type_key].get("tests", [])
-                    all_flaky_tests.extend(
-                        [t for t in tests if t.get("status") == "flaky"]
-                    )
+                    all_flaky_tests.extend([t for t in tests if t.get("status") == "flaky"])
 
                 result = {
                     "status": "completed",
@@ -447,9 +414,7 @@ class TestWatcherTool:
                         "failed": total_failed,
                         "flaky": total_flaky,
                         "skipped": total_skipped,
-                        "total": (
-                            total_passed + total_failed + total_flaky + total_skipped
-                        ),
+                        "total": (total_passed + total_failed + total_flaky + total_skipped),
                     },
                     "failed_tests": {
                         "count": len(all_failed_tests),
@@ -476,9 +441,7 @@ class TestWatcherTool:
                 if test_type not in self.test_results:
                     return {
                         "status": "error",
-                        "error": (
-                            f"Invalid test type: {test_type}. Must be one of: unit, integration, e2e, all"
-                        ),
+                        "error": (f"Invalid test type: {test_type}. Must be one of: unit, integration, e2e, all"),
                     }
 
                 test_data = self.test_results[test_type]
@@ -487,17 +450,11 @@ class TestWatcherTool:
                     return {
                         "status": "running",
                         "test_type": test_type,
-                        "message": (
-                            f"{test_type} tests are currently running. Please wait."
-                        ),
+                        "message": (f"{test_type} tests are currently running. Please wait."),
                     }
 
-                failed_tests = [
-                    t for t in test_data.get("tests", []) if t.get("status") == "failed"
-                ]
-                flaky_tests = [
-                    t for t in test_data.get("tests", []) if t.get("status") == "flaky"
-                ]
+                failed_tests = [t for t in test_data.get("tests", []) if t.get("status") == "failed"]
+                flaky_tests = [t for t in test_data.get("tests", []) if t.get("status") == "flaky"]
 
                 result = {
                     "status": test_data.get("status", "idle"),
@@ -533,10 +490,7 @@ class TestWatcherTool:
         with self.lock:
             return {
                 "file_watcher_running": self.observer is not None,
-                "playwright_running": (
-                    self.playwright_process is not None
-                    and self.playwright_process.poll() is None
-                ),
+                "playwright_running": (self.playwright_process is not None and self.playwright_process.poll() is None),
                 "project_root": str(self.project_root),
                 "test_results": {
                     "unit": {
@@ -545,9 +499,7 @@ class TestWatcherTool:
                         "failed": self.test_results["unit"].get("failed", 0),
                     },
                     "integration": {
-                        "status": (
-                            self.test_results["integration"].get("status", "idle")
-                        ),
+                        "status": (self.test_results["integration"].get("status", "idle")),
                         "passed": self.test_results["integration"].get("passed", 0),
                         "failed": self.test_results["integration"].get("failed", 0),
                     },

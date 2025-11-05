@@ -151,9 +151,7 @@ def test_is_running_command_failure(docker_manager, mock_executor):
 def test_wait_for_health_success(docker_manager):
     """Test wait_for_health when containers become healthy."""
     with mock.patch.object(docker_manager, "_check_neo4j_health", return_value=True):
-        with mock.patch.object(
-            docker_manager, "_check_qdrant_health", return_value=True
-        ):
+        with mock.patch.object(docker_manager, "_check_qdrant_health", return_value=True):
             result = docker_manager.wait_for_health(timeout=1, check_interval=0.1)
 
     assert result is True
@@ -162,9 +160,7 @@ def test_wait_for_health_success(docker_manager):
 def test_wait_for_health_timeout(docker_manager):
     """Test wait_for_health when timeout is reached."""
     with mock.patch.object(docker_manager, "_check_neo4j_health", return_value=False):
-        with mock.patch.object(
-            docker_manager, "_check_qdrant_health", return_value=False
-        ):
+        with mock.patch.object(docker_manager, "_check_qdrant_health", return_value=False):
             result = docker_manager.wait_for_health(timeout=0.5, check_interval=0.1)
 
     assert result is False
@@ -173,9 +169,7 @@ def test_wait_for_health_timeout(docker_manager):
 def test_get_status(docker_manager):
     """Test get_status returns correct status."""
     with mock.patch.object(docker_manager, "_check_neo4j_health", return_value=True):
-        with mock.patch.object(
-            docker_manager, "_check_qdrant_health", return_value=False
-        ):
+        with mock.patch.object(docker_manager, "_check_qdrant_health", return_value=False):
             status = docker_manager.get_status()
 
     assert status == {"neo4j": True, "qdrant": False}
@@ -301,15 +295,9 @@ def test_detect_docker_compose_command_not_found():
 def test_is_permission_error(docker_manager):
     """Test permission error detection."""
     # Test various permission error messages
-    assert docker_manager._is_permission_error(
-        "permission denied while trying to connect"
-    )
-    assert docker_manager._is_permission_error(
-        "dial unix /var/run/docker.sock: connect: permission denied"
-    )
-    assert docker_manager._is_permission_error(
-        "Got permission denied while trying to connect to the Docker daemon socket"
-    )
+    assert docker_manager._is_permission_error("permission denied while trying to connect")
+    assert docker_manager._is_permission_error("dial unix /var/run/docker.sock: connect: permission denied")
+    assert docker_manager._is_permission_error("Got permission denied while trying to connect to the Docker daemon socket")
 
     # Test non-permission errors
     assert not docker_manager._is_permission_error("connection refused")
@@ -322,9 +310,7 @@ def test_run_docker_compose_with_sudo_retry(docker_manager, mock_executor):
     # First call fails with permission error
     permission_error_result = mock.MagicMock()
     permission_error_result.success = False
-    permission_error_result.stderr = (
-        "permission denied while trying to connect to the Docker daemon socket"
-    )
+    permission_error_result.stderr = "permission denied while trying to connect to the Docker daemon socket"
     permission_error_result.stdout = ""
 
     # Second call (with sudo) succeeds
@@ -406,9 +392,7 @@ def test_get_current_container_id_not_in_container(docker_manager):
 def test_get_graphrag_network_name_success(docker_manager):
     """Test getting GraphRAG network name."""
     with mock.patch("subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(
-            returncode=0, stdout=b"auto-coder_graphrag-network\nother-network\n"
-        )
+        mock_run.return_value = mock.MagicMock(returncode=0, stdout=b"auto-coder_graphrag-network\nother-network\n")
         network_name = docker_manager._get_graphrag_network_name()
 
     assert network_name == "auto-coder_graphrag-network"
@@ -417,9 +401,7 @@ def test_get_graphrag_network_name_success(docker_manager):
 def test_get_graphrag_network_name_not_found(docker_manager):
     """Test getting GraphRAG network name when not found."""
     with mock.patch("subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(
-            returncode=0, stdout=b"other-network\nanother-network\n"
-        )
+        mock_run.return_value = mock.MagicMock(returncode=0, stdout=b"other-network\nanother-network\n")
         network_name = docker_manager._get_graphrag_network_name()
 
     assert network_name is None
@@ -427,9 +409,7 @@ def test_get_graphrag_network_name_not_found(docker_manager):
 
 def test_connect_to_graphrag_network_success(docker_manager):
     """Test connecting to GraphRAG network."""
-    with mock.patch.object(
-        docker_manager, "_get_current_container_id", return_value="abc123"
-    ):
+    with mock.patch.object(docker_manager, "_get_current_container_id", return_value="abc123"):
         with mock.patch.object(
             docker_manager,
             "_get_graphrag_network_name",
@@ -453,9 +433,7 @@ def test_connect_to_graphrag_network_success(docker_manager):
 
 def test_connect_to_graphrag_network_already_connected(docker_manager):
     """Test connecting to GraphRAG network when already connected."""
-    with mock.patch.object(
-        docker_manager, "_get_current_container_id", return_value="abc123"
-    ):
+    with mock.patch.object(docker_manager, "_get_current_container_id", return_value="abc123"):
         with mock.patch.object(
             docker_manager,
             "_get_graphrag_network_name",
@@ -466,9 +444,7 @@ def test_connect_to_graphrag_network_already_connected(docker_manager):
                 # Second call: check connection (already connected by name)
                 mock_run.side_effect = [
                     mock.MagicMock(returncode=0, stdout=b"/test-container\n"),
-                    mock.MagicMock(
-                        returncode=0, stdout=b"test-container other-container "
-                    ),
+                    mock.MagicMock(returncode=0, stdout=b"test-container other-container "),
                 ]
 
                 docker_manager._connect_to_graphrag_network()
@@ -479,9 +455,7 @@ def test_connect_to_graphrag_network_already_connected(docker_manager):
 
 def test_connect_to_graphrag_network_not_in_container(docker_manager):
     """Test connecting to GraphRAG network when not in container."""
-    with mock.patch.object(
-        docker_manager, "_get_current_container_id", return_value=None
-    ):
+    with mock.patch.object(docker_manager, "_get_current_container_id", return_value=None):
         with mock.patch("subprocess.run") as mock_run:
             docker_manager._connect_to_graphrag_network()
 
@@ -497,9 +471,7 @@ def test_start_connects_to_network(docker_manager, mock_executor):
     mock_executor.run_command.return_value = mock_result
 
     with mock.patch.object(docker_manager, "wait_for_health", return_value=True):
-        with mock.patch.object(
-            docker_manager, "_connect_to_graphrag_network"
-        ) as mock_connect:
+        with mock.patch.object(docker_manager, "_connect_to_graphrag_network") as mock_connect:
             docker_manager.start(wait_for_health=True)
 
             # Should have called _connect_to_graphrag_network

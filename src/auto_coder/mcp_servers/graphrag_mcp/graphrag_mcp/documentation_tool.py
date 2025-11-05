@@ -43,9 +43,7 @@ class DocumentationGPTTool:
         """Establish connections to Neo4j and Qdrant."""
         # Connect to Neo4j
         try:
-            self.neo4j_driver = GraphDatabase.driver(
-                self.neo4j_uri, auth=(self.neo4j_user, self.neo4j_password)
-            )
+            self.neo4j_driver = GraphDatabase.driver(self.neo4j_uri, auth=(self.neo4j_user, self.neo4j_password))
             # Test connection
             with self.neo4j_driver.session() as session:
                 result = session.run("MATCH (d:Document) RETURN count(d) AS count")
@@ -58,12 +56,8 @@ class DocumentationGPTTool:
         try:
             # Handle potential version compatibility issues
             try:
-                self.qdrant_client = QdrantClient(
-                    host=self.qdrant_host, port=self.qdrant_port
-                )
-                collection_info = self.qdrant_client.get_collection(
-                    self.qdrant_collection
-                )
+                self.qdrant_client = QdrantClient(host=self.qdrant_host, port=self.qdrant_port)
+                collection_info = self.qdrant_client.get_collection(self.qdrant_collection)
 
                 # Check for vectors count based on client version
                 vectors_count = 0
@@ -76,15 +70,11 @@ class DocumentationGPTTool:
                     try:
                         if hasattr(collection_info.config, "params"):
                             if hasattr(collection_info.config.params, "vectors"):
-                                vectors_count = (
-                                    collection_info.config.params.vectors.size
-                                )
+                                vectors_count = collection_info.config.params.vectors.size
                     except BaseException:
                         pass
 
-                logger.info(
-                    f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors"
-                )
+                logger.info(f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors")
             except Exception as e:
                 logger.warning(f"Qdrant connection warning: {e}")
                 # Fallback for older versions if needed
@@ -98,9 +88,7 @@ class DocumentationGPTTool:
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
 
-    def search_documentation(
-        self, query: str, limit: int = 5, category: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def search_documentation(self, query: str, limit: int = 5, category: Optional[str] = None) -> Dict[str, Any]:
         """
         Search for documentation using semantic search and optionally expand with graph context.
 
@@ -153,9 +141,7 @@ class DocumentationGPTTool:
                 if hasattr(result, "payload") and "text" in result.payload:
                     text = result.payload["text"]
 
-                results["chunks"].append(
-                    {"chunk_id": chunk_id, "text": text, "score": score}
-                )
+                results["chunks"].append({"chunk_id": chunk_id, "text": text, "score": score})
         except Exception as e:
             results["error"] = f"Qdrant search error: {e}"
 
@@ -188,9 +174,7 @@ class DocumentationGPTTool:
                                collect(DISTINCT {doc_id: related.id, title: related.title}) as related_docs
                         """
 
-                    result = session.run(
-                        cypher_query, chunk_ids=chunk_ids, category=category
-                    )
+                    result = session.run(cypher_query, chunk_ids=chunk_ids, category=category)
 
                     # Process results
                     related_docs = set()
@@ -199,9 +183,7 @@ class DocumentationGPTTool:
                         title = record["title"]
 
                         # Add the document itself
-                        results["related_documents"].append(
-                            {"doc_id": doc_id, "title": title}
-                        )
+                        results["related_documents"].append({"doc_id": doc_id, "title": title})
 
                         # Add related documents
                         for related in record["related_docs"]:
@@ -243,9 +225,7 @@ class DocumentationGPTTool:
             Combined search results
         """
         # Get vector search results
-        vector_results = self.search_documentation(
-            query, limit=limit * 2, category=category
-        )
+        vector_results = self.search_documentation(query, limit=limit * 2, category=category)
 
         # If we don't want expanded context, return vector results
         if not expand_context:

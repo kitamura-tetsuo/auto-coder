@@ -27,8 +27,7 @@ class TestBackwardCompatibilityLayer:
 
     def test_session_creation(self):
         """Test session creation."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            GraphRAGMCPIntegration
+        from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
         integration = GraphRAGMCPIntegration()
         session_id = integration.create_session(str(Path.cwd().resolve()))
@@ -37,8 +36,7 @@ class TestBackwardCompatibilityLayer:
 
     def test_get_session_context(self):
         """Test getting session context."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            GraphRAGMCPIntegration
+        from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
         integration = GraphRAGMCPIntegration()
         session_id = integration.create_session(str(Path.cwd().resolve()))
@@ -49,8 +47,7 @@ class TestBackwardCompatibilityLayer:
 
     def test_get_repo_label_for_session(self):
         """Test getting repository label for session."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            GraphRAGMCPIntegration
+        from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
         integration = GraphRAGMCPIntegration()
         session_id = integration.create_session(str(Path.cwd().resolve()))
@@ -65,8 +62,7 @@ class TestSessionIsolation:
 
     def test_multiple_sessions_areolation(self):
         """Test that multiple sessions provide isolation."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            GraphRAGMCPIntegration
+        from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
         integration = GraphRAGMCPIntegration()
 
@@ -92,16 +88,14 @@ class TestAPICompatibility:
 
     def test_backward_compatibility_layer_exists(self):
         """Test that BackwardCompatibilityLayer class exists."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            BackwardCompatibilityLayer
+        from src.auto_coder.graphrag_mcp_integration import BackwardCompatibilityLayer
 
         # Should be able to import the class
         assert BackwardCompatibilityLayer is not None
 
     def test_create_session_method_exists(self):
         """Test that create_session method exists in GraphRAGMCPIntegration."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            GraphRAGMCPIntegration
+        from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
         integration = GraphRAGMCPIntegration()
         assert hasattr(integration, "create_session")
@@ -109,8 +103,7 @@ class TestAPICompatibility:
 
     def test_get_session_context_method_exists(self):
         """Test that get_session_context method exists."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            GraphRAGMCPIntegration
+        from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
         integration = GraphRAGMCPIntegration()
         assert hasattr(integration, "get_session_context")
@@ -118,8 +111,7 @@ class TestAPICompatibility:
 
     def test_get_repo_label_for_session_method_exists(self):
         """Test that get_repo_label_for_session method exists."""
-        from src.auto_coder.graphrag_mcp_integration import \
-            GraphRAGMCPIntegration
+        from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
         integration = GraphRAGMCPIntegration()
         assert hasattr(integration, "get_repo_label_for_session")

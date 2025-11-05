@@ -54,9 +54,7 @@ class CodeAnalysisTool:
         """Establish connections to Neo4j and Qdrant."""
         # Connect to Neo4j
         try:
-            self.neo4j_driver = GraphDatabase.driver(
-                self.neo4j_uri, auth=(self.neo4j_user, self.neo4j_password)
-            )
+            self.neo4j_driver = GraphDatabase.driver(self.neo4j_uri, auth=(self.neo4j_user, self.neo4j_password))
             # Test connection
             with self.neo4j_driver.session() as session:
                 result = session.run("MATCH (f:File) RETURN count(f) AS count")
@@ -64,15 +62,11 @@ class CodeAnalysisTool:
                 logger.info(f"Connected to Neo4j with {record['count']} files")
         except Exception as e:
             logger.error(f"Neo4j connection error: {e}")
-            raise RuntimeError(
-                f"Failed to connect to Neo4j at {self.neo4j_uri}. Please ensure Neo4j is running. Error: {e}"
-            )
+            raise RuntimeError(f"Failed to connect to Neo4j at {self.neo4j_uri}. Please ensure Neo4j is running. Error: {e}")
 
         # Connect to Qdrant
         try:
-            self.qdrant_client = QdrantClient(
-                host=self.qdrant_host, port=self.qdrant_port
-            )
+            self.qdrant_client = QdrantClient(host=self.qdrant_host, port=self.qdrant_port)
             collection_info = self.qdrant_client.get_collection(self.qdrant_collection)
 
             # Check for vectors count based on client version
@@ -82,14 +76,10 @@ class CodeAnalysisTool:
             elif hasattr(collection_info, "points_count"):
                 vectors_count = collection_info.points_count
 
-            logger.info(
-                f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors"
-            )
+            logger.info(f"Connected to Qdrant collection '{self.qdrant_collection}' with {vectors_count} vectors")
         except Exception as e:
             logger.error(f"Qdrant connection error: {e}")
-            raise RuntimeError(
-                f"Failed to connect to Qdrant at {self.qdrant_host}:{self.qdrant_port}. Please ensure Qdrant is running. Error: {e}"
-            )
+            raise RuntimeError(f"Failed to connect to Qdrant at {self.qdrant_host}:{self.qdrant_port}. Please ensure Qdrant is running. Error: {e}")
 
         # Load the embedding model
         try:
@@ -97,13 +87,9 @@ class CodeAnalysisTool:
             logger.info(f"Loaded embedding model: {self.model_name}")
         except Exception as e:
             logger.error(f"Error loading embedding model: {e}")
-            raise RuntimeError(
-                f"Failed to load embedding model '{self.model_name}'. Error: {e}"
-            )
+            raise RuntimeError(f"Failed to load embedding model '{self.model_name}'. Error: {e}")
 
-    def find_symbol(
-        self, fqname: str, repo_label: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def find_symbol(self, fqname: str, repo_label: Optional[str] = None) -> Dict[str, Any]:
         """
         Find a code symbol by fully qualified name.
 
@@ -129,9 +115,7 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build query with repository label filter if provided
-                node_match = (
-                    f"(s:{repo_label}:CodeNode)" if repo_label else "(s:CodeNode)"
-                )
+                node_match = f"(s:{repo_label}:CodeNode)" if repo_label else "(s:CodeNode)"
 
                 cypher_query = f"""
                 MATCH {node_match}
@@ -213,26 +197,10 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build base node match with repository label if provided
-                node_match = (
-                    f"(s:{repo_label}:CodeNode {{id: $symbol_id}})"
-                    if repo_label
-                    else "(s:CodeNode {{id: $symbol_id}})"
-                )
-                caller_match = (
-                    f"(caller:{repo_label}:CodeNode)"
-                    if repo_label
-                    else "(caller:CodeNode)"
-                )
-                callee_match = (
-                    f"(callee:{repo_label}:CodeNode)"
-                    if repo_label
-                    else "(callee:CodeNode)"
-                )
-                related_match = (
-                    f"(related:{repo_label}:CodeNode)"
-                    if repo_label
-                    else "(related:CodeNode)"
-                )
+                node_match = f"(s:{repo_label}:CodeNode {{id: $symbol_id}})" if repo_label else "(s:CodeNode {{id: $symbol_id}})"
+                caller_match = f"(caller:{repo_label}:CodeNode)" if repo_label else "(caller:CodeNode)"
+                callee_match = f"(callee:{repo_label}:CodeNode)" if repo_label else "(callee:CodeNode)"
+                related_match = f"(related:{repo_label}:CodeNode)" if repo_label else "(related:CodeNode)"
 
                 # Build Cypher query based on direction
                 if direction == "callers":
@@ -292,9 +260,7 @@ class CodeAnalysisTool:
 
         return result
 
-    def get_dependencies(
-        self, file_path: str, repo_label: Optional[str] = None
-    ) -> Dict[str, Any]:
+    def get_dependencies(self, file_path: str, repo_label: Optional[str] = None) -> Dict[str, Any]:
         """
         Get file dependencies (imports).
 
@@ -321,12 +287,8 @@ class CodeAnalysisTool:
             with self.neo4j_driver.session() as session:
                 # Build node matches with repository label if provided
                 file_match = f"(f:{repo_label}:File)" if repo_label else "(f:File)"
-                importer_match = (
-                    f"(importer:{repo_label}:File)" if repo_label else "(importer:File)"
-                )
-                imported_match = (
-                    f"(imported:{repo_label}:File)" if repo_label else "(imported:File)"
-                )
+                importer_match = f"(importer:{repo_label}:File)" if repo_label else "(importer:File)"
+                imported_match = f"(imported:{repo_label}:File)" if repo_label else "(imported:File)"
 
                 # Get imports (what this file imports)
                 cypher_query = f"""
@@ -337,9 +299,7 @@ class CodeAnalysisTool:
 
                 query_result = session.run(cypher_query, file_path=file_path)
                 for record in query_result:
-                    result["imports"].append(
-                        {"file": record["file"], "count": record["count"]}
-                    )
+                    result["imports"].append({"file": record["file"], "count": record["count"]})
 
                 # Get imported_by (what files import this)
                 cypher_query = f"""
@@ -350,9 +310,7 @@ class CodeAnalysisTool:
 
                 query_result = session.run(cypher_query, file_path=file_path)
                 for record in query_result:
-                    result["imported_by"].append(
-                        {"file": record["file"], "count": record["count"]}
-                    )
+                    result["imported_by"].append({"file": record["file"], "count": record["count"]})
 
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
@@ -402,36 +360,12 @@ class CodeAnalysisTool:
         try:
             with self.neo4j_driver.session() as session:
                 # Build base node match with repository label if provided
-                base_node_match = (
-                    f"(changed:{repo_label}:CodeNode)"
-                    if repo_label
-                    else "(changed:CodeNode)"
-                )
-                caller_match = (
-                    f"(caller:{repo_label}:CodeNode)"
-                    if repo_label
-                    else "(caller:CodeNode)"
-                )
-                changed_file_match = (
-                    f"(changed_file:{repo_label}:File)"
-                    if repo_label
-                    else "(changed_file:File)"
-                )
-                importing_file_match = (
-                    f"(importing_file:{repo_label}:File)"
-                    if repo_label
-                    else "(importing_file:File)"
-                )
-                importing_symbol_match = (
-                    f"(importing_symbol:{repo_label}:CodeNode)"
-                    if repo_label
-                    else "(importing_symbol:CodeNode)"
-                )
-                implementer_match = (
-                    f"(implementer:{repo_label}:CodeNode)"
-                    if repo_label
-                    else "(implementer:CodeNode)"
-                )
+                base_node_match = f"(changed:{repo_label}:CodeNode)" if repo_label else "(changed:CodeNode)"
+                caller_match = f"(caller:{repo_label}:CodeNode)" if repo_label else "(caller:CodeNode)"
+                changed_file_match = f"(changed_file:{repo_label}:File)" if repo_label else "(changed_file:File)"
+                importing_file_match = f"(importing_file:{repo_label}:File)" if repo_label else "(importing_file:File)"
+                importing_symbol_match = f"(importing_symbol:{repo_label}:CodeNode)" if repo_label else "(importing_symbol:CodeNode)"
+                implementer_match = f"(implementer:{repo_label}:CodeNode)" if repo_label else "(implementer:CodeNode)"
 
                 # Find all symbols that depend on the changed symbols
                 cypher_query = f"""
@@ -490,18 +424,14 @@ class CodeAnalysisTool:
                 # Count by kind
                 for symbol in result["affected_symbols"]:
                     kind = symbol["kind"]
-                    result["impact_summary"]["by_kind"][kind] = (
-                        result["impact_summary"]["by_kind"].get(kind, 0) + 1
-                    )
+                    result["impact_summary"]["by_kind"][kind] = result["impact_summary"]["by_kind"].get(kind, 0) + 1
 
         except Exception as e:
             result["error"] = f"Neo4j query error: {e}"
 
         return result
 
-    def semantic_code_search(
-        self, query: str, limit: int = 10, kind_filter: Optional[List[str]] = None
-    ) -> Dict[str, Any]:
+    def semantic_code_search(self, query: str, limit: int = 10, kind_filter: Optional[List[str]] = None) -> Dict[str, Any]:
         """
         Search for code using semantic similarity.
 

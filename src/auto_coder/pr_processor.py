@@ -15,18 +15,12 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
-from auto_coder.util.github_action import (DetailedChecksResult,
-                                           _check_github_actions_status,
-                                           _get_github_actions_logs,
-                                           get_detailed_checks_from_history)
+from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
-from .conflict_resolver import (_get_merge_conflict_info,
-                                resolve_merge_conflicts_with_llm,
-                                resolve_pr_merge_conflicts)
+from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
-from .git_utils import (git_checkout_branch, git_commit_with_retry, git_push,
-                        save_commit_failure_history)
+from .git_utils import git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -46,26 +40,20 @@ def process_pull_requests(
 ) -> List[Dict[str, Any]]:
     """Process open pull requests in the repository with priority order."""
     try:
-        prs = github_client.get_open_pull_requests(
-            repo_name, limit=config.max_prs_per_run
-        )
+        prs = github_client.get_open_pull_requests(repo_name, limit=config.max_prs_per_run)
         # Optionally ignore Dependabot PRs
         if config.IGNORE_DEPENDABOT_PRS:
             original_count = len(prs)
             prs = [pr for pr in prs if not _is_dependabot_pr(pr)]
             filtered = original_count - len(prs)
             if filtered > 0:
-                logger.info(
-                    f"Ignoring {filtered} Dependabot PR(s) due to configuration"
-                )
+                logger.info(f"Ignoring {filtered} Dependabot PR(s) due to configuration")
         processed_prs = []
         merged_pr_numbers = set()
         handled_pr_numbers = set()
 
         # First loop: Process PRs with passing GitHub Actions AND mergeable status (merge them)
-        logger.info(
-            "First pass: Processing PRs with passing GitHub Actions and mergeable status for merging..."
-        )
+        logger.info("First pass: Processing PRs with passing GitHub Actions and mergeable status for merging...")
 
         # Track which PRs have the @auto-coder label added
         labeled_pr_numbers = set()
@@ -78,9 +66,7 @@ def process_pull_requests(
             except SystemExit:
                 raise
             except Exception:
-                logger.warning(
-                    "Auto-update check failed during PR merge pass", exc_info=True
-                )
+                logger.warning("Auto-update check failed during PR merge pass", exc_info=True)
             try:
                 pr_data = github_client.get_pr_details(pr)
                 pr_number = pr_data["number"]
@@ -88,15 +74,11 @@ def process_pull_requests(
                 # Skip immediately if PR already has @auto-coder label
                 pr_labels = pr_data.get("labels", [])
                 if "@auto-coder" in pr_labels:
-                    logger.info(
-                        f"Skipping PR #{pr_number} - already has @auto-coder label"
-                    )
+                    logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
                     processed_prs.append(
                         {
                             "pr_data": pr_data,
-                            "actions_taken": [
-                                "Skipped - already being processed (@auto-coder label present)"
-                            ],
+                            "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
                         }
                     )
                     skipped_pr_numbers.add(pr_number)
@@ -120,18 +102,12 @@ def process_pull_requests(
                 ):
                     # Skip if PR already has @auto-coder label (being processed by another instance)
                     if not dry_run and not github_client.disable_labels:
-                        if not github_client.try_add_work_in_progress_label(
-                            repo_name, pr_number
-                        ):
-                            logger.info(
-                                f"Skipping PR #{pr_number} - already has @auto-coder label"
-                            )
+                        if not github_client.try_add_work_in_progress_label(repo_name, pr_number):
+                            logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
                             processed_prs.append(
                                 {
                                     "pr_data": pr_data,
-                                    "actions_taken": [
-                                        "Skipped - already being processed (@auto-coder label present)"
-                                    ],
+                                    "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
                                 }
                             )
                             # Track that we skipped this PR
@@ -142,9 +118,7 @@ def process_pull_requests(
                         labeled_pr_numbers.add(pr_number)
 
                     try:
-                        github_checks = _check_github_actions_status(
-                            repo_name, pr_data, config
-                        )
+                        github_checks = _check_github_actions_status(repo_name, pr_data, config)
 
                         # Check both GitHub Actions success AND mergeable status (default True if unknown)
                         mergeable = pr_data.get("mergeable", True)
@@ -154,12 +128,8 @@ def process_pull_requests(
                                 from unittest.mock import Mock as _Mock
                             except Exception:
                                 _Mock = None
-                            if _Mock is not None and isinstance(
-                                _process_pr_for_merge, _Mock
-                            ):
-                                logger.info(
-                                    f"PR #{pr_number}: Actions PASSING and MERGEABLE - attempting merge"
-                                )
+                            if _Mock is not None and isinstance(_process_pr_for_merge, _Mock):
+                                logger.info(f"PR #{pr_number}: Actions PASSING and MERGEABLE - attempting merge")
                                 with ProgressStage("Attempting merge"):
                                     processed_pr = _process_pr_for_merge(
                                         repo_name,
@@ -171,9 +141,7 @@ def process_pull_requests(
                                 handled_pr_numbers.add(pr_number)
 
                                 actions_taken = processed_pr.get("actions_taken", [])
-                                if any(
-                                    "Successfully merged" in a for a in actions_taken
-                                ) or any("Would merge" in a for a in actions_taken):
+                                if any("Successfully merged" in a for a in actions_taken) or any("Would merge" in a for a in actions_taken):
                                     merged_pr_numbers.add(pr_number)
                             else:
                                 # LLM単回実行ポリシー: 分析フェーズのLLM呼び出しは行わない
@@ -193,48 +161,28 @@ def process_pull_requests(
                                 )
                                 handled_pr_numbers.add(pr_number)
                         elif github_checks.success and not mergeable:
-                            logger.info(
-                                f"PR #{pr_number}: Actions PASSING but NOT MERGEABLE - deferring to second pass"
-                            )
+                            logger.info(f"PR #{pr_number}: Actions PASSING but NOT MERGEABLE - deferring to second pass")
                         elif not github_checks.success and mergeable:
-                            logger.info(
-                                f"PR #{pr_number}: MERGEABLE but Actions FAILING - deferring to second pass"
-                            )
+                            logger.info(f"PR #{pr_number}: MERGEABLE but Actions FAILING - deferring to second pass")
                         else:
-                            logger.info(
-                                f"PR #{pr_number}: Actions FAILING and NOT MERGEABLE - deferring to second pass"
-                            )
+                            logger.info(f"PR #{pr_number}: Actions FAILING and NOT MERGEABLE - deferring to second pass")
                     finally:
                         # Remove @auto-coder label only if handled in first pass
-                        if (
-                            not dry_run
-                            and not github_client.disable_labels
-                            and pr_number in handled_pr_numbers
-                        ):
+                        if not dry_run and not github_client.disable_labels and pr_number in handled_pr_numbers:
                             try:
-                                github_client.remove_labels_from_issue(
-                                    repo_name, pr_number, ["@auto-coder"]
-                                )
+                                github_client.remove_labels_from_issue(repo_name, pr_number, ["@auto-coder"])
                                 labeled_pr_numbers.discard(pr_number)
                             except Exception as e:
-                                logger.warning(
-                                    f"Failed to remove @auto-coder label from PR #{pr_number}: {e}"
-                                )
+                                logger.warning(f"Failed to remove @auto-coder label from PR #{pr_number}: {e}")
                         # Clear progress header after processing
                         newline_progress()
 
             except Exception as e:
                 logger.error(f"Failed to process PR #{pr.number} in merge pass: {e}")
                 # Try to remove @auto-coder label on error (if we added it)
-                if (
-                    not dry_run
-                    and not github_client.disable_labels
-                    and pr.number in labeled_pr_numbers
-                ):
+                if not dry_run and not github_client.disable_labels and pr.number in labeled_pr_numbers:
                     try:
-                        github_client.remove_labels_from_issue(
-                            repo_name, pr.number, ["@auto-coder"]
-                        )
+                        github_client.remove_labels_from_issue(repo_name, pr.number, ["@auto-coder"])
                         labeled_pr_numbers.discard(pr.number)
                     except Exception:
                         pass
@@ -247,19 +195,13 @@ def process_pull_requests(
             except SystemExit:
                 raise
             except Exception:
-                logger.warning(
-                    "Auto-update check failed during PR fix pass", exc_info=True
-                )
+                logger.warning("Auto-update check failed during PR fix pass", exc_info=True)
             try:
                 pr_data = github_client.get_pr_details(pr)
                 pr_number = pr_data["number"]
 
                 # Skip PRs that were already merged, handled, or skipped in first pass
-                if (
-                    pr_number in merged_pr_numbers
-                    or pr_number in handled_pr_numbers
-                    or pr_number in skipped_pr_numbers
-                ):
+                if pr_number in merged_pr_numbers or pr_number in handled_pr_numbers or pr_number in skipped_pr_numbers:
                     continue
 
                 # Second pass: fix issues
@@ -273,15 +215,11 @@ def process_pull_requests(
                 # Skip immediately if PR already has @auto-coder label
                 pr_labels = pr_data.get("labels", [])
                 if "@auto-coder" in pr_labels:
-                    logger.info(
-                        f"Skipping PR #{pr_number} - already has @auto-coder label"
-                    )
+                    logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
                     processed_prs.append(
                         {
                             "pr_data": pr_data,
-                            "actions_taken": [
-                                "Skipped - already being processed (@auto-coder label present)"
-                            ],
+                            "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
                         }
                     )
                     newline_progress()
@@ -299,43 +237,27 @@ def process_pull_requests(
 
                     try:
                         logger.info(f"PR #{pr_number}: Processing for issue resolution")
-                        processed_pr = _process_pr_for_fixes(
-                            repo_name, pr_data, config, dry_run
-                        )
+                        processed_pr = _process_pr_for_fixes(repo_name, pr_data, config, dry_run)
                         # Ensure priority is fix in second pass
                         processed_pr["priority"] = "fix"
                         processed_prs.append(processed_pr)
                     finally:
                         # Remove @auto-coder label after processing (added in first pass)
-                        if (
-                            not dry_run
-                            and not github_client.disable_labels
-                            and pr_number in labeled_pr_numbers
-                        ):
+                        if not dry_run and not github_client.disable_labels and pr_number in labeled_pr_numbers:
                             try:
-                                github_client.remove_labels_from_issue(
-                                    repo_name, pr_number, ["@auto-coder"]
-                                )
+                                github_client.remove_labels_from_issue(repo_name, pr_number, ["@auto-coder"])
                                 labeled_pr_numbers.discard(pr_number)
                             except Exception as e:
-                                logger.warning(
-                                    f"Failed to remove @auto-coder label from PR #{pr_number}: {e}"
-                                )
+                                logger.warning(f"Failed to remove @auto-coder label from PR #{pr_number}: {e}")
                         # Clear progress header after processing
                         newline_progress()
 
             except Exception as e:
                 logger.error(f"Failed to process PR #{pr.number} in fix pass: {e}")
                 # Try to remove @auto-coder label on error (if we added it)
-                if (
-                    not dry_run
-                    and not github_client.disable_labels
-                    and pr.number in labeled_pr_numbers
-                ):
+                if not dry_run and not github_client.disable_labels and pr.number in labeled_pr_numbers:
                     try:
-                        github_client.remove_labels_from_issue(
-                            repo_name, pr.number, ["@auto-coder"]
-                        )
+                        github_client.remove_labels_from_issue(repo_name, pr.number, ["@auto-coder"])
                         labeled_pr_numbers.discard(pr.number)
                     except Exception:
                         pass
@@ -382,27 +304,19 @@ def _process_pr_for_merge(
     try:
         if dry_run:
             # 単回実行ポリシーにより、分析フェーズは行わない
-            processed_pr["actions_taken"].append(
-                f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)"
-            )
+            processed_pr["actions_taken"].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
             return processed_pr
         else:
             # Since Actions are passing, attempt direct merge
             merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
             if merge_result:
-                processed_pr["actions_taken"].append(
-                    f"Successfully merged PR #{pr_data['number']}"
-                )
+                processed_pr["actions_taken"].append(f"Successfully merged PR #{pr_data['number']}")
             else:
-                processed_pr["actions_taken"].append(
-                    f"Failed to merge PR #{pr_data['number']}"
-                )
+                processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
             return processed_pr
 
     except Exception as e:
-        processed_pr["actions_taken"].append(
-            f"Error processing PR #{pr_data['number']} for merge: {str(e)}"
-        )
+        processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for merge: {str(e)}")
 
     return processed_pr
 
@@ -423,9 +337,7 @@ def _process_pr_for_fixes(
         processed_pr["actions_taken"] = actions
 
     except Exception as e:
-        processed_pr["actions_taken"].append(
-            f"Error processing PR #{pr_data['number']} for fixes: {str(e)}"
-        )
+        processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for fixes: {str(e)}")
 
     return processed_pr
 
@@ -442,9 +354,7 @@ def _take_pr_actions(
 
     try:
         if dry_run:
-            logger.debug(
-                "Dry run requested for PR #%s; skipping merge workflow", pr_number
-            )
+            logger.debug("Dry run requested for PR #%s; skipping merge workflow", pr_number)
             return [f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}"]
 
         # First, handle the merge process (GitHub Actions, testing, etc.)
@@ -455,15 +365,11 @@ def _take_pr_actions(
         # If merge process completed successfully (PR was merged), skip analysis
         if any("Successfully merged" in action for action in merge_actions):
             actions.append(f"PR #{pr_number} was merged, skipping further analysis")
-        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any(
-            "skipping to next PR" in action for action in merge_actions
-        ):
+        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions):
             actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
         else:
             # Only do Gemini analysis if merge process didn't complete
-            analysis_results = _apply_pr_actions_directly(
-                repo_name, pr_data, config, dry_run
-            )
+            analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config, dry_run)
             actions.extend(analysis_results)
 
     except Exception as e:
@@ -490,9 +396,7 @@ def _apply_pr_actions_directly(
     try:
         # Handle dry run mode - skip actual LLM processing
         if dry_run:
-            actions.append(
-                f"[DRY RUN] Would apply PR actions directly for PR #{pr_number}"
-            )
+            actions.append(f"[DRY RUN] Would apply PR actions directly for PR #{pr_number}")
             return actions
 
         # Get PR diff for analysis
@@ -501,9 +405,7 @@ def _apply_pr_actions_directly(
 
         # Create action-oriented prompt (no comments)
         with ProgressStage("Creating prompt"):
-            action_prompt = _create_pr_analysis_prompt(
-                repo_name, pr_data, pr_diff, config
-            )
+            action_prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
             logger.debug(
                 "Prepared PR action prompt for #%s (preview: %s)",
                 pr_data.get("number", "unknown"),
@@ -561,9 +463,7 @@ def _apply_pr_actions_directly(
                             actions.append(f"Pushed changes for PR #{pr_number}")
                         else:
                             # Push failed - try one more time after a brief pause
-                            logger.warning(
-                                f"First push attempt failed: {push_res.stderr}, retrying..."
-                            )
+                            logger.warning(f"First push attempt failed: {push_res.stderr}, retrying...")
 
                     if not push_res.success:
                         with ProgressStage("Retrying push"):
@@ -572,16 +472,10 @@ def _apply_pr_actions_directly(
                             time.sleep(2)
                             retry_push_res = git_push()
                             if retry_push_res.success:
-                                actions.append(
-                                    f"Pushed changes for PR #{pr_number} (after retry)"
-                                )
+                                actions.append(f"Pushed changes for PR #{pr_number} (after retry)")
                             else:
-                                logger.error(
-                                    f"Failed to push changes after retry: {retry_push_res.stderr}"
-                                )
-                                actions.append(
-                                    f"CRITICAL: Committed but failed to push changes: {retry_push_res.stderr}"
-                                )
+                                logger.error(f"Failed to push changes after retry: {retry_push_res.stderr}")
+                                actions.append(f"CRITICAL: Committed but failed to push changes: {retry_push_res.stderr}")
                 else:
                     # Check if it's a "nothing to commit" case
                     if "nothing to commit" in (commit_res.stdout or ""):
@@ -593,13 +487,9 @@ def _apply_pr_actions_directly(
                             "pr_number": pr_number,
                             "commit_message": commit_msg,
                         }
-                        save_commit_failure_history(
-                            commit_res.stderr, context, repo_name=None
-                        )
+                        save_commit_failure_history(commit_res.stderr, context, repo_name=None)
                         # This line will never be reached due to sys.exit in save_commit_failure_history
-                        actions.append(
-                            f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}"
-                        )
+                        actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
         else:
             actions.append("LLM CLI did not provide a clear response for PR actions")
 
@@ -612,21 +502,13 @@ def _apply_pr_actions_directly(
 def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> str:
     """Get PR diff for analysis."""
     try:
-        result = cmd.run_command(
-            ["gh", "pr", "diff", str(pr_number), "--repo", repo_name]
-        )
-        return (
-            result.stdout[: config.MAX_PR_DIFF_SIZE]
-            if result.success
-            else "Could not retrieve PR diff"
-        )
+        result = cmd.run_command(["gh", "pr", "diff", str(pr_number), "--repo", repo_name])
+        return result.stdout[: config.MAX_PR_DIFF_SIZE] if result.success else "Could not retrieve PR diff"
     except Exception:
         return "Could not retrieve PR diff"
 
 
-def _create_pr_analysis_prompt(
-    repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig
-) -> str:
+def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig) -> str:
     """Create a PR prompt that prioritizes direct code changes over comments."""
     body_text = (pr_data.get("body") or "")[: config.MAX_PROMPT_SIZE]
     return render_prompt(
@@ -657,9 +539,7 @@ def _handle_pr_merge(
 
     try:
         # Ensure any unpushed commits are pushed before starting
-        logger.info(
-            f"Checking for unpushed commits before processing PR #{pr_number}..."
-        )
+        logger.info(f"Checking for unpushed commits before processing PR #{pr_number}...")
         push_result = git_push(
             commit_message=f"Auto-Coder: PR #{pr_number} processing",
         )
@@ -677,9 +557,7 @@ def _handle_pr_merge(
 
         # Step 2: Skip if GitHub Actions are still in progress
         if detailed_checks.has_in_progress:
-            actions.append(
-                f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR"
-            )
+            actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
             return actions
 
         # Step 3: If GitHub Actions passed, merge directly
@@ -698,9 +576,7 @@ def _handle_pr_merge(
 
         # Step 4: GitHub Actions failed - checkout PR branch
         failed_checks = detailed_checks.failed_checks
-        actions.append(
-            f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed"
-        )
+        actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
         checkout_result = _checkout_pr_branch(repo_name, pr_data, config)
         if not checkout_result:
@@ -711,62 +587,40 @@ def _handle_pr_merge(
 
         # Step 5: Optionally update with latest base branch commits (configurable)
         if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
-            actions.append(
-                f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)"
-            )
+            actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
-                github_logs = _get_github_actions_logs(
-                    repo_name, config, failed_checks, pr_data
-                )
-                fix_actions = _fix_pr_issues_with_testing(
-                    repo_name, pr_data, config, dry_run, github_logs
-                )
+                github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, dry_run, github_logs)
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
 
             return actions
         else:
-            actions.append(
-                f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)"
-            )
-            update_actions = _update_with_base_branch(
-                repo_name, pr_data, config, dry_run
-            )
+            actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
+            update_actions = _update_with_base_branch(repo_name, pr_data, config, dry_run)
             actions.extend(update_actions)
 
             # Step 6: If base branch update required pushing changes, skip to next PR
-            if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any(
-                "Pushed updated branch" in action for action in update_actions
-            ):
-                actions.append(
-                    f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check"
-                )
+            if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+                actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
                 return actions
 
             # Step 7: If no main branch updates were needed, the test failures are due to PR content
             # Get GitHub Actions error logs and ask Gemini to fix
             if any("up to date with" in action for action in update_actions):
-                actions.append(
-                    f"PR #{pr_number} is up to date with main branch, test failures are due to PR content"
-                )
+                actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
 
                 # Fix PR issues using GitHub Actions logs first, then local tests
                 if failed_checks:
                     # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                    github_logs = _get_github_actions_logs(
-                        repo_name, config, failed_checks, pr_data
-                    )
-                    fix_actions = _fix_pr_issues_with_testing(
-                        repo_name, pr_data, config, dry_run, github_logs
-                    )
+                    github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, dry_run, github_logs)
                     actions.extend(fix_actions)
                 else:
-                    actions.append(
-                        f"No specific failed checks found for PR #{pr_number}"
-                    )
+                    actions.append(f"No specific failed checks found for PR #{pr_number}")
             else:
                 # If we reach here, some other update action occurred
                 actions.append(f"PR #{pr_number} processing completed")
@@ -777,9 +631,7 @@ def _handle_pr_merge(
     return actions
 
 
-def _checkout_pr_branch(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig
-) -> bool:
+def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> bool:
     """Checkout the PR branch for local testing.
 
     If config.FORCE_CLEAN_BEFORE_CHECKOUT is True, forcefully discard any local changes
@@ -832,9 +684,7 @@ def _checkout_pr_branch(
         return False
 
 
-def _force_checkout_pr_manually(
-    repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig
-) -> bool:
+def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> bool:
     """Manually fetch and checkout PR branch as fallback."""
     pr_number = pr_data["number"]
 
@@ -842,24 +692,16 @@ def _force_checkout_pr_manually(
         # Get PR branch information
         branch_name = pr_data.get("head", {}).get("ref", f"pr-{pr_number}")
 
-        log_action(
-            f"Attempting manual checkout of branch '{branch_name}' for PR #{pr_number}"
-        )
+        log_action(f"Attempting manual checkout of branch '{branch_name}' for PR #{pr_number}")
 
         # Fetch the PR branch
-        fetch_result = cmd.run_command(
-            ["git", "fetch", "origin", f"pull/{pr_number}/head:{branch_name}"]
-        )
+        fetch_result = cmd.run_command(["git", "fetch", "origin", f"pull/{pr_number}/head:{branch_name}"])
         if not fetch_result.success:
-            log_action(
-                f"Failed to fetch PR #{pr_number} branch", False, fetch_result.stderr
-            )
+            log_action(f"Failed to fetch PR #{pr_number} branch", False, fetch_result.stderr)
             return False
 
         # Force checkout the branch (create or reset)
-        checkout_result = git_checkout_branch(
-            branch_name, create_new=True, base_branch=branch_name
-        )
+        checkout_result = git_checkout_branch(branch_name, create_new=True, base_branch=branch_name)
         if checkout_result.success:
             log_action(f"Successfully manually checked out PR #{pr_number}")
             return True
@@ -892,11 +734,7 @@ def _update_with_base_branch(
 
     try:
         # Determine target base branch for this PR
-        target_branch = (
-            pr_data.get("base_branch")
-            or pr_data.get("base", {}).get("ref")
-            or config.MAIN_BRANCH
-        )
+        target_branch = pr_data.get("base_branch") or pr_data.get("base", {}).get("ref") or config.MAIN_BRANCH
 
         # Fetch latest changes from origin
         result = cmd.run_command(["git", "fetch", "origin"])
@@ -905,13 +743,9 @@ def _update_with_base_branch(
             return actions
 
         # Check if base branch has new commits
-        result = cmd.run_command(
-            ["git", "rev-list", "--count", f"HEAD..origin/{target_branch}"]
-        )
+        result = cmd.run_command(["git", "rev-list", "--count", f"HEAD..origin/{target_branch}"])
         if not result.success:
-            actions.append(
-                f"Failed to check {target_branch} branch status: {result.stderr}"
-            )
+            actions.append(f"Failed to check {target_branch} branch status: {result.stderr}")
             return actions
 
         commits_behind = int(result.stdout.strip())
@@ -919,16 +753,12 @@ def _update_with_base_branch(
             actions.append(f"PR #{pr_number} is up to date with {target_branch} branch")
             return actions
 
-        actions.append(
-            f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating..."
-        )
+        actions.append(f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating...")
 
         # Try to merge base branch
         result = cmd.run_command(["git", "merge", f"origin/{target_branch}"])
         if result.success:
-            actions.append(
-                f"Successfully merged {target_branch} branch into PR #{pr_number}"
-            )
+            actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
 
             # Push the updated branch using centralized helper with retry
             push_result = git_push()
@@ -938,33 +768,24 @@ def _update_with_base_branch(
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
                 # Push failed - try one more time after a brief pause
-                logger.warning(
-                    f"First push attempt failed: {push_result.stderr}, retrying..."
-                )
+                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
                 import time
 
                 time.sleep(2)
                 retry_push_result = git_push()
                 if retry_push_result.success:
-                    actions.append(
-                        f"Pushed updated branch for PR #{pr_number} (after retry)"
-                    )
+                    actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
                     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 else:
-                    logger.error(
-                        f"Failed to push updated branch after retry: {retry_push_result.stderr}"
-                    )
+                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
                     logger.error("Exiting application due to git push failure")
                     sys.exit(1)
         else:
             # Merge conflict occurred, use common subroutine for conflict resolution
-            actions.append(
-                f"Merge conflict detected for PR #{pr_number}, using common subroutine for resolution..."
-            )
+            actions.append(f"Merge conflict detected for PR #{pr_number}, using common subroutine for resolution...")
 
             # Use the common subroutine for conflict resolution
-            from .conflict_resolver import \
-                _perform_base_branch_merge_and_conflict_resolution
+            from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
 
             conflict_resolved = _perform_base_branch_merge_and_conflict_resolution(
                 pr_number,
@@ -976,9 +797,7 @@ def _update_with_base_branch(
             )
 
             if conflict_resolved:
-                actions.append(
-                    f"Successfully resolved merge conflicts for PR #{pr_number}"
-                )
+                actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
                 actions.append(f"Failed to resolve merge conflicts for PR #{pr_number}")
@@ -1034,9 +853,7 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
     """
     try:
         # Get PR body
-        result = cmd.run_command(
-            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"]
-        )
+        result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"])
 
         if not result.success or not result.stdout:
             logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking")
@@ -1069,16 +886,10 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
                 )
 
                 if close_result.success:
-                    logger.info(
-                        f"Closed issue #{issue_num} linked from PR #{pr_number}"
-                    )
-                    log_action(
-                        f"Closed issue #{issue_num} (linked from PR #{pr_number})"
-                    )
+                    logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
+                    log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
                 else:
-                    logger.warning(
-                        f"Failed to close issue #{issue_num}: {close_result.stderr}"
-                    )
+                    logger.warning(f"Failed to close issue #{issue_num}: {close_result.stderr}")
             except Exception as e:
                 logger.warning(f"Error closing issue #{issue_num}: {e}")
 
@@ -1115,12 +926,8 @@ def _merge_pr(
                 return True
             else:
                 # Log the auto-merge failure but continue with direct merge
-                logger.warning(
-                    f"Auto-merge failed for PR #{pr_number}: {result.stderr}"
-                )
-                log_action(
-                    f"Auto-merge failed for PR #{pr_number}, attempting direct merge"
-                )
+                logger.warning(f"Auto-merge failed for PR #{pr_number}: {result.stderr}")
+                log_action(f"Auto-merge failed for PR #{pr_number}, attempting direct merge")
 
         # Direct merge without --auto flag
         direct_cmd = cmd_list + [config.MERGE_METHOD]
@@ -1132,25 +939,16 @@ def _merge_pr(
             return True
         else:
             # Check if the failure is due to merge conflicts
-            if (
-                "not mergeable" in result.stderr.lower()
-                or "merge commit cannot be cleanly created" in result.stderr.lower()
-            ):
-                logger.info(
-                    f"PR #{pr_number} has merge conflicts, attempting to resolve..."
-                )
-                log_action(
-                    f"PR #{pr_number} has merge conflicts, attempting resolution"
-                )
+            if "not mergeable" in result.stderr.lower() or "merge commit cannot be cleanly created" in result.stderr.lower():
+                logger.info(f"PR #{pr_number} has merge conflicts, attempting to resolve...")
+                log_action(f"PR #{pr_number} has merge conflicts, attempting resolution")
 
                 # Try to resolve merge conflicts using the new function from conflict_resolver
                 if resolve_pr_merge_conflicts(repo_name, pr_number, config):
                     # Retry merge after conflict resolution
                     retry_result = cmd.run_command(direct_cmd)
                     if retry_result.success:
-                        log_action(
-                            f"Successfully merged PR #{pr_number} after conflict resolution"
-                        )
+                        log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
                         _close_linked_issues(repo_name, pr_number)
                         return True
                     else:
@@ -1164,28 +962,20 @@ def _merge_pr(
                         if _poll_pr_mergeable(repo_name, pr_number, config):
                             retry_after_poll = cmd.run_command(direct_cmd)
                             if retry_after_poll.success:
-                                log_action(
-                                    f"Successfully merged PR #{pr_number} after waiting for mergeable state"
-                                )
+                                log_action(f"Successfully merged PR #{pr_number} after waiting for mergeable state")
                                 _close_linked_issues(repo_name, pr_number)
                                 return True
                         # 2) Try alternative merge methods allowed by repo
                         allowed = _get_allowed_merge_methods(repo_name)
                         # Preserve order preference: configured first, then others
-                        methods_order = [config.MERGE_METHOD] + [
-                            m
-                            for m in ["--squash", "--merge", "--rebase"]
-                            if m != config.MERGE_METHOD
-                        ]
+                        methods_order = [config.MERGE_METHOD] + [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
                         for m in methods_order:
                             if m not in allowed or m == config.MERGE_METHOD:
                                 continue
                             alt_cmd = cmd_list + [m]
                             alt_result = cmd.run_command(alt_cmd)
                             if alt_result.success:
-                                log_action(
-                                    f"Successfully merged PR #{pr_number} with fallback method {m}"
-                                )
+                                log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
                                 _close_linked_issues(repo_name, pr_number)
                                 return True
                         return False
@@ -1275,15 +1065,11 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
         return []
 
 
-def _resolve_pr_merge_conflicts(
-    repo_name: str, pr_number: int, config: AutomationConfig
-) -> bool:
+def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch (not necessarily main)."""
     try:
         # Step 0: Clean up any existing git state
-        logger.info(
-            f"Cleaning up git state before resolving conflicts for PR #{pr_number}"
-        )
+        logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
 
         # Reset any uncommitted changes
         reset_result = cmd.run_command(["git", "reset", "--hard"])
@@ -1305,19 +1091,13 @@ def _resolve_pr_merge_conflicts(
         checkout_result = cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
 
         if not checkout_result.success:
-            logger.error(
-                f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}"
-            )
+            logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
             return False
 
         # Step 1.5: Get PR details to determine the target base branch
-        pr_details_result = cmd.run_command(
-            ["gh", "pr", "view", str(pr_number), "--json", "base"]
-        )
+        pr_details_result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--json", "base"])
         if not pr_details_result.success:
-            logger.error(
-                f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}"
-            )
+            logger.error(f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}")
             return False
 
         try:
@@ -1340,9 +1120,7 @@ def _resolve_pr_merge_conflicts(
 
         if merge_result.success:
             # No conflicts, push the updated branch using centralized helper with retry
-            logger.info(
-                f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes"
-            )
+            logger.info(f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes")
             push_result = git_push()
 
             if push_result.success:
@@ -1350,28 +1128,20 @@ def _resolve_pr_merge_conflicts(
                 return True
             else:
                 # Push failed - try one more time after a brief pause
-                logger.warning(
-                    f"First push attempt failed: {push_result.stderr}, retrying..."
-                )
+                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
                 import time
 
                 time.sleep(2)
                 retry_push_result = git_push()
                 if retry_push_result.success:
-                    logger.info(
-                        f"Successfully pushed updated branch for PR #{pr_number} (after retry)"
-                    )
+                    logger.info(f"Successfully pushed updated branch for PR #{pr_number} (after retry)")
                     return True
                 else:
-                    logger.error(
-                        f"Failed to push updated branch after retry: {retry_push_result.stderr}"
-                    )
+                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
                     return False
         else:
             # Merge conflicts detected, use LLM to resolve them
-            logger.info(
-                f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve"
-            )
+            logger.info(f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve")
 
             # Get conflict information
             conflict_info = _get_merge_conflict_info()
@@ -1416,13 +1186,9 @@ def _fix_pr_issues_with_testing(
 
     try:
         # Step 1: Initial fix using GitHub Actions logs
-        actions.append(
-            f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs"
-        )
+        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
 
-        initial_fix_actions = _apply_github_actions_fix(
-            repo_name, pr_data, config, dry_run, github_logs
-        )
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, dry_run, github_logs)
         actions.extend(initial_fix_actions)
 
         # Step 2: Local testing and iterative fixing loop
@@ -1435,13 +1201,9 @@ def _fix_pr_issues_with_testing(
                 except SystemExit:
                     raise
                 except Exception:
-                    logger.warning(
-                        "Auto-update check failed during PR fix loop", exc_info=True
-                    )
+                    logger.warning("Auto-update check failed during PR fix loop", exc_info=True)
                 attempt += 1
-                actions.append(
-                    f"Running local tests (attempt {attempt}/{attempts_limit})"
-                )
+                actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
                 with ProgressStage(f"Running local tests"):
                     test_result = run_local_tests(config)
@@ -1458,22 +1220,16 @@ def _fix_pr_issues_with_testing(
                     # Determine if we have remaining attempts (finite limit)
                     finite_limit_reached = False
                     try:
-                        if math.isfinite(float(attempts_limit)) and attempt >= int(
-                            attempts_limit
-                        ):
+                        if math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
                             finite_limit_reached = True
                     except Exception:
                         finite_limit_reached = False
 
                     if finite_limit_reached:
-                        actions.append(
-                            f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}"
-                        )
+                        actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
                         break
                     else:
-                        local_fix_actions = _apply_local_test_fix(
-                            repo_name, pr_data, config, dry_run, test_result
-                        )
+                        local_fix_actions = _apply_local_test_fix(repo_name, pr_data, config, dry_run, test_result)
                         actions.extend(local_fix_actions)
 
     except Exception as e:
@@ -1519,11 +1275,7 @@ def _apply_github_actions_fix(
             response = run_llm_prompt(fix_prompt)
 
             if response:
-                response_preview = (
-                    response.strip()[: config.MAX_RESPONSE_SIZE]
-                    if response.strip()
-                    else "No response"
-                )
+                response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
                 actions.append(f"Applied GitHub Actions fix: {response_preview}...")
             else:
                 actions.append("No response from LLM for GitHub Actions fix")
@@ -1557,9 +1309,7 @@ def _apply_github_actions_fix(
             #     else:
             #         actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
         else:
-            actions.append(
-                f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}"
-            )
+            actions.append(f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}")
 
     except Exception as e:
         actions.append(f"Error applying GitHub Actions fix for PR #{pr_number}: {e}")
@@ -1588,12 +1338,8 @@ def _apply_local_test_fix(
             error_summary = extract_important_errors(test_result)
 
             if not error_summary:
-                actions.append(
-                    f"No actionable errors found in local test output for PR #{pr_number}"
-                )
-                logger.info(
-                    "Skipping LLM local test fix because no actionable errors were extracted"
-                )
+                actions.append(f"No actionable errors found in local test output for PR #{pr_number}")
+                logger.info("Skipping LLM local test fix because no actionable errors were extracted")
                 return actions
 
             # Create prompt for local test error fix
@@ -1612,9 +1358,7 @@ def _apply_local_test_fix(
             )
 
             if dry_run:
-                actions.append(
-                    f"[DRY RUN] Would apply local test fix for PR #{pr_number}"
-                )
+                actions.append(f"[DRY RUN] Would apply local test fix for PR #{pr_number}")
                 return actions
 
             # Use LLM backend manager to run the prompt
@@ -1623,24 +1367,16 @@ def _apply_local_test_fix(
             logger.info(f"Requesting LLM local test fix for PR #{pr_number}")
 
             # BackendManager with test file tracking
-            response = get_llm_backend_manager().run_test_fix_prompt(
-                fix_prompt, current_test_file=None
-            )
+            response = get_llm_backend_manager().run_test_fix_prompt(fix_prompt, current_test_file=None)
 
             if response:
-                response_preview = (
-                    response.strip()[: config.MAX_RESPONSE_SIZE]
-                    if response.strip()
-                    else "No response"
-                )
+                response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
                 actions.append(f"Applied local test fix: {response_preview}...")
             else:
                 actions.append("No response from LLM for local test fix")
 
         except Exception as e:
             actions.append(f"Error applying local test fix for PR #{pr_number}: {e}")
-            logger.error(
-                f"Error applying local test fix for PR #{pr_number}: {e}", exc_info=True
-            )
+            logger.error(f"Error applying local test fix for PR #{pr_number}: {e}", exc_info=True)
 
         return actions

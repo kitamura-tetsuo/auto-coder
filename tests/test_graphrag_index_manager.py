@@ -31,9 +31,7 @@ def temp_index_state_file(tmp_path):
 @pytest.fixture
 def index_manager(temp_repo, temp_index_state_file):
     """Create a GraphRAGIndexManager instance for testing."""
-    return GraphRAGIndexManager(
-        repo_path=str(temp_repo), index_state_file=temp_index_state_file
-    )
+    return GraphRAGIndexManager(repo_path=str(temp_repo), index_state_file=temp_index_state_file)
 
 
 @pytest.mark.slow
@@ -62,9 +60,7 @@ def test_get_codebase_hash_with_git(index_manager, temp_repo):
     """Test codebase hash calculation with git repository."""
     # Mock git ls-files to return specific files
     with mock.patch("subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(
-            returncode=0, stdout="file1.py\nfile2.py\nsubdir/file3.py\n"
-        )
+        mock_run.return_value = mock.MagicMock(returncode=0, stdout="file1.py\nfile2.py\nsubdir/file3.py\n")
         hash1 = index_manager._get_codebase_hash()
 
     assert isinstance(hash1, str)
@@ -295,9 +291,7 @@ def test_init_default_paths():
 
 def test_init_custom_paths(temp_repo, temp_index_state_file):
     """Test initialization with custom paths."""
-    manager = GraphRAGIndexManager(
-        repo_path=str(temp_repo), index_state_file=temp_index_state_file
-    )
+    manager = GraphRAGIndexManager(repo_path=str(temp_repo), index_state_file=temp_index_state_file)
     assert manager.repo_path == Path(temp_repo)
     assert manager.index_state_file == Path(temp_index_state_file)
 
@@ -344,9 +338,7 @@ def test_save_index_state(index_manager, temp_index_state_file):
 def test_save_index_state_creates_directory(temp_repo):
     """Test that save_index_state creates directory if it doesn't exist."""
     state_file = temp_repo / "nested" / "dir" / "state.json"
-    manager = GraphRAGIndexManager(
-        repo_path=str(temp_repo), index_state_file=str(state_file)
-    )
+    manager = GraphRAGIndexManager(repo_path=str(temp_repo), index_state_file=str(state_file))
 
     test_state = {"codebase_hash": "test_hash"}
     manager._save_index_state(test_state)

@@ -13,9 +13,7 @@ class TestGeminiClient:
     @patch("src.auto_coder.gemini_client.logger")
     @patch("subprocess.run")
     @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_llm_invocation_warn_log(
-        self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key
-    ):
+    def test_llm_invocation_warn_log(self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key):
         """Verify that LLM invocation emits a warning log before running CLI."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
@@ -47,9 +45,7 @@ class TestGeminiClient:
         assert not hasattr(client, "analyze_issue")
 
     @patch("src.auto_coder.gemini_client.genai")
-    def test_analyze_pull_request_removed(
-        self, mock_genai, mock_gemini_api_key, sample_pr_data
-    ):
+    def test_analyze_pull_request_removed(self, mock_genai, mock_gemini_api_key, sample_pr_data):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
         assert not hasattr(client, "analyze_pull_request")
@@ -91,9 +87,7 @@ class TestGeminiClient:
         mock_model.generate_content.assert_called_once()
 
     @patch("src.auto_coder.gemini_client.genai")
-    def test_generate_solution_removed(
-        self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result
-    ):
+    def test_generate_solution_removed(self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
         """Ensure generation helper is removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
         assert not hasattr(client, "generate_solution")
@@ -218,9 +212,7 @@ class TestGeminiClient:
         assert client.model_name == "gemini-2.5-pro"
 
     @patch("subprocess.run")
-    def test_switch_to_conflict_model_no_change_if_already_conflict(
-        self, mock_subprocess
-    ):
+    def test_switch_to_conflict_model_no_change_if_already_conflict(self, mock_subprocess):
         """Test that switching to conflict model when already using it doesn't change anything."""
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0

@@ -63,9 +63,7 @@ def check_graphrag_dependencies() -> bool:
     """
     # Check if uv is available
     try:
-        result = subprocess.run(
-            ["uv", "--version"], capture_output=True, text=True, timeout=5
-        )
+        result = subprocess.run(["uv", "--version"], capture_output=True, text=True, timeout=5)
         if result.returncode != 0:
             logger.warning("uv is not available")
             return False
@@ -107,9 +105,7 @@ def graphrag_server_path():
     """Fixture to find graphrag_mcp server path."""
     server_path = find_graphrag_mcp_server()
     if server_path is None:
-        pytest.skip(
-            "graphrag_mcp server not found. Run 'auto-coder graphrag setup-mcp' to install."
-        )
+        pytest.skip("graphrag_mcp server not found. Run 'auto-coder graphrag setup-mcp' to install.")
     return server_path
 
 
@@ -206,9 +202,7 @@ def test_graphrag_mcp_initialize(graphrag_server_process):
     response = send_jsonrpc_message(graphrag_server_process, init_request)
 
     # Verify response
-    assert (
-        "result" in response or "error" not in response
-    ), f"Initialize failed: {response}"
+    assert "result" in response or "error" not in response, f"Initialize failed: {response}"
     assert response.get("id") == 1, "Response ID should match request ID"
 
 
@@ -238,9 +232,7 @@ def test_graphrag_mcp_list_tools(graphrag_server_process):
     response = send_jsonrpc_message(graphrag_server_process, list_tools_request)
 
     # Verify response
-    assert (
-        "result" in response or "error" not in response
-    ), f"List tools failed: {response}"
+    assert "result" in response or "error" not in response, f"List tools failed: {response}"
     assert response.get("id") == 2, "Response ID should match request ID"
 
     # Check for expected tools

@@ -16,8 +16,7 @@ except ImportError:
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_graphrag import graphrag_group
-from .cli_commands_main import (create_feature_issues,
-                                fix_to_pass_tests_command, process_issues)
+from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
 from .cli_commands_utils import auth_status, get_actions_logs

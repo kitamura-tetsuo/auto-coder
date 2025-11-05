@@ -9,8 +9,7 @@ from unittest.mock import patch
 import pytest
 from loguru import logger
 
-from src.auto_coder.logger_config import (format_path_for_log, get_logger,
-                                          setup_logger)
+from src.auto_coder.logger_config import format_path_for_log, get_logger, setup_logger
 from src.auto_coder.utils import log_action
 
 
@@ -148,9 +147,7 @@ class TestLoggerConfig:
             with patch("src.auto_coder.logger_config.settings") as mock_settings:
                 mock_settings.log_level = "INFO"
 
-                setup_logger(
-                    log_level="INFO", log_file=str(log_file), include_file_info=True
-                )
+                setup_logger(log_level="INFO", log_file=str(log_file), include_file_info=True)
                 test_logger = get_logger(__name__)
 
                 test_logger.info("Test message with file info")

@@ -28,9 +28,7 @@ def test_change_fraction_detects_tail_difference():
     # 同一の大部分 + 末尾20行のうち数行が異なる
     shared_prefix = "\n".join([f"line-{i}" for i in range(200)])
     tail_old = "\n".join([f"end-{i}" for i in range(20)])
-    tail_new = "\n".join(
-        [f"end-{i if i < 15 else i+1}" for i in range(20)]
-    )  # 末尾側に差分
+    tail_new = "\n".join([f"end-{i if i < 15 else i+1}" for i in range(20)])  # 末尾側に差分
 
     s_old = f"{shared_prefix}\n{tail_old}"
     s_new = f"{shared_prefix}\n{tail_new}"

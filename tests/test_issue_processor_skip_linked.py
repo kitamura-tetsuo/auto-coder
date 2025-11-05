@@ -56,9 +56,7 @@ class TestIssueProcessorSkipLinked:
         config.max_issues_per_run = 10
 
         # Execute
-        result = _process_issues_normal(
-            mock_github_client, config, dry_run=False, repo_name="test/repo"
-        )
+        result = _process_issues_normal(mock_github_client, config, dry_run=False, repo_name="test/repo")
 
         # Assert
         assert len(result) == 2
@@ -78,9 +76,7 @@ class TestIssueProcessorSkipLinked:
         mock_github_client.has_linked_pr.assert_any_call("test/repo", 456)
 
         # Verify @auto-coder label was only added for issue 456 (not for issue 123 which was skipped)
-        mock_github_client.try_add_work_in_progress_label.assert_called_once_with(
-            "test/repo", 456
-        )
+        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("test/repo", 456)
 
         # Verify _take_issue_actions was only called for issue 456
         assert mock_take_actions.call_count == 1
@@ -88,9 +84,7 @@ class TestIssueProcessorSkipLinked:
         assert call_args[1]["number"] == 456
 
     @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_normal_processes_all_when_no_linked_prs(
-        self, mock_take_actions
-    ):
+    def test_process_issues_normal_processes_all_when_no_linked_prs(self, mock_take_actions):
         """Test that all issues are processed when none have linked PRs."""
         # Setup
         mock_github_client = Mock()
@@ -134,9 +128,7 @@ class TestIssueProcessorSkipLinked:
         config.max_issues_per_run = 10
 
         # Execute
-        result = _process_issues_normal(
-            mock_github_client, config, dry_run=False, repo_name="test/repo"
-        )
+        result = _process_issues_normal(mock_github_client, config, dry_run=False, repo_name="test/repo")
 
         # Assert
         assert len(result) == 2
@@ -151,9 +143,7 @@ class TestIssueProcessorSkipLinked:
         assert mock_take_actions.call_count == 2
 
     @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_normal_skips_all_when_all_have_linked_prs(
-        self, mock_take_actions
-    ):
+    def test_process_issues_normal_skips_all_when_all_have_linked_prs(self, mock_take_actions):
         """Test that all issues are skipped when all have linked PRs."""
         # Setup
         mock_github_client = Mock()
@@ -192,9 +182,7 @@ class TestIssueProcessorSkipLinked:
         config.max_issues_per_run = 10
 
         # Execute
-        result = _process_issues_normal(
-            mock_github_client, config, dry_run=False, repo_name="test/repo"
-        )
+        result = _process_issues_normal(mock_github_client, config, dry_run=False, repo_name="test/repo")
 
         # Assert
         assert len(result) == 2
@@ -212,9 +200,7 @@ class TestIssueProcessorSkipLinked:
         assert mock_take_actions.call_count == 0
 
     @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_normal_handles_has_linked_pr_exception(
-        self, mock_take_actions
-    ):
+    def test_process_issues_normal_handles_has_linked_pr_exception(self, mock_take_actions):
         """Test that exceptions in has_linked_pr are handled gracefully."""
         # Setup
         mock_github_client = Mock()
@@ -246,9 +232,7 @@ class TestIssueProcessorSkipLinked:
         config.max_issues_per_run = 10
 
         # Execute
-        result = _process_issues_normal(
-            mock_github_client, config, dry_run=False, repo_name="test/repo"
-        )
+        result = _process_issues_normal(mock_github_client, config, dry_run=False, repo_name="test/repo")
 
         # Assert
         assert len(result) == 1

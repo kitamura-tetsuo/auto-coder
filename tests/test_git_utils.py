@@ -9,14 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.git_utils import (extract_number_from_branch,
-                                      get_current_branch,
-                                      get_current_repo_name,
-                                      git_checkout_branch,
-                                      git_commit_with_retry, git_push,
-                                      is_git_repository,
-                                      parse_github_repo_from_url,
-                                      save_commit_failure_history)
+from src.auto_coder.git_utils import extract_number_from_branch, get_current_branch, get_current_repo_name, git_checkout_branch, git_commit_with_retry, git_push, is_git_repository, parse_github_repo_from_url, save_commit_failure_history
 from src.auto_coder.utils import CommandResult
 
 
@@ -28,9 +21,7 @@ class TestGitCommitWithRetry:
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
             result = git_commit_with_retry("Test commit message")
 
@@ -56,15 +47,9 @@ class TestGitCommitWithRetry:
                     stderr="Formatting issues detected. Run 'npx dprint fmt' to fix.",
                     returncode=1,
                 ),
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),  # dprint fmt
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),  # git add
-                CommandResult(
-                    success=True, stdout="", stderr="", returncode=0
-                ),  # commit retry
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # dprint fmt
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git add
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # commit retry
             ]
 
             result = git_commit_with_retry("Test commit message")
@@ -136,9 +121,7 @@ class TestGitCommitWithRetry:
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
             result = git_commit_with_retry("Test commit", cwd="/custom/path")
 
@@ -159,9 +142,7 @@ class TestGitPush:
                 # First call in check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
                 # Second call in check_unpushed_commits: check unpushed commits
-                CommandResult(
-                    success=True, stdout="2\n", stderr="", returncode=0
-                ),  # 2 unpushed commits
+                CommandResult(success=True, stdout="2\n", stderr="", returncode=0),  # 2 unpushed commits
                 # Third call in git_push: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
                 # Fourth call: push
@@ -182,9 +163,7 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # When branch is specified, no need to get current branch
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
             result = git_push(branch="feature-branch")
 
@@ -200,9 +179,7 @@ class TestGitPush:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # When branch is specified, no need to get current branch
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
             result = git_push(remote="upstream", branch="main")
 
@@ -271,15 +248,11 @@ class TestGitPush:
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
-                CommandResult(
-                    success=True, stdout="issue-733\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="issue-733\n", stderr="", returncode=0),
                 # 2) check_unpushed_commits: found unpushed commits
                 CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
                 # 3) _perform_git_push: get current branch for push
-                CommandResult(
-                    success=True, stdout="issue-733\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="issue-733\n", stderr="", returncode=0),
                 # 4) _perform_git_push: push fails with no upstream error
                 CommandResult(
                     success=False,
@@ -288,9 +261,7 @@ class TestGitPush:
                     returncode=1,
                 ),
                 # 5) _retry_with_set_upstream: resolve current branch
-                CommandResult(
-                    success=True, stdout="issue-733\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="issue-733\n", stderr="", returncode=0),
                 # 6) push with --set-upstream succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
@@ -531,15 +502,11 @@ class TestGitPush:
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
-                CommandResult(
-                    success=True, stdout="feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
                 # 2) check_unpushed_commits: found unpushed commits
                 CommandResult(success=True, stdout="2\n", stderr="", returncode=0),
                 # 3) _perform_git_push: get current branch for push
-                CommandResult(
-                    success=True, stdout="feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
                 # 4) _perform_git_push: push fails with dprint error
                 CommandResult(
                     success=False,
@@ -559,9 +526,7 @@ class TestGitPush:
                     returncode=1,
                 ),
                 # 8) _retry_with_set_upstream: resolve current branch
-                CommandResult(
-                    success=True, stdout="feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
                 # 9) push with --set-upstream succeeds
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
             ]
@@ -726,9 +691,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Third call: verify current branch
-                CommandResult(
-                    success=True, stdout="feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("feature")
@@ -762,9 +725,7 @@ class TestGitCheckoutBranch:
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (has changes, needs commit)
-                CommandResult(
-                    success=True, stdout="M  test.py", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="M  test.py", stderr="", returncode=0),
                 # Second call: git add -A (from git_checkout_branch)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Third call: git commit (from git_commit_with_retry)
@@ -782,9 +743,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Fifth call: verify current branch (git rev-parse --abbrev-ref HEAD)
-                CommandResult(
-                    success=True, stdout="new-feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
                 # Sixth call: git push -u origin new-feature
                 CommandResult(
                     success=True,
@@ -830,9 +789,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Third call: verify current branch
-                CommandResult(
-                    success=True, stdout="new-feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
                 # Fourth call: git push -u origin new-feature
                 CommandResult(
                     success=True,
@@ -842,9 +799,7 @@ class TestGitCheckoutBranch:
                 ),
             ]
 
-            result = git_checkout_branch(
-                "new-feature", create_new=True, base_branch="main"
-            )
+            result = git_checkout_branch("new-feature", create_new=True, base_branch="main")
 
             assert result.success is True
             assert mock_cmd.run_command.call_count == 4
@@ -961,9 +916,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Third call: verify current branch
-                CommandResult(
-                    success=True, stdout="feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("feature", cwd="/custom/path")
@@ -990,9 +943,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Third call: verify current branch
-                CommandResult(
-                    success=True, stdout="new-feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
                 # Fourth call: git push fails
                 CommandResult(
                     success=False,
@@ -1024,9 +975,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Third call: verify current branch
-                CommandResult(
-                    success=True, stdout="new-feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("new-feature", create_new=True, publish=False)
@@ -1042,9 +991,7 @@ class TestGitCheckoutBranch:
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # First call: git status --porcelain (has changes)
-                CommandResult(
-                    success=True, stdout=" M file.txt\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout=" M file.txt\n", stderr="", returncode=0),
                 # Second call: git add -A
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
                 # Third call: git commit (from git_commit_with_retry)
@@ -1062,9 +1009,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Fifth call: verify current branch
-                CommandResult(
-                    success=True, stdout="feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("feature")
@@ -1113,9 +1058,7 @@ class TestGitCheckoutBranch:
                     returncode=0,
                 ),
                 # Sixth call: verify current branch
-                CommandResult(
-                    success=True, stdout="feature\n", stderr="", returncode=0
-                ),
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("feature")
@@ -1180,32 +1123,24 @@ class TestGetCurrentBranch:
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="main\n", stderr="", returncode=0
-            )
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="main\n", stderr="", returncode=0)
 
             result = get_current_branch()
 
             assert result == "main"
-            mock_cmd.run_command.assert_called_once_with(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=None
-            )
+            mock_cmd.run_command.assert_called_once_with(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=None)
 
     def test_get_current_branch_with_cwd(self):
         """Test get_current_branch with custom working directory."""
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True, stdout="feature-branch\n", stderr="", returncode=0
-            )
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0)
 
             result = get_current_branch(cwd="/path/to/repo")
 
             assert result == "feature-branch"
-            mock_cmd.run_command.assert_called_once_with(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd="/path/to/repo"
-            )
+            mock_cmd.run_command.assert_called_once_with(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd="/path/to/repo")
 
     def test_get_current_branch_failure(self):
         """Test get_current_branch when git command fails."""

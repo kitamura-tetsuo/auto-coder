@@ -14,8 +14,6 @@ class TestPRChecksNoChecks:
         github_client = GitHubClient(token)
         engine = AutomationEngine(github_client, None)
         pr_data = {"number": 515}
-        result = engine._check_github_actions_status(
-            "kitamura-tetsuo/outliner", pr_data
-        )
+        result = engine._check_github_actions_status("kitamura-tetsuo/outliner", pr_data)
         assert result["success"] is True
         assert len(result["failed_checks"]) == 0

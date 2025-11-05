@@ -25,9 +25,7 @@ def test_handshake_timeout_uses_configured_limit(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
-    with mock.patch.object(
-        CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")
-    ) as mock_rpc:
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")) as mock_rpc:
         client = CodexMCPClient()
 
     assert client._initialized is False

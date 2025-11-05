@@ -3,8 +3,7 @@
 import json
 from unittest.mock import Mock, patch
 
-from src.auto_coder.util.github_action import (
-    _check_commit_for_github_actions, parse_git_commit_history_for_actions)
+from src.auto_coder.util.github_action import _check_commit_for_github_actions, parse_git_commit_history_for_actions
 
 
 def test_parse_git_commit_history_with_actions():
@@ -173,9 +172,7 @@ def test_parse_git_commit_history_depth_limit():
     """Test that search depth limit is respected."""
 
     # Mock git log with many commits
-    many_commits = "\n".join(
-        [f"{hash(f'commit{i:04d}')} Commit message" for i in range(20)]
-    )
+    many_commits = "\n".join([f"{hash(f'commit{i:04d}')} Commit message" for i in range(20)])
 
     with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
         # Setup mock for git log
@@ -305,9 +302,7 @@ ghi9012 Third commit"""
 
     with (
         patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command,
-        patch(
-            "src.auto_coder.util.github_action._check_commit_for_github_actions"
-        ) as mock_check,
+        patch("src.auto_coder.util.github_action._check_commit_for_github_actions") as mock_check,
     ):
         # Setup mock for git log
         mock_git_result = Mock()

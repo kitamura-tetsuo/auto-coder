@@ -56,11 +56,7 @@ def mcp_pdb_print_config(target: str, write_to: Optional[str]) -> None:
     else:
         # For Claude Code, present the command line as-is
         content = (
-            "# Install the MCP server\n"
-            "claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb\n\n"
-            "# Alternative: Install with specific Python version\n"
-            "claude mcp add mcp-pdb -- uv run --python 3.13 --with mcp-pdb mcp-pdb\n\n"
-            "# Note: The -- separator is required for Claude Code CLI\n"
+            "# Install the MCP server\n" "claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb\n\n" "# Alternative: Install with specific Python version\n" "claude mcp add mcp-pdb -- uv run --python 3.13 --with mcp-pdb mcp-pdb\n\n" "# Note: The -- separator is required for Claude Code CLI\n"
         )
 
     click.echo(content)
@@ -98,6 +94,4 @@ def mcp_pdb_status() -> None:
     click.echo()
     click.echo("Setup tips:")
     click.echo("  - Windsurf: add mcpServers to settings.json")
-    click.echo(
-        "  - Claude Code: 'claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb'"
-    )
+    click.echo("  - Claude Code: 'claude mcp add mcp-pdb -- uv run --with mcp-pdb mcp-pdb'")

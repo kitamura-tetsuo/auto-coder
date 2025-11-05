@@ -9,9 +9,7 @@ import functools
 import inspect
 from typing import Any, Callable, Optional, Union
 
-from .progress_footer import (clear_progress, get_progress_footer,
-                              pop_progress_stage, push_progress_stage,
-                              set_progress_item)
+from .progress_footer import clear_progress, get_progress_footer, pop_progress_stage, push_progress_stage, set_progress_item
 
 
 def progress_stage(*args, **kwargs) -> Callable:
@@ -69,9 +67,7 @@ def progress_stage(*args, **kwargs) -> Callable:
                 # Five arguments: item_type, item_number, stage, related_issues, branch_name
                 item_type, item_number, stage_name, related_issues, branch_name = args
             else:
-                raise ValueError(
-                    "progress_stage decorator requires 0, 1, 3, 4, or 5 positional arguments"
-                )
+                raise ValueError("progress_stage decorator requires 0, 1, 3, 4, or 5 positional arguments")
 
             # Push stage and set item info if provided
             should_clear_on_exit = False
@@ -228,13 +224,9 @@ class ProgressStageDecorator:
                 item_type, item_number, stage_name, related_issues = self.args
                 branch_name = self.kwargs.get("branch_name")
             elif len(self.args) == 5:
-                item_type, item_number, stage_name, related_issues, branch_name = (
-                    self.args
-                )
+                item_type, item_number, stage_name, related_issues, branch_name = self.args
             else:
-                raise ValueError(
-                    "ProgressStageDecorator requires 0, 1, 3, 4, or 5 positional arguments"
-                )
+                raise ValueError("ProgressStageDecorator requires 0, 1, 3, 4, or 5 positional arguments")
 
             should_clear_on_exit = False
             if item_type and item_number:

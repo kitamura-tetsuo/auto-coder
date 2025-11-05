@@ -11,14 +11,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
-from .git_utils import (git_commit_with_retry, git_push,
-                        save_commit_failure_history)
+from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .update_manager import check_for_updates_and_restart
-from .utils import (CommandExecutor, change_fraction,
-                    extract_first_failed_test, log_action)
+from .utils import CommandExecutor, change_fraction, extract_first_failed_test, log_action
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager
@@ -61,9 +59,7 @@ def _sanitize_for_filename(value: str, *, default: str) -> str:
     return cleaned[:80]
 
 
-def _log_fix_attempt_metadata(
-    test_file: Optional[str], backend: str, model: str, timestamp: datetime
-) -> Path:
+def _log_fix_attempt_metadata(test_file: Optional[str], backend: str, model: str, timestamp: datetime) -> Path:
     """Append metadata about a fix attempt to the CSV summary log."""
 
     base_dir = Path(".auto-coder")
@@ -146,9 +142,7 @@ def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
         logger.warning(f"Failed to remove {path}: {exc}")
 
 
-def run_local_tests(
-    config: AutomationConfig, test_file: Optional[str] = None
-) -> Dict[str, Any]:
+def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -> Dict[str, Any]:
     """Run local tests using configured script or pytest fallback.
 
     If test_file is specified, only that test file will be run.
@@ -172,9 +166,7 @@ def run_local_tests(
                     results = client.query_test_results(test_type="all")
 
                     if results.get("status") == "running":
-                        logger.info(
-                            "Tests are currently running in test_watcher, waiting..."
-                        )
+                        logger.info("Tests are currently running in test_watcher, waiting...")
                         # Fall back to normal test execution
                     elif results.get("status") == "completed":
                         # Convert MCP results to expected format
@@ -196,26 +188,14 @@ def run_local_tests(
                         if failed_tests:
                             output_lines.append("\nFailed Tests:")
                             for test in failed_tests:
-                                output_lines.append(
-                                    f"  - {test.get('file', 'unknown')}: {test.get('title', '')}"
-                                )
+                                output_lines.append(f"  - {test.get('file', 'unknown')}: {test.get('title', '')}")
                                 if test.get("error"):
                                     output_lines.append(f"    Error: {test['error']}")
 
                         return {
                             "success": success,
                             "output": "\n".join(output_lines),
-                            "errors": (
-                                ""
-                                if success
-                                else "\n".join(
-                                    [
-                                        t.get("error", "")
-                                        for t in failed_tests
-                                        if t.get("error")
-                                    ]
-                                )
-                            ),
+                            "errors": ("" if success else "\n".join([t.get("error", "") for t in failed_tests if t.get("error")])),
                             "return_code": 0 if success else 1,
                             "command": "test_watcher_mcp_query",
                             "test_file": None,
@@ -223,19 +203,13 @@ def run_local_tests(
                             "mcp_results": results,
                         }
         except Exception as e:
-            logger.warning(
-                f"Failed to query test_watcher MCP, falling back to normal test execution: {e}"
-            )
+            logger.warning(f"Failed to query test_watcher MCP, falling back to normal test execution: {e}")
 
     try:
         # If a specific test file is specified, run only that test (always via TEST_SCRIPT_PATH)
         if test_file:
-            with ProgressStage(
-                f"Running only the specified test file via script: {test_file}"
-            ):
-                logger.info(
-                    f"Running only the specified test file via script: {test_file}"
-                )
+            with ProgressStage(f"Running only the specified test file via script: {test_file}"):
+                logger.info(f"Running only the specified test file via script: {test_file}")
                 cmd_list = ["bash", config.TEST_SCRIPT_PATH, test_file]
                 result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
                 return {
@@ -258,9 +232,7 @@ def run_local_tests(
             # Extract the first failed test file from the output
             first_failed_test = extract_first_failed_test(result.stdout, result.stderr)
             if first_failed_test:
-                logger.info(
-                    f"Detected failing test file {first_failed_test}; rerunning targeted script"
-                )
+                logger.info(f"Detected failing test file {first_failed_test}; rerunning targeted script")
                 # Store the full suite result for comparison
                 full_suite_result = {
                     "success": result.success,
@@ -272,15 +244,11 @@ def run_local_tests(
 
                 # Run the isolated test
                 isolated_cmd_list = ["bash", config.TEST_SCRIPT_PATH, first_failed_test]
-                isolated_result = cmd.run_command(
-                    isolated_cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"]
-                )
+                isolated_result = cmd.run_command(isolated_cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
 
                 # Check for stability issue: failed in full suite but passed in isolation
                 if isolated_result.success:
-                    logger.warning(
-                        f"Test stability issue detected: {first_failed_test} failed in full suite but passed in isolation"
-                    )
+                    logger.warning(f"Test stability issue detected: {first_failed_test} failed in full suite but passed in isolation")
                     return {
                         "success": False,
                         "output": isolated_result.stdout,
@@ -360,14 +328,10 @@ def apply_test_stability_fix(
                 model=model,
             )
 
-        logger.info(
-            f"Requesting LLM test stability fix for {test_file} using backend {backend} model {model}"
-        )
+        logger.info(f"Requesting LLM test stability fix for {test_file} using backend {backend} model {model}")
 
         # Use the LLM backend manager to run the prompt
-        response = llm_backend_manager.run_test_fix_prompt(
-            fix_prompt, current_test_file=test_file
-        )
+        response = llm_backend_manager.run_test_fix_prompt(fix_prompt, current_test_file=test_file)
 
         backend, model = _extract_backend_model(llm_backend_manager)
         raw_response = response.strip() if response and response.strip() else None
@@ -377,9 +341,7 @@ def apply_test_stability_fix(
         else:
             summary = "LLM produced no response"
 
-        logger.info(
-            f"LLM test stability fix summary: {summary if summary else '<empty response>'}"
-        )
+        logger.info(f"LLM test stability fix summary: {summary if summary else '<empty response>'}")
 
         return WorkspaceFixResult(
             summary=summary,
@@ -411,9 +373,7 @@ def apply_workspace_test_fix(
     try:
         error_summary = extract_important_errors(test_result)
         if not error_summary:
-            logger.info(
-                "Skipping LLM workspace fix because no actionable errors were extracted"
-            )
+            logger.info("Skipping LLM workspace fix because no actionable errors were extracted")
             return WorkspaceFixResult(
                 summary="No actionable errors found in local test output",
                 raw_response=None,
@@ -439,12 +399,8 @@ def apply_workspace_test_fix(
 
         # Use the LLM backend manager to run the prompt
         logger.debug(f"0")
-        logger.info(
-            f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)"
-        )
-        response = llm_backend_manager.run_test_fix_prompt(
-            fix_prompt, current_test_file=current_test_file
-        )
+        logger.info(f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)")
+        response = llm_backend_manager.run_test_fix_prompt(fix_prompt, current_test_file=current_test_file)
 
         logger.debug(f"0")
 
@@ -458,9 +414,7 @@ def apply_workspace_test_fix(
             logger.debug(f"0")
             summary = "LLM produced no response"
 
-        logger.info(
-            f"LLM workspace fix summary: {summary if summary else '<empty response>'}"
-        )
+        logger.info(f"LLM workspace fix summary: {summary if summary else '<empty response>'}")
 
         return WorkspaceFixResult(
             summary=summary,
@@ -489,11 +443,7 @@ def fix_to_pass_tests(
     If the LLM makes no edits (no changes to commit) in an iteration, raise an error and stop.
     Returns a summary dict.
     """
-    attempts_limit = (
-        max_attempts
-        if isinstance(max_attempts, int) and max_attempts > 0
-        else config.MAX_FIX_ATTEMPTS
-    )
+    attempts_limit = max_attempts if isinstance(max_attempts, int) and max_attempts > 0 else config.MAX_FIX_ATTEMPTS
     summary: Dict[str, Any] = {
         "mode": "fix-to-pass-tests",
         "attempts": 0,
@@ -523,13 +473,9 @@ def fix_to_pass_tests(
         if cached_test_result is not None:
             test_result = cached_test_result
             cached_test_result = None
-            attempt_label = (
-                cached_result_attempt if cached_result_attempt is not None else attempt
-            )
+            attempt_label = cached_result_attempt if cached_result_attempt is not None else attempt
             target_label = current_test_file or "ALL_TESTS"
-            logger.info(
-                f"Reusing cached post-fix test result from attempt {attempt_label} for {target_label}"
-            )
+            logger.info(f"Reusing cached post-fix test result from attempt {attempt_label} for {target_label}")
             cached_result_attempt = None
         else:
             attempt += 1
@@ -540,9 +486,7 @@ def fix_to_pass_tests(
             current_test_file = test_result.get("test_file")
         if test_result["success"]:
             if current_test_file is not None:
-                logger.info(
-                    f"Targeted test {current_test_file} passed; clearing focus before rerunning full suite"
-                )
+                logger.info(f"Targeted test {current_test_file} passed; clearing focus before rerunning full suite")
                 current_test_file = None
                 continue
             msg = f"Local tests passed on attempt {attempt}"
@@ -555,9 +499,7 @@ def fix_to_pass_tests(
 
         # Check for test stability issue (failed in full suite but passed in isolation)
         if test_result.get("stability_issue", False):
-            stability_msg = (
-                f"Test stability issue detected for {test_result.get('test_file')}"
-            )
+            stability_msg = f"Test stability issue detected for {test_result.get('test_file')}"
             logger.warning(stability_msg)
             summary["messages"].append(stability_msg)
 
@@ -589,30 +531,22 @@ def fix_to_pass_tests(
             continue
 
         # Baseline (pre-fix) outputs for comparison
-        baseline_full_output = (
-            f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
-        )
+        baseline_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
         baseline_error_summary = extract_important_errors(test_result)
 
         # Re-run tests AFTER LLM edits to measure change and decide commit
         attempt += 1
         summary["attempts"] = attempt
-        logger.info(
-            f"Re-running local tests after LLM fix (attempt {attempt}/{attempts_limit})"
-        )
+        logger.info(f"Re-running local tests after LLM fix (attempt {attempt}/{attempts_limit})")
         post_result = run_local_tests(config, test_file=current_test_file)
 
         log_timestamp = datetime.now()
         backend_for_log = fix_response.backend
         model_for_log = fix_response.model
         try:
-            _log_fix_attempt_metadata(
-                current_test_file, backend_for_log, model_for_log, log_timestamp
-            )
+            _log_fix_attempt_metadata(current_test_file, backend_for_log, model_for_log, log_timestamp)
         except Exception:
-            logger.warning(
-                "Failed to record fix-to-pass-tests summary CSV entry", exc_info=True
-            )
+            logger.warning("Failed to record fix-to-pass-tests summary CSV entry", exc_info=True)
         try:
             _write_llm_output_log(
                 raw_output=fix_response.raw_response,
@@ -622,13 +556,9 @@ def fix_to_pass_tests(
                 timestamp=log_timestamp,
             )
         except Exception:
-            logger.warning(
-                "Failed to write LLM output log for fix-to-pass-tests", exc_info=True
-            )
+            logger.warning("Failed to write LLM output log for fix-to-pass-tests", exc_info=True)
 
-        post_full_output = (
-            f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
-        )
+        post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
         post_error_summary = extract_important_errors(post_result)
 
         # Update previous context for next loop start
@@ -644,12 +574,8 @@ def fix_to_pass_tests(
         else:
             # Compute change ratios between pre-fix and post-fix results
             try:
-                change_ratio_tests = change_fraction(
-                    baseline_full_output or "", post_full_output or ""
-                )
-                change_ratio_errors = change_fraction(
-                    baseline_error_summary or "", post_error_summary or ""
-                )
+                change_ratio_tests = change_fraction(baseline_full_output or "", post_full_output or "")
+                change_ratio_errors = change_fraction(baseline_error_summary or "", post_error_summary or "")
                 max_change = max(change_ratio_tests, change_ratio_errors)
             except Exception:
                 max_change = 1.0  # default to commit if comparison fails
@@ -664,11 +590,7 @@ def fix_to_pass_tests(
                 cached_result_attempt = attempt
                 # Stop if finite limit reached
                 try:
-                    if (
-                        isinstance(attempts_limit, (int, float))
-                        and math.isfinite(float(attempts_limit))
-                        and attempt >= int(attempts_limit)
-                    ):
+                    if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
                         break
                 except Exception:
                     pass
@@ -719,9 +641,7 @@ def fix_to_pass_tests(
         # If tests passed, mark success and push changes
         if post_result["success"]:
             if current_test_file is not None:
-                logger.info(
-                    f"Targeted test {current_test_file} passed after LLM fix; rerunning full suite"
-                )
+                logger.info(f"Targeted test {current_test_file} passed after LLM fix; rerunning full suite")
                 current_test_file = None
                 continue
             summary["success"] = True
@@ -746,14 +666,8 @@ def fix_to_pass_tests(
 
         # Stop if finite limit reached
         try:
-            if (
-                isinstance(attempts_limit, (int, float))
-                and math.isfinite(float(attempts_limit))
-                and attempt >= int(attempts_limit)
-            ):
-                logger.info(
-                    f"Reached attempt limit ({attempts_limit}); exiting fix loop"
-                )
+            if isinstance(attempts_limit, (int, float)) and math.isfinite(float(attempts_limit)) and attempt >= int(attempts_limit):
+                logger.info(f"Reached attempt limit ({attempts_limit}); exiting fix loop")
                 break
         except Exception:
             # If attempts_limit is not a number, treat as unlimited
@@ -781,11 +695,7 @@ def generate_commit_message_via_llm(
     """
     try:
         # Use message_backend_manager if available, otherwise fall back to llm_backend_manager
-        manager = (
-            message_backend_manager
-            if message_backend_manager is not None
-            else llm_backend_manager
-        )
+        manager = message_backend_manager if message_backend_manager is not None else llm_backend_manager
 
         if manager is None:
             return ""
@@ -827,9 +737,7 @@ def generate_commit_message_via_llm(
         return ""
 
 
-def format_commit_message(
-    config: AutomationConfig, llm_summary: str, attempt: int
-) -> str:
+def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: int) -> str:
     """Create a concise commit message using the LLM-produced summary.
 
     - Prefix with "Auto-Coder:" to unify automation commits
@@ -871,11 +779,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
     lines = full_output.split("\n")
 
     # 0) 期待/受領（Playwright/Jest）の詳細行が含まれていれば、見出しからその周辺を優先抽出
-    if (
-        ("Expected substring:" in full_output)
-        or ("Received string:" in full_output)
-        or ("expect(received)" in full_output)
-    ):
+    if ("Expected substring:" in full_output) or ("Received string:" in full_output) or ("expect(received)" in full_output):
         try:
             import re
 
@@ -884,11 +788,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
             hdr_pat = re.compile(r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\).*\.spec\.ts:.*")
             idx_expect = None
             for i, ln in enumerate(lines):
-                if (
-                    ("Expected substring:" in ln)
-                    or ("Received string:" in ln)
-                    or ("expect(received)" in ln)
-                ):
+                if ("Expected substring:" in ln) or ("Received string:" in ln) or ("expect(received)" in ln):
                     idx_expect = i
                     break
             if idx_expect is not None:
@@ -912,17 +812,14 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
         header_indices = []
         # Playwright header: allow both with/without leading "Error:" and also leading whitespace or the × mark
         header_regex = re.compile(
-            r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+\[[^\]]+\]\s+\u203a\s+.*\.spec\.ts:\d+:\d+\s+\u203a\s+.*|"
-            r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+.*\.spec\.ts:.*",
+            r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+\[[^\]]+\]\s+\u203a\s+.*\.spec\.ts:\d+:\d+\s+\u203a\s+.*|" r"^(?:Error:\s+)?\s*(?:[×xX]\s*)?\d+\)\s+.*\.spec\.ts:.*",
             re.UNICODE,
         )
         for idx, ln in enumerate(lines):
             if header_regex.search(ln):
                 header_indices.append(idx)
         # 期待/受領の典型
-        expect_regex = re.compile(
-            r"expect\(received\).*|Expected substring:|Received string:"
-        )
+        expect_regex = re.compile(r"expect\(received\).*|Expected substring:|Received string:")
 
         blocks = []
         for start_idx in header_indices:
@@ -937,9 +834,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
                     break
             block = lines[start_idx:end_idx]
             # Check if it includes expectation/received lines or the corresponding expect line
-            if any(expect_regex.search(b) for b in block) or any(
-                ".spec.ts" in b for b in block
-            ):
+            if any(expect_regex.search(b) for b in block) or any(".spec.ts" in b for b in block):
                 blocks.append("\n".join(block))
         if blocks:
             result = "\n\n".join(blocks)
@@ -947,20 +842,12 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
             if "Expected substring:" not in result or "Received string:" not in result:
                 extra_lines = []
                 for i, ln in enumerate(lines):
-                    if (
-                        "Expected substring:" in ln
-                        or "Received string:" in ln
-                        or "expect(received)" in ln
-                    ):
+                    if "Expected substring:" in ln or "Received string:" in ln or "expect(received)" in ln:
                         start = max(0, i - 2)
                         end = min(len(lines), i + 4)
                         extra_lines.extend(lines[start:end])
                 if extra_lines:
-                    result = (
-                        result
-                        + "\n\n--- Expectation Details ---\n"
-                        + "\n".join(extra_lines)
-                    )
+                    result = result + "\n\n--- Expectation Details ---\n" + "\n".join(extra_lines)
             if len(result) > 3000:
                 result = result[:3000] + "\n... (output truncated)"
             return result
@@ -1039,9 +926,7 @@ def run_pr_tests(config: AutomationConfig, pr_data: Dict[str, Any]) -> Dict[str,
     try:
         log_action(f"Running tests for PR #{pr_number}")
         result = run_local_tests(config)
-        log_action(
-            f"Test result for PR #{pr_number}: {'PASS' if result['success'] else 'FAIL'}"
-        )
+        log_action(f"Test result for PR #{pr_number}: {'PASS' if result['success'] else 'FAIL'}")
         return result
 
     except Exception as e:

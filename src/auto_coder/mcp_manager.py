@@ -276,9 +276,7 @@ class MCPServerManager:
             from .codex_client import CodexClient
 
             client = CodexClient()
-            result = client.add_mcp_server_config(
-                server_name, "uv", ["run", str(install_path / "main.py")]
-            )
+            result = client.add_mcp_server_config(server_name, "uv", ["run", str(install_path / "main.py")])
 
             if result:
                 logger.info(f"✅ Updated Codex configuration ({server_name})")
@@ -394,9 +392,7 @@ class MCPServerManager:
             if result:
                 logger.info(f"✅ Updated Windsurf/Claude configuration ({server_name})")
             else:
-                logger.error(
-                    f"Failed to update Windsurf/Claude configuration ({server_name})"
-                )
+                logger.error(f"Failed to update Windsurf/Claude configuration ({server_name})")
 
             return result
         except Exception as e:
@@ -457,10 +453,7 @@ class MCPServerManager:
             return False
 
         # Check for main.py or server.py
-        if (
-            not (config.install_dir / "main.py").exists()
-            and not (config.install_dir / "server.py").exists()
-        ):
+        if not (config.install_dir / "main.py").exists() and not (config.install_dir / "server.py").exists():
             return False
 
         return True

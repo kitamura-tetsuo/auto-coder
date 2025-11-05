@@ -7,8 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.issue_processor import (_process_issues_jules_mode,
-                                            _process_issues_normal)
+from src.auto_coder.issue_processor import _process_issues_jules_mode, _process_issues_normal
 
 
 class TestIssueProcessorSkipSubIssues:
@@ -39,9 +38,7 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client.get_open_sub_issues.return_value = [100, 200]
 
         # Execute
-        result = _process_issues_normal(
-            mock_github_client, config, dry_run=False, repo_name="owner/repo"
-        )
+        result = _process_issues_normal(mock_github_client, config, dry_run=False, repo_name="owner/repo")
 
         # Assert
         assert len(result) == 1
@@ -54,9 +51,7 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client.remove_labels_from_issue.assert_not_called()
 
     @patch("src.auto_coder.issue_processor.logger")
-    def test_process_issues_normal_processes_issue_without_sub_issues(
-        self, mock_logger
-    ):
+    def test_process_issues_normal_processes_issue_without_sub_issues(self, mock_logger):
         """Test that issues without sub-issues are processed normally."""
         # Setup
         mock_github_client = Mock()
@@ -97,15 +92,10 @@ class TestIssueProcessorSkipSubIssues:
         assert len(result) == 1
         assert result[0]["issue_data"]["number"] == 1
         # Should not have skip message
-        assert not any(
-            "Skipped - has open sub-issues" in action
-            for action in result[0].get("actions_taken", [])
-        )
+        assert not any("Skipped - has open sub-issues" in action for action in result[0].get("actions_taken", []))
 
     @patch("src.auto_coder.issue_processor.logger")
-    def test_process_issues_normal_processes_issue_with_closed_sub_issues(
-        self, mock_logger
-    ):
+    def test_process_issues_normal_processes_issue_with_closed_sub_issues(self, mock_logger):
         """Test that issues with all closed sub-issues are processed."""
         # Setup
         mock_github_client = Mock()
@@ -145,15 +135,10 @@ class TestIssueProcessorSkipSubIssues:
         # Assert - issue should be processed
         assert len(result) == 1
         assert result[0]["issue_data"]["number"] == 1
-        assert not any(
-            "Skipped - has open sub-issues" in action
-            for action in result[0].get("actions_taken", [])
-        )
+        assert not any("Skipped - has open sub-issues" in action for action in result[0].get("actions_taken", []))
 
     @patch("src.auto_coder.issue_processor.logger")
-    def test_process_issues_jules_mode_skips_issue_with_open_sub_issues(
-        self, mock_logger
-    ):
+    def test_process_issues_jules_mode_skips_issue_with_open_sub_issues(self, mock_logger):
         """Test that issues with open sub-issues are skipped in Jules mode."""
         # Setup
         mock_github_client = Mock()
@@ -177,9 +162,7 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client.get_open_sub_issues.return_value = [100]
 
         # Execute
-        result = _process_issues_jules_mode(
-            mock_github_client, config, dry_run=False, repo_name="owner/repo"
-        )
+        result = _process_issues_jules_mode(mock_github_client, config, dry_run=False, repo_name="owner/repo")
 
         # Assert
         assert len(result) == 1
@@ -192,9 +175,7 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client.remove_labels_from_issue.assert_not_called()
 
     @patch("src.auto_coder.issue_processor.logger")
-    def test_process_issues_jules_mode_processes_issue_without_sub_issues(
-        self, mock_logger
-    ):
+    def test_process_issues_jules_mode_processes_issue_without_sub_issues(self, mock_logger):
         """Test that issues without sub-issues get 'jules' label in Jules mode."""
         # Setup
         mock_github_client = Mock()
@@ -221,17 +202,13 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client.get_open_sub_issues.return_value = []
 
         # Execute
-        result = _process_issues_jules_mode(
-            mock_github_client, config, dry_run=False, repo_name="owner/repo"
-        )
+        result = _process_issues_jules_mode(mock_github_client, config, dry_run=False, repo_name="owner/repo")
 
         # Assert - issue should be processed
         assert len(result) == 1
         assert result[0]["issue_data"]["number"] == 1
         # Should have added 'jules' label
-        mock_github_client.add_labels_to_issue.assert_called_once_with(
-            "owner/repo", 1, ["jules"]
-        )
+        mock_github_client.add_labels_to_issue.assert_called_once_with("owner/repo", 1, ["jules"])
 
     @patch("src.auto_coder.issue_processor.logger")
     def test_process_issues_normal_dry_run_skips_label_removal(self, mock_logger):
@@ -258,9 +235,7 @@ class TestIssueProcessorSkipSubIssues:
         mock_github_client.get_open_sub_issues.return_value = [100]
 
         # Execute in dry run mode
-        result = _process_issues_normal(
-            mock_github_client, config, dry_run=True, repo_name="owner/repo"
-        )
+        result = _process_issues_normal(mock_github_client, config, dry_run=True, repo_name="owner/repo")
 
         # Assert
         assert len(result) == 1

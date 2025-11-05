@@ -31,9 +31,7 @@ class ClaudeClient(LLMClientBase):
 
         # Check if claude CLI is available
         try:
-            result = subprocess.run(
-                ["claude", "--version"], capture_output=True, text=True, timeout=10
-            )
+            result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 raise RuntimeError("claude CLI not available or not working")
         except Exception as e:
@@ -42,9 +40,7 @@ class ClaudeClient(LLMClientBase):
     def switch_to_conflict_model(self) -> None:
         """Switch to faster model for conflict resolution."""
         if self.model_name != self.conflict_model:
-            logger.info(
-                f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution"
-            )
+            logger.info(f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution")
             self.model_name = self.conflict_model
 
     def switch_to_default_model(self) -> None:
@@ -76,16 +72,9 @@ class ClaudeClient(LLMClientBase):
             ]
 
             # Warn that we are invoking an LLM (minimize calls)
-            logger.warning(
-                "LLM invocation: claude CLI is being called. Keep LLM calls minimized."
-            )
-            logger.debug(
-                f"Running claude CLI with prompt length: {len(prompt)} characters"
-            )
-            logger.info(
-                f"🤖 Running: claude --print --dangerously-skip-permissions "
-                f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]"
-            )
+            logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
+            logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
+            logger.info(f"🤖 Running: claude --print --dangerously-skip-permissions " f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]")
             logger.info("=" * 60)
 
             usage_markers = (
@@ -111,20 +100,14 @@ class ClaudeClient(LLMClientBase):
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
             combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = (
-                "\n".join(combined_parts)
-                if combined_parts
-                else (result.stderr or result.stdout or "")
-            )
+            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
             if result.returncode != 0:
                 # Detect usage/rate limit patterns
                 if any(marker in low for marker in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
-                raise RuntimeError(
-                    f"claude CLI failed with return code {result.returncode}\n{full_output}"
-                )
+                raise RuntimeError(f"claude CLI failed with return code {result.returncode}\n{full_output}")
 
             # Even with 0, some CLIs may print limit messages
             if any(marker in low for marker in usage_markers):
@@ -163,17 +146,13 @@ class ClaudeClient(LLMClientBase):
                 logger.debug(f"MCP server '{server_name}' not found via 'claude mcp'")
                 return False
             else:
-                logger.debug(
-                    f"'claude mcp' command failed with return code {result.returncode}"
-                )
+                logger.debug(f"'claude mcp' command failed with return code {result.returncode}")
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Claude MCP config: {e}")
             return False
 
-    def add_mcp_server_config(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration to Claude CLI config.
 
         Args:

@@ -30,9 +30,7 @@ def test_codex_mcp_client_graphrag_disabled(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
-    with mock.patch.object(
-        CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")
-    ):
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=False)
 
     assert client.enable_graphrag is False
@@ -54,9 +52,7 @@ def test_codex_mcp_client_graphrag_enabled(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
-    with mock.patch.object(
-        CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")
-    ):
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
 
     assert client.enable_graphrag is True
@@ -78,9 +74,7 @@ def test_run_gemini_cli_graphrag_ensure_ready_success(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
-    with mock.patch.object(
-        CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")
-    ):
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
 
     # Mock GraphRAG integration
@@ -116,9 +110,7 @@ def test_run_gemini_cli_graphrag_ensure_ready_failure(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
-    with mock.patch.object(
-        CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")
-    ):
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
 
     # Mock GraphRAG integration with failure
@@ -154,9 +146,7 @@ def test_run_gemini_cli_graphrag_ensure_ready_exception(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
-    with mock.patch.object(
-        CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")
-    ):
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
 
     # Mock GraphRAG integration with exception
@@ -192,9 +182,7 @@ def test_run_gemini_cli_no_graphrag(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
-    with mock.patch.object(
-        CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")
-    ):
+    with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=False)
 
     # Mock codex exec

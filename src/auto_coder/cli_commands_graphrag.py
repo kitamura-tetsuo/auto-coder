@@ -110,21 +110,15 @@ def run_graphrag_setup_mcp_programmatically(
                     )
                     if result.returncode == 0:
                         if not silent:
-                            logger.info(
-                                f"✅ Automatically installed uv: {result.stdout.strip()}"
-                            )
+                            logger.info(f"✅ Automatically installed uv: {result.stdout.strip()}")
                     else:
-                        logger.error(
-                            "uv installation completed, but it cannot be executed."
-                        )
+                        logger.error("uv installation completed, but it cannot be executed.")
                         logger.error("Please restart your shell and try again.")
                         return False
                 except FileNotFoundError:
                     logger.error("uv was installed, but not found in PATH.")
                     logger.error("Please restart your shell and try again.")
-                    logger.error(
-                        f"Alternatively, add the following paths to PATH: {':'.join(uv_bin_paths)}"
-                    )
+                    logger.error(f"Alternatively, add the following paths to PATH: {':'.join(uv_bin_paths)}")
                     return False
 
             except subprocess.TimeoutExpired:
@@ -176,9 +170,7 @@ def run_graphrag_setup_mcp_programmatically(
                     return False
         else:
             if not install_path.exists():
-                logger.error(
-                    f"Directory {install_path} does not exist. When using --skip-clone, set up the MCP server beforehand."
-                )
+                logger.error(f"Directory {install_path} does not exist. When using --skip-clone, set up the MCP server beforehand.")
                 return False
             if not silent:
                 logger.info(f"Using existing directory: {install_path}")
@@ -300,9 +292,7 @@ exec "$UV_CMD" run main.py
 
             os.chmod(run_script_path, 0o755)
             if not silent:
-                logger.info(
-                    f"✅ run_server.sh スクリプトを作成しました: {run_script_path}"
-                )
+                logger.info(f"✅ run_server.sh スクリプトを作成しました: {run_script_path}")
         except Exception as e:
             logger.error(f"run_server.sh スクリプトの作成に失敗しました: {e}")
             return False
@@ -403,9 +393,7 @@ def _add_codex_config(install_path: Path) -> bool:
         from .codex_client import CodexClient
 
         client = CodexClient()
-        result = client.add_mcp_server_config(
-            "graphrag", "uv", ["run", str(install_path / "main.py")]
-        )
+        result = client.add_mcp_server_config("graphrag", "uv", ["run", str(install_path / "main.py")])
 
         if result:
             logger.info("✅ Codex設定を更新しました")
@@ -435,9 +423,7 @@ def _add_gemini_config(install_path: Path) -> bool:
         client = GeminiClient(api_key=None)
 
         # Use uv with --directory option to ensure correct working directory
-        result = client.add_mcp_server_config(
-            "graphrag", "uv", ["--directory", str(install_path), "run", "main.py"]
-        )
+        result = client.add_mcp_server_config("graphrag", "uv", ["--directory", str(install_path), "run", "main.py"])
 
         if result:
             logger.info("✅ Gemini設定を更新しました")
@@ -471,9 +457,7 @@ def _add_qwen_config(install_path: Path) -> bool:
             result = client.add_mcp_server_config("graphrag", str(run_script), [])
         else:
             # Fallback to uv with --directory option
-            result = client.add_mcp_server_config(
-                "graphrag", "uv", ["--directory", str(install_path), "run", "main.py"]
-            )
+            result = client.add_mcp_server_config("graphrag", "uv", ["--directory", str(install_path), "run", "main.py"])
 
         if result:
             logger.info("✅ Qwen設定を更新しました")
@@ -507,9 +491,7 @@ def _add_windsurf_claude_config(install_path: Path) -> bool:
             result = client.add_mcp_server_config("graphrag", str(run_script), [])
         else:
             # Fallback to uv with --directory option
-            result = client.add_mcp_server_config(
-                "graphrag", "uv", ["--directory", str(install_path), "run", "main.py"]
-            )
+            result = client.add_mcp_server_config("graphrag", "uv", ["--directory", str(install_path), "run", "main.py"])
 
         if result:
             logger.info("✅ Windsurf/Claude設定を更新しました")
@@ -568,28 +550,16 @@ def graphrag_start(wait: bool, timeout: int) -> None:
             click.echo("✅ GraphRAG containers started successfully")
             if wait:
                 status = manager.get_status()
-                click.echo(
-                    f"   Neo4j: {'✅ healthy' if status['neo4j'] else '❌ unhealthy'}"
-                )
-                click.echo(
-                    f"   Qdrant: {'✅ healthy' if status['qdrant'] else '❌ unhealthy'}"
-                )
+                click.echo(f"   Neo4j: {'✅ healthy' if status['neo4j'] else '❌ unhealthy'}")
+                click.echo(f"   Qdrant: {'✅ healthy' if status['qdrant'] else '❌ unhealthy'}")
 
                 # Check if any container is unhealthy
                 if not status["neo4j"] or not status["qdrant"]:
                     click.echo()
-                    click.echo(
-                        "⚠️  Some containers are unhealthy. Troubleshooting tips:"
-                    )
-                    click.echo(
-                        "   1. Check Docker logs: docker compose -f docker-compose.graphrag.yml logs"
-                    )
-                    click.echo(
-                        "   2. Verify ports are not in use: lsof -i :7474 -i :7687 -i :6333"
-                    )
-                    click.echo(
-                        "   3. Try restarting: auto-coder graphrag stop && auto-coder graphrag start"
-                    )
+                    click.echo("⚠️  Some containers are unhealthy. Troubleshooting tips:")
+                    click.echo("   1. Check Docker logs: docker compose -f docker-compose.graphrag.yml logs")
+                    click.echo("   2. Verify ports are not in use: lsof -i :7474 -i :7687 -i :6333")
+                    click.echo("   3. Try restarting: auto-coder graphrag stop && auto-coder graphrag start")
         else:
             click.echo()
             click.echo("❌ Failed to start GraphRAG containers")
@@ -598,15 +568,9 @@ def graphrag_start(wait: bool, timeout: int) -> None:
             click.echo("   1. Ensure Docker is running: docker ps")
             click.echo("   2. Check Docker permissions: sudo usermod -aG docker $USER")
             click.echo("      (then logout and login again)")
-            click.echo(
-                "   3. Check docker-compose.graphrag.yml exists in repository root"
-            )
-            click.echo(
-                "   4. Check Docker logs: docker compose -f docker-compose.graphrag.yml logs"
-            )
-            click.echo(
-                "   5. Try manual start: docker compose -f docker-compose.graphrag.yml up -d"
-            )
+            click.echo("   3. Check docker-compose.graphrag.yml exists in repository root")
+            click.echo("   4. Check Docker logs: docker compose -f docker-compose.graphrag.yml logs")
+            click.echo("   5. Try manual start: docker compose -f docker-compose.graphrag.yml up -d")
             raise click.ClickException("Failed to start GraphRAG containers")
     except click.ClickException:
         raise
@@ -665,12 +629,8 @@ def graphrag_status() -> None:
         if is_running:
             click.echo("📦 Containers: ✅ Running")
             status = manager.get_status()
-            click.echo(
-                f"   Neo4j: {'✅ healthy' if status['neo4j'] else '❌ unhealthy'}"
-            )
-            click.echo(
-                f"   Qdrant: {'✅ healthy' if status['qdrant'] else '❌ unhealthy'}"
-            )
+            click.echo(f"   Neo4j: {'✅ healthy' if status['neo4j'] else '❌ unhealthy'}")
+            click.echo(f"   Qdrant: {'✅ healthy' if status['qdrant'] else '❌ unhealthy'}")
         else:
             click.echo("📦 Containers: ❌ Not running")
             click.echo("   Run 'auto-coder graphrag start' to start containers")
@@ -706,9 +666,7 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
                 raise click.ClickException("Failed to start containers")
             click.echo("✅ Containers started")
         else:
-            raise click.ClickException(
-                "Containers must be running to update index. Run 'auto-coder graphrag start' first."
-            )
+            raise click.ClickException("Containers must be running to update index. Run 'auto-coder graphrag start' first.")
 
     # Update index
     try:
@@ -731,9 +689,7 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
             click.echo(f"   Indexed: {indexed_path}")
             click.echo(f"   Current directory: {index_manager.repo_path.resolve()}")
             click.echo()
-            if not force and not click.confirm(
-                "Update index for the current directory?"
-            ):
+            if not force and not click.confirm("Update index for the current directory?"):
                 click.echo("Canceled index update")
                 return
             force = True  # Force update when path changes
@@ -757,18 +713,14 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
             click.echo("✅ Index updated successfully")
             click.echo()
             click.echo("Note: Current implementation uses hash-based change detection.")
-            click.echo(
-                "      Full semantic indexing (embeddings, Neo4j/Qdrant storage)"
-            )
+            click.echo("      Full semantic indexing (embeddings, Neo4j/Qdrant storage)")
             click.echo("      is planned for future enhancement.")
         else:
             click.echo()
             click.echo("❌ Failed to update index")
             click.echo()
             click.echo("Troubleshooting tips:")
-            click.echo(
-                "   1. Check if containers are healthy: auto-coder graphrag status"
-            )
+            click.echo("   1. Check if containers are healthy: auto-coder graphrag status")
             click.echo("   2. Verify repository contains Python files")
             click.echo("   3. Check logs for detailed error messages")
             raise click.ClickException("Failed to update index")
@@ -853,9 +805,7 @@ def graphrag_setup_mcp(
 
     # Interactive confirmation if directory exists and not skip_clone
     if not skip_clone and install_path.exists():
-        if not click.confirm(
-            f"Directory {install_path} already exists. Delete and re-copy?"
-        ):
+        if not click.confirm(f"Directory {install_path} already exists. Delete and re-copy?"):
             click.echo("Setup cancelled")
             return
 

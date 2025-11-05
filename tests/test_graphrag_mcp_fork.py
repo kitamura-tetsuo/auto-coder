@@ -65,9 +65,7 @@ def test_code_analysis_tool_has_required_methods():
     ]
 
     for method_name in required_methods:
-        assert hasattr(
-            CodeAnalysisTool, method_name
-        ), f"CodeAnalysisTool should have {method_name} method"
+        assert hasattr(CodeAnalysisTool, method_name), f"CodeAnalysisTool should have {method_name} method"
 
 
 def test_server_imports_code_analysis_tool():
@@ -79,11 +77,7 @@ def test_server_imports_code_analysis_tool():
     assert "from graphrag_mcp.code_analysis_tool import CodeAnalysisTool" in content
 
     # Should NOT import DocumentationGPTTool
-    assert (
-        "DocumentationGPTTool" not in content
-        or "from graphrag_mcp.documentation_tool import DocumentationGPTTool"
-        not in content
-    )
+    assert "DocumentationGPTTool" not in content or "from graphrag_mcp.documentation_tool import DocumentationGPTTool" not in content
 
 
 def test_server_has_code_analysis_tools():
@@ -101,9 +95,7 @@ def test_server_has_code_analysis_tools():
     ]
 
     for tool_name in required_tools:
-        assert (
-            f"def {tool_name}" in content
-        ), f"server.py should define {tool_name} tool"
+        assert f"def {tool_name}" in content, f"server.py should define {tool_name} tool"
 
 
 def test_server_has_enhanced_schema_description():
@@ -125,9 +117,7 @@ def test_server_has_enhanced_schema_description():
     ]
 
     for term in code_terms:
-        assert (
-            term in content
-        ), f"server.py should mention '{term}' in schema description"
+        assert term in content, f"server.py should mention '{term}' in schema description"
 
 
 def test_mcp_server_name_updated():
@@ -205,9 +195,7 @@ def test_code_analysis_tool_method_signatures():
 
     from graphrag_mcp.code_analysis_tool import CodeAnalysisTool
 
-    tool = CodeAnalysisTool.__new__(
-        CodeAnalysisTool
-    )  # Don't call __init__ (no DB connection)
+    tool = CodeAnalysisTool.__new__(CodeAnalysisTool)  # Don't call __init__ (no DB connection)
 
     # Check find_symbol signature
     sig = inspect.signature(CodeAnalysisTool.find_symbol)
@@ -248,9 +236,7 @@ def test_original_documentation_tool_not_used():
         # Count occurrences
         doc_tool_count = content.count("doc_tool")
         code_tool_count = content.count("code_tool")
-        assert (
-            code_tool_count > doc_tool_count
-        ), "server.py should primarily use code_tool, not doc_tool"
+        assert code_tool_count > doc_tool_count, "server.py should primarily use code_tool, not doc_tool"
 
 
 def test_mcp_server_bundled_in_package():
@@ -264,21 +250,11 @@ def test_mcp_server_bundled_in_package():
         # Check if bundled MCP server exists
         if bundled_mcp.exists():
             # Verify key files exist
-            assert (
-                bundled_mcp / "server.py"
-            ).exists(), "server.py should exist in bundled MCP"
-            assert (
-                bundled_mcp / "main.py"
-            ).exists(), "main.py should exist in bundled MCP"
-            assert (
-                bundled_mcp / "pyproject.toml"
-            ).exists(), "pyproject.toml should exist in bundled MCP"
-            assert (
-                bundled_mcp / "graphrag_mcp" / "code_analysis_tool.py"
-            ).exists(), "code_analysis_tool.py should exist in bundled MCP"
-            assert (
-                bundled_mcp / "FORK_INFO.md"
-            ).exists(), "FORK_INFO.md should exist in bundled MCP"
+            assert (bundled_mcp / "server.py").exists(), "server.py should exist in bundled MCP"
+            assert (bundled_mcp / "main.py").exists(), "main.py should exist in bundled MCP"
+            assert (bundled_mcp / "pyproject.toml").exists(), "pyproject.toml should exist in bundled MCP"
+            assert (bundled_mcp / "graphrag_mcp" / "code_analysis_tool.py").exists(), "code_analysis_tool.py should exist in bundled MCP"
+            assert (bundled_mcp / "FORK_INFO.md").exists(), "FORK_INFO.md should exist in bundled MCP"
         else:
             # In development mode, bundled MCP may not exist yet
             pytest.skip("Bundled MCP server not found (development mode)")
@@ -290,21 +266,16 @@ def test_setup_mcp_uses_bundled_server():
     """Test that setup-mcp command uses bundled MCP server."""
     import inspect
 
-    from auto_coder.cli_commands_graphrag import \
-        run_graphrag_setup_mcp_programmatically
+    from auto_coder.cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
 
     # Get the source code of the function
     source = inspect.getsource(run_graphrag_setup_mcp_programmatically)
 
     # Should reference bundled MCP server
-    assert (
-        "mcp_servers" in source or "bundled" in source.lower()
-    ), "setup-mcp should use bundled MCP server"
+    assert "mcp_servers" in source or "bundled" in source.lower(), "setup-mcp should use bundled MCP server"
 
     # Should NOT clone from GitHub
-    assert (
-        "git clone" not in source or "Copy bundled" in source
-    ), "setup-mcp should copy bundled MCP, not clone from GitHub"
+    assert "git clone" not in source or "Copy bundled" in source, "setup-mcp should copy bundled MCP, not clone from GitHub"
 
 
 if __name__ == "__main__":

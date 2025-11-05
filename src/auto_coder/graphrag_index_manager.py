@@ -33,9 +33,7 @@ class GraphRAGIndexManager:
         self.repo_path = Path(repo_path) if repo_path else Path.cwd()
         if index_state_file is None:
             # Default to .auto-coder/graphrag_index_state.json in repository
-            index_state_file = str(
-                self.repo_path / ".auto-coder" / "graphrag_index_state.json"
-            )
+            index_state_file = str(self.repo_path / ".auto-coder" / "graphrag_index_state.json")
         self.index_state_file = Path(index_state_file)
 
     def _get_codebase_hash(self) -> str:
@@ -59,11 +57,7 @@ class GraphRAGIndexManager:
                 logger.warning("Failed to get git tracked files, using all files")
                 files = list(self.repo_path.rglob("*.py"))
             else:
-                files = [
-                    self.repo_path / f.strip()
-                    for f in result.stdout.split("\n")
-                    if f.strip()
-                ]
+                files = [self.repo_path / f.strip() for f in result.stdout.split("\n") if f.strip()]
         except Exception as e:
             logger.warning(f"Failed to get git tracked files: {e}, using all files")
             files = list(self.repo_path.rglob("*.py"))
@@ -161,10 +155,7 @@ class GraphRAGIndexManager:
             if indexed_path is None:
                 logger.info("No indexed path found, index needs to be created")
             else:
-                logger.info(
-                    f"Indexed path mismatch: indexed={indexed_path}, "
-                    f"current={self.repo_path.resolve()}, index needs to be updated"
-                )
+                logger.info(f"Indexed path mismatch: indexed={indexed_path}, " f"current={self.repo_path.resolve()}, index needs to be updated")
             return False
 
         # Check if codebase hash matches
@@ -221,8 +212,7 @@ class GraphRAGIndexManager:
         try:
             from neo4j import GraphDatabase
             from qdrant_client import QdrantClient
-            from qdrant_client.models import (Distance, PointStruct,
-                                              VectorParams)
+            from qdrant_client.models import Distance, PointStruct, VectorParams
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
             import sys
@@ -230,9 +220,7 @@ class GraphRAGIndexManager:
             logger.error(f"Required packages not installed: {e}")
             logger.error(f"Python executable: {sys.executable}")
             logger.error(f"Python path: {sys.path}")
-            logger.info(
-                "Install with: pip install qdrant-client sentence-transformers neo4j"
-            )
+            logger.info("Install with: pip install qdrant-client sentence-transformers neo4j")
             raise
 
         # Determine if running in container
@@ -246,15 +234,11 @@ class GraphRAGIndexManager:
         logger.info("Running graph-builder to analyze codebase...")
         graph_data = self._run_graph_builder()
 
-        if not graph_data or (
-            not graph_data.get("nodes") and not graph_data.get("edges")
-        ):
+        if not graph_data or (not graph_data.get("nodes") and not graph_data.get("edges")):
             logger.warning("No graph data extracted from codebase")
             return
 
-        logger.info(
-            f"Extracted {len(graph_data.get('nodes', []))} nodes and {len(graph_data.get('edges', []))} edges"
-        )
+        logger.info(f"Extracted {len(graph_data.get('nodes', []))} nodes and {len(graph_data.get('edges', []))} edges")
 
         # Step 2: Store graph data in Neo4j
         logger.info("Storing graph data in Neo4j...")
@@ -277,9 +261,7 @@ class GraphRAGIndexManager:
         if not graph_builder_path:
             auto_coder_pkg_dir = Path(__file__).parent
             logger.warning("graph-builder not found in common locations")
-            logger.info(
-                f"Searched locations: {auto_coder_pkg_dir}/graph_builder, {self.repo_path}/graph-builder, {Path.cwd()}/graph-builder, {Path.home()}/graph-builder"
-            )
+            logger.info(f"Searched locations: {auto_coder_pkg_dir}/graph_builder, {self.repo_path}/graph-builder, {Path.cwd()}/graph-builder, {Path.home()}/graph-builder")
             logger.info("Falling back to simple Python indexing")
             return self._fallback_python_indexing()
 
@@ -327,9 +309,7 @@ class GraphRAGIndexManager:
                     # Use Python version
                     py_cli = graph_builder_path / "src" / "cli_python.py"
                     if not py_cli.exists():
-                        logger.warning(
-                            f"graph-builder CLI not found at {ts_cli_bundle}, {ts_cli} or {py_cli}"
-                        )
+                        logger.warning(f"graph-builder CLI not found at {ts_cli_bundle}, {ts_cli} or {py_cli}")
                         return self._fallback_python_indexing()
 
                     logger.info("Using Python version of graph-builder")
@@ -358,9 +338,7 @@ class GraphRAGIndexManager:
                     logger.debug(f"graph-builder stdout:\n{result.stdout}")
 
                 if result.returncode != 0:
-                    logger.warning(
-                        f"graph-builder failed with return code {result.returncode}"
-                    )
+                    logger.warning(f"graph-builder failed with return code {result.returncode}")
                     logger.warning(f"stderr: {result.stderr}")
                     if result.stdout:
                         logger.warning(f"stdout: {result.stdout}")
@@ -370,17 +348,11 @@ class GraphRAGIndexManager:
                 if output_path.exists():
                     with open(output_path, "r") as f:
                         data = json.load(f)
-                        logger.info(
-                            f"Successfully loaded graph data: {len(data.get('nodes', []))} nodes, {len(data.get('edges', []))} edges"
-                        )
+                        logger.info(f"Successfully loaded graph data: {len(data.get('nodes', []))} nodes, {len(data.get('edges', []))} edges")
                         return data
                 else:
-                    logger.warning(
-                        f"graph-builder did not produce output at {output_path}"
-                    )
-                    logger.warning(
-                        f"Output directory contents: {list(Path(temp_dir).iterdir())}"
-                    )
+                    logger.warning(f"graph-builder did not produce output at {output_path}")
+                    logger.warning(f"Output directory contents: {list(Path(temp_dir).iterdir())}")
                     return self._fallback_python_indexing()
 
             except subprocess.TimeoutExpired:
@@ -405,8 +377,7 @@ class GraphRAGIndexManager:
         # Check common local directory locations
         # Priority: In-package > Target repository > Current directory > Home directory
         candidates = [
-            auto_coder_pkg_dir
-            / "graph_builder",  # In-package (for both development and pipx installs)
+            auto_coder_pkg_dir / "graph_builder",  # In-package (for both development and pipx installs)
             self.repo_path / "graph-builder",  # In the target repository
             Path.cwd() / "graph-builder",  # Current directory
             Path.home() / "graph-builder",  # Home directory
@@ -425,9 +396,7 @@ class GraphRAGIndexManager:
                     has_ts_cli_bundle = (candidate / "dist" / "cli.bundle.js").exists()
                     has_ts_cli = (candidate / "dist" / "cli.js").exists()
                     has_py_cli = (candidate / "src" / "cli_python.py").exists()
-                    logger.debug(
-                        f"  TypeScript bundled CLI exists: {has_ts_cli_bundle}"
-                    )
+                    logger.debug(f"  TypeScript bundled CLI exists: {has_ts_cli_bundle}")
                     logger.debug(f"  TypeScript CLI exists: {has_ts_cli}")
                     logger.debug(f"  Python CLI exists: {has_py_cli}")
                     if has_ts_cli_bundle or has_ts_cli or has_py_cli:
@@ -491,9 +460,7 @@ class GraphRAGIndexManager:
 
         # Connect to Neo4j
         # Use container name if in container and connected to same network, otherwise localhost
-        neo4j_uri = (
-            "bolt://auto-coder-neo4j:7687" if in_container else "bolt://localhost:7687"
-        )
+        neo4j_uri = "bolt://auto-coder-neo4j:7687" if in_container else "bolt://localhost:7687"
         neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
         neo4j_password = os.environ.get("NEO4J_PASSWORD", "password")
 
@@ -536,9 +503,7 @@ class GraphRAGIndexManager:
                         props=node_data,
                     )
 
-                logger.info(
-                    f"Inserted {len(nodes)} nodes with label {repo_label} into Neo4j"
-                )
+                logger.info(f"Inserted {len(nodes)} nodes with label {repo_label} into Neo4j")
 
                 # Insert edges
                 edges = graph_data.get("edges", [])
@@ -574,24 +539,19 @@ class GraphRAGIndexManager:
         """
         try:
             from qdrant_client import QdrantClient
-            from qdrant_client.models import (Distance, PointStruct,
-                                              VectorParams)
+            from qdrant_client.models import Distance, PointStruct, VectorParams
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
             import sys
 
-            logger.warning(
-                f"Required packages not installed, skipping Qdrant indexing: {e}"
-            )
+            logger.warning(f"Required packages not installed, skipping Qdrant indexing: {e}")
             logger.debug(f"Python executable: {sys.executable}")
             logger.debug(f"Python path: {sys.path}")
             return
 
         # Connect to Qdrant
         # Use container name if in container and connected to same network, otherwise localhost
-        qdrant_url = (
-            "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
-        )
+        qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
         logger.info(f"Connecting to Qdrant at {qdrant_url}")
         client = QdrantClient(url=qdrant_url, timeout=10)
 
@@ -650,11 +610,7 @@ class GraphRAGIndexManager:
                 # Create embedding
                 embedding_result = model.encode(text)
                 # Handle both numpy arrays and lists
-                embedding = (
-                    embedding_result.tolist()
-                    if hasattr(embedding_result, "tolist")
-                    else embedding_result
-                )
+                embedding = embedding_result.tolist() if hasattr(embedding_result, "tolist") else embedding_result
 
                 # Create point
                 point = PointStruct(

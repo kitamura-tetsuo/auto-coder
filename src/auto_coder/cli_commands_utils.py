@@ -33,12 +33,7 @@ def get_github_token_or_fail(provided_token: Optional[str]) -> str:
         return detected_token
 
     # Show helpful error with authentication instructions
-    raise click.ClickException(
-        "GitHub token is required. Please either:\n"
-        "1. Set GITHUB_TOKEN environment variable, or\n"
-        "2. Login with gh CLI: 'gh auth login', or\n"
-        "3. Use --github-token option"
-    )
+    raise click.ClickException("GitHub token is required. Please either:\n" "1. Set GITHUB_TOKEN environment variable, or\n" "2. Login with gh CLI: 'gh auth login', or\n" "3. Use --github-token option")
 
 
 def get_repo_or_detect(repo: Optional[str]) -> str:
@@ -54,13 +49,9 @@ def get_repo_or_detect(repo: Optional[str]) -> str:
 
     # If not in a git repository or can't detect, show helpful error
     if not is_git_repository():
-        raise click.ClickException(
-            "Not in a Git repository. Please specify --repo option or run from within a Git repository."
-        )
+        raise click.ClickException("Not in a Git repository. Please specify --repo option or run from within a Git repository.")
     else:
-        raise click.ClickException(
-            "Could not auto-detect GitHub repository. Please specify --repo option."
-        )
+        raise click.ClickException("Could not auto-detect GitHub repository. Please specify --repo option.")
 
 
 @click.command()
@@ -103,9 +94,7 @@ def auth_status() -> None:
     try:
         import subprocess
 
-        result = subprocess.run(
-            ["gemini", "--version"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             click.echo("  ✅ gemini CLI available")
             version_info = result.stdout.strip()
@@ -115,9 +104,7 @@ def auth_status() -> None:
             click.echo("  ❌ gemini CLI not working")
     except Exception:
         click.echo("  ❌ gemini CLI not found")
-        click.echo(
-            "     Please install from: https://github.com/google-gemini/gemini-cli"
-        )
+        click.echo("     Please install from: https://github.com/google-gemini/gemini-cli")
 
     click.echo()
 
@@ -145,9 +132,7 @@ def auth_status() -> None:
     try:
         import subprocess as _sp
 
-        res = _sp.run(
-            ["auggie", "--version"], capture_output=True, text=True, timeout=10
-        )
+        res = _sp.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)
         if res.returncode == 0:
             click.echo("  ✅ auggie CLI available")
             ver = (res.stdout or "").strip()

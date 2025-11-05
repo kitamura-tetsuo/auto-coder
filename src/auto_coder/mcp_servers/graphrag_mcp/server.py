@@ -114,9 +114,7 @@ def find_symbol(fqname: str, session_id: str = None) -> dict:
 
 
 @mcp.tool()
-def get_call_graph(
-    symbol_id: str, direction: str = "both", depth: int = 1, session_id: str = None
-) -> dict:
+def get_call_graph(symbol_id: str, direction: str = "both", depth: int = 1, session_id: str = None) -> dict:
     """Get call graph with backward compatibility.
 
     This tool analyzes the call relationships in the code graph, showing which
@@ -193,9 +191,7 @@ def get_dependencies(file_path: str, session_id: str = None) -> dict:
 
 
 @mcp.tool()
-def impact_analysis(
-    symbol_ids: list, max_depth: int = 2, session_id: str = None
-) -> dict:
+def impact_analysis(symbol_ids: list, max_depth: int = 2, session_id: str = None) -> dict:
     """Analyze impact with backward compatibility.
 
     This tool performs comprehensive impact analysis by traversing the code graph
@@ -238,9 +234,7 @@ def impact_analysis(
 
 
 @mcp.tool()
-def semantic_code_search(
-    query: str, limit: int = 10, kind_filter: list = None, session_id: str = None
-) -> dict:
+def semantic_code_search(query: str, limit: int = 10, kind_filter: list = None, session_id: str = None) -> dict:
     """Semantic search with backward compatibility.
 
     This tool uses vector embeddings to find code symbols that are semantically
@@ -389,9 +383,7 @@ def get_vector_collection_info() -> str:
     """
     try:
         info = []
-        collection_info = code_tool.qdrant_client.get_collection(
-            code_tool.qdrant_collection
-        )
+        collection_info = code_tool.qdrant_client.get_collection(code_tool.qdrant_collection)
 
         # Try to extract vectors count based on client version
         vectors_count = 0
@@ -408,14 +400,10 @@ def get_vector_collection_info() -> str:
         try:
             if hasattr(collection_info, "config"):
                 if hasattr(collection_info.config, "params"):
-                    vector_size = getattr(
-                        collection_info.config.params, "vector_size", "unknown"
-                    )
+                    vector_size = getattr(collection_info.config.params, "vector_size", "unknown")
                     info.append(f"Vector Size: {vector_size}")
 
-                    distance = getattr(
-                        collection_info.config.params, "distance", "unknown"
-                    )
+                    distance = getattr(collection_info.config.params, "distance", "unknown")
                     info.append(f"Distance Function: {distance}")
         except:
             info.append("Could not retrieve detailed vector configuration")

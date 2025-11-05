@@ -4,6 +4,4 @@ Auto-Coder: Automated application development using Gemini CLI and GitHub integr
 
 __version__ = "2025.11.5.14+ge3b78d2"
 __author__ = "Auto-Coder Team"
-__description__ = (
-    "Automated application development using Gemini CLI and GitHub integration"
-)
+__description__ = "Automated application development using Gemini CLI and GitHub integration"

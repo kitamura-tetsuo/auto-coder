@@ -6,11 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from auto_coder.progress_footer import (ProgressContext, ProgressFooter,
-                                        ProgressStage, clear_progress,
-                                        get_progress_footer, newline_progress,
-                                        pop_progress_stage,
-                                        push_progress_stage, set_progress_item)
+from auto_coder.progress_footer import ProgressContext, ProgressFooter, ProgressStage, clear_progress, get_progress_footer, newline_progress, pop_progress_stage, push_progress_stage, set_progress_item
 
 
 def test_progress_footer_format():
