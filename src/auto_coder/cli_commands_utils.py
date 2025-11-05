@@ -7,7 +7,7 @@ import click
 
 from .auth_utils import get_auth_status, get_github_token
 from .automation_engine import AutomationEngine
-from .git_utils import get_current_repo_name, is_git_repository
+from .git_utils import get_current_repo_name, is_git_repository, migrate_pr_branches
 from .github_client import GitHubClient
 from .logger_config import setup_logger
 from .util.github_action import get_github_actions_logs_from_url
@@ -155,3 +155,131 @@ def auth_status() -> None:
             click.echo("📁 Repository: Git repository detected but not GitHub")
         else:
             click.echo("📁 Repository: Not in a Git repository")
+
+
+@click.command()
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=True,
+    help="Show what would be done without making changes (default: True)",
+)
+@click.option(
+    "--execute",
+    is_flag=True,
+    help="Actually perform the migration (default: False, use --execute to run)",
+)
+@click.option(
+    "--no-delete",
+    is_flag=True,
+    default=False,
+    help="Do not delete pr-<number> branches after successful migration",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Auto-resolve merge conflicts (use with caution)",
+)
+def migrate_branches(
+    dry_run: bool,
+    execute: bool,
+    no_delete: bool,
+    force: bool,
+) -> None:
+    """Migrate existing pr-<number> branches to their corresponding issue-<number> branches.
+
+    This command will:
+    1. Scan for all branches matching the pr-<number> pattern
+    2. For each pr-xx branch, check if an issue-xx branch exists
+    3. If issue-xx exists, merge pr-xx into issue-xx
+    4. If issue-xx doesn't exist, create it from pr-xx
+    5. Delete the pr-xx branch after successful merge (unless --no-delete is used)
+
+    Examples:
+        # Preview what would be migrated
+        auto-coder migrate-branches
+
+        # Execute the migration
+        auto-coder migrate-branches --execute
+
+        # Execute without deleting pr-* branches
+        auto-coder migrate-branches --execute --no-delete
+
+        # Auto-resolve merge conflicts
+        auto-coder migrate-branches --execute --force
+    """
+    # Setup logger to show detailed output
+    setup_logger(stream=sys.stderr)
+
+    # Determine actual dry_run based on flags
+    actual_dry_run = not execute
+
+    if actual_dry_run:
+        click.echo("=" * 80)
+        click.echo("DRY RUN MODE - No changes will be made")
+        click.echo("=" * 80)
+        click.echo()
+
+    # Check if we're in a git repository
+    if not is_git_repository():
+        raise click.ClickException("Not in a Git repository. Please run from within a Git repository.")
+
+    # Perform the migration
+    results = migrate_pr_branches(
+        dry_run=actual_dry_run,
+        delete_after_merge=not no_delete,
+        force=force,
+    )
+
+    # Display results
+    click.echo()
+    click.echo("=" * 80)
+    click.echo("MIGRATION RESULTS")
+    click.echo("=" * 80)
+
+    if results["migrated"]:
+        click.echo(f"\n✅ Successfully migrated: {len(results['migrated'])}")
+        for item in results["migrated"]:
+            if item.get("dry_run"):
+                click.echo(f"  - {item['from']} -> {item['to']} (DRY RUN)")
+            else:
+                click.echo(f"  - {item['from']} -> {item['to']}")
+
+    if results["skipped"]:
+        click.echo(f"\n⚠️  Skipped: {len(results['skipped'])}")
+        for item in results["skipped"]:
+            reason = item.get("reason", item.get("error", "Unknown reason"))
+            click.echo(f"  - {item.get('branch', item.get('from', 'Unknown'))}: {reason}")
+
+    if results["conflicts"]:
+        click.echo(f"\n❌ Merge conflicts detected: {len(results['conflicts'])}")
+        for item in results["conflicts"]:
+            click.echo(f"  - {item['from']} -> {item['to']}: {item['error']}")
+
+    if results["failed"]:
+        click.echo(f"\n❌ Failed: {len(results['failed'])}")
+        for item in results["failed"]:
+            click.echo(f"  - {item['from']} -> {item['to']}: {item['error']}")
+
+    click.echo()
+    click.echo("=" * 80)
+
+    # Provide guidance based on results
+    if not actual_dry_run:
+        if results["conflicts"] or results["failed"]:
+            click.echo("\n⚠️  Some issues occurred during migration.")
+            if results["conflicts"]:
+                click.echo("   Use --force flag to auto-resolve merge conflicts, or resolve manually.")
+            if results["failed"]:
+                click.echo("   Please check the error messages above and resolve manually.")
+        else:
+            click.echo("✅ Migration completed successfully!")
+    else:
+        click.echo("💡 To execute the migration, run with --execute flag")
+        click.echo("   Example: auto-coder migrate-branches --execute")
+
+    # Exit with non-zero code if there were failures
+    if results["failed"] or results["conflicts"]:
+        sys.exit(1)
+
