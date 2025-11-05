@@ -93,7 +93,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
             if call_count["list"] == 1:
                 # 1st time (equivalent to commit) will not hit
                 return commit_run_list
-            # 2回目（フォールバック）は候補が返る
+            # 2nd time (fallback) returns candidates
             return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
             run_id = int(cmd[3])
