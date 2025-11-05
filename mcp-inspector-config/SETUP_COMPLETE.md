@@ -1,172 +1,172 @@
-# MCP Inspector Setup 完了報告
+# MCP Inspector Setup Completion Report
 
-## 🎉 セットアップ完了
+## 🎉 Setup Complete
 
-MCP Inspectorが正常にセットアップされ、MCPサーバーの動作を可視化ることが可能になりました。
+MCP Inspector has been successfully set up, and it is now possible to visualize the operation of MCP servers.
 
-## 📍 アクセス情報
+## 📍 Access Information
 
 **Inspector URL**: http://0.0.0.0:6274/?MCP_PROXY_AUTH_TOKEN=973ff60cac74430ba774a6b9bbe0d366232cb452202845a6d706420fcac2f474
 
-**ローカルのみ**: http://localhost:6274/?MCP_PROXY_AUTH_TOKEN=973ff60cac74430ba774a6b9bbe0d366232cb452202845a6d706420fcac2f474
+**Local only**: http://localhost:6274/?MCP_PROXY_AUTH_TOKEN=973ff60cac74430ba774a6b9bbe0d366232cb452202845a6d706420fcac2f474
 
-**プロキシサーバー**: localhost:6277 (TCP Proxy経由でも0.0.0.0:6277でアクセス可能)
+**Proxy server**: localhost:6277 (also accessible via 0.0.0.0:6277 through TCP Proxy)
 
 **TCP Proxy**: localhost:6274 → 0.0.0.0:6274, localhost:6277 → 0.0.0.0:6277
 
-## 📁 作成されたファイル
+## 📁 Created Files
 
-### 1. 設定ファイル
-- `/home/node/src/auto-coder/mcp-inspector-config/mcp-servers.json` - MCPサーバー接続設定
-- `/home/node/src/auto-coder/test_server.py` - test-watcherサーバー起動スクリプト
+### 1. Configuration files
+- `/home/node/src/auto-coder/mcp-inspector-config/mcp-servers.json` - MCP server connection configuration
+- `/home/node/src/auto-coder/test_server.py` - test-watcher server startup script
 
-### 2. ドキュメント
-- `/home/node/src/auto-coder/mcp-inspector-config/README.md` - セットアップ手順書
-- `/home/node/src/auto-coder/mcp-inspector-config/SETUP_COMPLETE.md` - このファイル
+### 2. Documentation
+- `/home/node/src/auto-coder/mcp-inspector-config/README.md` - Setup instructions
+- `/home/node/src/auto-coder/mcp-inspector-config/SETUP_COMPLETE.md` - This file
 
-### 3. TCPプロキシ
-- `/home/node/src/auto-coder/tcp_proxy.py` - localhostポートを0.0.0.0でアクセス可能にするTCPプロキシ
+### 3. TCP proxy
+- `/home/node/src/auto-coder/tcp_proxy.py` - TCP proxy to make localhost ports accessible via 0.0.0.0
 
-## 🔧 設定されたMCPサーバー
+## 🔧 Configured MCP Servers
 
 ### test-watcher
-- **説明**: ファイル変更監視・テスト自動実行サーバー
-- **コマンド**: `uv run --python 3.13 --with loguru --with watchdog --with pathspec python /home/node/src/auto-coder/test_server.py`
-- **作業ディレクトリ**: `/home/node/src/auto-coder`
-- **環境変数**:
+- **Description**: File change monitoring and automatic test execution server
+- **Command**: `uv run --python 3.13 --with loguru --with watchdog --with pathspec python /home/node/src/auto-coder/test_server.py`
+- **Working directory**: `/home/node/src/auto-coder`
+- **Environment variables**:
   - `TEST_WATCHER_PROJECT_ROOT=/home/node/src/auto-coder`
 
-#### 利用可能なツール
-1. `start_watching()` - ファイル監視とテスト自動実行を開始
-2. `stop_watching()` - ファイル監視を停止
-3. `query_test_results(test_type)` - テスト結果をクエリ（unit/integration/e2e/all）
-4. `get_status()` - テスト監視サービスの全体状態を取得
+#### Available tools
+1. `start_watching()` - Start file monitoring and automatic test execution
+2. `stop_watching()` - Stop file monitoring
+3. `query_test_results(test_type)` - Query test results (unit/integration/e2e/all)
+4. `get_status()` - Get overall status of test monitoring service
 
-#### 利用可能なリソース
-1. `test-watcher://status` - 全体状態とテスト結果
-2. `test-watcher://help` - ヘルプ情報
+#### Available resources
+1. `test-watcher://status` - Overall status and test results
+2. `test-watcher://help` - Help information
 
-## 🚀 MCP Inspector使用方法
+## 🚀 How to Use MCP Inspector
 
-### 1. ブラウザでアクセス
-上記のInspector URLにアクセスしてください。
+### 1. Access via browser
+Access the Inspector URL above.
 
-### 2. MCPサーバーの確認
-Inspector内でtest-watcherサーバーが自動的に接続され、以下の情報が表示されるはずです：
-- 利用可能なツール一覧
-- ツールの引数と説明
-- リソース一覧
+### 2. Verify MCP servers
+The test-watcher server should be automatically connected and display in Inspector:
+- Available tools list
+- Tool arguments and descriptions
+- Resources list
 
-### 3. ツールのテスト
-Inspectorから直接ツールを呼び出してテストできます：
-- `start_watching()` - ファイル監視を開始
-- `get_status()` - 状態を確認
+### 3. Test tools
+You can test tools directly from Inspector:
+- `start_watching()` - Start file monitoring
+- `get_status()` - Check status
 
-## 🛠️ 管理コマンド
+## 🛠️ Management Commands
 
-### Inspectorの再起動
+### Restart Inspector
 ```bash
 mcp-inspector /home/node/src/auto-coder/mcp-inspector-config/mcp-servers.json
 ```
 
-### test-watcherサーバーを手動でテスト
+### Manually test test-watcher server
 ```bash
 timeout 15 uv run --python 3.13 --with loguru --with watchdog --with pathspec python /home/node/src/auto-coder/test_server.py
 ```
 
-### TCPプロキシの管理
+### Manage TCP proxy
 ```bash
-# プロキシの起動
+# Start proxy
 python3 /home/node/src/auto-coder/tcp_proxy.py 6274 localhost 6274 &
 python3 /home/node/src/auto-coder/tcp_proxy.py 6277 localhost 6277 &
 
-# プロキシプロセスの確認
+# Check proxy processes
 ps aux | grep tcp_proxy
 
-# プロキシの停止
+# Stop proxy
 pkill -f tcp_proxy.py
 ```
 
-### プロセスの確認
+### Check processes
 ```bash
 ps aux | grep mcp-inspector
 ps aux | grep "test_server.py"
 ps aux | grep tcp_proxy
 ```
 
-### ポート使用状況の確認
+### Check port usage
 ```bash
 lsof -i :6274  # Inspector Web UI (0.0.0.0:6274 via proxy)
 lsof -i :6277  # Proxy server (0.0.0.0:6277 via proxy)
 ```
 
-## 📦 インストール済み依存関係
+## 📦 Installed Dependencies
 
-MCP Inspector関連：
-- `@modelcontextprotocol/inspector` (v0.2.0以上)
+MCP Inspector related:
+- `@modelcontextprotocol/inspector` (v0.2.0 or above)
 
-MCPサーバー（test-watcher）関連：
-- `loguru` (0.7.3) - ログ管理
-- `watchdog` (6.0.0) - ファイル監視
-- `pathspec` (0.12.1) - パスパターン照合
-- `pydantic` (2.0.0以上) - データ検証
-- `mcp` (Model Context Protocol) - FastMCPサーバー
+MCP server (test-watcher) related:
+- `loguru` (0.7.3) - Log management
+- `watchdog` (6.0.0) - File monitoring
+- `pathspec` (0.12.1) - Path pattern matching
+- `pydantic` (2.0.0 or above) - Data validation
+- `mcp` (Model Context Protocol) - FastMCP server
 
-## 🔍 トラブルシューティング
+## 🔍 Troubleshooting
 
-### 問題1: Port already in use
-**症状**: `❌ Proxy Server PORT IS IN USE` エラー
+### Issue 1: Port already in use
+**Symptoms**: `❌ Proxy Server PORT IS IN USE` error
 
-**解決方法**:
+**Solution**:
 ```bash
 lsof -i :6277 | grep -v PID | awk '{print $2}' | xargs -r kill -9
 lsof -i :6274 | grep -v PID | awk '{print $2}' | xargs -r kill -9
 ```
 
-### 問題2: MCPサーバーが起動しない
-**症状**: Inspector内でサーバーが表示されない
+### Issue 2: MCP server doesn't start
+**Symptoms**: Server doesn't appear in Inspector
 
-**解決方法**:
-1. サーバーが実行中か確認:
+**Solution**:
+1. Check if server is running:
    ```bash
    ps aux | grep test_server
    ```
 
-2. 手動でテスト:
+2. Test manually:
    ```bash
    cd /home/node/src/auto-coder
    uv run --python 3.13 --with loguru --with watchdog --with pathspec python test_server.py
    ```
 
-3. ログを確認してエラーの詳細を調べる
+3. Check logs for detailed error information
 
-### 問題3: Python 3.14関連エラー
-**症状**: `PyO3 maximum supported version` エラー
+### Issue 3: Python 3.14 related errors
+**Symptoms**: `PyO3 maximum supported version` error
 
-**解決方法**:
-Python 3.13を使用するように設定されています（`--python 3.13`）。この設定を維持してください。
+**Solution**:
+Configured to use Python 3.13 (`--python 3.13`). Please maintain this configuration.
 
-## 📋 次のステップ
+## 📋 Next Steps
 
-1. **ブラウザでInspectorにアクセス** - 上記のURLにアクセスしてUIを確認
-2. **MCPサーバーの機能テスト** - Inspector内でツールを呼び出してテスト
-3. ** дополнительные серверы の追加** - `mcp-servers.json` に新しいサーバーを追加可能
-4. **graphrag-mcpサーバーの追加** - Neo4jとQdrantの起動後に追加可能
+1. **Access Inspector via browser** - Access the URL above to check the UI
+2. **Test MCP server functionality** - Call tools within Inspector to test
+3. **Add additional servers** - New servers can be added to `mcp-servers.json`
+4. **Add graphrag-mcp server** - Can be added after starting Neo4j and Qdrant
 
-## 🎯 現在の状態
+## 🎯 Current Status
 
-✅ MCP Inspector: 実行中 (localhost:6274)
-✅ プロキシサーバー: 実行中 (localhost:6277)
-✅ TCPプロキシ: 実行中 (0.0.0.0:6274, 0.0.0.0:6277)
-✅ test-watcherサーバー: 設定完了（依存関係ダウンロード中）
-✅ 設定ファイル: 作成済み
-✅ ドキュメント: 作成済み
-✅ **外部アクセス**: 0.0.0.0でアクセス可能
+✅ MCP Inspector: Running (localhost:6274)
+✅ Proxy server: Running (localhost:6277)
+✅ TCP proxy: Running (0.0.0.0:6274, 0.0.0.0:6277)
+✅ test-watcher server: Configured (downloading dependencies)
+✅ Configuration files: Created
+✅ Documentation: Created
+✅ **External access**: Accessible via 0.0.0.0
 
 ---
 
-**作成日時**: 2025-10-31
-**Python バージョン**: 3.13.9
-**Node.js バージョン**: v22.16.0
-**npm バージョン**: 10.9.2
-**uv バージョン**: 0.9.6
+**Created**: 2025-10-31
+**Python version**: 3.13.9
+**Node.js version**: v22.16.0
+**npm version**: 10.9.2
+**uv version**: 0.9.6

@@ -1,99 +1,99 @@
-# 使用例
+# Usage Examples
 
-## 基本的なワークフロー
+## Basic Workflow
 
-### 1. 親 issue を作成
+### 1. Create parent issue
 
 ```bash
-# GitHub CLI で親 issue を作成
-gh issue create --title "機能: ユーザー認証システム" --body "完全な認証システムを実装する"
+# Create parent issue via GitHub CLI
+gh issue create --title "Feature: User Authentication System" --body "Implement a complete authentication system"
 # Created issue #100
 ```
 
-### 2. sub-issue を作成
+### 2. Create sub-issues
 
 ```bash
-# データベーススキーマの設計
-github-sub-issue create --parent 100 --title "データベーススキーマの設計" --label "database"
+# Design database schema
+github-sub-issue create --parent 100 --title "Design database schema" --label "database"
 
-# JWT トークンの実装
-github-sub-issue create --parent 100 --title "JWT トークンの実装" --label "backend"
+# Implement JWT tokens
+github-sub-issue create --parent 100 --title "Implement JWT tokens" --label "backend"
 
-# ログイン UI の作成
-github-sub-issue create --parent 100 --title "ログイン UI の作成" --label "frontend"
+# Create login UI
+github-sub-issue create --parent 100 --title "Create login UI" --label "frontend"
 ```
 
-### 3. 既存の issue を sub-issue として追加
+### 3. Add existing issue as sub-issue
 
 ```bash
-# 既存の issue #95 を sub-issue として追加
+# Add existing issue #95 as sub-issue
 github-sub-issue add 100 95
 ```
 
-### 4. 進捗を確認
+### 4. Check progress
 
 ```bash
-# すべての sub-issue を表示
+# Display all sub-issues
 github-sub-issue list 100 --state all
 
-# 出力例:
+# Example output:
 # 📋 Sub-issues (4 total):
 # ─────────────────────────────
-# ✅ #101  データベーススキーマの設計           [closed]
-# ✅ #95   セキュリティ監査チェックリスト         [closed]
-# 🔵 #102  JWT トークンの実装                   [open]   @alice
-# 🔵 #103  ログイン UI の作成                   [open]   @bob
+# ✅ #101  Design database schema              [closed]
+# ✅ #95   Security audit checklist            [closed]
+# 🔵 #102  Implement JWT tokens                [open]   @alice
+# 🔵 #103  Create login UI                     [open]   @bob
 ```
 
-### 5. 不要な sub-issue を削除
+### 5. Remove unnecessary sub-issues
 
 ```bash
-# sub-issue #95 を削除
+# Remove sub-issue #95
 github-sub-issue remove 100 95
 
-# 複数の sub-issue を削除
+# Remove multiple sub-issues
 github-sub-issue remove 100 95 96 97 --force
 ```
 
-## 高度な使用例
+## Advanced Usage Examples
 
-### クロスリポジトリの sub-issue
+### Cross-repository sub-issues
 
 ```bash
-# 別のリポジトリの issue を sub-issue として追加
+# Add issue from another repository as sub-issue
 github-sub-issue add https://github.com/owner/repo1/issues/100 \
   https://github.com/owner/repo2/issues/200
 ```
 
-### JSON 出力を使った自動化
+### Automation using JSON output
 
 ```bash
-# JSON 形式で sub-issue を取得
+# Get sub-issues in JSON format
 github-sub-issue list 100 --json | jq '.[] | select(.state == "OPEN") | .number'
 
-# 出力例:
+# Example output:
 # 102
 # 103
 ```
 
-### スクリプトでの使用
+### Usage in scripts
 
 ```bash
 #!/bin/bash
 
-# 親 issue を作成
-PARENT=$(gh issue create --title "Sprint 1" --body "Sprint 1 のタスク" | grep -oP '\d+$')
+# Create parent issue
+PARENT=$(gh issue create --title "Sprint 1" --body "Sprint 1 tasks" | grep -oP '\d+$')
 
-# タスクリストから sub-issue を作成
+# Create sub-issues from task list
 while IFS= read -r task; do
   github-sub-issue create --parent "$PARENT" --title "$task" --label "sprint-1"
 done < tasks.txt
 
-# 進捗を表示
+# Display progress
 github-sub-issue list "$PARENT"
 ```
 
-### CI/CD での使用
+### Usage in CI/CD
 
 ```yaml
 # .github/workflows/create-sub-issues.yml
@@ -109,93 +109,92 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      
+
       - name: Install github-sub-issue
         run: |
           cd utils/github-sub-issue
           pip install -e .
-      
+
       - name: Create sub-issues
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUMBER=${{ github.event.issue.number }}
-          
-          # タスクリストから sub-issue を作成
+
+          # Create sub-issues from task list
           github-sub-issue create --parent "$ISSUE_NUMBER" \
-            --title "タスク 1: 設計" --label "design"
-          
+            --title "Task 1: Design" --label "design"
+
           github-sub-issue create --parent "$ISSUE_NUMBER" \
-            --title "タスク 2: 実装" --label "implementation"
-          
+            --title "Task 2: Implementation" --label "implementation"
+
           github-sub-issue create --parent "$ISSUE_NUMBER" \
-            --title "タスク 3: テスト" --label "testing"
+            --title "Task 3: Testing" --label "testing"
 ```
 
-## トラブルシューティング
+## Troubleshooting
 
-### エラー: "Failed to get current repository"
+### Error: "Failed to get current repository"
 
-現在のディレクトリが GitHub リポジトリではない場合、`--repo` オプションを使用してください:
+If the current directory is not a GitHub repository, use the `--repo` option:
 
 ```bash
 github-sub-issue list 123 --repo owner/repo
 ```
 
-### エラー: "The provided sub-issue does not exist"
+### Error: "The provided sub-issue does not exist"
 
-issue ID が正しく取得されていない可能性があります。`--verbose` オプションでデバッグ情報を確認してください:
+The issue ID might not be correctly obtained. Check debug information with the `--verbose` option:
 
 ```bash
 github-sub-issue --verbose add 123 456
 ```
 
-### エラー: "authentication required"
+### Error: "authentication required"
 
-GitHub CLI が認証されていることを確認してください:
+Make sure GitHub CLI is authenticated:
 
 ```bash
 gh auth status
 gh auth login
 ```
 
-## ベストプラクティス
+## Best Practices
 
-### 1. 適切な粒度で sub-issue を作成
+### 1. Create sub-issues with appropriate granularity
 
-- 大きすぎる sub-issue は避ける (1-3日で完了できるサイズが理想)
-- 小さすぎる sub-issue も避ける (チェックリストで十分な場合もある)
+- Avoid sub-issues that are too large (ideal size: can be completed in 1-3 days)
+- Avoid sub-issues that are too small (checklists may be sufficient)
 
-### 2. ラベルを活用
+### 2. Use labels effectively
 
 ```bash
 github-sub-issue create --parent 100 \
-  --title "API エンドポイントの実装" \
+  --title "Implement API endpoints" \
   --label "backend,api,priority-high"
 ```
 
-### 3. アサインを明確に
+### 3. Clearly assign issues
 
 ```bash
 github-sub-issue create --parent 100 \
-  --title "フロントエンド実装" \
+  --title "Frontend implementation" \
   --assignee "@me"
 ```
 
-### 4. 定期的に進捗を確認
+### 4. Check progress regularly
 
 ```bash
-# 毎日の進捗確認
+# Daily progress check
 github-sub-issue list 100 --state all
 
-# JSON 形式で進捗率計算
+# Calculate progress rate in JSON format
 github-sub-issue list 100 --json | \
   jq '[.[] | select(.state == "CLOSED")] | length' | \
-  awk '{print "完了率: " ($1/4)*100 "%"}'
+  awk '{print "Completion rate: " ($1/4)*100 "%"}'
 ```
-
