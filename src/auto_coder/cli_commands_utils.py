@@ -282,4 +282,3 @@ def migrate_branches(
     # Exit with non-zero code if there were failures
     if results["failed"] or results["conflicts"]:
         sys.exit(1)
-

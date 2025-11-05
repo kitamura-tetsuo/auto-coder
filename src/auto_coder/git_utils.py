@@ -95,10 +95,7 @@ def validate_branch_name(branch_name: str) -> None:
     # Check if branch name matches the prohibited pr-<number> pattern
     pattern = r"^pr-\d+$"
     if re.match(pattern, branch_name, re.IGNORECASE):
-        raise ValueError(
-            f"Branch name '{branch_name}' matches the prohibited pattern 'pr-<number>'. "
-            f"Use 'issue-<number>' naming convention instead (e.g., 'issue-{branch_name.split('-')[1] if '-' in branch_name else '123'}')."
-        )
+        raise ValueError(f"Branch name '{branch_name}' matches the prohibited pattern 'pr-<number>'. " f"Use 'issue-<number>' naming convention instead (e.g., 'issue-{branch_name.split('-')[1] if '-' in branch_name else '123'}').")
 
 
 def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50) -> str:
