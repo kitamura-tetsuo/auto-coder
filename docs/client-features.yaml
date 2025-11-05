@@ -104,6 +104,20 @@ cli:
         - { name: --github-token, env: GITHUB_TOKEN }
     - name: auth-status
       purpose: Print authentication and CLI availability status for GitHub, Gemini, Qwen, Auggie
+    - name: migrate-branches
+      purpose: Migrate existing pr-<number> branches to their corresponding issue-<number> branches
+      options:
+        - { name: --dry-run, flag: true, default: true, help: "Show what would be done without making changes" }
+        - { name: --execute, flag: true, default: false, help: "Actually perform the migration" }
+        - { name: --no-delete, flag: true, default: false, help: "Do not delete pr-<number> branches after successful migration" }
+        - { name: --force, flag: true, default: false, help: "Auto-resolve merge conflicts (use with caution)" }
+      behavior:
+        - Scans for all branches matching the pr-<number> pattern
+        - For each pr-xx branch, checks if an issue-xx branch exists
+        - If issue-xx exists, merges pr-xx into issue-xx
+        - If issue-xx doesn't exist, creates it from pr-xx
+        - Deletes the pr-xx branch after successful merge (unless --no-delete is used)
+        - Safe to run multiple times (idempotent)
   groups:
     - name: graphrag
       description: Manage Neo4j + Qdrant and the GraphRAG MCP server
