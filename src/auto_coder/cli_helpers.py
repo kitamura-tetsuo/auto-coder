@@ -25,9 +25,7 @@ def ensure_test_script_or_fail() -> None:
     cfg = AutomationConfig()
     script_path = cfg.TEST_SCRIPT_PATH
     if not os.path.exists(script_path):
-        raise click.ClickException(
-            f"Required test script not found: {script_path}. This tool requires a target-repo-provided test script."
-        )
+        raise click.ClickException(f"Required test script not found: {script_path}. This tool requires a target-repo-provided test script.")
 
 
 def initialize_graphrag(force_reindex: bool = False) -> None:
@@ -85,10 +83,7 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
             logger.error("Failed to automatically set up GraphRAG MCP server")
             click.echo("❌ GraphRAG MCP server setup failed")
             click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
-            raise click.ClickException(
-                "Failed to set up GraphRAG MCP server. "
-                "Run 'auto-coder graphrag setup-mcp' manually."
-            )
+            raise click.ClickException("Failed to set up GraphRAG MCP server. " "Run 'auto-coder graphrag setup-mcp' manually.")
 
         logger.info("✅ GraphRAG MCP server setup completed successfully")
         click.echo("✅ GraphRAG MCP server setup completed successfully")
@@ -103,13 +98,8 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
             click.echo("Troubleshooting tips:")
             click.echo("   1. Start containers manually: auto-coder graphrag start")
             click.echo("   2. Check container status: auto-coder graphrag status")
-            click.echo(
-                "   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs"
-            )
-            raise click.ClickException(
-                "Failed to initialize GraphRAG environment. "
-                "Run 'auto-coder graphrag start' to start containers."
-            )
+            click.echo("   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs")
+            raise click.ClickException("Failed to initialize GraphRAG environment. " "Run 'auto-coder graphrag start' to start containers.")
         logger.info("GraphRAG environment ready")
         click.echo("✅ GraphRAG environment ready")
     except click.ClickException:
@@ -151,10 +141,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
     # Verify MCP server is installed (should be done by initialize_graphrag)
     if not default_mcp_dir.exists():
-        logger.warning(
-            f"GraphRAG MCP server directory not found at {default_mcp_dir}. "
-            f"This should have been installed by initialize_graphrag()."
-        )
+        logger.warning(f"GraphRAG MCP server directory not found at {default_mcp_dir}. " f"This should have been installed by initialize_graphrag().")
         click.echo()
         click.echo("⚠️  GraphRAG MCP server not found")
         click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
@@ -165,10 +152,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
     if client is not None:
         logger.info(f"Checking GraphRAG MCP configuration for client...")
         if not client.check_mcp_server_configured(server_name):
-            logger.info(
-                f"GraphRAG MCP server not configured for client. "
-                f"Adding configuration..."
-            )
+            logger.info(f"GraphRAG MCP server not configured for client. " f"Adding configuration...")
             click.echo()
             click.echo("⚠️  GraphRAG MCP server not configured for client")
             click.echo("   Adding configuration...")
@@ -180,12 +164,8 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
             manager = get_mcp_manager()
             success = True
             for backend in backends:
-                if not manager.add_backend_config(
-                    server_name, backend, default_mcp_dir
-                ):
-                    logger.warning(
-                        f"Failed to configure {backend} backend for {server_name}"
-                    )
+                if not manager.add_backend_config(server_name, backend, default_mcp_dir):
+                    logger.warning(f"Failed to configure {backend} backend for {server_name}")
                     success = False
 
             if success:
@@ -203,10 +183,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
         for backend in backends:
             if not ensure_graphrag_mcp_configured(backend, auto_setup=False):
-                logger.info(
-                    f"GraphRAG MCP server not configured for {backend}. "
-                    f"Adding configuration..."
-                )
+                logger.info(f"GraphRAG MCP server not configured for {backend}. " f"Adding configuration...")
                 click.echo()
                 click.echo(f"⚠️  GraphRAG MCP server not configured for {backend}")
                 click.echo("   Adding configuration...")
@@ -216,24 +193,14 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
                 from .mcp_manager import get_mcp_manager
 
                 manager = get_mcp_manager()
-                success = manager.add_backend_config(
-                    server_name, backend, default_mcp_dir
-                )
+                success = manager.add_backend_config(server_name, backend, default_mcp_dir)
 
                 if success:
-                    logger.info(
-                        f"✅ GraphRAG MCP server configuration added successfully for {backend}"
-                    )
-                    click.echo(
-                        f"✅ GraphRAG MCP server configuration added successfully for {backend}"
-                    )
+                    logger.info(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
+                    click.echo(f"✅ GraphRAG MCP server configuration added successfully for {backend}")
                 else:
-                    logger.error(
-                        f"❌ GraphRAG MCP server configuration failed for {backend}"
-                    )
-                    click.echo(
-                        f"❌ GraphRAG MCP server configuration failed for {backend}"
-                    )
+                    logger.error(f"❌ GraphRAG MCP server configuration failed for {backend}")
+                    click.echo(f"❌ GraphRAG MCP server configuration failed for {backend}")
                     click.echo("   Please run 'auto-coder graphrag setup-mcp' manually")
             else:
                 logger.info(f"✅ GraphRAG MCP server already configured for {backend}")
@@ -242,9 +209,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 def check_gemini_cli_or_fail() -> None:
     """Check if gemini CLI is available and working."""
     try:
-        result = subprocess.run(
-            ["gemini", "--version"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             click.echo("Using gemini CLI")
             return
@@ -252,11 +217,7 @@ def check_gemini_cli_or_fail() -> None:
         pass
 
     # Show helpful error with installation instructions
-    raise click.ClickException(
-        "Gemini CLI is required. Please install it from:\n"
-        "https://github.com/google-gemini/gemini-cli\n"
-        "Or use: npm install -g @google/generative-ai-cli"
-    )
+    raise click.ClickException("Gemini CLI is required. Please install it from:\n" "https://github.com/google-gemini/gemini-cli\n" "Or use: npm install -g @google/generative-ai-cli")
 
 
 def check_codex_cli_or_fail() -> None:
@@ -273,9 +234,7 @@ def check_codex_cli_or_fail() -> None:
         cmd = shlex.split(override)
         # Try with --version
         try:
-            result = subprocess.run(
-                cmd + ["--version"], capture_output=True, text=True, timeout=10
-            )
+            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 click.echo(f"Using codex CLI (override): {cmd[0]}")
                 return
@@ -289,76 +248,54 @@ def check_codex_cli_or_fail() -> None:
                 return
         except Exception:
             pass
-        raise click.ClickException(
-            "Codex CLI override (AUTOCODER_CODEX_CLI) is set but not working"
-        )
+        raise click.ClickException("Codex CLI override (AUTOCODER_CODEX_CLI) is set but not working")
 
     # Default: check real codex CLI
     try:
-        result = subprocess.run(
-            ["codex", "--version"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             click.echo("Using codex CLI")
             return
     except Exception:
         pass
 
-    raise click.ClickException(
-        "Codex CLI is required. Please install it from:\n"
-        "https://github.com/openai/codex"
-    )
+    raise click.ClickException("Codex CLI is required. Please install it from:\n" "https://github.com/openai/codex")
 
 
 def check_qwen_cli_or_fail() -> None:
     """Check if qwen CLI is available and working."""
     try:
-        result = subprocess.run(
-            ["qwen", "--version"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             click.echo("Using qwen CLI")
             return
     except Exception:
         pass
-    raise click.ClickException(
-        "Qwen Code CLI is required. Please install it from:\n"
-        "https://github.com/QwenLM/qwen-code\n"
-        "Or use: npm install -g @qwen-code/qwen-code"
-    )
+    raise click.ClickException("Qwen Code CLI is required. Please install it from:\n" "https://github.com/QwenLM/qwen-code\n" "Or use: npm install -g @qwen-code/qwen-code")
 
 
 def check_auggie_cli_or_fail() -> None:
     """Check if auggie CLI is available and working."""
     try:
-        result = subprocess.run(
-            ["auggie", "--version"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             click.echo("Using auggie CLI")
             return
     except Exception:
         pass
-    raise click.ClickException(
-        "Auggie CLI is required. Please install it via:\n"
-        "npm install -g @augmentcode/auggie"
-    )
+    raise click.ClickException("Auggie CLI is required. Please install it via:\n" "npm install -g @augmentcode/auggie")
 
 
 def check_claude_cli_or_fail() -> None:
     """Check if claude CLI is available and working."""
     try:
-        result = subprocess.run(
-            ["claude", "--version"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             click.echo("Using claude CLI")
             return
     except Exception:
         pass
-    raise click.ClickException(
-        "Claude CLI is required. Please install it from:\n" "https://claude.ai/download"
-    )
+    raise click.ClickException("Claude CLI is required. Please install it from:\n" "https://claude.ai/download")
 
 
 def build_models_map(
@@ -455,14 +392,8 @@ def build_backend_manager(
 
     factories_all = {
         "codex": lambda: CodexClient(model_name="codex"),
-        "codex-mcp": lambda: CodexMCPClient(
-            model_name="codex-mcp", enable_graphrag=enable_graphrag
-        ),
-        "gemini": lambda: (
-            GeminiClient(gemini_api_key, model_name=_gm())
-            if gemini_api_key
-            else GeminiClient(model_name=_gm())
-        ),
+        "codex-mcp": lambda: CodexMCPClient(model_name="codex-mcp", enable_graphrag=enable_graphrag),
+        "gemini": lambda: (GeminiClient(gemini_api_key, model_name=_gm()) if gemini_api_key else GeminiClient(model_name=_gm())),
         "qwen": lambda: QwenClient(
             model_name=_qm(),
             openai_api_key=openai_api_key,
@@ -474,13 +405,9 @@ def build_backend_manager(
         "claude": lambda: ClaudeClient(model_name=_cm()),
     }
 
-    missing_factories = [
-        name for name in selected_backends if name not in factories_all
-    ]
+    missing_factories = [name for name in selected_backends if name not in factories_all]
     if missing_factories:
-        raise click.ClickException(
-            f"Unsupported backend(s) specified: {', '.join(missing_factories)}"
-        )
+        raise click.ClickException(f"Unsupported backend(s) specified: {', '.join(missing_factories)}")
 
     default_client = factories_all[primary_backend]()
     selected_factories = {name: factories_all[name] for name in selected_backends}
@@ -534,10 +461,7 @@ def check_github_sub_issue_or_setup() -> None:
 
     utils_dir = Path(__file__).parent.parent.parent / "utils" / "github-sub-issue"
     if not utils_dir.exists():
-        raise click.ClickException(
-            f"github-sub-issue source directory not found at {utils_dir}. "
-            "Cannot auto-install."
-        )
+        raise click.ClickException(f"github-sub-issue source directory not found at {utils_dir}. " "Cannot auto-install.")
 
     try:
         # Install the tool in editable mode
@@ -562,18 +486,12 @@ def check_github_sub_issue_or_setup() -> None:
                     return
                 else:
                     click.echo("⚠️  Installation completed but verification failed")
-                    raise click.ClickException(
-                        "github-sub-issue tool installation completed but verification failed"
-                    )
+                    raise click.ClickException("github-sub-issue tool installation completed but verification failed")
             except Exception as e:
-                raise click.ClickException(
-                    f"github-sub-issue tool installation completed but verification failed: {e}"
-                )
+                raise click.ClickException(f"github-sub-issue tool installation completed but verification failed: {e}")
         else:
             click.echo(f"❌ Installation failed: {result.stderr}")
-            raise click.ClickException(
-                f"Failed to install github-sub-issue tool: {result.stderr}"
-            )
+            raise click.ClickException(f"Failed to install github-sub-issue tool: {result.stderr}")
     except Exception as e:
         click.echo(f"❌ Installation error: {e}")
         raise click.ClickException(f"Failed to install github-sub-issue tool: {e}")
@@ -588,9 +506,7 @@ def qwen_help_has_flags(required_flags: list[str]) -> bool:
     try:
         import re as _re
 
-        res = subprocess.run(
-            ["qwen", "--help"], capture_output=True, text=True, timeout=10
-        )
+        res = subprocess.run(["qwen", "--help"], capture_output=True, text=True, timeout=10)
         if res.returncode != 0:
             return False
         help_text_raw = (res.stdout or "") + (res.stderr or "")

@@ -95,9 +95,7 @@ def setup_logger(
     # Validate log level
     valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
     if level.upper() not in valid_levels:
-        raise ValueError(
-            f"Invalid log level '{level}'. Must be one of: {', '.join(valid_levels)}"
-        )
+        raise ValueError(f"Invalid log level '{level}'. Must be one of: {', '.join(valid_levels)}")
 
     level = level.upper()
 
@@ -108,19 +106,9 @@ def setup_logger(
     # Format with file and line information (VS Code clickable path:line)
     if include_file_info:
         # Keep the file path segment uncolored so VS Code detects clickable links
-        format_string = (
-            "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-            "<level>{level: <8}</level> | "
-            "{extra[short_path]}:{line} in <cyan>{function}</cyan> - "
-            "<level>{message}</level>"
-        )
+        format_string = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | " "<level>{level: <8}</level> | " "{extra[short_path]}:{line} in <cyan>{function}</cyan> - " "<level>{message}</level>"
     else:
-        format_string = (
-            "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | "
-            "<level>{level: <8}</level> | "
-            "<cyan>{name}</cyan> - "
-            "<level>{message}</level>"
-        )
+        format_string = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | " "<level>{level: <8}</level> | " "<cyan>{name}</cyan> - " "<level>{message}</level>"
 
     # Use non-enqueue mode during pytest to avoid background queue growth
     use_enqueue = False if os.environ.get("PYTEST_CURRENT_TEST") else True
@@ -152,19 +140,9 @@ def setup_logger(
 
         # File format without colors
         if include_file_info:
-            file_format = (
-                "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
-                "{level: <8} | "
-                "{extra[short_path]}:{line} in {function} - "
-                "{message}"
-            )
+            file_format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | " "{level: <8} | " "{extra[short_path]}:{line} in {function} - " "{message}"
         else:
-            file_format = (
-                "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
-                "{level: <8} | "
-                "{name} - "
-                "{message}"
-            )
+            file_format = "{time:YYYY-MM-DD HH:mm:ss.SSS} | " "{level: <8} | " "{name} - " "{message}"
 
         logger.add(
             log_file,
@@ -210,9 +188,7 @@ def log_calls(func):
 
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            logger.opt(depth=1).debug(
-                f"CALL {where}({_format_args(func, args, kwargs)})"
-            )
+            logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = await func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
@@ -222,9 +198,7 @@ def log_calls(func):
 
         @wraps(func)
         def wrapper(*args, **kwargs):
-            logger.opt(depth=1).debug(
-                f"CALL {where}({_format_args(func, args, kwargs)})"
-            )
+            logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result

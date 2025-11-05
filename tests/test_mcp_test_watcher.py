@@ -12,9 +12,7 @@ from pathlib import Path
 import pytest
 
 # Add the test_watcher module to the path
-test_watcher_path = (
-    Path(__file__).parent.parent / "src" / "auto_coder" / "mcp_servers" / "test_watcher"
-)
+test_watcher_path = Path(__file__).parent.parent / "src" / "auto_coder" / "mcp_servers" / "test_watcher"
 sys.path.insert(0, str(test_watcher_path))
 
 from test_watcher_tool import TestWatcherTool
@@ -125,9 +123,7 @@ class TestTestWatcherTool:
                                     "results": [
                                         {
                                             "status": "failed",
-                                            "error": {
-                                                "message": "Expected true to be false"
-                                            },
+                                            "error": {"message": "Expected true to be false"},
                                         }
                                     ]
                                 }

@@ -97,13 +97,9 @@ class TestCLICreateFeatureIssues:
         assert mock_automation_engine_class.call_count == 1
         args, kwargs = mock_automation_engine_class.call_args
         assert args[0] is mock_github_client
-        manager = args[1]
-        assert isinstance(manager, BackendManager)
-        assert manager._default_backend == "codex"
-        assert manager._all_backends == ["codex"]
-        mock_automation_engine.create_feature_issues.assert_called_once_with(
-            "test/repo"
-        )
+        # After refactor, AutomationEngine no longer receives the backend manager as a positional arg
+        assert len(args) == 1
+        mock_automation_engine.create_feature_issues.assert_called_once_with("test/repo")
 
     def test_create_feature_issues_missing_github_token(self):
         """Test create-feature-issues command with missing GitHub token."""
@@ -116,9 +112,7 @@ class TestCLICreateFeatureIssues:
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
-    def test_create_feature_issues_missing_codex_cli(
-        self, mock_check_cli, mock_initialize_graphrag
-    ):
+    def test_create_feature_issues_missing_codex_cli(self, mock_check_cli, mock_initialize_graphrag):
         """Default backend codex missing should error."""
         mock_check_cli.side_effect = click.ClickException("Codex CLI missing")
         runner = CliRunner()

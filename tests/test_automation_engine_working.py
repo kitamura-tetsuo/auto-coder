@@ -8,13 +8,9 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 from src.auto_coder.utils import CommandExecutor
 
 
-def test_create_pr_prompt_is_action_oriented_no_comments(
-    mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name
-):
+def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
     engine = AutomationEngine(mock_github_client, dry_run=True)
-    prompt = engine._create_pr_analysis_prompt(
-        test_repo_name, sample_pr_data, pr_diff="diff..."
-    )
+    prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
 
     assert "Do NOT post any comments" in prompt
     # Should NOT ask LLM to commit/push or merge
@@ -28,14 +24,9 @@ def test_create_pr_prompt_is_action_oriented_no_comments(
     assert test_repo_name in prompt
 
 
-def test_apply_pr_actions_directly_does_not_post_comments(
-    mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name
-):
+def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
     # Initialize backend manager for proper LLM client handling
-    from src.auto_coder.backend_manager import (
-        LLMBackendManager,
-        get_llm_backend_manager,
-    )
+    from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
     from src.auto_coder.pr_processor import _apply_pr_actions_directly
 
     # Reset singleton and initialize properly
@@ -100,9 +91,7 @@ class TestAutomationEngine:
             "gemini-2.5-pro",
         )
 
-        with patch(
-            "src.auto_coder.automation_engine.get_llm_backend_manager"
-        ) as mock_get_manager:
+        with patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
             mock_get_manager.return_value = mock_backend_manager
 
             # Setup - Mock GitHub client methods needed for operation
@@ -145,9 +134,7 @@ class TestAutomationEngine:
             "gemini-2.5-pro",
         )
 
-        with patch(
-            "src.auto_coder.automation_engine.get_llm_backend_manager"
-        ) as mock_get_manager:
+        with patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
             mock_get_manager.return_value = mock_backend_manager
 
             # Setup - Mock GitHub client methods needed for operation
@@ -190,9 +177,7 @@ class TestAutomationEngine:
             "gemini-2.5-pro",
         )
 
-        with patch(
-            "src.auto_coder.automation_engine.get_llm_backend_manager"
-        ) as mock_get_manager:
+        with patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
             mock_get_manager.return_value = mock_backend_manager
 
             # Setup - Mock GitHub client methods needed for operation

@@ -101,9 +101,7 @@ class CodexMCPClient(LLMClientBase):
 
         # Verify codex CLI is available
         try:
-            chk = subprocess.run(
-                ["codex", "--version"], capture_output=True, text=True, timeout=10
-            )
+            chk = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
             if chk.returncode != 0:
                 raise RuntimeError("codex CLI not available or not working")
         except Exception as e:
@@ -142,20 +140,14 @@ class CodexMCPClient(LLMClientBase):
             raise RuntimeError(f"Failed to start MCP subprocess: {e}")
 
         # Prepare JSON-RPC state
-        self._stdin = (
-            getattr(self.proc, "stdin", None) if self.proc is not None else None
-        )
-        self._stdout = (
-            getattr(self.proc, "stdout", None) if self.proc is not None else None
-        )
+        self._stdin = getattr(self.proc, "stdin", None) if self.proc is not None else None
+        self._stdout = getattr(self.proc, "stdout", None) if self.proc is not None else None
         self._req_id = 0
         self._initialized = False
 
         # Try minimal JSON-RPC handshake (non-fatal if it fails)
         self._default_timeout = float(os.environ.get("AUTOCODER_MCP_TIMEOUT", "60"))
-        self._handshake_timeout = float(
-            os.environ.get("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "1.0")
-        )
+        self._handshake_timeout = float(os.environ.get("AUTOCODER_MCP_HANDSHAKE_TIMEOUT", "1.0"))
 
         try:
             _ = self._rpc_call(
@@ -171,9 +163,7 @@ class CodexMCPClient(LLMClientBase):
             logger.info("MCP JSON-RPC initialized successfully")
 
         except Exception as e:
-            logger.warning(
-                f"MCP initialize failed or not supported; will fallback to 'codex exec' for actions: {e}"
-            )
+            logger.warning(f"MCP initialize failed or not supported; will fallback to 'codex exec' for actions: {e}")
 
     # Compatibility no-ops (Codex has no model switching)
     def switch_to_conflict_model(self) -> None:  # pragma: no cover - trivial
@@ -301,11 +291,7 @@ class CodexMCPClient(LLMClientBase):
         # Fallbacks
         if isinstance(result, str):
             return result
-        if (
-            isinstance(result, dict)
-            and "text" in result
-            and isinstance(result["text"], str)
-        ):
+        if isinstance(result, dict) and "text" in result and isinstance(result["text"], str):
             return result["text"]
         return json.dumps(result, ensure_ascii=False)
 
@@ -338,9 +324,7 @@ class CodexMCPClient(LLMClientBase):
         if self.graphrag_integration:
             try:
                 if not self.graphrag_integration.ensure_ready():
-                    logger.warning(
-                        "GraphRAG environment not ready, continuing without it"
-                    )
+                    logger.warning("GraphRAG environment not ready, continuing without it")
             except Exception as e:
                 logger.warning(f"Failed to ensure GraphRAG environment: {e}")
 
@@ -398,16 +382,9 @@ class CodexMCPClient(LLMClientBase):
                 "--dangerously-bypass-approvals-and-sandbox",
                 escaped_prompt,
             ]
-            logger.warning(
-                "LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized."
-            )
-            logger.debug(
-                f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)"
-            )
-            logger.info(
-                "🤖 Running under MCP session: codex exec -s workspace-write "
-                "--dangerously-bypass-approvals-and-sandbox [prompt]"
-            )
+            logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
+            logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
+            logger.info("🤖 Running under MCP session: codex exec -s workspace-write " "--dangerously-bypass-approvals-and-sandbox [prompt]")
 
             proc = subprocess.Popen(
                 cmd,
@@ -475,26 +452,18 @@ class CodexMCPClient(LLMClientBase):
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if server_name.lower() in output:
-                    logger.info(
-                        f"Found MCP server '{server_name}' via 'codex mcp list'"
-                    )
+                    logger.info(f"Found MCP server '{server_name}' via 'codex mcp list'")
                     return True
-                logger.debug(
-                    f"MCP server '{server_name}' not found via 'codex mcp list'"
-                )
+                logger.debug(f"MCP server '{server_name}' not found via 'codex mcp list'")
                 return False
             else:
-                logger.debug(
-                    f"'codex mcp list' command failed with return code {result.returncode}"
-                )
+                logger.debug(f"'codex mcp list' command failed with return code {result.returncode}")
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             logger.debug(f"Failed to check Codex MCP config: {e}")
             return False
 
-    def add_mcp_server_config(
-        self, server_name: str, command: str, args: list[str]
-    ) -> bool:
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
         """Add MCP server configuration to Codex CLI config.
 
         Args:

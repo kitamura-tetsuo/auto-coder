@@ -68,12 +68,7 @@ def test_extract_error_context_with_multiple_errors():
 2025-10-27T03:25:57.0000000Z 
 
 """
-        + "\n".join(
-            [
-                f"2025-10-27T03:26:{i:02d}.0000000Z   Some log line {i}"
-                for i in range(100)
-            ]
-        )
+        + "\n".join([f"2025-10-27T03:26:{i:02d}.0000000Z   Some log line {i}" for i in range(100)])
         + """
 2025-10-27T03:28:00.0000000Z 
 2025-10-27T03:28:01.0000000Z   2) [core] › e2e/core/test2.spec.ts:20:5 › Test 2
@@ -153,9 +148,7 @@ def test_extract_error_context_with_long_log():
 
 def test_extract_error_context_no_errors():
     """エラーがない場合は最初の部分を返すことを確認"""
-    log_content = "\n".join(
-        [f"2025-10-27T03:25:{i:02d}.0000000Z   Test line {i}" for i in range(600)]
-    )
+    log_content = "\n".join([f"2025-10-27T03:25:{i:02d}.0000000Z   Test line {i}" for i in range(600)])
 
     result = _extract_error_context(log_content, max_lines=500)
 

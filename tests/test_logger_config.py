@@ -147,9 +147,7 @@ class TestLoggerConfig:
             with patch("src.auto_coder.logger_config.settings") as mock_settings:
                 mock_settings.log_level = "INFO"
 
-                setup_logger(
-                    log_level="INFO", log_file=str(log_file), include_file_info=True
-                )
+                setup_logger(log_level="INFO", log_file=str(log_file), include_file_info=True)
                 test_logger = get_logger(__name__)
 
                 test_logger.info("Test message with file info")

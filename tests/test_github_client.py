@@ -80,9 +80,7 @@ class TestGitHubClient:
         assert mock_issue1 in result
         assert mock_issue2 in result
         assert mock_pr not in result
-        mock_repo.get_issues.assert_called_once_with(
-            state="open", sort="created", direction="asc"
-        )
+        mock_repo.get_issues.assert_called_once_with(state="open", sort="created", direction="asc")
 
     @patch("src.auto_coder.github_client.Github")
     def test_get_open_pull_requests_success(self, mock_github_class, mock_github_token):
@@ -105,9 +103,7 @@ class TestGitHubClient:
         # Assert
         assert len(result) == 1
         assert mock_pr1 in result
-        mock_repo.get_pulls.assert_called_once_with(
-            state="open", sort="created", direction="asc"
-        )
+        mock_repo.get_pulls.assert_called_once_with(state="open", sort="created", direction="asc")
 
     def test_get_open_issues_sorted_oldest_first(self, mock_github_token):
         """Test that issues are sorted by creation date (oldest first)."""
@@ -143,9 +139,7 @@ class TestGitHubClient:
             assert len(result) == 2
             assert result[0] == mock_issue1  # Oldest first
             assert result[1] == mock_issue2
-            mock_repo.get_issues.assert_called_once_with(
-                state="open", sort="created", direction="asc"
-            )
+            mock_repo.get_issues.assert_called_once_with(state="open", sort="created", direction="asc")
 
     def test_get_open_pull_requests_sorted_oldest_first(self, mock_github_token):
         """Test that pull requests are sorted by
@@ -179,9 +173,7 @@ class TestGitHubClient:
             assert len(result) == 2
             assert result[0] == mock_pr1  # Oldest first
             assert result[1] == mock_pr2
-            mock_repo.get_pulls.assert_called_once_with(
-                state="open", sort="created", direction="asc"
-            )
+            mock_repo.get_pulls.assert_called_once_with(state="open", sort="created", direction="asc")
 
     @patch("src.auto_coder.github_client.Github")
     def test_find_pr_by_head_branch_found(self, mock_github_class, mock_github_token):
@@ -221,9 +213,7 @@ class TestGitHubClient:
             mock_get_details.assert_called_once_with(mock_pr1)
 
     @patch("src.auto_coder.github_client.Github")
-    def test_find_pr_by_head_branch_not_found(
-        self, mock_github_class, mock_github_token
-    ):
+    def test_find_pr_by_head_branch_not_found(self, mock_github_class, mock_github_token):
         """Test finding PR by head branch when PR does not exist."""
         # Setup
         mock_github = Mock()
@@ -365,9 +355,7 @@ class TestGitHubClient:
         assert result == expected
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_details_by_number_success(
-        self, mock_github_class, mock_github_token
-    ):
+    def test_get_pr_details_by_number_success(self, mock_github_class, mock_github_token):
         """Test successful PR details retrieval by number."""
         # Setup
         mock_github = Mock()
@@ -413,9 +401,7 @@ class TestGitHubClient:
         assert result["body"] == "Test PR body"
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_issue_details_by_number_success(
-        self, mock_github_class, mock_github_token
-    ):
+    def test_get_issue_details_by_number_success(self, mock_github_class, mock_github_token):
         """Test successful Issue details retrieval by number."""
         # Setup
         mock_github = Mock()
@@ -476,9 +462,7 @@ class TestGitHubClient:
 
         # Assert
         assert result == mock_issue
-        mock_repo.create_issue.assert_called_once_with(
-            title="New Issue", body="Issue body", labels=["bug"]
-        )
+        mock_repo.create_issue.assert_called_once_with(title="New Issue", body="Issue body", labels=["bug"])
 
     @patch("src.auto_coder.github_client.Github")
     def test_add_comment_to_issue_success(self, mock_github_class, mock_github_token):
@@ -558,9 +542,7 @@ class TestGitHubClient:
         assert set(actual_labels) == expected_labels
 
     @patch("src.auto_coder.github_client.Github")
-    def test_add_labels_to_issue_no_duplicates(
-        self, mock_github_class, mock_github_token
-    ):
+    def test_add_labels_to_issue_no_duplicates(self, mock_github_class, mock_github_token):
         """Test that duplicate labels are not added."""
         # Setup
         mock_github = Mock()
@@ -619,9 +601,7 @@ class TestGitHubClient:
         mock_repo.get_pulls.assert_called_once_with(state="open")
 
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_with_no_linked_pr(
-        self, mock_github_class, mock_github_token
-    ):
+    def test_has_linked_pr_with_no_linked_pr(self, mock_github_class, mock_github_token):
         """Test has_linked_pr returns False when no PR references the issue."""
         # Setup
         mock_github = Mock()
@@ -647,9 +627,7 @@ class TestGitHubClient:
         mock_repo.get_pulls.assert_called_once_with(state="open")
 
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_with_multiple_patterns(
-        self, mock_github_class, mock_github_token
-    ):
+    def test_has_linked_pr_with_multiple_patterns(self, mock_github_class, mock_github_token):
         """Test has_linked_pr detects various reference patterns."""
         # Setup
         mock_github = Mock()
@@ -681,9 +659,7 @@ class TestGitHubClient:
             assert result is True, f"Failed for title='{title}', body='{body}'"
 
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_handles_exception(
-        self, mock_github_class, mock_github_token
-    ):
+    def test_has_linked_pr_handles_exception(self, mock_github_class, mock_github_token):
         """Test has_linked_pr handles exceptions gracefully."""
         # Setup
         mock_github = Mock()
@@ -739,16 +715,12 @@ class TestGitHubClient:
         assert call_args[2] == "graphql"
 
     @patch("subprocess.run")
-    def test_get_linked_prs_via_graphql_no_linked_prs(
-        self, mock_run, mock_github_token
-    ):
+    def test_get_linked_prs_via_graphql_no_linked_prs(self, mock_run, mock_github_token):
         """Test get_linked_prs_via_graphql returns
         empty list when no PRs linked.
         """
         # Setup
-        graphql_response = {
-            "data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}
-        }
+        graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
 
         mock_result = Mock()
         mock_result.returncode = 0
@@ -765,9 +737,7 @@ class TestGitHubClient:
         assert result == []
 
     @patch("subprocess.run")
-    def test_get_linked_prs_via_graphql_handles_error(
-        self, mock_run, mock_github_token
-    ):
+    def test_get_linked_prs_via_graphql_handles_error(self, mock_run, mock_github_token):
         """Test get_linked_prs_via_graphql handles subprocess errors."""
         # Setup
         mock_result = Mock()
@@ -786,22 +756,10 @@ class TestGitHubClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_uses_graphql_first(
-        self, mock_github_class, mock_run, mock_github_token
-    ):
+    def test_has_linked_pr_uses_graphql_first(self, mock_github_class, mock_run, mock_github_token):
         """Test has_linked_pr uses GraphQL API first."""
         # Setup GraphQL to return a linked PR
-        graphql_response = {
-            "data": {
-                "repository": {
-                    "issue": {
-                        "timelineItems": {
-                            "nodes": [{"source": {"number": 456, "state": "OPEN"}}]
-                        }
-                    }
-                }
-            }
-        }
+        graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": [{"source": {"number": 456, "state": "OPEN"}}]}}}}}
 
         mock_result = Mock()
         mock_result.returncode = 0
@@ -824,9 +782,7 @@ class TestGitHubClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_closing_issues_success(
-        self, mock_github_class, mock_run, mock_github_token
-    ):
+    def test_get_pr_closing_issues_success(self, mock_github_class, mock_run, mock_github_token):
         """Test successful retrieval of closing issues for a PR."""
         # Setup
         graphql_response = {
@@ -870,9 +826,7 @@ class TestGitHubClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_closing_issues_empty(
-        self, mock_github_class, mock_run, mock_github_token
-    ):
+    def test_get_pr_closing_issues_empty(self, mock_github_class, mock_run, mock_github_token):
         """Test PR with no closing issues."""
         # Setup
         graphql_response = {
@@ -906,9 +860,7 @@ class TestGitHubClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_closing_issues_error(
-        self, mock_github_class, mock_run, mock_github_token
-    ):
+    def test_get_pr_closing_issues_error(self, mock_github_class, mock_run, mock_github_token):
         """Test error handling when GraphQL query fails."""
         # Setup
         mock_result = Mock()

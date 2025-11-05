@@ -10,16 +10,7 @@ import click
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
-from .cli_helpers import (
-    build_backend_manager,
-    build_models_map,
-    check_backend_prerequisites,
-    check_github_sub_issue_or_setup,
-    check_graphrag_mcp_for_backends,
-    ensure_test_script_or_fail,
-    initialize_graphrag,
-    normalize_backends,
-)
+from .cli_helpers import build_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag, normalize_backends
 from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
 from .logger_config import get_logger, setup_logger
@@ -78,15 +69,9 @@ logger = get_logger(__name__)
 )
 @click.option("--model-gemini", help="Model to use when backend=gemini")
 @click.option("--model-qwen", help="Model to use when backend=qwen")
-@click.option(
-    "--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)"
-)
-@click.option(
-    "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
-)
-@click.option(
-    "--dry-run", is_flag=True, help="Run in dry-run mode without making changes"
-)
+@click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
+@click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
+@click.option("--dry-run", is_flag=True, help="Run in dry-run mode without making changes")
 @click.option(
     "--jules-mode/--no-jules-mode",
     default=True,
@@ -135,9 +120,7 @@ logger = get_logger(__name__)
     help="Set logging level",
 )
 @click.option("--log-file", help="Log file path (optional)")
-@click.option(
-    "--verbose", is_flag=True, help="Enable verbose logging and detailed command traces"
-)
+@click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -199,9 +182,7 @@ def process_issues(
     if disable_labels is None:
         # Disable labels when running in debugger, enable otherwise
         disable_labels = CommandExecutor.is_running_in_debugger()
-        logger.debug(
-            f"Auto-detected disable_labels={disable_labels} (debugger={disable_labels})"
-        )
+        logger.debug(f"Auto-detected disable_labels={disable_labels} (debugger={disable_labels})")
 
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")
@@ -217,9 +198,7 @@ def process_issues(
     logger.info(f"Force clean before checkout: {force_clean_before_checkout}")
 
     # Explicitly show base branch update policy for PR checks failure
-    policy_str = (
-        "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
-    )
+    policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
     logger.info(f"Base branch update before fixes when PR checks fail: {policy_str}")
 
     click.echo(f"Processing repository: {repo_name}")
@@ -260,7 +239,6 @@ def process_issues(
     )
 
     # Initialize the global singleton with proper configuration
-    from auto_coder.backend_manager import get_llm_backend_manager
 
     manager = get_llm_backend_manager(
         default_backend=primary_backend,
@@ -276,9 +254,7 @@ def process_issues(
     # Initialize message backend manager (use same backends if not specified)
     from .cli_helpers import build_message_backend_manager
 
-    message_backend_list = (
-        normalize_backends(message_backends) if message_backends else selected_backends
-    )
+    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
     message_primary_backend = message_backend_list[0]
     message_manager = build_message_backend_manager(
         message_backend_list,
@@ -293,12 +269,8 @@ def process_issues(
 
     if message_backends:
         message_backend_str = ", ".join(message_backend_list)
-        logger.info(
-            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
-        )
-        click.echo(
-            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
-        )
+        logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
+        click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
@@ -327,9 +299,7 @@ def process_issues(
 
             # Try to find PR by head branch
             try:
-                pr_data = github_client.find_pr_by_head_branch(
-                    repo_name, current_branch
-                )
+                pr_data = github_client.find_pr_by_head_branch(repo_name, current_branch)
                 if pr_data:
                     target_type = "pr"
                     target_data = pr_data
@@ -343,29 +313,21 @@ def process_issues(
                 number = extract_number_from_branch(current_branch)
                 if number:
                     try:
-                        issue_data = github_client.get_issue_details_by_number(
-                            repo_name, number
-                        )
+                        issue_data = github_client.get_issue_details_by_number(repo_name, number)
                         if issue_data and issue_data.get("state") == "open":
                             target_type = "issue"
                             target_data = issue_data
-                            logger.info(
-                                f"Found open issue #{number} for current branch"
-                            )
+                            logger.info(f"Found open issue #{number} for current branch")
                     except Exception as e:
                         logger.debug(f"No open issue found for #{number}: {e}")
 
             # If we found an open PR or issue, process it
             if target_type and target_data and number:
-                click.echo(
-                    f"Resuming work on {target_type} #{number} (branch: {current_branch})"
-                )
+                click.echo(f"Resuming work on {target_type} #{number} (branch: {current_branch})")
                 logger.info(f"Resuming work on {target_type} #{number}")
 
                 # Run single-item processing
-                _ = automation_engine.process_single(
-                    repo_name, target_type, number, jules_mode=jules_mode
-                )
+                _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
                 # Print brief summary to stdout
                 click.echo(f"Processed {target_type} #{number}")
                 # Close MCP session if present
@@ -376,9 +338,7 @@ def process_issues(
                     pass
                 return
             else:
-                logger.info(
-                    f"No open PR or issue found for branch '{current_branch}', proceeding with normal processing"
-                )
+                logger.info(f"No open PR or issue found for branch '{current_branch}', proceeding with normal processing")
 
     # If only_target is provided, parse and process a single item
     if only_target:
@@ -402,9 +362,7 @@ def process_issues(
             except ValueError:
                 raise click.ClickException("--only must be a PR/Issue URL or a number")
         # Run single-item processing
-        _ = automation_engine.process_single(
-            repo_name, target_type, number, jules_mode=jules_mode
-        )
+        _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
         # Print brief summary to stdout
         click.echo(f"Processed single {target_type} #{number}")
         # Close MCP session if present
@@ -468,12 +426,8 @@ def process_issues(
 )
 @click.option("--model-gemini", help="Model to use when backend=gemini")
 @click.option("--model-qwen", help="Model to use when backend=qwen")
-@click.option(
-    "--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)"
-)
-@click.option(
-    "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
-)
+@click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
+@click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
 @click.option(
     "--enable-graphrag/--disable-graphrag",
     default=True,
@@ -492,9 +446,7 @@ def process_issues(
     help="Set logging level",
 )
 @click.option("--log-file", help="Log file path (optional)")
-@click.option(
-    "--verbose", is_flag=True, help="Enable verbose logging and detailed command traces"
-)
+@click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
 def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -631,12 +583,8 @@ def create_feature_issues(
 )
 @click.option("--model-gemini", help="Model to use when backend=gemini")
 @click.option("--model-qwen", help="Model to use when backend=qwen")
-@click.option(
-    "--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)"
-)
-@click.option(
-    "--model-claude", help="Model to use when backend=claude (defaults to sonnet)"
-)
+@click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
+@click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
 @click.option(
     "--max-attempts",
     type=int,
@@ -648,9 +596,7 @@ def create_feature_issues(
     default=True,
     help="Enable GraphRAG integration (default: enabled)",
 )
-@click.option(
-    "--dry-run", is_flag=True, help="Run without making changes (LLM edits simulated)"
-)
+@click.option("--dry-run", is_flag=True, help="Run without making changes (LLM edits simulated)")
 @click.option(
     "--force-reindex",
     is_flag=True,
@@ -664,9 +610,7 @@ def create_feature_issues(
     help="Set logging level",
 )
 @click.option("--log-file", help="Log file path (optional)")
-@click.option(
-    "--verbose", is_flag=True, help="Enable verbose logging and detailed command traces"
-)
+@click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
 def fix_to_pass_tests_command(
     backends: tuple[str, ...],
     message_backends: Optional[tuple[str, ...]],
@@ -754,9 +698,7 @@ def fix_to_pass_tests_command(
     # Initialize message backend manager (use same backends if not specified)
     from .cli_helpers import build_message_backend_manager
 
-    message_backend_list = (
-        normalize_backends(message_backends) if message_backends else selected_backends
-    )
+    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
     message_primary_backend = message_backend_list[0]
     message_manager = build_message_backend_manager(
         message_backend_list,
@@ -771,19 +713,13 @@ def fix_to_pass_tests_command(
 
     if message_backends:
         message_backend_str = ", ".join(message_backend_list)
-        logger.info(
-            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
-        )
-        click.echo(
-            f"Using message backends: {message_backend_str} (default: {message_primary_backend})"
-        )
+        logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
+        click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
 
     engine = AutomationEngine(github_client, dry_run=dry_run)
 
     try:
-        result = engine.fix_to_pass_tests(
-            max_attempts=max_attempts, message_backend_manager=message_manager
-        )
+        result = engine.fix_to_pass_tests(max_attempts=max_attempts, message_backend_manager=message_manager)
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")
         else:

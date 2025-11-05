@@ -215,6 +215,11 @@ auto-coder fix-to-pass-tests --dry-run
 
 動作仕様:
 - テスト実行は `scripts/test.sh` が存在すればそれを使用、なければ `pytest -q --maxfail=1` を実行します。
+  - `scripts/test.sh` は以下の機能をサポートします:
+    - 一貫性のある再現可能な環境のために uv ランナーを優先使用
+    - uv がインストールされていない場合はシステムの Python の pytest にフォールバック
+    - `AC_USE_LOCAL_VENV=1` を設定することでローカルの仮想環境を任意で有効化可能
+    - 依存関係を uv による自動同期機能を常有効化
 - 各失敗ごとにエラー出力から重要部分を抽出し、LLM に最小限の修正を依頼します。
 - 修正後はステージングとコミットを行います。変更が全くない（`nothing to commit`）場合はエラーで停止します。
 
@@ -405,6 +410,9 @@ flake8 src/ tests/
 
 # 型チェック
 mypy src/
+
+# pre-commit経由での型チェック（uv使用）
+# pre-commit install によりフックをセットアップ
 ```
 
 ## アーキテクチャ

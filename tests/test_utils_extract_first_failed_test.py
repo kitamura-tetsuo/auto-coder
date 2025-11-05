@@ -59,10 +59,7 @@ def test_extract_from_playwright_spec(monkeypatch):
 
 def test_extract_playwright_candidate_returned_even_if_not_exists():
     # ANSIカラーや存在しないパスでも候補として返せること
-    stdout = (
-        "\x1b[31m  ✘    1 [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \x1b[39m\n"
-        "\n  1) [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \n\n"
-    )
+    stdout = "\x1b[31m  ✘    1 [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \x1b[39m\n" "\n  1) [basic] › e2e/basic/00-foo-bar.spec.ts:15:5 › title \n\n"
     stderr = ""
 
     path = extract_first_failed_test(stdout, stderr)
@@ -85,21 +82,14 @@ def test_extract_playwright_from_sample_full_output_excerpt():
 
 def test_playwright_prefers_fail_over_pass_when_both_present():
     # 先に成功(\u2713)行があり、その後に失敗(\u2718)行が出るケースでも、失敗側を返す
-    stdout = (
-        "  \u2713    1 [basic] \u203a e2e/basic/pass-example.spec.ts:10:5 \u203a ok \n"
-        "  \u2718   22 [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n"
-        "\n  1) [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n"
-    )
+    stdout = "  \u2713    1 [basic] \u203a e2e/basic/pass-example.spec.ts:10:5 \u203a ok \n" "  \u2718   22 [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n" "\n  1) [new] \u203a e2e/new/fail-example.spec.ts:20:5 \u203a ng \n"
     stderr = ""
     path = extract_first_failed_test(stdout, stderr)
     assert path == "e2e/new/fail-example.spec.ts"
 
 
 def test_stderr_is_prioritized_over_stdout(monkeypatch):
-    stdout = (
-        "  \u2713    1 [basic] › e2e/basic/pass-example.spec.ts:10:5 › ok\n"
-        "All tests passed\n"
-    )
+    stdout = "  \u2713    1 [basic] › e2e/basic/pass-example.spec.ts:10:5 › ok\n" "All tests passed\n"
     stderr = "  ✘    1 [new] › e2e/new/fail-example.spec.ts:20:5 › broken\n"
 
     failing_path = "e2e/new/fail-example.spec.ts"

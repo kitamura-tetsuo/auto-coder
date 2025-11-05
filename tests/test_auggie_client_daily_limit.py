@@ -92,9 +92,7 @@ def test_auggie_usage_resets_when_date_changes(monkeypatch, tmp_path):
 
     yesterday = (datetime.now() - timedelta(days=1)).date().isoformat()
     state_path = tmp_path / "auggie_usage.json"
-    state_path.write_text(
-        json.dumps({"date": yesterday, "count": AuggieClient.DAILY_CALL_LIMIT})
-    )
+    state_path.write_text(json.dumps({"date": yesterday, "count": AuggieClient.DAILY_CALL_LIMIT}))
 
     client = AuggieClient()
     output = client._run_auggie_cli("allowed prompt")

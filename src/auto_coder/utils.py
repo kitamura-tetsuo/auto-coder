@@ -92,9 +92,7 @@ class CommandExecutor:
         return CommandExecutor.is_running_in_debugger()
 
     @staticmethod
-    def _spawn_reader(
-        stream, stream_name: str, out_queue: "queue.Queue[Tuple[str, Optional[str]]]"
-    ) -> threading.Thread:
+    def _spawn_reader(stream, stream_name: str, out_queue: "queue.Queue[Tuple[str, Optional[str]]]") -> threading.Thread:
         """Spawn a background reader thread for the given stream."""
 
         def _reader() -> None:
@@ -106,9 +104,7 @@ class CommandExecutor:
             finally:
                 out_queue.put((stream_name, None))
 
-        thread = threading.Thread(
-            target=_reader, name=f"CommandStream-{stream_name}", daemon=True
-        )
+        thread = threading.Thread(target=_reader, name=f"CommandStream-{stream_name}", daemon=True)
         thread.start()
         return thread
 
@@ -159,15 +155,9 @@ class CommandExecutor:
                     remaining = timeout - elapsed
                     if remaining <= 0:
                         process.kill()
-                        raise subprocess.TimeoutExpired(
-                            cmd, timeout, "".join(stdout_lines), "".join(stderr_lines)
-                        )
+                        raise subprocess.TimeoutExpired(cmd, timeout, "".join(stdout_lines), "".join(stderr_lines))
 
-                poll_interval = (
-                    min(cls.STREAM_POLL_INTERVAL, remaining)
-                    if timeout is not None
-                    else cls.STREAM_POLL_INTERVAL
-                )
+                poll_interval = min(cls.STREAM_POLL_INTERVAL, remaining) if timeout is not None else cls.STREAM_POLL_INTERVAL
 
                 try:
                     stream_name, chunk = output_queue.get(timeout=poll_interval)
@@ -199,11 +189,7 @@ class CommandExecutor:
                 except queue.Empty:
                     pass
 
-                if (
-                    process.poll() is not None
-                    and not streams_active
-                    and output_queue.empty()
-                ):
+                if process.poll() is not None and not streams_active and output_queue.empty():
                     break
 
             return_code = process.returncode
@@ -260,9 +246,7 @@ class CommandExecutor:
         if timeout is None:
             # Auto-detect timeout based on command type
             cmd_type = cmd[0] if cmd else "default"
-            timeout = cls.DEFAULT_TIMEOUTS.get(
-                cmd_type, cls.DEFAULT_TIMEOUTS["default"]
-            )
+            timeout = cls.DEFAULT_TIMEOUTS.get(cmd_type, cls.DEFAULT_TIMEOUTS["default"])
 
         command_display = shlex.join(cmd) if cmd else ""
         should_stream = cls._should_stream_output(stream_output)
@@ -281,9 +265,7 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(
-                    cmd, timeout, cwd, env, on_stream
-                )
+                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, env, on_stream)
             else:
                 result = subprocess.run(
                     cmd,
@@ -299,9 +281,7 @@ class CommandExecutor:
 
             success = return_code == 0
 
-            return CommandResult(
-                success=success, stdout=stdout, stderr=stderr, returncode=return_code
-            )
+            return CommandResult(success=success, stdout=stdout, stderr=stderr, returncode=return_code)
 
         except subprocess.TimeoutExpired:
             logger.error(f"Command timed out after {timeout}s: {' '.join(cmd)}")
@@ -339,11 +319,7 @@ def change_fraction(old: str, new: str) -> float:
             # Trailing 1000 characters
             tail_by_chars = s[-1000:]
             # Use the shorter one
-            return (
-                tail_by_lines
-                if len(tail_by_lines) <= len(tail_by_chars)
-                else tail_by_chars
-            )
+            return tail_by_lines if len(tail_by_lines) <= len(tail_by_chars) else tail_by_chars
 
         old_s = old or ""
         new_s = new or ""
@@ -406,9 +382,7 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         # Playwright failure patterns
         if re.search(r"^\s*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›", text, re.MULTILINE):
             return "playwright"
-        if re.search(
-            r"^\s*\d+\)\s+\[[^\]]+\]\s+›\s+[^\s:]+\.spec\.ts", text, re.MULTILINE
-        ):
+        if re.search(r"^\s*\d+\)\s+\[[^\]]+\]\s+›\s+[^\s:]+\.spec\.ts", text, re.MULTILINE):
             return "playwright"
         if re.search(r"\d+ failed.*playwright", text, re.IGNORECASE):
             return "playwright"
@@ -443,9 +417,7 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
                 break
 
         # 2) Extract .py files under tests/ from pytest traceback lines
-        m = re.search(
-            r"(^|\s)((?:tests?/|^tests?/)[^:\s]+\.py):\d+", text, re.MULTILINE
-        )
+        m = re.search(r"(^|\s)((?:tests?/|^tests?/)[^:\s]+\.py):\d+", text, re.MULTILINE)
         if m:
             py_path = m.group(2)
             if py_path not in found:
@@ -462,12 +434,8 @@ def extract_first_failed_test(stdout: str, stderr: str) -> Optional[str]:
         found: List[str] = []
         lines = text.split("\n")
 
-        fail_bullet_re = re.compile(
-            r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+"
-        )
-        fail_heading_re = re.compile(
-            r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+"
-        )
+        fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
+        fail_heading_re = re.compile(r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
 
         def _normalize_spec(path: str) -> str:
             m_e2e = re.search(r"(?:^|/)(e2e/[A-Za-z0-9_./-]+\.spec\.ts)$", path)

@@ -96,7 +96,7 @@
                 "--backend",
                 "auggie",
                 "--model-auggie",
-                // "sonnet4.5",
+                // "gpt5",
                 "gpt5",
                 "--backend",
                 "qwen",
@@ -136,12 +136,44 @@
                 "--backend",
                 "auggie",
                 "--model-auggie",
-                "sonnet4.5",
+                "gpt5",
                 // "gpt5",
                 "--backend",
                 "qwen",
                 "--message-backend",
                 "qwen"
+            ],
+            "python": "${command:python.interpreterPath}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src"
+            }
+        },
+        {
+            "name": "Fix to pass tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "auto_coder.cli",
+            "console": "integratedTerminal",
+            "args": [
+                "fix-to-pass-tests",
+                "--disable-graphrag",
+                "--backend",
+                "claude",
+                "--model-claude",
+                "MiniMax-M2",
+                // "--backend",
+                // "qwen",
+                // "--backend",
+                // "gemini",
+                // // "--backend", "codex-mcp",
+                // "--backend",
+                // "codex",
+                "--backend",
+                "auggie",
+                "--model-auggie",
+                "gpt5",
+                "--max-attempts",
+                "100000"
             ],
             "python": "${command:python.interpreterPath}",
             "env": {
@@ -167,7 +199,7 @@
                 "--backend",
                 "auggie",
                 "--model-auggie",
-                "sonnet4.5",
+                "gpt5",
                 "--max-attempts",
                 "100000"
             ],

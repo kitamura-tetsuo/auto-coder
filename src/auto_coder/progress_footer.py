@@ -66,9 +66,7 @@ class ProgressFooter:
 
         # Add related issues if available (without space before it)
         if self._related_issues:
-            related_issues_str = ", ".join(
-                [f"#{issue}" for issue in self._related_issues]
-            )
+            related_issues_str = ", ".join([f"#{issue}" for issue in self._related_issues])
             main_display += f"\033[95m[Issue {related_issues_str}]\033[0m"
 
         # Add stages if available
@@ -130,9 +128,7 @@ class ProgressFooter:
     def _render_footer(self) -> None:
         """Render the footer from current state (must be called with lock held)."""
         if self._current_item_type and self._current_item_number:
-            self._current_footer = self._format_footer(
-                self._current_item_type, self._current_item_number
-            )
+            self._current_footer = self._format_footer(self._current_item_type, self._current_item_number)
         else:
             self._current_footer = None
 
@@ -176,10 +172,7 @@ class ProgressFooter:
             self._stage_stack.append(stage)
             # Log for file logging
             if self._current_item_type and self._current_item_number:
-                logger.debug(
-                    f"Progress: {self._current_item_type} #{self._current_item_number} - "
-                    f"{' / '.join(self._stage_stack)}"
-                )
+                logger.debug(f"Progress: {self._current_item_type} #{self._current_item_number} - " f"{' / '.join(self._stage_stack)}")
             self._render_footer()
 
         # Print footer outside the lock
@@ -349,9 +342,7 @@ class ProgressContext:
 
     def __enter__(self):
         """Enter the context and display the initial footer."""
-        set_progress_item(
-            self.item_type, self.item_number, self.related_issues, self.branch_name
-        )
+        set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
         push_progress_stage(self.initial_stage)
         return self
 
@@ -418,17 +409,13 @@ class ProgressStage:
             self.related_issues = kwargs.get("related_issues")
             self.branch_name = kwargs.get("branch_name")
         else:
-            raise ValueError(
-                "ProgressStage requires either 1 argument (stage) or 3 arguments (item_type, item_number, stage)"
-            )
+            raise ValueError("ProgressStage requires either 1 argument (stage) or 3 arguments (item_type, item_number, stage)")
 
     def __enter__(self):
         """Enter the context and push the stage."""
         if self.item_type and self.item_number:
             # Set item info and push stage
-            set_progress_item(
-                self.item_type, self.item_number, self.related_issues, self.branch_name
-            )
+            set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
             push_progress_stage(self.stage)
         else:
             # Just push stage

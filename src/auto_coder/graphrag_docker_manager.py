@@ -68,9 +68,7 @@ class GraphRAGDockerManager:
                 # Fallback for older Python versions
                 import pkg_resources
 
-                compose_content = pkg_resources.resource_string(
-                    "auto_coder", "docker-compose.graphrag.yml"
-                ).decode("utf-8")
+                compose_content = pkg_resources.resource_string("auto_coder", "docker-compose.graphrag.yml").decode("utf-8")
 
                 # Create a temporary file that persists
                 temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
@@ -81,13 +79,8 @@ class GraphRAGDockerManager:
                 logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
                 return str(compose_file)
         except Exception as e:
-            logger.error(
-                f"Failed to extract docker-compose.graphrag.yml from package: {e}"
-            )
-            raise FileNotFoundError(
-                "docker-compose.graphrag.yml not found in package. "
-                "Please ensure the package is installed correctly."
-            ) from e
+            logger.error(f"Failed to extract docker-compose.graphrag.yml from package: {e}")
+            raise FileNotFoundError("docker-compose.graphrag.yml not found in package. " "Please ensure the package is installed correctly.") from e
 
     def _detect_docker_compose_command(self) -> list[str]:
         """Detect which docker compose command is available.
@@ -153,9 +146,7 @@ class GraphRAGDockerManager:
         stderr_lower = stderr.lower()
         return any(indicator in stderr_lower for indicator in permission_indicators)
 
-    def _run_docker_compose(
-        self, args: list[str], timeout: int = 60, retry_with_sudo: bool = True
-    ) -> CommandResult:
+    def _run_docker_compose(self, args: list[str], timeout: int = 60, retry_with_sudo: bool = True) -> CommandResult:
         """Run docker-compose command.
 
         Args:
@@ -174,18 +165,10 @@ class GraphRAGDockerManager:
         result = self.executor.run_command(cmd, timeout=timeout)
 
         # If permission error and retry is enabled, try with sudo
-        if (
-            not result.success
-            and retry_with_sudo
-            and self._is_permission_error(result.stderr)
-        ):
-            logger.warning(
-                "Permission denied when accessing Docker. Retrying with sudo..."
-            )
+        if not result.success and retry_with_sudo and self._is_permission_error(result.stderr):
+            logger.warning("Permission denied when accessing Docker. Retrying with sudo...")
             sudo_cmd = ["sudo"] + cmd
-            logger.debug(
-                f"Running docker compose command with sudo: {' '.join(sudo_cmd)}"
-            )
+            logger.debug(f"Running docker compose command with sudo: {' '.join(sudo_cmd)}")
             result = self.executor.run_command(sudo_cmd, timeout=timeout)
 
         return result
@@ -296,10 +279,7 @@ class GraphRAGDockerManager:
             if neo4j_healthy and qdrant_healthy:
                 return True
 
-            logger.debug(
-                f"Waiting for containers to be healthy... "
-                f"(Neo4j: {neo4j_healthy}, Qdrant: {qdrant_healthy})"
-            )
+            logger.debug(f"Waiting for containers to be healthy... " f"(Neo4j: {neo4j_healthy}, Qdrant: {qdrant_healthy})")
             time.sleep(check_interval)
 
         return False
@@ -456,11 +436,7 @@ class GraphRAGDockerManager:
                 cmd = ["sudo"] + cmd
                 result = subprocess.run(cmd, capture_output=True, timeout=5)
 
-            container_name = (
-                result.stdout.decode().strip().lstrip("/")
-                if result.returncode == 0
-                else None
-            )
+            container_name = result.stdout.decode().strip().lstrip("/") if result.returncode == 0 else None
 
             # Check if already connected
             cmd = [
@@ -481,12 +457,8 @@ class GraphRAGDockerManager:
             if result.returncode == 0:
                 connected_containers = result.stdout.decode().strip()
                 # Check both container ID and name
-                if container_id in connected_containers or (
-                    container_name and container_name in connected_containers
-                ):
-                    logger.debug(
-                        f"Container {container_id} ({container_name}) already connected to {network_name}"
-                    )
+                if container_id in connected_containers or (container_name and container_name in connected_containers):
+                    logger.debug(f"Container {container_id} ({container_name}) already connected to {network_name}")
                     return
 
             # Connect to network
@@ -499,16 +471,12 @@ class GraphRAGDockerManager:
                 result = subprocess.run(cmd, capture_output=True, timeout=10)
 
             if result.returncode == 0:
-                logger.info(
-                    f"Connected container {container_id} ({container_name}) to GraphRAG network {network_name}"
-                )
+                logger.info(f"Connected container {container_id} ({container_name}) to GraphRAG network {network_name}")
             else:
                 stderr = result.stderr.decode()
                 # Ignore "already exists in network" error
                 if "already exists in network" in stderr:
-                    logger.debug(
-                        f"Container {container_id} ({container_name}) already connected to {network_name}"
-                    )
+                    logger.debug(f"Container {container_id} ({container_name}) already connected to {network_name}")
                 else:
                     logger.warning(f"Failed to connect to GraphRAG network: {stderr}")
 

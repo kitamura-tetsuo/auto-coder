@@ -6,12 +6,8 @@ from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.util.github_action import _check_github_actions_status_from_history
 
 
-def _cmd_result(
-    success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0
-):
-    return SimpleNamespace(
-        success=success, stdout=stdout, stderr=stderr, returncode=returncode
-    )
+def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):
+    return SimpleNamespace(success=success, stdout=stdout, stderr=stderr, returncode=returncode)
 
 
 def test_history_prefers_pull_request_event_runs():
@@ -55,9 +51,7 @@ def test_history_prefers_pull_request_event_runs():
             "event": "pull_request",
         },
     ]
-    run_list_result = _cmd_result(
-        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
-    )
+    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
     # run view の応答: push の方は対象 PR を含まない / pull_request の方は含む
     jobs_payload = {
@@ -108,20 +102,14 @@ def test_history_prefers_pull_request_event_runs():
             if run_id == push_run_id:
                 return _cmd_result(
                     True,
-                    stdout=json.dumps(
-                        {"jobs": jobs_payload["jobs"], "pullRequests": []}
-                    ),
+                    stdout=json.dumps({"jobs": jobs_payload["jobs"], "pullRequests": []}),
                     stderr="",
                     returncode=0,
                 )
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch(
-        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
-    ):
-        result = _check_github_actions_status_from_history(
-            "owner/repo", pr_data, config
-        )
+    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
     assert pr_run_id in result.ids
@@ -167,9 +155,7 @@ def test_history_limits_to_runs_referencing_target_pr():
             "event": "pull_request",
         },
     ]
-    run_list_result = _cmd_result(
-        True, stdout=json.dumps(run_list_payload), stderr="", returncode=0
-    )
+    run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
     jobs_payload = {
         "jobs": [
@@ -228,12 +214,8 @@ def test_history_limits_to_runs_referencing_target_pr():
                 )
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch(
-        "src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect
-    ):
-        result = _check_github_actions_status_from_history(
-            "owner/repo", pr_data, config
-        )
+    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+        result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
     assert run_b in result.ids

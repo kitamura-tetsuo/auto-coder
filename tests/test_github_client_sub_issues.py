@@ -185,9 +185,7 @@ class TestGitHubClientSubIssues:
         client = GitHubClient("test_token")
 
         # Mock subprocess error
-        mock_subprocess_run.side_effect = subprocess.CalledProcessError(
-            1, "gh api graphql", stderr="GraphQL error"
-        )
+        mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")
 
         result = client.get_open_sub_issues("owner/repo", 1)
         # Should return empty list on error

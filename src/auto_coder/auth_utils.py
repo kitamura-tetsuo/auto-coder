@@ -33,9 +33,7 @@ def get_github_token() -> Optional[str]:
 
     # 2. Try to get token from gh CLI
     try:
-        result = subprocess.run(
-            ["gh", "auth", "token"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             token = result.stdout.strip()
             if token:
@@ -106,9 +104,7 @@ def get_gemini_api_key() -> Optional[str]:
 
     # 3. Try alternative gemini CLI command
     try:
-        result = subprocess.run(
-            ["gemini", "auth", "status"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0 and "authenticated" in result.stdout.lower():
             # Try to extract API key from status output
             lines = result.stdout.split("\n")
@@ -162,9 +158,7 @@ def get_gemini_api_key() -> Optional[str]:
         if result.returncode == 0:
             token = result.stdout.strip()
             if token:
-                logger.info(
-                    "Using access token from gcloud CLI (may work for some Gemini APIs)"
-                )
+                logger.info("Using access token from gcloud CLI (may work for some Gemini APIs)")
                 return token
     except (
         subprocess.TimeoutExpired,
@@ -185,9 +179,7 @@ def check_gh_auth() -> bool:
         True if authenticated, False otherwise.
     """
     try:
-        result = subprocess.run(
-            ["gh", "auth", "status"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, timeout=10)
         return result.returncode == 0 and "logged in" in result.stdout.lower()
     except Exception:
         return False
@@ -202,9 +194,7 @@ def check_gemini_auth() -> bool:
     """
     try:
         # Try to check if gemini CLI is authenticated
-        result = subprocess.run(
-            ["gemini", "auth", "status"], capture_output=True, text=True, timeout=10
-        )
+        result = subprocess.run(["gemini", "auth", "status"], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
             return "authenticated" in result.stdout.lower()
 

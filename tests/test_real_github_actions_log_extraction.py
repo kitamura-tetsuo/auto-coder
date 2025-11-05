@@ -7,10 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.util.github_action import (
-    _extract_error_context,
-    get_github_actions_logs_from_url,
-)
+from src.auto_coder.util.github_action import _extract_error_context, get_github_actions_logs_from_url
 
 
 def test_extract_error_context_with_realistic_playwright_log():
@@ -105,23 +102,14 @@ def test_extract_error_context_with_realistic_playwright_log():
 
     # 重要なエラー情報が含まれていることを確認
     assert "Error: expect(received).toContain(expected)" in result
-    assert (
-        'Expected substring: "<a href=\\"https://example.com\\""' in result
-        or 'Expected substring: "<a href="https://example.com"' in result
-    )
-    assert (
-        'Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"'
-        in result
-    )
+    assert 'Expected substring: "<a href=\\"https://example.com\\""' in result or 'Expected substring: "<a href="https://example.com"' in result
+    assert 'Received string:    "test-page-1755122947471Visit https:/example.comSecond item<!---->"' in result
     assert "fmt-url-label-links-a391b6c2.spec.ts" in result
     assert "URL label links" in result
 
     # エラーの前後のコンテキストが含まれていることを確認
     assert "expect(firstItemHtml).toContain" in result
-    assert (
-        "at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31"
-        in result
-    )
+    assert "at /tmp/runner/work/outliner/outliner/client/e2e/core/fmt-url-label-links-a391b6c2.spec.ts:49:31" in result
 
     # テストサマリが含まれていることを確認
     assert "1 failed" in result or "147 passed" in result
@@ -196,11 +184,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
             return Mock(returncode=0, stdout=json.dumps(jobs_obj).encode(), stderr=b"")
 
         # ジョブ詳細（ステップ情報）
-        if (
-            cmd[:2] == ["gh", "api"]
-            and "actions/jobs/53715705095" in cmd[2]
-            and not cmd[2].endswith("/logs")
-        ):
+        if cmd[:2] == ["gh", "api"] and "actions/jobs/53715705095" in cmd[2] and not cmd[2].endswith("/logs"):
             job_obj = {
                 "id": 53715705095,
                 "name": "CI / e2e tests",
@@ -234,9 +218,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
         if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/logs"):
             bio = io.BytesIO()
             with zipfile.ZipFile(bio, "w") as zf:
-                zf.writestr(
-                    "1_Set up job.txt", "Setting up job...\nJob setup complete."
-                )
+                zf.writestr("1_Set up job.txt", "Setting up job...\nJob setup complete.")
                 zf.writestr(
                     "2_Run actions checkout@v4.txt",
                     "Checking out code...\nCheckout complete.",
@@ -250,9 +232,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 
         return Mock(returncode=1, stdout=b"", stderr=b"unknown")
 
-    def fake_cmd_run(
-        cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True
-    ):
+    def fake_cmd_run(cmd, capture_output=True, text=False, timeout=60, cwd=None, check_success=True):
         # この関数は使用されないはずだが、念のため定義
         from src.auto_coder.utils import CommandResult
 
