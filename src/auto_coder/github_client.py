@@ -68,13 +68,16 @@ class GitHubClient:
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
-        self._initialized = True
 
-    def __new__(cls, *args, **kwargs):
+    def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
 
         This method is called when creating a new instance. It ensures only one
         instance is created across all threads.
+
+        Note: This method should NOT acquire cls._lock since it's called from
+        get_instance which already holds the lock. Acquiring the lock here
+        would cause a deadlock.
         """
         # __new__ should not use locks to avoid deadlock with get_instance
         # Only create a new instance if _instance is None
@@ -111,7 +114,7 @@ class GitHubClient:
         return cls._instance
 
     @classmethod
-    def reset_singleton(cls):
+    def reset_singleton(cls) -> None:
         """Reset the singleton instance.
 
         This method is primarily for testing purposes to ensure tests don't
@@ -119,7 +122,6 @@ class GitHubClient:
         """
         with cls._lock:
             cls._instance = None
-
 
     def get_repository(self, repo_name: str) -> Repository.Repository:
         """Get repository object by name (owner/repo)."""
@@ -142,11 +144,11 @@ class GitHubClient:
                 from unittest.mock import MagicMock as _UMagicMock
                 from unittest.mock import Mock as _UMock
 
-                _mock_types = (_UMock, _UMagicMock)
+                _mock_types: tuple = (_UMock, _UMagicMock)
             except Exception:
                 _mock_types = tuple()
 
-            def _is_pr(it):
+            def _is_pr(it: Any) -> bool:
                 try:
                     if not hasattr(it, "pull_request"):
                         return False
@@ -214,7 +216,7 @@ class GitHubClient:
             "labels": [label.name for label in pr.labels],
             "assignees": [assignee.login for assignee in pr.assignees],
             "created_at": pr.created_at.isoformat(),
-            "updated_at": pr.updated_at.isoformat(),
+            "updated_at": pr.updated_at.isoformat() if pr.updated_at else None,
             "url": pr.html_url,
             "author": pr.user.login if pr.user else None,
             "head_branch": pr.head.ref,
@@ -592,7 +594,7 @@ class GitHubClient:
             if parent_issue:
                 parent_number = parent_issue.get("number")
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_number}: {parent_issue.get('title')}")
-                return parent_number
+                return int(parent_number) if parent_number is not None else None
 
             return None
 

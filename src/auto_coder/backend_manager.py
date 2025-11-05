@@ -119,7 +119,7 @@ class BackendManager(LLMBackendManagerBase):
         logger.info(f"BackendManager: switched back to default backend -> {self._current_backend_name()}")
 
     # ---------- Direct Compatibility Methods ----------
-    @log_calls
+    @log_calls  # type: ignore[misc]
     def _run_llm_cli(self, prompt: str) -> str:
         """Normal execution (circular retry on usage limit)."""
         attempts = 0
@@ -155,7 +155,7 @@ class BackendManager(LLMBackendManagerBase):
         raise RuntimeError("No backend available to run prompt")
 
     # ---------- For apply_workspace_test_fix ----------
-    @log_calls
+    @log_calls  # type: ignore[misc]
     def run_test_fix_prompt(self, prompt: str, current_test_file: Optional[str] = None) -> str:
         """Execution for apply_workspace_test_fix.
         - If the same current_test_file is given 3 consecutive times, switch to the next backend
@@ -536,7 +536,7 @@ def run_message_prompt(prompt: str) -> str:
     manager = LLMBackendManager.get_message_instance()
     if manager is None:
         raise RuntimeError("Message backend manager not initialized. " "Call get_message_backend_manager() with initialization parameters first.")
-    return manager._run_llm_cli(prompt)
+    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
 
 
 def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
@@ -548,7 +548,7 @@ def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     """
     manager = LLMBackendManager.get_message_instance()
     if manager is None:
-        return None, None
+        return None, None  # type: ignore[unreachable]
     return manager.get_last_backend_and_model()
 
 
@@ -609,7 +609,7 @@ def run_llm_prompt(prompt: str) -> str:
     manager = LLMBackendManager.get_llm_instance()
     if manager is None:
         raise RuntimeError("LLM backend manager not initialized. " "Call get_llm_backend_manager() with initialization parameters first.")
-    return manager._run_llm_cli(prompt)
+    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
 
 
 def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
@@ -621,5 +621,5 @@ def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     """
     manager = LLMBackendManager.get_llm_instance()
     if manager is None:
-        return None, None
+        return None, None  # type: ignore[unreachable]
     return manager.get_last_backend_and_model()
