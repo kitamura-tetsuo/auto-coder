@@ -410,6 +410,9 @@ flake8 src/ tests/
 
 # 型チェック
 mypy src/
+
+# pre-commit経由での型チェック（uv使用）
+# pre-commit install によりフックをセットアップ
 ```
 
 ## アーキテクチャ
