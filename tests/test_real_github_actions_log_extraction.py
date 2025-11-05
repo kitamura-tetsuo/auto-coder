@@ -1,4 +1,6 @@
+"""
 Integration tests using actual GitHub Actions logs
+"""
 
 import io
 import json
@@ -117,7 +119,7 @@ def test_extract_error_context_with_realistic_playwright_log():
     # Verify that result is appropriate length
     result_lines = result.split("\n")
     assert len(result_lines) >= 20  # At least 10 lines before and after error line
-    assert len(result_lines) <= 500  # 最大500行
+    assert len(result_lines) <= 500  # Maximum 500 lines
 
     # Verify that unnecessary setup information is excluded (or minimal)
     # Even if setup information is included, verify that error part is prioritized
@@ -170,7 +172,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
 """
 
     def fake_subprocess_run(cmd, capture_output=True, timeout=60, cwd=None):
-        # ジョブ名取得
+        # Get job name
         if cmd[:3] == ["gh", "run", "view"] and "--json" in cmd:
             jobs_obj = {
                 "jobs": [
@@ -214,7 +216,7 @@ def test_get_github_actions_logs_from_url_with_realistic_zip():
             }
             return Mock(returncode=0, stdout=json.dumps(job_obj).encode(), stderr=b"")
 
-        # job ZIP -> 成功
+        # job ZIP -> success
         if cmd[:2] == ["gh", "api"] and cmd[2].endswith("/logs"):
             bio = io.BytesIO()
             with zipfile.ZipFile(bio, "w") as zf:
