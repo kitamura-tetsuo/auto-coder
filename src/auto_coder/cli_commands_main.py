@@ -219,7 +219,7 @@ def process_issues(
         initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
-    github_client = GitHubClient(github_token_final, disable_labels=disable_labels)
+    github_client = GitHubClient.get_instance(github_token_final, disable_labels=disable_labels)
     # Use global LLMBackendManager for main backend
     from auto_coder.backend_manager import get_llm_backend_manager
 
@@ -511,7 +511,7 @@ def create_feature_issues(
         initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
-    github_client = GitHubClient(github_token_final)
+    github_client = GitHubClient.get_instance(github_token_final)
     manager = build_backend_manager(
         selected_backends,
         primary_backend,
