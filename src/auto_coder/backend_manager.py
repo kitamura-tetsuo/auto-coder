@@ -300,6 +300,42 @@ class LLMBackendManager:
 
     Thread-safe singleton implementation ensures only one instance exists
     across all threads in the application.
+
+    Usage Pattern:
+    -----------
+    1. First call: Provide initialization parameters (default_backend, default_client, factories)
+       ```python
+       manager = LLMBackendManager.get_llm_instance(
+           default_backend="gemini",
+           default_client=client,
+           factories={"gemini": lambda: client}
+       )
+       ```
+
+    2. Subsequent calls: Call without parameters to get the same instance
+       ```python
+       manager = LLMBackendManager.get_llm_instance()
+       # Returns the same instance created above
+       ```
+
+    3. Using convenience functions (recommended):
+       ```python
+       from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
+
+       manager = get_llm_backend_manager(
+           default_backend="codex",
+           default_client=client,
+           factories={"codex": lambda: client}
+       )
+       response = run_llm_prompt("Your prompt here")
+       ```
+
+    Important Notes:
+    --------------
+    - Initialization parameters are required ONLY on the first call
+    - The singleton is thread-safe and can be accessed from multiple threads
+    - Use force_reinitialize=True to reconfigure with new parameters
+    - Call manager.close() during application shutdown for cleanup
     """
 
     _instance: Optional[BackendManager] = None

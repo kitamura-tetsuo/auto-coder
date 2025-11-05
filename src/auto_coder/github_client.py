@@ -20,6 +20,35 @@ class GitHubClient:
 
     Implements a thread-safe singleton pattern. Use get_instance() to get the singleton,
     or use the constructor for backward compatibility (which creates the singleton lazily).
+
+    Usage Pattern:
+    -------------
+    1. First call: Provide token and optional parameters
+       ```python
+       from auto_coder.github_client import GitHubClient
+
+       client = GitHubClient.get_instance("your-token", disable_labels=False)
+       ```
+
+    2. Subsequent calls: Call without parameters to get the same instance
+       ```python
+       # Parameters are ignored on subsequent calls
+       client2 = GitHubClient.get_instance("different-token", disable_labels=True)
+       # client is client2  # True, uses first instance
+       ```
+
+    3. Backward compatibility: Constructor also creates singleton
+       ```python
+       client = GitHubClient("your-token")
+       # Equivalent to get_instance("your-token")
+       ```
+
+    Important Notes:
+    ---------------
+    - Thread-safe: Can be called from multiple threads simultaneously
+    - Parameters are only used on first call; subsequent calls return the same instance
+    - Use reset_singleton() in tests to clear the instance
+    - The constructor is kept for backward compatibility but behaves as a singleton
     """
 
     # Class variable to hold the singleton instance
