@@ -79,8 +79,8 @@ logger = get_logger(__name__)
 )
 @click.option(
     "--disable-labels/--no-disable-labels",
-    default=None,
-    help="Disable GitHub label operations (@auto-coder label). Auto-detected: disabled in debugger, enabled otherwise",
+    default=False,
+    help="Disable GitHub label operations (@auto-coder label)",
 )
 @click.option(
     "--skip-main-update/--no-skip-main-update",
@@ -177,12 +177,6 @@ def process_issues(
 
     # Ensure required test script is present (fail early)
     ensure_test_script_or_fail()
-
-    # Auto-detect disable_labels if not explicitly set
-    if disable_labels is None:
-        # Disable labels when running in debugger, enable otherwise
-        disable_labels = CommandExecutor.is_running_in_debugger()
-        logger.debug(f"Auto-detected disable_labels={disable_labels} (debugger={disable_labels})")
 
     backend_list_str = ", ".join(selected_backends)
     logger.info(f"Processing repository: {repo_name}")

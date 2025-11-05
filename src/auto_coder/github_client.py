@@ -64,28 +64,29 @@ class GitHubClient:
             token: GitHub API token
             disable_labels: If True, all label operations are no-ops
         """
-        # Thread-safe: __new__ ensures only one instance is created
-        # So __init__ is only called once for the singleton
+        # No locking here - __new__ handles thread safety
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
+        self._initialized = True
 
-    def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
+    def __new__(cls, *args, **kwargs):
         """Implement thread-safe singleton pattern.
 
         This method is called when creating a new instance. It ensures only one
         instance is created across all threads.
-
-        Note: This method should NOT acquire cls._lock since it's called from
-        get_instance which already holds the lock. Acquiring the lock here
-        would cause a deadlock.
         """
+        # __new__ should not use locks to avoid deadlock with get_instance
+        # Only create a new instance if _instance is None
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            instance = super().__new__(cls)
+            # Mark as not initialized yet so __init__ will run
+            instance._initialized = False
+            return instance
         return cls._instance
 
     @classmethod
-    def get_instance(cls, token: str, disable_labels: bool = False) -> "GitHubClient":
+    def get_instance(cls, token: str=None, disable_labels: bool = False):
         """Get the singleton instance of GitHubClient.
 
         On the first call, this creates and returns the singleton instance.
@@ -98,13 +99,19 @@ class GitHubClient:
         Returns:
             The singleton instance of GitHubClient
         """
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls(token, disable_labels)
-            return cls._instance
+        # Single check without double-checked locking to avoid complexity
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    instance = cls.__new__(cls)
+                    # Only call __init__ if not already initialized
+                    if not hasattr(instance, '_initialized') or not instance._initialized:
+                        instance.__init__(token, disable_labels)
+                    cls._instance = instance
+        return cls._instance
 
     @classmethod
-    def reset_singleton(cls) -> None:
+    def reset_singleton(cls):
         """Reset the singleton instance.
 
         This method is primarily for testing purposes to ensure tests don't
@@ -112,6 +119,7 @@ class GitHubClient:
         """
         with cls._lock:
             cls._instance = None
+
 
     def get_repository(self, repo_name: str) -> Repository.Repository:
         """Get repository object by name (owner/repo)."""
@@ -134,11 +142,11 @@ class GitHubClient:
                 from unittest.mock import MagicMock as _UMagicMock
                 from unittest.mock import Mock as _UMock
 
-                _mock_types: tuple = (_UMock, _UMagicMock)
+                _mock_types = (_UMock, _UMagicMock)
             except Exception:
                 _mock_types = tuple()
 
-            def _is_pr(it: Any) -> bool:
+            def _is_pr(it):
                 try:
                     if not hasattr(it, "pull_request"):
                         return False
@@ -206,7 +214,7 @@ class GitHubClient:
             "labels": [label.name for label in pr.labels],
             "assignees": [assignee.login for assignee in pr.assignees],
             "created_at": pr.created_at.isoformat(),
-            "updated_at": pr.updated_at.isoformat() if pr.updated_at else None,
+            "updated_at": pr.updated_at.isoformat(),
             "url": pr.html_url,
             "author": pr.user.login if pr.user else None,
             "head_branch": pr.head.ref,
@@ -584,7 +592,7 @@ class GitHubClient:
             if parent_issue:
                 parent_number = parent_issue.get("number")
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_number}: {parent_issue.get('title')}")
-                return int(parent_number) if parent_number is not None else None
+                return parent_number
 
             return None
 
