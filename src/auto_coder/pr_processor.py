@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
+from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
@@ -144,12 +145,12 @@ def _process_pr_for_merge(
         "priority": "merge",
         "analysis": None,
     }
-    github_client = getattr(config, "github_client", None)
+    github_client = GitHubClient.get_instance()
     labeled = False
 
     try:
         # Try to add @auto-coder label
-        if not dry_run and github_client and not github_client.disable_labels:
+        if not dry_run and not github_client.disable_labels:
             if github_client.try_add_work_in_progress_label(repo_name, pr_data["number"]):
                 labeled = True
             else:
@@ -175,7 +176,7 @@ def _process_pr_for_merge(
         return processed_pr
     finally:
         # Remove @auto-coder label after processing
-        if labeled and not dry_run and github_client and not github_client.disable_labels:
+        if labeled and not dry_run and not github_client.disable_labels:
             try:
                 github_client.remove_labels_from_issue(repo_name, pr_data["number"], ["@auto-coder"])
             except Exception as e:
@@ -190,12 +191,12 @@ def _process_pr_for_fixes(
 ) -> Dict[str, Any]:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr: Dict[str, Any] = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
-    github_client = getattr(config, "github_client", None)
+    github_client = GitHubClient.get_instance()
     labeled = False
 
     try:
         # Try to add @auto-coder label
-        if not dry_run and github_client and not github_client.disable_labels:
+        if not dry_run and not github_client.disable_labels:
             if github_client.try_add_work_in_progress_label(repo_name, pr_data["number"]):
                 labeled = True
             else:
@@ -212,7 +213,7 @@ def _process_pr_for_fixes(
         processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for fixes: {str(e)}")
     finally:
         # Remove @auto-coder label after processing
-        if labeled and not dry_run and github_client and not github_client.disable_labels:
+        if labeled and not dry_run and not github_client.disable_labels:
             try:
                 github_client.remove_labels_from_issue(repo_name, pr_data["number"], ["@auto-coder"])
             except Exception as e:

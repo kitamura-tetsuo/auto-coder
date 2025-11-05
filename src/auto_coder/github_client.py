@@ -64,10 +64,7 @@ class GitHubClient:
             token: GitHub API token
             disable_labels: If True, all label operations are no-ops
         """
-        # Check if already initialized to prevent re-initialization in singleton
-        if hasattr(self, '_initialized'):
-            return
-
+        # No locking here - __new__ handles thread safety
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
@@ -79,13 +76,17 @@ class GitHubClient:
         This method is called when creating a new instance. It ensures only one
         instance is created across all threads.
         """
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-            return cls._instance
+        # __new__ should not use locks to avoid deadlock with get_instance
+        # Only create a new instance if _instance is None
+        if cls._instance is None:
+            instance = super().__new__(cls)
+            # Mark as not initialized yet so __init__ will run
+            instance._initialized = False
+            return instance
+        return cls._instance
 
     @classmethod
-    def get_instance(cls, token: str, disable_labels: bool = False):
+    def get_instance(cls, token: str=None, disable_labels: bool = False):
         """Get the singleton instance of GitHubClient.
 
         On the first call, this creates and returns the singleton instance.
@@ -98,10 +99,16 @@ class GitHubClient:
         Returns:
             The singleton instance of GitHubClient
         """
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = cls(token, disable_labels)
-            return cls._instance
+        # Single check without double-checked locking to avoid complexity
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    instance = cls.__new__(cls)
+                    # Only call __init__ if not already initialized
+                    if not hasattr(instance, '_initialized') or not instance._initialized:
+                        instance.__init__(token, disable_labels)
+                    cls._instance = instance
+        return cls._instance
 
     @classmethod
     def reset_singleton(cls):
