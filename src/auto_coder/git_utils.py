@@ -79,6 +79,67 @@ def extract_number_from_branch(branch_name: str) -> Optional[int]:
     return None
 
 
+def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50) -> str:
+    """
+    Get commit messages since the current branch diverged from the base branch.
+
+    Args:
+        cwd: Optional working directory for git command
+        base_branch: The base branch to compare against (default: 'main')
+        max_commits: Maximum number of commits to retrieve (default: 50)
+
+    Returns:
+        String containing commit log messages, one per line, or empty string if no commits
+    """
+    cmd = CommandExecutor()
+
+    try:
+        # Get current branch
+        current_branch = get_current_branch(cwd=cwd)
+        if not current_branch:
+            logger.warning("Failed to get current branch")
+            return ""
+
+        # If we're already on the base branch, return empty string
+        if current_branch == base_branch:
+            return ""
+
+        # Check if the base branch exists
+        base_check = cmd.run_command(["git", "rev-parse", "--verify", f"origin/{base_branch}"], cwd=cwd)
+        if not base_check.success:
+            # Try without 'origin/' prefix
+            base_check = cmd.run_command(["git", "rev-parse", "--verify", base_branch], cwd=cwd)
+            if not base_check.success:
+                logger.warning(f"Base branch {base_branch} not found")
+                return ""
+
+        # Get the common ancestor (merge base) between current branch and base branch
+        merge_base_result = cmd.run_command(["git", "merge-base", "HEAD", base_branch], cwd=cwd)
+
+        if not merge_base_result.success:
+            logger.warning(f"Failed to find merge base with {base_branch}: {merge_base_result.stderr}")
+            return ""
+
+        merge_base_commit = merge_base_result.stdout.strip()
+
+        # Get commit log since the merge base
+        log_result = cmd.run_command(["git", "log", f"{merge_base_commit}..HEAD", f"--max-count={max_commits}", "--pretty=format:%s"], cwd=cwd)
+
+        if not log_result.success:
+            logger.warning(f"Failed to get commit log: {log_result.stderr}")
+            return ""
+
+        commit_messages = log_result.stdout.strip()
+        if not commit_messages:
+            return ""
+
+        return commit_messages
+
+    except Exception as e:
+        logger.warning(f"Error getting commit log: {e}")
+        return ""
+
+
 def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
     """
     Get the GitHub repository name (owner/repo) from the current directory.

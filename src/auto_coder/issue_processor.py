@@ -10,7 +10,7 @@ from auto_coder.backend_manager import get_llm_backend_manager, run_message_prom
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
-from .git_utils import commit_and_push_changes, ensure_pushed, git_checkout_branch, switch_to_branch
+from .git_utils import commit_and_push_changes, ensure_pushed, get_commit_log, git_checkout_branch, switch_to_branch
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, push_progress_stage, set_progress_item
 from .prompt_loader import render_prompt
@@ -568,6 +568,10 @@ def _apply_issue_actions_directly(
                     logger.error(error_msg)
                     return actions
 
+        # Get commit log since branch creation
+        with ProgressStage("Getting commit log"):
+            commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+
         # Create a comprehensive prompt for LLM CLI
         action_prompt = render_prompt(
             "issue.action",
@@ -578,6 +582,7 @@ def _apply_issue_actions_directly(
             issue_labels=", ".join(issue_data.get("labels", [])),
             issue_state=issue_data.get("state", "open"),
             issue_author=issue_data.get("author", "unknown"),
+            commit_log=commit_log or "(No commit history)",
         )
         logger.debug(
             "Prepared issue-action prompt for #%s (preview: %s)",
