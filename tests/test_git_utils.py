@@ -5,11 +5,26 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.git_utils import extract_number_from_branch, get_commit_log, get_current_branch, get_current_repo_name, git_checkout_branch, git_commit_with_retry, git_push, is_git_repository, parse_github_repo_from_url, save_commit_failure_history
+from src.auto_coder.git_utils import (
+    extract_number_from_branch,
+    get_all_branches,
+    get_branches_by_pattern,
+    get_commit_log,
+    get_current_branch,
+    get_current_repo_name,
+    git_checkout_branch,
+    git_commit_with_retry,
+    git_push,
+    is_git_repository,
+    migrate_pr_branches,
+    parse_github_repo_from_url,
+    save_commit_failure_history,
+    validate_branch_name,
+)
 from src.auto_coder.utils import CommandResult
 
 
@@ -724,27 +739,29 @@ class TestGitCheckoutBranch:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: git status --porcelain (has changes, needs commit)
-                CommandResult(success=True, stdout="M  test.py", stderr="", returncode=0),
-                # Second call: git add -A (from git_checkout_branch)
+                # First call: git branch --list (branch doesn't exist)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Third call: git commit (from git_commit_with_retry)
+                # Second call: git status --porcelain (has changes, needs commit)
+                CommandResult(success=True, stdout="M  test.py", stderr="", returncode=0),
+                # Third call: git add -A (from git_checkout_branch)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Fourth call: git commit (from git_commit_with_retry)
                 CommandResult(
                     success=True,
                     stdout="WIP: Auto-commit before branch checkout\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Fourth call: git checkout -b new-feature
+                # Fifth call: git checkout -b new-feature
                 CommandResult(
                     success=True,
                     stdout="Switched to a new branch 'new-feature'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Fifth call: verify current branch (git rev-parse --abbrev-ref HEAD)
+                # Sixth call: verify current branch (git rev-parse --abbrev-ref HEAD)
                 CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
-                # Sixth call: git push -u origin new-feature
+                # Seventh call: git push -u origin new-feature
                 CommandResult(
                     success=True,
                     stdout="Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.\n",
@@ -756,16 +773,16 @@ class TestGitCheckoutBranch:
             result = git_checkout_branch("new-feature", create_new=True)
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 6
-            # Verify checkout command with -b flag
-            assert mock_cmd.run_command.call_args_list[3][0][0] == [
+            assert mock_cmd.run_command.call_count == 7
+            # Verify checkout command with -b flag (now at index 4)
+            assert mock_cmd.run_command.call_args_list[4][0][0] == [
                 "git",
                 "checkout",
                 "-b",
                 "new-feature",
             ]
-            # Verify push command
-            assert mock_cmd.run_command.call_args_list[5][0][0] == [
+            # Verify push command (now at index 6)
+            assert mock_cmd.run_command.call_args_list[6][0][0] == [
                 "git",
                 "push",
                 "-u",
@@ -779,18 +796,20 @@ class TestGitCheckoutBranch:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: git status --porcelain (no changes)
+                # First call: git branch --list (branch doesn't exist)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Second call: git checkout -B new-feature
+                # Second call: git status --porcelain (no changes)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Third call: git checkout -B new-feature
                 CommandResult(
                     success=True,
                     stdout="Switched to branch 'new-feature'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Third call: verify current branch
+                # Fourth call: verify current branch
                 CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
-                # Fourth call: git push -u origin new-feature
+                # Fifth call: git push -u origin new-feature
                 CommandResult(
                     success=True,
                     stdout="Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'.\n",
@@ -802,16 +821,16 @@ class TestGitCheckoutBranch:
             result = git_checkout_branch("new-feature", create_new=True, base_branch="main")
 
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 4
-            # Verify checkout command with -B flag
-            assert mock_cmd.run_command.call_args_list[1][0][0] == [
+            assert mock_cmd.run_command.call_count == 5
+            # Verify checkout command with -B flag (now at index 2)
+            assert mock_cmd.run_command.call_args_list[2][0][0] == [
                 "git",
                 "checkout",
                 "-B",
                 "new-feature",
             ]
-            # Verify push command
-            assert mock_cmd.run_command.call_args_list[3][0][0] == [
+            # Verify push command (now at index 4)
+            assert mock_cmd.run_command.call_args_list[4][0][0] == [
                 "git",
                 "push",
                 "-u",
@@ -933,18 +952,20 @@ class TestGitCheckoutBranch:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: git status --porcelain (no changes)
+                # First call: git branch --list (branch doesn't exist)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Second call: git checkout -b
+                # Second call: git status --porcelain (no changes)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Third call: git checkout -b
                 CommandResult(
                     success=True,
                     stdout="Switched to a new branch 'new-feature'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Third call: verify current branch
+                # Fourth call: verify current branch
                 CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
-                # Fourth call: git push fails
+                # Fifth call: git push fails
                 CommandResult(
                     success=False,
                     stdout="",
@@ -957,7 +978,7 @@ class TestGitCheckoutBranch:
 
             # Should still succeed even if push fails
             assert result.success is True
-            assert mock_cmd.run_command.call_count == 4
+            assert mock_cmd.run_command.call_count == 5
 
     def test_create_new_branch_without_publish(self):
         """Test creating a new branch without publishing to remote."""
@@ -965,24 +986,26 @@ class TestGitCheckoutBranch:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
-                # First call: git status --porcelain (no changes)
+                # First call: git branch --list (branch doesn't exist)
                 CommandResult(success=True, stdout="", stderr="", returncode=0),
-                # Second call: git checkout -b
+                # Second call: git status --porcelain (no changes)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Third call: git checkout -b
                 CommandResult(
                     success=True,
                     stdout="Switched to a new branch 'new-feature'\n",
                     stderr="",
                     returncode=0,
                 ),
-                # Third call: verify current branch
+                # Fourth call: verify current branch
                 CommandResult(success=True, stdout="new-feature\n", stderr="", returncode=0),
             ]
 
             result = git_checkout_branch("new-feature", create_new=True, publish=False)
 
             assert result.success is True
-            # Should have 3 calls (status, checkout, verify), no push
-            assert mock_cmd.run_command.call_count == 3
+            # Should have 4 calls (branch list, status, checkout, verify), no push
+            assert mock_cmd.run_command.call_count == 4
 
     def test_checkout_with_uncommitted_changes_auto_commit(self):
         """Test checkout with uncommitted changes automatically commits them."""
@@ -1114,6 +1137,62 @@ class TestGitCheckoutBranch:
             # Should stop after commit fails
             assert mock_cmd.run_command.call_count == 4
 
+    def test_checkout_rejects_invalid_pr_branch_name_when_creating(self):
+        """Test that creating new branch with pr-<number> pattern is rejected."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Mock that branch doesn't exist
+            mock_cmd.run_command.return_value = Mock(success=True, stdout="")
+
+            result = git_checkout_branch("pr-123", create_new=True)
+
+            assert result.success is False
+            assert "prohibited pattern 'pr-<number>'" in result.stderr
+            assert "issue-123" in result.stderr
+            # Should not have called any git commands except branch list
+            mock_cmd.run_command.assert_called_once()
+
+    def test_checkout_accepts_existing_pr_branch(self):
+        """Test that checking out existing pr-<number> branch is allowed."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Mock that branch exists
+            mock_cmd.run_command.side_effect = [
+                # First call: git branch --list (branch exists)
+                CommandResult(success=True, stdout="  pr-123\n", stderr="", returncode=0),
+                # Second call: git status --porcelain (no changes)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+                # Third call: git checkout (switch to existing branch)
+                CommandResult(success=True, stdout="Switched to branch 'pr-123'\n", stderr="", returncode=0),
+                # Fourth call: git branch --show-current (verify current branch)
+                CommandResult(success=True, stdout="pr-123\n", stderr="", returncode=0),
+                # Fifth call: git push (publish to remote)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
+
+            result = git_checkout_branch("pr-123", create_new=True)
+
+            assert result.success is True
+            # Should have called git commands for checkout
+            assert mock_cmd.run_command.call_count >= 3
+
+    def test_checkout_rejects_invalid_pr_branch_name_case_insensitive(self):
+        """Test that creating pr-<number> pattern is rejected regardless of case."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Mock that branch doesn't exist
+            mock_cmd.run_command.return_value = Mock(success=True, stdout="")
+
+            result = git_checkout_branch("PR-456", create_new=True)
+
+            assert result.success is False
+            assert "prohibited pattern 'pr-<number>'" in result.stderr
+            # Should not have called any git commands except branch list
+            mock_cmd.run_command.assert_called_once()
+
 
 class TestGetCurrentBranch:
     """Tests for get_current_branch function."""
@@ -1190,6 +1269,51 @@ class TestExtractNumberFromBranch:
         assert extract_number_from_branch("develop") is None
         assert extract_number_from_branch("") is None
         assert extract_number_from_branch(None) is None
+
+
+class TestValidateBranchName:
+    """Tests for validate_branch_name function."""
+
+    def test_validate_branch_name_valid_issue_pattern(self):
+        """Test that issue-<number> pattern is valid."""
+        validate_branch_name("issue-123")
+        validate_branch_name("issue-456")
+        validate_branch_name("feature/issue-789")  # With prefix
+        validate_branch_name("main")
+        validate_branch_name("feature-branch")
+        validate_branch_name("develop")
+        validate_branch_name("")  # Empty string should be valid
+
+    def test_validate_branch_name_invalid_pr_pattern(self):
+        """Test that pr-<number> pattern raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("pr-123")
+        assert "prohibited pattern 'pr-<number>'" in str(exc_info.value)
+        assert "issue-<number>" in str(exc_info.value)
+
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("PR-456")
+        assert "prohibited pattern 'pr-<number>'" in str(exc_info.value)
+
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("pr-789")
+        assert "prohibited pattern 'pr-<number>'" in str(exc_info.value)
+
+    def test_validate_branch_name_case_insensitive(self):
+        """Test that validation is case-insensitive for pr- pattern."""
+        with pytest.raises(ValueError):
+            validate_branch_name("PR-123")
+
+        with pytest.raises(ValueError):
+            validate_branch_name("Pr-456")
+
+    def test_validate_branch_name_suggestion_message(self):
+        """Test that error message provides helpful suggestion."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("pr-123")
+        error_msg = str(exc_info.value)
+        assert "pr-123" in error_msg
+        assert "issue-123" in error_msg
 
 
 class TestGetCommitLog:
@@ -1324,3 +1448,327 @@ class TestGetCommitLog:
             # Check that --max-count was passed
             log_call = mock_cmd.run_command.call_args_list[3][0][0]
             assert "--max-count=5" in log_call
+
+
+class TestGetAllBranches:
+    """Tests for get_all_branches function."""
+
+    def test_get_all_branches_local(self):
+        """Test getting all local branches."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="main\nfeature-branch\nissue-123\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_all_branches(remote=False)
+
+            assert result == ["main", "feature-branch", "issue-123"]
+            mock_cmd.run_command.assert_called_once_with(["git", "branch", "--format=%(refname:short)"], cwd=None)
+
+    def test_get_all_branches_remote(self):
+        """Test getting all remote branches."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="origin/main\norigin/feature-branch\norigin/issue-123\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_all_branches(remote=True)
+
+            assert result == ["origin/main", "origin/feature-branch", "origin/issue-123"]
+            mock_cmd.run_command.assert_called_once_with(["git", "branch", "-r", "--format=%(refname:short)"], cwd=None)
+
+    def test_get_all_branches_empty(self):
+        """Test getting branches when none exist."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+
+            result = get_all_branches()
+
+            assert result == []
+
+    def test_get_all_branches_with_cwd(self):
+        """Test getting branches with custom working directory."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="main\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_all_branches(cwd="/custom/path")
+
+            assert result == ["main"]
+            mock_cmd.run_command.assert_called_once_with(["git", "branch", "-r", "--format=%(refname:short)"], cwd="/custom/path")
+
+    def test_get_all_branches_failure(self):
+        """Test getting branches when git command fails."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=False,
+                stdout="",
+                stderr="fatal: not a git repository",
+                returncode=128,
+            )
+
+            result = get_all_branches()
+
+            assert result == []
+
+
+class TestGetBranchesByPattern:
+    """Tests for get_branches_by_pattern function."""
+
+    def test_get_branches_by_pattern_with_wildcard(self):
+        """Test getting branches matching a pattern with wildcard."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # get_all_branches is called internally
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="main\nissue-123\nissue-456\npr-789\nfeature-branch\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_branches_by_pattern("issue-*")
+
+            assert result == ["issue-123", "issue-456"]
+            mock_cmd.run_command.assert_called_once()
+
+    def test_get_branches_by_pattern_exact_match(self):
+        """Test getting branches with exact match pattern."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="main\nissue-123\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_branches_by_pattern("main")
+
+            assert result == ["main"]
+            mock_cmd.run_command.assert_called_once()
+
+    def test_get_branches_by_pattern_case_insensitive(self):
+        """Test case-insensitive pattern matching."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="main\nISSUE-123\nIssue-456\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_branches_by_pattern("issue-*")
+
+            assert result == ["ISSUE-123", "Issue-456"]
+            mock_cmd.run_command.assert_called_once()
+
+    def test_get_branches_by_pattern_no_matches(self):
+        """Test pattern matching when no branches match."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="main\ndevelop\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_branches_by_pattern("issue-*")
+
+            assert result == []
+            mock_cmd.run_command.assert_called_once()
+
+    def test_get_branches_by_pattern_with_remote_prefix(self):
+        """Test pattern matching with remote branch prefix."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="origin/main\norigin/issue-123\norigin/pr-456\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_branches_by_pattern("pr-*")
+
+            assert result == ["origin/pr-456"]
+            mock_cmd.run_command.assert_called_once()
+
+    def test_get_branches_by_pattern_local_only(self):
+        """Test pattern matching in local branches only."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Mock for local branches (no -r flag)
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="main\nissue-123\n",
+                stderr="",
+                returncode=0,
+            )
+
+            result = get_branches_by_pattern("issue-*", remote=False)
+
+            assert result == ["issue-123"]
+            # Verify that local branch command was used
+            call_args = mock_cmd.run_command.call_args[0][0]
+            assert "-r" not in call_args
+            mock_cmd.run_command.assert_called_once()
+
+
+class TestMigratePrBranches:
+    """Tests for migrate_pr_branches function."""
+
+    def test_migrate_pr_branches_dry_run(self):
+        """Test dry run mode shows what would be done."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                # git branch -r (get_all_branches)
+                CommandResult(
+                    success=True,
+                    stdout="origin/main\norigin/pr-123\norigin/pr-456\norigin/issue-123\n",
+                    stderr="",
+                    returncode=0,
+                ),
+                # git branch --list for issue-123 (pr-123)
+                CommandResult(
+                    success=True,
+                    stdout="issue-123\n",
+                    stderr="",
+                    returncode=0,
+                ),
+                # git branch --list for issue-456 (pr-456)
+                CommandResult(
+                    success=True,
+                    stdout="issue-456\n",
+                    stderr="",
+                    returncode=0,
+                ),
+            ]
+
+            results = migrate_pr_branches(dry_run=True)
+
+            assert results["success"] is True
+            assert len(results["migrated"]) == 2
+            # Check that dry run results don't include execution details
+            for item in results["migrated"]:
+                assert item.get("dry_run") is True
+            assert len(results["skipped"]) == 0
+            assert len(results["failed"]) == 0
+            assert len(results["conflicts"]) == 0
+
+    def test_migrate_pr_branches_no_pr_branches(self):
+        """Test migration when no pr-<number> branches exist."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # git branch -r (get_all_branches) - no pr-* branches
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="origin/main\norigin/issue-123\norigin/feature-branch\n",
+                stderr="",
+                returncode=0,
+            )
+
+            results = migrate_pr_branches(dry_run=False, delete_after_merge=True)
+
+            assert results["success"] is True
+            assert len(results["migrated"]) == 0
+            assert len(results["skipped"]) == 0
+            assert len(results["failed"]) == 0
+            assert len(results["conflicts"]) == 0
+            # No git commands should be called beyond get_branches_by_pattern
+            mock_cmd.run_command.assert_called_once()
+
+    def test_migrate_pr_branches_multiple_branches(self):
+        """Test migration with multiple pr-<number> branches."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Return multiple pr-* branches
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="origin/main\norigin/pr-123\norigin/pr-456\norigin/pr-789\norigin/issue-123\norigin/issue-456\n",
+                stderr="",
+                returncode=0,
+            )
+
+            results = migrate_pr_branches(dry_run=True)
+
+            assert results["success"] is True
+            assert len(results["migrated"]) == 3
+            # Verify all pr-* branches would be migrated
+            migrated_from = [item["from"] for item in results["migrated"]]
+            assert "pr-123" in migrated_from
+            assert "pr-456" in migrated_from
+            assert "pr-789" in migrated_from
+
+    def test_migrate_pr_branches_extraction_failure(self):
+        """Test migration when number extraction fails for a branch."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Branch with invalid pattern (no number)
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="origin/main\norigin/pr-invalid\n",
+                stderr="",
+                returncode=0,
+            )
+
+            results = migrate_pr_branches(dry_run=False)
+
+            assert results["success"] is True  # Overall success (some branches handled)
+            assert len(results["migrated"]) == 0
+            assert len(results["skipped"]) == 1
+            assert results["skipped"][0]["branch"] == "pr-invalid"
+            assert "Could not extract issue number" in results["skipped"][0]["reason"]
+            assert len(results["failed"]) == 0
+
+    def test_migrate_pr_branches_with_cwd(self):
+        """Test migration with custom working directory."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(
+                success=True,
+                stdout="origin/main\norigin/pr-123\n",
+                stderr="",
+                returncode=0,
+            )
+
+            results = migrate_pr_branches(cwd="/custom/path", dry_run=True)
+
+            assert results["success"] is True
+            # Verify cwd was passed to git commands
+            for call in mock_cmd.run_command.call_args_list:
+                assert call[1]["cwd"] == "/custom/path"

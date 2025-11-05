@@ -1,0 +1,110 @@
+name: Migrate PR Branches
+
+description: |
+  Automatically migrate pr-<number> branches to their corresponding issue-<number> branches.
+  This workflow scans for branches matching the pr-<number> pattern and merges them into
+  their corresponding issue-<number> branches, then deletes the pr-<number> branches.
+
+  To use this workflow:
+  1. Go to the Actions tab
+  2. Select "Migrate PR Branches" workflow
+  3. Click "Run workflow"
+  4. Configure options and run
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview what would be done without making changes'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      force:
+        description: 'Auto-resolve merge conflicts (use with caution)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      no_delete:
+        description: 'Do not delete pr-<number> branches after migration'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  migrate-branches:
+    name: Migrate PR Branches
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          uv sync --dev
+
+      - name: Run branch migration
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Convert string inputs to boolean flags
+          DRY_RUN="${{ github.event.inputs.dry_run }}"
+          FORCE="${{ github.event.inputs.force }}"
+          NO_DELETE="${{ github.event.inputs.no_delete }}"
+
+          # Build command
+          CMD="uv run auto-coder migrate-branches"
+
+          # Add flags based on inputs
+          if [ "$DRY_RUN" = "true" ]; then
+            CMD="$CMD --dry-run"
+          else
+            CMD="$CMD --execute"
+          fi
+
+          if [ "$FORCE" = "true" ]; then
+            CMD="$CMD --force"
+          fi
+
+          if [ "$NO_DELETE" = "true" ]; then
+            CMD="$CMD --no-delete"
+          fi
+
+          echo "Running: $CMD"
+          $CMD
+
+      - name: Upload migration logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-logs
+          path: |
+            .auto-coder/
+          retention-days: 30
