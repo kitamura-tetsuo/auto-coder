@@ -73,11 +73,10 @@ class AutomationEngine:
 
             # ボット作成した PR をスキップ（dependabot, renovate, etc.）
             author = pr_data.get("author")
-            if author and isinstance(author, dict):
-                author_login = author.get("login", "")
+            if author:
                 # 一般的なボット名をリスト化
                 bot_authors = ["app/dependabot", "dependabot-preview", "renovate-bot", "dependabot[bot]"]
-                if author_login in bot_authors or author_login.endswith("[bot]"):
+                if author in bot_authors or author.endswith("[bot]"):
                     continue
 
             # 優先度計算
@@ -98,7 +97,7 @@ class AutomationEngine:
                 }
             )
 
-        if len(prs) < 5:
+        if len(candidates) < 5:
             # Issue 候補収集
             issues = self.github.get_open_issues(repo_name)
             for issue in issues:
