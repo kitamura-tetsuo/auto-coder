@@ -9,7 +9,8 @@ from unittest.mock import patch
 import pytest
 from loguru import logger
 
-from src.auto_coder.logger_config import format_path_for_log, get_logger, setup_logger
+from src.auto_coder.logger_config import (format_path_for_log, get_logger,
+                                          setup_logger)
 from src.auto_coder.utils import log_action
 
 

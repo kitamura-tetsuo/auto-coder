@@ -7,10 +7,8 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.issue_processor import (
-    _process_issues_jules_mode,
-    _process_issues_normal,
-)
+from src.auto_coder.issue_processor import (_process_issues_jules_mode,
+                                            _process_issues_normal)
 
 
 class TestIssueProcessorSkipSubIssues:

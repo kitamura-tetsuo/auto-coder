@@ -32,10 +32,8 @@ def test_apply_pr_actions_directly_does_not_post_comments(
     mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name
 ):
     # Initialize backend manager for proper LLM client handling
-    from src.auto_coder.backend_manager import (
-        LLMBackendManager,
-        get_llm_backend_manager,
-    )
+    from src.auto_coder.backend_manager import (LLMBackendManager,
+                                                get_llm_backend_manager)
     from src.auto_coder.pr_processor import _apply_pr_actions_directly
 
     # Reset singleton and initialize properly

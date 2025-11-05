@@ -13,9 +13,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.util.github_action import (
-    _get_github_actions_logs,
-    _search_github_actions_logs_from_history,
-)
+    _get_github_actions_logs, _search_github_actions_logs_from_history)
 
 
 class TestSearchGitHubActionsLogsFromHistory:

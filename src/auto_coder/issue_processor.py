@@ -6,23 +6,16 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
+from auto_coder.backend_manager import (get_llm_backend_manager,
+                                        run_message_prompt)
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
-from .git_utils import (
-    commit_and_push_changes,
-    ensure_pushed,
-    git_checkout_branch,
-    switch_to_branch,
-)
+from .git_utils import (commit_and_push_changes, ensure_pushed,
+                        git_checkout_branch, switch_to_branch)
 from .logger_config import get_logger
-from .progress_footer import (
-    ProgressStage,
-    newline_progress,
-    push_progress_stage,
-    set_progress_item,
-)
+from .progress_footer import (ProgressStage, newline_progress,
+                              push_progress_stage, set_progress_item)
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
@@ -935,9 +928,7 @@ def process_single(
                 try:
                     from .pr_processor import (
                         _check_github_actions_status,
-                        _extract_linked_issues_from_pr_body,
-                        _take_pr_actions,
-                    )
+                        _extract_linked_issues_from_pr_body, _take_pr_actions)
 
                     pr_data = github_client.get_pr_details_by_number(repo_name, number)
 

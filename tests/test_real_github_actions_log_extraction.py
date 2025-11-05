@@ -8,9 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder.util.github_action import (
-    _extract_error_context,
-    get_github_actions_logs_from_url,
-)
+    _extract_error_context, get_github_actions_logs_from_url)
 
 
 def test_extract_error_context_with_realistic_playwright_log():

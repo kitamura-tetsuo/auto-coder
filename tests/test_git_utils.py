@@ -9,17 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.git_utils import (
-    extract_number_from_branch,
-    get_current_branch,
-    get_current_repo_name,
-    git_checkout_branch,
-    git_commit_with_retry,
-    git_push,
-    is_git_repository,
-    parse_github_repo_from_url,
-    save_commit_failure_history,
-)
+from src.auto_coder.git_utils import (extract_number_from_branch,
+                                      get_current_branch,
+                                      get_current_repo_name,
+                                      git_checkout_branch,
+                                      git_commit_with_retry, git_push,
+                                      is_git_repository,
+                                      parse_github_repo_from_url,
+                                      save_commit_failure_history)
 from src.auto_coder.utils import CommandResult
 
 

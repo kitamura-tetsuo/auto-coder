@@ -7,11 +7,9 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from auto_coder.backend_manager import (
-    LLMBackendManager,
-    get_llm_backend_manager,
-    run_llm_prompt,
-)
+from auto_coder.backend_manager import (LLMBackendManager,
+                                        get_llm_backend_manager,
+                                        run_llm_prompt)
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.util.github_action import get_github_actions_logs_from_url
 
@@ -19,7 +17,8 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
-from .issue_processor import create_feature_issues, process_issues, process_single
+from .issue_processor import (create_feature_issues, process_issues,
+                              process_single)
 from .logger_config import get_logger
 from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
@@ -62,9 +61,8 @@ class AutomationEngine:
         - 優先度降順（3 -> 0）
         - 作成日時昇順（古いものから）
         """
-        from .pr_processor import (
-            _check_github_actions_status as _pr_check_github_actions_status,
-        )
+        from .pr_processor import \
+            _check_github_actions_status as _pr_check_github_actions_status
         from .pr_processor import _extract_linked_issues_from_pr_body
 
         candidates: List[Dict[str, Any]] = []
@@ -434,7 +432,8 @@ class AutomationEngine:
         self, repo_name: str, issue_data: Dict[str, Any]
     ) -> List[str]:
         """Take actions on an issue using direct LLM CLI analysis and implementation."""
-        from .issue_processor import _take_issue_actions as _take_issue_actions_func
+        from .issue_processor import \
+            _take_issue_actions as _take_issue_actions_func
 
         return _take_issue_actions_func(
             repo_name,
@@ -448,9 +447,8 @@ class AutomationEngine:
         self, repo_name: str, issue_data: Dict[str, Any]
     ) -> List[str]:
         """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
-        from .issue_processor import (
-            _apply_issue_actions_directly as _apply_issue_actions_directly_func,
-        )
+        from .issue_processor import \
+            _apply_issue_actions_directly as _apply_issue_actions_directly_func
 
         return _apply_issue_actions_directly_func(
             repo_name,

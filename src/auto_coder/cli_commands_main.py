@@ -10,16 +10,12 @@ import click
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
-from .cli_helpers import (
-    build_backend_manager,
-    build_models_map,
-    check_backend_prerequisites,
-    check_github_sub_issue_or_setup,
-    check_graphrag_mcp_for_backends,
-    ensure_test_script_or_fail,
-    initialize_graphrag,
-    normalize_backends,
-)
+from .cli_helpers import (build_backend_manager, build_models_map,
+                          check_backend_prerequisites,
+                          check_github_sub_issue_or_setup,
+                          check_graphrag_mcp_for_backends,
+                          ensure_test_script_or_fail, initialize_graphrag,
+                          normalize_backends)
 from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
 from .logger_config import get_logger, setup_logger
@@ -260,7 +256,6 @@ def process_issues(
     )
 
     # Initialize the global singleton with proper configuration
-    from auto_coder.backend_manager import get_llm_backend_manager
 
     manager = get_llm_backend_manager(
         default_backend=primary_backend,

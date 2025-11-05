@@ -17,7 +17,8 @@ from unittest.mock import Mock
 import pytest
 
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
+from src.auto_coder.backend_manager import (LLMBackendManager,
+                                            get_llm_backend_manager)
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.github_client import GitHubClient
 
@@ -590,9 +591,7 @@ def compatibility_graphrag_setup():
     from unittest.mock import Mock
 
     from src.auto_coder.graphrag_mcp_integration import (
-        BackwardCompatibilityLayer,
-        GraphRAGMCPIntegration,
-    )
+        BackwardCompatibilityLayer, GraphRAGMCPIntegration)
 
     # Get the mocked GraphRAGMCPIntegration (already patched by autouse fixture)
     mock_integration = GraphRAGMCPIntegration()

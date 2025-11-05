@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.git_utils import check_unpushed_commits, ensure_pushed, git_push
+from src.auto_coder.git_utils import (check_unpushed_commits, ensure_pushed,
+                                      git_push)
 from src.auto_coder.utils import CommandResult
 
 

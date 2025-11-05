@@ -290,7 +290,8 @@ def test_setup_mcp_uses_bundled_server():
     """Test that setup-mcp command uses bundled MCP server."""
     import inspect
 
-    from auto_coder.cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+    from auto_coder.cli_commands_graphrag import \
+        run_graphrag_setup_mcp_programmatically
 
     # Get the source code of the function
     source = inspect.getsource(run_graphrag_setup_mcp_programmatically)

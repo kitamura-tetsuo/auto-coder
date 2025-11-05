@@ -4,9 +4,7 @@ import json
 from unittest.mock import Mock, patch
 
 from src.auto_coder.util.github_action import (
-    _check_commit_for_github_actions,
-    parse_git_commit_history_for_actions,
-)
+    _check_commit_for_github_actions, parse_git_commit_history_for_actions)
 
 
 def test_parse_git_commit_history_with_actions():

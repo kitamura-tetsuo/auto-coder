@@ -68,7 +68,8 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
         click.echo()
 
         # Import here to avoid circular dependency
-        from .cli_commands_graphrag import run_graphrag_setup_mcp_programmatically
+        from .cli_commands_graphrag import \
+            run_graphrag_setup_mcp_programmatically
 
         success = run_graphrag_setup_mcp_programmatically(
             install_dir=None,  # Use default ~/graphrag_mcp

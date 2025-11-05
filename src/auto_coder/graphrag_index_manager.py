@@ -221,7 +221,8 @@ class GraphRAGIndexManager:
         try:
             from neo4j import GraphDatabase
             from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, PointStruct, VectorParams
+            from qdrant_client.models import (Distance, PointStruct,
+                                              VectorParams)
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
             import sys
@@ -573,7 +574,8 @@ class GraphRAGIndexManager:
         """
         try:
             from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, PointStruct, VectorParams
+            from qdrant_client.models import (Distance, PointStruct,
+                                              VectorParams)
             from sentence_transformers import SentenceTransformer
         except ImportError as e:
             import sys

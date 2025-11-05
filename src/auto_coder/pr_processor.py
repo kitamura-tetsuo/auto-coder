@@ -15,26 +15,18 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
-from auto_coder.util.github_action import (
-    DetailedChecksResult,
-    _check_github_actions_status,
-    _get_github_actions_logs,
-    get_detailed_checks_from_history,
-)
+from auto_coder.util.github_action import (DetailedChecksResult,
+                                           _check_github_actions_status,
+                                           _get_github_actions_logs,
+                                           get_detailed_checks_from_history)
 
 from .automation_config import AutomationConfig
-from .conflict_resolver import (
-    _get_merge_conflict_info,
-    resolve_merge_conflicts_with_llm,
-    resolve_pr_merge_conflicts,
-)
+from .conflict_resolver import (_get_merge_conflict_info,
+                                resolve_merge_conflicts_with_llm,
+                                resolve_pr_merge_conflicts)
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
-from .git_utils import (
-    git_checkout_branch,
-    git_commit_with_retry,
-    git_push,
-    save_commit_failure_history,
-)
+from .git_utils import (git_checkout_branch, git_commit_with_retry, git_push,
+                        save_commit_failure_history)
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -971,9 +963,8 @@ def _update_with_base_branch(
             )
 
             # Use the common subroutine for conflict resolution
-            from .conflict_resolver import (
-                _perform_base_branch_merge_and_conflict_resolution,
-            )
+            from .conflict_resolver import \
+                _perform_base_branch_merge_and_conflict_resolution
 
             conflict_resolved = _perform_base_branch_merge_and_conflict_resolution(
                 pr_number,

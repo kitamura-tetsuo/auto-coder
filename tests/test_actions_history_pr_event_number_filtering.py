@@ -3,7 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.util.github_action import _check_github_actions_status_from_history
+from src.auto_coder.util.github_action import \
+    _check_github_actions_status_from_history
 
 
 def _cmd_result(
