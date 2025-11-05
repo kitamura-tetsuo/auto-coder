@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCPサーバー動作確認用の詳細テストクライアント
+Detailed test client for checking MCP server operation
 """
 
 import json
@@ -10,9 +10,9 @@ import time
 from typing import Dict, Any, List
 
 def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
-    """MCPサーバーを詳細にテストする"""
-    
-    # MCP初期化メッセージ
+    """Test MCP server in detail"""
+
+    # MCP initialization message
     init_message = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -26,21 +26,21 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
             }
         }
     }
-    
-    # tools/list リクエストメッセージ
+
+    # tools/list request message
     tools_request = {
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/list"
     }
-    
-    # ping リクエスト
+
+    # ping request
     ping_request = {
         "jsonrpc": "2.0",
         "id": 3,
         "method": "ping"
     }
-    
+
     try:
         process = subprocess.Popen(
             [sys.executable, server_script],
@@ -50,51 +50,51 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
             text=True,
             bufsize=0
         )
-        
+
         responses = []
-        
-        # 初期化メッセージ送信
-        print("送信: initialize")
+
+        # Send initialization message
+        print("Sending: initialize")
         init_json = json.dumps(init_message) + "\n"
         process.stdin.write(init_json)
         process.stdin.flush()
         time.sleep(0.5)
-        
-        # 初期化応答を待つ
+
+        # Wait for initialization response
         line = process.stdout.readline()
         if line:
             try:
                 response = json.loads(line)
                 responses.append(response)
-                print(f"受信: {response}")
+                print(f"Received: {response}")
             except json.JSONDecodeError:
-                print(f"初期化応答のJSON解析に失敗: {line}")
-        
-        # ping送信
-        print("送信: ping")
+                print(f"Failed to parse initialization response JSON: {line}")
+
+        # Send ping
+        print("Sending: ping")
         ping_json = json.dumps(ping_request) + "\n"
         process.stdin.write(ping_json)
         process.stdin.flush()
         time.sleep(0.5)
-        
-        # ping応答を待つ
+
+        # Wait for ping response
         line = process.stdout.readline()
         if line:
             try:
                 response = json.loads(line)
                 responses.append(response)
-                print(f"受信: {response}")
+                print(f"Received: {response}")
             except json.JSONDecodeError:
-                print(f"ping応答のJSON解析に失敗: {line}")
-        
-        # tools/list送信
-        print("送信: tools/list")
+                print(f"Failed to parse ping response JSON: {line}")
+
+        # Send tools/list
+        print("Sending: tools/list")
         tools_json = json.dumps(tools_request) + "\n"
         process.stdin.write(tools_json)
         process.stdin.flush()
         time.sleep(1.0)
-        
-        # 全ての応答を読み取り
+
+        # Read all responses
         remaining_output = process.stdout.read()
         if remaining_output:
             lines = remaining_output.strip().split('\n')
@@ -103,19 +103,19 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
                     try:
                         response = json.loads(line)
                         responses.append(response)
-                        print(f"受信: {response}")
+                        print(f"Received: {response}")
                     except json.JSONDecodeError:
-                        print(f"JSON解析に失敗: {line}")
-        
-        # プロセス終了
+                        print(f"JSON parsing failed: {line}")
+
+        # Terminate process
         process.stdin.close()
         process.wait(timeout=5)
-        
+
         return {
             "success": True,
             "responses": responses
         }
-        
+
     except subprocess.TimeoutExpired:
         process.kill()
         return {"success": False, "error": "Timeout"}
@@ -123,33 +123,33 @@ def test_mcp_server_detailed(server_script: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 def main():
-    print("=== MCPサーバー詳細テスト ===")
-    
-    # Test Watcherサーバー詳細テスト
-    print("\n1. Test Watcherサーバー詳細テスト:")
+    print("=== MCP Server Detailed Test ===")
+
+    # Test Watcher server detailed test
+    print("\n1. Test Watcher Server Detailed Test:")
     result = test_mcp_server_detailed("src/auto_coder/mcp_servers/test_watcher/server.py")
-    
+
     if result["success"]:
-        print("✓ サーバー起動成功")
-        
-        # 応答を解析
+        print("✓ Server started successfully")
+
+        # Parse responses
         for response in result["responses"]:
             if "result" in response:
                 if "tools" in response["result"]:
                     tools = response["result"]["tools"]
-                    print(f"利用可能なツール数: {len(tools)}")
+                    print(f"Available tools count: {len(tools)}")
                     for tool in tools:
-                        print(f"  - ツール名: {tool.get('name', 'Unknown')}")
-                        print(f"    説明: {tool.get('description', 'No description')}")
+                        print(f"  - Tool name: {tool.get('name', 'Unknown')}")
+                        print(f"    Description: {tool.get('description', 'No description')}")
                         if 'inputSchema' in tool:
-                            print(f"    パラメーター: {tool['inputSchema'].get('properties', {}).keys()}")
+                            print(f"    Parameters: {tool['inputSchema'].get('properties', {}).keys()}")
                         print()
                 elif response["result"] == {}:
-                    print("  ping 応答受信")
+                    print("  Ping response received")
             elif "error" in response:
-                print(f"エラー: {response['error']}")
+                print(f"Error: {response['error']}")
     else:
-        print(f"✗ サーバー起動失敗: {result.get('error', 'Unknown error')}")
+        print(f"✗ Server startup failed: {result.get('error', 'Unknown error')}")
 
 if __name__ == "__main__":
     main()

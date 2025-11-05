@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCPサーバー動作確認用のテストクライアント
+Test client for checking MCP server operation
 """
 
 import json
@@ -10,9 +10,9 @@ import time
 from typing import Dict, Any
 
 def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
-    """MCPサーバーを初期化してツール一覧を取得するテスト"""
-    
-    # MCP初期化メッセージ
+    """Test MCP server by initializing and getting tool list"""
+
+    # MCP initialization message
     init_message = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -26,15 +26,15 @@ def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
             }
         }
     }
-    
-    # tools/list リクエストメッセージ
+
+    # tools/list request message
     tools_request = {
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/list"
     }
-    
-    # サーバープロセスを開始
+
+    # Start server process
     try:
         process = subprocess.Popen(
             [sys.executable, server_script],
@@ -43,19 +43,19 @@ def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
             stderr=subprocess.PIPE,
             text=True
         )
-        
-        # 初期化メッセージを送信
+
+        # Send initialization message
         init_json = json.dumps(init_message) + "\n"
         tools_json = json.dumps(tools_request) + "\n"
-        
+
         process.stdin.write(init_json)
         process.stdin.write(tools_json)
         process.stdin.flush()
-        
-        # 応答を読み取り
+
+        # Read responses
         stdout, stderr = process.communicate(timeout=10)
-        
-        # 応答を解析
+
+        # Parse responses
         lines = stdout.strip().split('\n')
         responses = []
         for line in lines:
@@ -65,14 +65,14 @@ def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
                     responses.append(response)
                 except json.JSONDecodeError:
                     pass
-        
+
         return {
             "success": True,
             "responses": responses,
             "stdout": stdout,
             "stderr": stderr
         }
-        
+
     except subprocess.TimeoutExpired:
         process.kill()
         return {"success": False, "error": "Timeout"}
@@ -80,30 +80,30 @@ def test_mcp_server_with_initialize(server_script: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 def main():
-    # テスト対象サーバー
+    # Servers to test
     servers = [
         "src/auto_coder/mcp_servers/test_watcher/server.py",
         "src/auto_coder/mcp_servers/graphrag_mcp/server.py"
     ]
-    
+
     for server in servers:
-        print(f"\n=== テスト中: {server} ===")
+        print(f"\n=== Testing: {server} ===")
         result = test_mcp_server_with_initialize(server)
-        
+
         if result["success"]:
-            print("✓ サーバー起動成功")
-            
-            # 応答解析
+            print("✓ Server started successfully")
+
+            # Parse responses
             for response in result["responses"]:
                 if "result" in response and "tools" in response["result"]:
                     tools = response["result"]["tools"]
-                    print(f"利用可能なツール数: {len(tools)}")
+                    print(f"Available tools count: {len(tools)}")
                     for tool in tools:
                         print(f"  - {tool.get('name', 'Unknown')}: {tool.get('description', 'No description')}")
                 elif "error" in response:
-                    print(f"エラー: {response['error']}")
+                    print(f"Error: {response['error']}")
         else:
-            print(f"✗ サーバー起動失敗: {result.get('error', 'Unknown error')}")
+            print(f"✗ Server startup failed: {result.get('error', 'Unknown error')}")
 
 if __name__ == "__main__":
     main()

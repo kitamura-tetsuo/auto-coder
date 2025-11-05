@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-シンプルなMCPサーバーテストクライアント
+Simple MCP server test client
 """
 
 import json
@@ -9,11 +9,11 @@ import sys
 import time
 
 def test_simple_mcp(server_path, server_name):
-    """シンプルなMCPサーバー接続テスト"""
-    print(f"\n=== {server_name} テスト ===")
-    
+    """Simple MCP server connection test"""
+    print(f"\n=== {server_name} Test ===")
+
     try:
-        # MCP初期化メッセージ
+        # MCP initialization message
         init_message = {
             "jsonrpc": "2.0",
             "id": 1,
@@ -27,8 +27,8 @@ def test_simple_mcp(server_path, server_name):
                 }
             }
         }
-        
-        # プロセス開始
+
+        # Start process
         process = subprocess.Popen(
             [sys.executable, server_path],
             stdin=subprocess.PIPE,
@@ -36,46 +36,46 @@ def test_simple_mcp(server_path, server_name):
             stderr=subprocess.PIPE,
             text=True
         )
-        
-        print(f"✓ プロセス開始 (PID: {process.pid})")
-        
-        # 初期化メッセージ送信
+
+        print(f"✓ Process started (PID: {process.pid})")
+
+        # Send initialization message
         init_json = json.dumps(init_message) + "\n"
         process.stdin.write(init_json)
         process.stdin.flush()
-        
-        # 初期化応答を待機
+
+        # Wait for initialization response
         time.sleep(1)
-        
-        # 応答を読み取り
+
+        # Read response
         line = process.stdout.readline()
         if line:
             try:
                 response = json.loads(line.strip())
-                print(f"✓ 初期化応答受信: {response.get('result', {}).get('serverInfo', {}).get('name', 'Unknown')}")
+                print(f"✓ Received initialization response: {response.get('result', {}).get('serverInfo', {}).get('name', 'Unknown')}")
             except json.JSONDecodeError as e:
-                print(f"✗ JSON解析エラー: {e}")
-                print(f"   受信データ: {line[:100]}")
+                print(f"✗ JSON parsing error: {e}")
+                print(f"   Received data: {line[:100]}")
         else:
-            print("✗ 初期化応答なし")
-        
-        # tools/list リクエスト
+            print("✗ No initialization response")
+
+        # tools/list request
         tools_request = {
             "jsonrpc": "2.0",
             "id": 2,
             "method": "tools/list"
         }
-        
+
         tools_json = json.dumps(tools_request) + "\n"
         process.stdin.write(tools_json)
         process.stdin.flush()
-        
-        print("送信: tools/list")
-        
-        # tools/list 応答待機
+
+        print("Sent: tools/list")
+
+        # Wait for tools/list response
         time.sleep(2)
-        
-        # 残りの応答を読み取り
+
+        # Read remaining responses
         all_output = process.stdout.read()
         if all_output:
             lines = all_output.strip().split('\n')
@@ -85,45 +85,45 @@ def test_simple_mcp(server_path, server_name):
                         response = json.loads(line)
                         if 'tools' in response.get('result', {}):
                             tools = response['result']['tools']
-                            print(f"✓ ツール一覧受信: {len(tools)} 個のツール")
-                            for tool in tools[:5]:  # 最初の5個だけ表示
+                            print(f"✓ Received tool list: {len(tools)} tools")
+                            for tool in tools[:5]:  # Display only first 5
                                 print(f"  - {tool.get('name', 'Unknown')}")
                             if len(tools) > 5:
-                                print(f"  ... 他 {len(tools)-5} 個")
+                                print(f"  ... and {len(tools)-5} more")
                         else:
-                            print(f"応答 {i+1}: {response}")
+                            print(f"Response {i+1}: {response}")
                     except json.JSONDecodeError as e:
-                        print(f"ツール応答JSON解析エラー: {e}")
-                        print(f"   行 {i+1}: {line[:100]}")
-        
-        # クリーンアップ
+                        print(f"Tool response JSON parsing error: {e}")
+                        print(f"   Line {i+1}: {line[:100]}")
+
+        # Cleanup
         process.stdin.close()
         process.wait(timeout=5)
-        print(f"✓ プロセス終了")
-        
+        print(f"✓ Process terminated")
+
         return True
-        
+
     except Exception as e:
-        print(f"✗ エラー: {e}")
+        print(f"✗ Error: {e}")
         if 'process' in locals():
             process.kill()
         return False
 
 def main():
-    print("=== シンプルMCPサーバーテスト ===")
-    
+    print("=== Simple MCP Server Test ===")
+
     servers = [
         ("src/auto_coder/mcp_servers/test_watcher/server.py", "Test Watcher"),
         ("src/auto_coder/mcp_servers/graphrag_mcp/server.py", "GraphRAG")
     ]
-    
+
     results = {}
     for server_path, server_name in servers:
         results[server_name] = test_simple_mcp(server_path, server_name)
-    
-    print(f"\n=== テスト結果 ===")
+
+    print(f"\n=== Test Results ===")
     for name, success in results.items():
-        status = "✓ 成功" if success else "✗ 失敗"
+        status = "✓ Success" if success else "✗ Failed"
         print(f"{name}: {status}")
 
 if __name__ == "__main__":

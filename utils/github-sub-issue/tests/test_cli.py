@@ -1,4 +1,4 @@
-"""CLI のテスト."""
+"""Tests for CLI."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -9,15 +9,15 @@ from gh_sub_issue.cli import main
 
 
 class TestCLI:
-    """CLI のテストクラス."""
+    """Test class for CLI."""
 
     def setup_method(self) -> None:
-        """各テストの前に実行."""
+        """Run before each test."""
         self.runner = CliRunner()
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_add_command(self, mock_api_class: MagicMock) -> None:
-        """add コマンドが正しく動作することを確認."""
+        """Verify that add command works correctly."""
         mock_api = MagicMock()
         mock_api.add_sub_issue.return_value = {
             "data": {
@@ -37,7 +37,7 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_add_command_with_replace_parent(self, mock_api_class: MagicMock) -> None:
-        """add コマンドで --replace-parent オプションが動作することを確認."""
+        """Verify that --replace-parent option works in add command."""
         mock_api = MagicMock()
         mock_api.add_sub_issue.return_value = {
             "data": {
@@ -56,7 +56,7 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_create_command(self, mock_api_class: MagicMock) -> None:
-        """create コマンドが正しく動作することを確認."""
+        """Verify that create command works correctly."""
         mock_api = MagicMock()
         mock_api.create_sub_issue.return_value = {
             "number": 789,
@@ -89,7 +89,7 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_list_command(self, mock_api_class: MagicMock) -> None:
-        """list コマンドが正しく動作することを確認."""
+        """Verify that list command works correctly."""
         mock_api = MagicMock()
         mock_api.list_sub_issues.return_value = [
             {
@@ -122,7 +122,7 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_list_command_json_output(self, mock_api_class: MagicMock) -> None:
-        """list コマンドで JSON 出力が動作することを確認."""
+        """Verify that JSON output works in list command."""
         mock_api = MagicMock()
         sub_issues = [
             {
@@ -157,7 +157,7 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_remove_command_with_force(self, mock_api_class: MagicMock) -> None:
-        """remove コマンドで --force オプションが動作することを確認."""
+        """Verify that --force option works in remove command."""
         mock_api = MagicMock()
         mock_api.remove_sub_issue.return_value = {
             "data": {
@@ -177,7 +177,7 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_remove_command_multiple(self, mock_api_class: MagicMock) -> None:
-        """remove コマンドで複数の sub-issue を削除できることを確認."""
+        """Verify that multiple sub-issues can be removed in remove command."""
         mock_api = MagicMock()
         mock_api.remove_sub_issue.side_effect = [
             {
@@ -208,21 +208,21 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_remove_command_with_confirmation(self, mock_api_class: MagicMock) -> None:
-        """remove コマンドで確認プロンプトが表示されることを確認."""
+        """Verify that confirmation prompt appears in remove command."""
         mock_api = MagicMock()
         mock_api_class.return_value = mock_api
 
-        # ユーザーが 'n' を入力してキャンセル
+        # User inputs 'n' to cancel
         result = self.runner.invoke(main, ["remove", "123", "456"], input="n\n")
 
         assert result.exit_code == 0
-        assert "続行しますか?" in result.output
-        assert "キャンセルしました" in result.output
+        assert "Continue?" in result.output
+        assert "Cancelled." in result.output
         mock_api.remove_sub_issue.assert_not_called()
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_repo_option(self, mock_api_class: MagicMock) -> None:
-        """--repo オプションが正しく渡されることを確認."""
+        """Verify that --repo option is passed correctly."""
         mock_api = MagicMock()
         mock_api.list_sub_issues.return_value = []
         mock_api_class.return_value = mock_api

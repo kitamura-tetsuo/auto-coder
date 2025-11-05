@@ -1,146 +1,144 @@
 # github-sub-issue
 
-GitHub の sub-issues 機能を操作するための Python ユーティリティーです。
+A Python utility for operating GitHub's sub-issues feature.
 
-## 特徴
+## Features
 
-- ✅ **正しい GraphQL API を使用**: GitHub の公式 sub-issues API を使用
-- 🔗 **既存 issue を sub-issue として追加**: 既存の issue を親 issue に紐付け
-- ➕ **新しい sub-issue を作成**: 新規 issue を作成して親に紐付け
-- 📋 **sub-issue の一覧表示**: 親 issue の sub-issue を一覧表示
-- ❌ **sub-issue の削除**: 親 issue から sub-issue を削除
-- 🎨 **複数の出力形式**: TTY (色付き)、プレーンテキスト、JSON 出力をサポート
+- ✅ **Uses correct GraphQL API**: Uses GitHub's official sub-issues API
+- 🔗 **Add existing issues as sub-issues**: Link existing issues to a parent issue
+- ➕ **Create new sub-issues**: Create new issues and link them to a parent
+- 📋 **List sub-issues**: Display sub-issues of a parent issue
+- ❌ **Remove sub-issues**: Remove sub-issues from a parent issue
+- 🎨 **Multiple output formats**: Supports TTY (colored), plain text, JSON output
 
-## 前提条件
+## Prerequisites
 
-- Python 3.11 以上
-- GitHub CLI (`gh`) がインストールされ、認証済みであること
+- Python 3.11 or higher
+- GitHub CLI (`gh`) must be installed and authenticated
 
-## インストール
+## Installation
 
 ```bash
-# リポジトリのルートから
+# From the repository root
 cd utils/github-sub-issue
 pip install -e .
 ```
 
-## 使い方
+## Usage
 
-### 既存 issue を sub-issue として追加
+### Add existing issue as sub-issue
 
 ```bash
-# issue 番号を使用 (親 issue 123 に既存 issue 456 を追加)
+# Using issue numbers (add existing issue 456 to parent issue 123)
 github-sub-issue add 123 456
 
-# URL を使用
+# Using URL
 github-sub-issue add https://github.com/owner/repo/issues/123 456
 
-# リポジトリを指定
+# Specify repository
 github-sub-issue add 123 456 --repo owner/repo
 ```
 
-### 新しい sub-issue を作成
+### Create new sub-issue
 
 ```bash
-# 基本的な使い方
-github-sub-issue create --parent 123 --title "ユーザー認証の実装"
+# Basic usage
+github-sub-issue create --parent 123 --title "Implement user authentication"
 
-# 説明とラベルを追加
+# Add description and labels
 github-sub-issue create --parent 123 \
-  --title "ログインエンドポイントの追加" \
-  --body "POST /api/login エンドポイントを実装" \
+  --title "Add login endpoint" \
+  --body "Implement POST /api/login endpoint" \
   --label "backend,api" \
   --assignee "@me"
 
-# 親 issue の URL を使用
+# Using parent issue URL
 github-sub-issue create \
   --parent https://github.com/owner/repo/issues/123 \
-  --title "API テストを書く"
+  --title "Write API tests"
 ```
 
-### sub-issue の一覧表示
+### List sub-issues
 
 ```bash
-# 基本的な一覧表示
+# Basic listing
 github-sub-issue list 123
 
-# すべての状態を表示 (open, closed)
+# Show all states (open, closed)
 github-sub-issue list 123 --state all
 
-# JSON 出力
+# JSON output
 github-sub-issue list 123 --json
 
-# URL を使用
+# Using URL
 github-sub-issue list https://github.com/owner/repo/issues/123
 ```
 
-### sub-issue の削除
+### Remove sub-issues
 
 ```bash
-# 単一の sub-issue を削除
+# Remove single sub-issue
 github-sub-issue remove 123 456
 
-# 複数の sub-issue を削除
+# Remove multiple sub-issues
 github-sub-issue remove 123 456 457 458
 
-# 確認をスキップ
+# Skip confirmation
 github-sub-issue remove 123 456 --force
 
-# URL を使用
+# Using URL
 github-sub-issue remove https://github.com/owner/repo/issues/123 456
 ```
 
-## 開発
+## Development
 
-### テストの実行
+### Running tests
 
 ```bash
-# すべてのテストを実行
+# Run all tests
 pytest
 
-# カバレッジ付きで実行
+# Run with coverage
 pytest --cov=gh_sub_issue --cov-report=html
 ```
 
-### コードフォーマット
+### Code formatting
 
 ```bash
-# フォーマット
+# Format
 black .
 isort .
 
-# リント
+# Lint
 flake8
 mypy .
 ```
 
-## ライセンス
+## License
 
 MIT License
 
-## 技術的な詳細
+## Technical Details
 
-### GraphQL API の使用
+### Using GraphQL API
 
-このツールは GitHub の GraphQL API を使用して sub-issues を操作します。重要なポイント:
+This tool uses GitHub's GraphQL API to operate sub-issues. Important points:
 
-1. **GraphQL-Features ヘッダーが必要**: すべての sub-issues 関連の API 呼び出しには `GraphQL-Features: sub_issues` ヘッダーが必要です
-2. **Issue ID を使用**: issue 番号ではなく、issue ID (例: `I_kwDOOakzpM6yyU6H`) を使用する必要があります
-3. **Mutations を使用**: sub-issue の追加・削除には GraphQL mutations を使用します
+1. **GraphQL-Features header required**: All sub-issues related API calls require the `GraphQL-Features: sub_issues` header
+2. **Use issue ID**: Must use issue ID (e.g., `I_kwDOOakzpM6yyU6H`) instead of issue number
+3. **Use mutations**: Use GraphQL mutations to add/remove sub-issues
 
-### yahsan2/gh-sub-issue との違い
+### Differences from yahsan2/gh-sub-issue
 
-[yahsan2/gh-sub-issue](https://github.com/yahsan2/gh-sub-issue) は Go で実装された同様のツールですが、
-このツールは以下の点で異なります:
+[yahsan2/gh-sub-issue](https://github.com/yahsan2/gh-sub-issue) is a similar tool implemented in Go, but this tool differs in the following points:
 
-- **Python 実装**: auto-coder プロジェクトとの統合が容易
-- **本体から独立**: auto-coder の依存関係を持たない独立したユーティリティー
-- **正しい GraphQL API を使用**: GitHub の公式 sub-issues API を使用し、GraphQL で正しく認識される sub-issue を作成
+- **Python implementation**: Easy integration with the auto-coder project
+- **Independent from main body**: Independent utility without auto-coder dependencies
+- **Uses correct GraphQL API**: Uses GitHub's official sub-issues API and creates sub-issues correctly recognized by GraphQL
 
-## 参考
+## References
 
 - [GitHub Sub-issues Public Preview](https://github.com/orgs/community/discussions/148714)
 - [GitHub GraphQL API - Sub-issues](https://docs.github.com/en/graphql/reference/mutations#addsubissue)
 - [Create GitHub issue hierarchy using the API](https://jessehouwing.net/create-github-issue-hierarchy-using-the-api/)
 - [yahsan2/gh-sub-issue](https://github.com/yahsan2/gh-sub-issue)
-

@@ -70,9 +70,9 @@ def test_extract_playwright_from_sample_full_output_excerpt():
     # Excerpt close to user-provided format (including ANSI colors, symbols, and Japanese)
     stdout = (
         "TestHelper: UserManager found, attempting authentication\n"
-        "  ✘    1 [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › 見出し\n"
+        "  ✘    1 [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › Heading\n"
         "\x1b[31mTesting stopped early after 1 maximum allowed failures.\x1b[39m\n\n"
-        "  1) [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › 見出し \n\n"
+        "  1) [basic] › e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:15:5 › Heading \n\n"
         "    at /home/ubuntu/src3/outliner/client/e2e/basic/00-tst-outliner-visible-after-prepare-0f1a2b3c.spec.ts:11:10\n"
     )
     stderr = ""
