@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 - Behavior change: The default is now to skip merging the base branch before fixes (equivalent to `--skip-main-update`). Use `--no-skip-main-update` to perform the merge step first (previous behavior).
 - Logging: Improved clarity in `process-issues` command output by explicitly displaying the current policy for base branch update when PR checks fail.
 - Auggie backend: Added a persisted daily quota (20 calls per day) that raises `AutoCoderUsageLimitError` before invoking the CLI and rotates to fallback backends.
+- Refactor: Simplified PR processing logic by removing mock type check and consolidating to direct merge attempts
 
 ## [0.1.0] - Initial release
 - Initial public release with CLI commands: `process-issues`, `create-feature-issues`, and `auth-status`.

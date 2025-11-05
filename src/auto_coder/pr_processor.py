@@ -94,32 +94,14 @@ def process_pull_request(
                     logger.info(f"PR #{pr_number}: Actions PASSING and MERGEABLE - attempting merge")
                     processed_pr["priority"] = "merge"
 
-                    try:
-                        from unittest.mock import Mock as _MockType
-
-                        mock_type = _MockType
-                    except Exception:
-                        mock_type = None
-
-                    if mock_type is not None and isinstance(_process_pr_for_merge, mock_type):
-                        with ProgressStage("Attempting merge"):
-                            processed_pr_result = _process_pr_for_merge(
-                                repo_name,
-                                pr_data,
-                                config,
-                                dry_run,
-                            )
-                        processed_pr.update(processed_pr_result)
-                    else:
-                        # LLM single execution policy: take actions directly
-                        with ProgressStage("Taking actions"):
-                            actions = _take_pr_actions(
-                                repo_name,
-                                pr_data,
-                                config,
-                                dry_run,
-                            )
-                        processed_pr["actions_taken"] = actions
+                    with ProgressStage("Attempting merge"):
+                        processed_pr_result = _process_pr_for_merge(
+                            repo_name,
+                            pr_data,
+                            config,
+                            dry_run,
+                        )
+                    processed_pr.update(processed_pr_result)
                 else:
                     logger.info(f"PR #{pr_number}: Processing for issue resolution")
                     processed_pr["priority"] = "fix"
