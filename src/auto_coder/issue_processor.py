@@ -864,31 +864,28 @@ def process_single(
                             with ProgressStage("Processing"):
                                 actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
                                 processed_issue["actions_taken"] = actions
-                    except Exception as e:
-                        logger.warning(f"Error processing issue actions: {e}")
-                        processed_issue["actions_taken"].append(f"Error: {e}")
-                finally:
-                    # Remove @auto-coder label after processing
+                    finally:
+                        # Remove @auto-coder label after processing
+                        if not dry_run:
+                            try:
+                                github_client.remove_labels_from_issue(repo_name, number, ["@auto-coder"])
+                            except Exception as e:
+                                logger.warning(f"Failed to remove @auto-coder label from issue #{number}: {e}")
+                        # Clear progress header after processing
+                        newline_progress()
+
+                    result["issues_processed"].append(processed_issue)
+                except Exception as e:
+                    msg = f"Failed to process issue #{number}: {e}"
+                    logger.error(msg)
+                    # Try to remove @auto-coder label on error
                     if not dry_run:
                         try:
                             github_client.remove_labels_from_issue(repo_name, number, ["@auto-coder"])
-                        except Exception as e:
-                            logger.warning(f"Failed to remove @auto-coder label from issue #{number}: {e}")
-                    # Clear progress header after processing
+                        except Exception:
+                            pass
+                    result["errors"].append(msg)
                     newline_progress()
-
-                result["issues_processed"].append(processed_issue)
-            except Exception as e:
-                msg = f"Failed to process issue #{number}: {e}"
-                logger.error(msg)
-                # Try to remove @auto-coder label on error
-                if not dry_run:
-                    try:
-                        github_client.remove_labels_from_issue(repo_name, number, ["@auto-coder"])
-                    except Exception:
-                        pass
-                result["errors"].append(msg)
-                newline_progress()
         except Exception as e:
             msg = f"Error in process_single: {e}"
             logger.error(msg)
