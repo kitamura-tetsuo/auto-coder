@@ -1,4 +1,4 @@
-"""GitHub API を使った sub-issue 操作モジュール."""
+"""Sub-issue operation module using GitHub API."""
 
 import json
 import re
@@ -9,24 +9,24 @@ from loguru import logger
 
 
 class GitHubSubIssueAPI:
-    """GitHub sub-issue API クライアント."""
+    """GitHub sub-issue API client."""
 
     def __init__(self, repo: Optional[str] = None):
-        """初期化.
+        """Initialize.
 
         Args:
-            repo: リポジトリ名 (owner/repo 形式)。None の場合は現在のディレクトリから取得
+            repo: Repository name (owner/repo format). If None, get from current directory
         """
         self.repo = repo or self._get_current_repo()
 
     def _get_current_repo(self) -> str:
-        """現在のディレクトリから GitHub リポジトリ名を取得.
+        """Get GitHub repository name from current directory.
 
         Returns:
-            リポジトリ名 (owner/repo 形式)
+            Repository name (owner/repo format)
 
         Raises:
-            RuntimeError: リポジトリ名の取得に失敗した場合
+            RuntimeError: When failing to get repository name
         """
         try:
             result = subprocess.run(
@@ -42,25 +42,25 @@ class GitHubSubIssueAPI:
             raise RuntimeError(f"Failed to get current repository: {e.stderr}")
 
     def _parse_issue_reference(self, reference: str) -> tuple[str, int]:
-        """issue 参照を解析.
+        """Parse issue reference.
 
         Args:
-            reference: issue 番号または URL
+            reference: Issue number or URL
 
         Returns:
-            (リポジトリ名, issue 番号) のタプル
+            Tuple of (repository name, issue number)
 
         Raises:
-            ValueError: 解析に失敗した場合
+            ValueError: When parsing fails
         """
-        # URL の場合
+        # If URL
         url_pattern = r"https://github\.com/([^/]+)/([^/]+)/issues/(\d+)"
         match = re.match(url_pattern, reference)
         if match:
             owner, repo, number = match.groups()
             return f"{owner}/{repo}", int(number)
 
-        # issue 番号の場合
+        # If issue number
         try:
             number = int(reference)
             return self.repo, number
@@ -68,17 +68,17 @@ class GitHubSubIssueAPI:
             raise ValueError(f"Invalid issue reference: {reference}")
 
     def _get_issue_id(self, repo: str, issue_number: int) -> str:
-        """issue の ID を取得.
+        """Get issue ID.
 
         Args:
-            repo: リポジトリ名 (owner/repo 形式)
-            issue_number: issue 番号
+            repo: Repository name (owner/repo format)
+            issue_number: Issue number
 
         Returns:
-            issue ID
+            Issue ID
 
         Raises:
-            RuntimeError: ID の取得に失敗した場合
+            RuntimeError: When failing to get ID
         """
         try:
             result = subprocess.run(
@@ -94,18 +94,18 @@ class GitHubSubIssueAPI:
             raise RuntimeError(f"Failed to get issue ID for #{issue_number}: {e.stderr}")
 
     def add_sub_issue(self, parent_ref: str, sub_issue_ref: str, replace_parent: bool = False) -> Dict[str, Any]:
-        """既存の issue を sub-issue として追加.
+        """Add existing issue as sub-issue.
 
         Args:
-            parent_ref: 親 issue の参照 (番号または URL)
-            sub_issue_ref: sub-issue の参照 (番号または URL)
+            parent_ref: Parent issue reference (number or URL)
+            sub_issue_ref: Sub-issue reference (number or URL)
             replace_parent: Whether to replace existing parent
 
         Returns:
-            API レスポンス
+            API response
 
         Raises:
-            RuntimeError: API 呼び出しに失敗した場合
+            RuntimeError: When API call fails
         """
         parent_repo, parent_number = self._parse_issue_reference(parent_ref)
         sub_issue_repo, sub_issue_number = self._parse_issue_reference(sub_issue_ref)
@@ -143,17 +143,17 @@ class GitHubSubIssueAPI:
             raise RuntimeError(f"Failed to add sub-issue: {e.stderr}")
 
     def remove_sub_issue(self, parent_ref: str, sub_issue_ref: str) -> Dict[str, Any]:
-        """sub-issue を削除.
+        """Remove sub-issue.
 
         Args:
-            parent_ref: 親 issue の参照 (番号または URL)
-            sub_issue_ref: sub-issue の参照 (番号または URL)
+            parent_ref: Parent issue reference (number or URL)
+            sub_issue_ref: Sub-issue reference (number or URL)
 
         Returns:
-            API レスポンス
+            API response
 
         Raises:
-            RuntimeError: API 呼び出しに失敗した場合
+            RuntimeError: When API call fails
         """
         parent_repo, parent_number = self._parse_issue_reference(parent_ref)
         sub_issue_repo, sub_issue_number = self._parse_issue_reference(sub_issue_ref)
@@ -190,17 +190,17 @@ class GitHubSubIssueAPI:
             raise RuntimeError(f"Failed to remove sub-issue: {e.stderr}")
 
     def list_sub_issues(self, parent_ref: str, state: str = "OPEN") -> List[Dict[str, Any]]:
-        """sub-issue の一覧を取得.
+        """Get list of sub-issues.
 
         Args:
-            parent_ref: 親 issue の参照 (番号または URL)
-            state: issue の状態 (OPEN, CLOSED, ALL)
+            parent_ref: Parent issue reference (number or URL)
+            state: Issue state (OPEN, CLOSED, ALL)
 
         Returns:
-            sub-issue のリスト
+            List of sub-issues
 
         Raises:
-            RuntimeError: API 呼び出しに失敗した場合
+            RuntimeError: When API call fails
         """
         parent_repo, parent_number = self._parse_issue_reference(parent_ref)
         owner, repo = parent_repo.split("/")
@@ -245,8 +245,8 @@ class GitHubSubIssueAPI:
             
             issue_data = data.get("data", {}).get("repository", {}).get("issue", {})
             sub_issues = issue_data.get("subIssues", {}).get("nodes", [])
-            
-            # 状態でフィルタリング
+
+            # Filter by state
             if state != "ALL":
                 sub_issues = [si for si in sub_issues if si.get("state") == state]
             
@@ -266,21 +266,21 @@ class GitHubSubIssueAPI:
         """Create a new sub-issue.
 
         Args:
-            parent_ref: 親 issue の参照 (番号または URL)
-            title: issue のタイトル
-            body: issue の本文
-            labels: ラベルのリスト
-            assignees: アサインするユーザーのリスト
+            parent_ref: Parent issue reference (number or URL)
+            title: Issue title
+            body: Issue body
+            labels: List of labels
+            assignees: List of users to assign
 
         Returns:
-            作成された issue の情報
+            Created issue information
 
         Raises:
-            RuntimeError: issue の作成に失敗した場合
+            RuntimeError: When issue creation fails
         """
         parent_repo, parent_number = self._parse_issue_reference(parent_ref)
 
-        # まず issue を作成
+        # Create issue first
         cmd = ["gh", "issue", "create", "--repo", parent_repo, "--title", title]
         
         if body:
@@ -302,7 +302,7 @@ class GitHubSubIssueAPI:
                 check=True,
             )
             issue_url = result.stdout.strip()
-            # URL から issue 番号を抽出
+            # Extract issue number from URL
             match = re.search(r"/issues/(\d+)", issue_url)
             if not match:
                 raise RuntimeError(f"Failed to extract issue number from URL: {issue_url}")
@@ -310,7 +310,7 @@ class GitHubSubIssueAPI:
             issue_number = int(match.group(1))
             logger.info(f"Created issue #{issue_number}: {title}")
 
-            # sub-issue として追加
+            # Add as sub-issue
             self.add_sub_issue(parent_ref, str(issue_number))
 
             return {

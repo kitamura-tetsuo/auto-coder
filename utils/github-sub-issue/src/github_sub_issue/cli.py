@@ -1,4 +1,4 @@
-"""CLI インターフェース."""
+"""CLI interface."""
 
 import json
 import sys
@@ -12,11 +12,11 @@ from .logger_config import setup_logger
 
 
 @click.group()
-@click.option("--verbose", "-v", is_flag=True, help="詳細ログを有効にする")
-@click.option("--repo", "-R", help="リポジトリ名 (owner/repo 形式)")
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
+@click.option("--repo", "-R", help="Repository name (owner/repo format)")
 @click.pass_context
 def main(ctx: click.Context, verbose: bool, repo: Optional[str]) -> None:
-    """GitHub sub-issues 機能を操作するための CLI ツール."""
+    """CLI tool for operating GitHub sub-issues functionality."""
     setup_logger(verbose)
     ctx.ensure_object(dict)
     ctx.obj["repo"] = repo
@@ -26,13 +26,13 @@ def main(ctx: click.Context, verbose: bool, repo: Optional[str]) -> None:
 @main.command()
 @click.argument("parent")
 @click.argument("sub_issue")
-@click.option("--replace-parent", is_flag=True, help="既存の親を置き換える")
+@click.option("--replace-parent", is_flag=True, help="Replace existing parent")
 @click.pass_context
 def add(ctx: click.Context, parent: str, sub_issue: str, replace_parent: bool) -> None:
-    """既存の issue を sub-issue として追加.
+    """Add existing issue as sub-issue.
 
-    PARENT: 親 issue の番号または URL
-    SUB_ISSUE: sub-issue の番号または URL
+    PARENT: Parent issue number or URL
+    SUB_ISSUE: Sub-issue number or URL
     """
     try:
         api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
@@ -50,11 +50,11 @@ def add(ctx: click.Context, parent: str, sub_issue: str, replace_parent: bool) -
 
 
 @main.command()
-@click.option("--parent", "-p", required=True, help="親 issue の番号または URL")
-@click.option("--title", "-t", required=True, help="issue のタイトル")
-@click.option("--body", "-b", help="issue の本文")
-@click.option("--label", "-l", multiple=True, help="ラベル (複数指定可)")
-@click.option("--assignee", "-a", multiple=True, help="アサインするユーザー (複数指定可)")
+@click.option("--parent", "-p", required=True, help="Parent issue number or URL")
+@click.option("--title", "-t", required=True, help="Issue title")
+@click.option("--body", "-b", help="Issue body")
+@click.option("--label", "-l", multiple=True, help="Label (can be specified multiple times)")
+@click.option("--assignee", "-a", multiple=True, help="User to assign (can be specified multiple times)")
 @click.pass_context
 def create(
     ctx: click.Context,
@@ -87,13 +87,13 @@ def create(
 
 @main.command(name="list")
 @click.argument("parent")
-@click.option("--state", "-s", type=click.Choice(["open", "closed", "all"], case_sensitive=False), default="open", help="フィルタする状態")
-@click.option("--json-output", "--json", is_flag=True, help="JSON 形式で出力")
+@click.option("--state", "-s", type=click.Choice(["open", "closed", "all"], case_sensitive=False), default="open", help="Filter state")
+@click.option("--json-output", "--json", is_flag=True, help="Output in JSON format")
 @click.pass_context
 def list_command(ctx: click.Context, parent: str, state: str, json_output: bool) -> None:
-    """sub-issue の一覧を表示.
+    """Display list of sub-issues.
 
-    PARENT: 親 issue の番号または URL
+    PARENT: Parent issue number or URL
     """
     try:
         api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
@@ -129,22 +129,22 @@ def list_command(ctx: click.Context, parent: str, state: str, json_output: bool)
 @main.command()
 @click.argument("parent")
 @click.argument("sub_issues", nargs=-1, required=True)
-@click.option("--force", "-f", is_flag=True, help="確認をスキップ")
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation")
 @click.pass_context
 def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], force: bool) -> None:
-    """sub-issue を削除.
+    """Remove sub-issue.
 
-    PARENT: 親 issue の番号または URL
-    SUB_ISSUES: 削除する sub-issue の番号または URL (複数指定可)
+    PARENT: Parent issue number or URL
+    SUB_ISSUES: Sub-issue number(s) or URL(s) to remove (can be specified multiple times)
     """
     try:
         if not force:
             click.echo(f"⚠️  {len(sub_issues)} sub-issue(s) will be deleted:")
             for si in sub_issues:
                 click.echo(f"   - {si}")
-            
-            if not click.confirm("続行しますか?"):
-                click.echo("キャンセルしました。")
+
+            if not click.confirm("Continue?"):
+                click.echo("Cancelled.")
                 return
         
         api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
@@ -157,8 +157,8 @@ def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], force: 
             except Exception as e:
                 logger.error(f"Failed to remove sub-issue {sub_issue}: {e}")
                 continue
-        
-        click.echo(f"\n✅ {len(sub_issues)} sub-issue(s) を削除しました。")
+
+        click.echo(f"\n✅ Deleted {len(sub_issues)} sub-issue(s).")
     except Exception as e:
         logger.error(f"Failed to remove sub-issues: {e}")
         sys.exit(1)

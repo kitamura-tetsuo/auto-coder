@@ -1,4 +1,4 @@
-"""GitHub sub-issues 機能を操作するための Python ユーティリティー."""
+"""Python utility for operating GitHub sub-issues functionality."""
 
 __version__ = "0.1.0"
 

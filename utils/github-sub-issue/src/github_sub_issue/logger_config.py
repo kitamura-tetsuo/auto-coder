@@ -1,4 +1,4 @@
-"""ログ設定モジュール."""
+"""Logging configuration module."""
 
 import sys
 
@@ -6,15 +6,15 @@ from loguru import logger
 
 
 def setup_logger(verbose: bool = False) -> None:
-    """ロガーを設定する.
+    """Set up the logger.
 
     Args:
         verbose: Whether to enable verbose logging
     """
-    # デフォルトのハンドラーを削除
+    # Remove default handler
     logger.remove()
 
-    # コンソール出力を追加
+    # Add console output
     log_level = "DEBUG" if verbose else "INFO"
     logger.add(
         sys.stderr,
