@@ -83,6 +83,10 @@ def validate_branch_name(branch_name: str) -> None:
     """
     Validate that a branch name does not match the prohibited pr-<number> pattern.
 
+    This validation works in conjunction with explicit instructions in LLM prompts
+    (see prompts.yaml) that instruct LLMs to always use 'issue-<number>' naming
+    convention and never create 'pr-<number>' branches.
+
     Args:
         branch_name: The branch name to validate
 

@@ -16,6 +16,8 @@ pr:
     - Do NOT run git commit/push; the system will handle committing.
     - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). Existing branches with 'pr-<number>' pattern can be checked out but new branches must use 'issue-<number>' naming.
+
     Return format:
     - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
     - No greetings, no multi-paragraph analysis.
@@ -50,6 +52,8 @@ pr:
     Commit History Since Branch Creation:
     $commit_log
 
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+
     Please resolve these merge conflicts by:
     1. Examining the conflicted files
     2. When conflicts occur, prefer the newer code (the changes from the PR branch) over the older code (from the base branch). Choose the resolution that maintains the most recent implementation.
@@ -72,6 +76,8 @@ pr:
     GitHub Actions Error Logs (truncated):
     $github_logs
 
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+
     Your task:
     1) Identify the root cause(s) of the failing checks based on the logs.
     2) Apply the necessary code changes directly in the repository to fix them.
@@ -89,6 +95,8 @@ pr:
     - Title: $pr_title
     - Body: $pr_body
     - Number: $pr_number
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     GitHub Actions Logs:
     $github_logs
@@ -110,6 +118,8 @@ pr:
 
     Local test command used:
     $test_command
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     Please analyze the test failures and provide specific code fixes.
     Focus on making the tests pass while maintaining code quality.
@@ -160,6 +170,8 @@ issue:
     Commit History Since Branch Creation:
     $commit_log
 
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
     Please analyze this issue and determine the appropriate action:
 
     1. If this needs clarification, add a comment requesting more information
@@ -196,6 +208,8 @@ tests:
 
     Goal: Make local tests pass by applying safe edits.
 
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+
     Task Memory File: ./llm_task.md
     - If the file exists, review the "Logging Protocol" section before making changes.
     - After completing your attempt, insert a new entry at the top of "## Experiment Log" using this exact template:
@@ -228,6 +242,8 @@ tests:
     You are operating directly in this repository workspace with write access.
 
     Goal: Fix test stability and dependency issues.
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     PROBLEM DETECTED:
     A test file failed when run as part of the full test suite, but passed when run in isolation.
@@ -319,6 +335,8 @@ tests:
 
     Commit message that was attempted:
     $commit_message
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     **Your task is to:**
     1. First, review the current state by running:
