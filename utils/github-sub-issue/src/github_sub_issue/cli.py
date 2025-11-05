@@ -64,9 +64,9 @@ def create(
     label: tuple[str, ...],
     assignee: tuple[str, ...],
 ) -> None:
-    """新しい sub-issue を作成.
+    """Create a new sub-issue.
 
-    親 issue に紐付けられた新しい issue を作成します。
+    Creates a new issue linked to a parent issue.
     """
     try:
         api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
@@ -139,7 +139,7 @@ def remove(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], force: 
     """
     try:
         if not force:
-            click.echo(f"⚠️  {len(sub_issues)} sub-issue(s) を削除しようとしています:")
+            click.echo(f"⚠️  {len(sub_issues)} sub-issue(s) will be deleted:")
             for si in sub_issues:
                 click.echo(f"   - {si}")
             
