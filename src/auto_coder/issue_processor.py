@@ -10,7 +10,7 @@ from auto_coder.backend_manager import get_llm_backend_manager, run_message_prom
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
-from .git_utils import commit_and_push_changes, ensure_pushed, git_checkout_branch, switch_to_branch, get_commit_log
+from .git_utils import commit_and_push_changes, ensure_pushed, get_commit_log, git_checkout_branch, switch_to_branch
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, push_progress_stage, set_progress_item
 from .prompt_loader import render_prompt

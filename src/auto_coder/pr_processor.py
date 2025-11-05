@@ -20,7 +20,7 @@ from auto_coder.util.github_action import DetailedChecksResult, _check_github_ac
 from .automation_config import AutomationConfig
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
-from .git_utils import git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history, get_commit_log
+from .git_utils import get_commit_log, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
