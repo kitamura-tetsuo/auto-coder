@@ -347,15 +347,22 @@ class ProgressContext:
         self.initial_stage = initial_stage
         self.related_issues = related_issues
         self.branch_name = branch_name
+        # Use ProgressStage context manager for automatic stage push/pop
+        self._progress_stage = None
 
     def __enter__(self):
         """Enter the context and display the initial footer."""
         set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
-        push_progress_stage(self.initial_stage)
+        # Use ProgressStage context manager for the initial stage
+        self._progress_stage = ProgressStage(self.initial_stage)
+        self._progress_stage.__enter__()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and clear the footer."""
+        # Exit the ProgressStage context first
+        if self._progress_stage:
+            self._progress_stage.__exit__(exc_type, exc_val, exc_tb)
         newline_progress()
         clear_progress()
         return False
