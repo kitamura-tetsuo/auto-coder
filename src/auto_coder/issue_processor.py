@@ -627,14 +627,14 @@ def _apply_issue_actions_directly(
             if "head_branch" not in issue_data and target_branch:
                 with ProgressStage("Creating PR"):
                     pr_creation_result = _create_pr_for_issue(
-                    repo_name=repo_name,
-                    issue_data=issue_data,
-                    work_branch=target_branch,
-                    base_branch=pr_base_branch,
-                    llm_response=response,
-                    github_client=github_client,
-                    dry_run=dry_run,
-                )
+                        repo_name=repo_name,
+                        issue_data=issue_data,
+                        work_branch=target_branch,
+                        base_branch=pr_base_branch,
+                        llm_response=response,
+                        github_client=github_client,
+                        dry_run=dry_run,
+                    )
                 actions.append(pr_creation_result)
         else:
             actions.append("LLM CLI did not provide a clear response for issue analysis")
