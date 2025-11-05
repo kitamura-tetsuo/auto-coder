@@ -422,11 +422,47 @@ mypy src/
 ```
 src/auto_coder/
 ├── cli.py              # CLI entry point
-├── github_client.py    # GitHub API client
+├── github_client.py    # GitHub API client (singleton)
 ├── gemini_client.py    # Gemini AI client
+├── backend_manager.py  # LLM backend manager (singleton)
 ├── automation_engine.py # Main automation engine
 └── config.py          # Configuration management
 ```
+
+### Singleton Pattern
+
+Auto-Coder implements the singleton pattern for key components to ensure consistent state and resource management:
+
+#### GitHubClient Singleton
+The `GitHubClient` class uses a thread-safe singleton pattern:
+```python
+from auto_coder.github_client import GitHubClient
+
+# Get the singleton instance
+client = GitHubClient.get_instance(token, disable_labels=False)
+
+# Subsequent calls return the same instance
+client2 = GitHubClient.get_instance(token, disable_labels=False)
+# client is client2  # True
+```
+
+#### LLMBackendManager Singleton
+The `LLMBackendManager` class manages LLM backends as a singleton:
+```python
+from auto_coder.backend_manager import get_llm_backend_manager
+
+# Initialize once with configuration
+manager = get_llm_backend_manager(
+    default_backend="codex",
+    default_client=client,
+    factories={"codex": lambda: client}
+)
+
+# Use globally
+response = run_llm_prompt("Your prompt here")
+```
+
+For detailed usage patterns, see [GLOBAL_BACKEND_MANAGER_USAGE.md](GLOBAL_BACKEND_MANAGER_USAGE.md).
 
 ### Data Flow
 
