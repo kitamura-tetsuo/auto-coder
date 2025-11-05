@@ -79,7 +79,7 @@ class TestAutomationEngine:
 
     @pytest.mark.skip(reason="Test needs update after refactoring - process_issues call signature changed")
     @patch("src.auto_coder.issue_processor.process_issues")
-    @patch("src.auto_coder.pr_processor.process_pull_requests")
+    @patch("src.auto_coder.pr_processor.process_pull_request")
     @patch("src.auto_coder.automation_engine.datetime")
     def test_run_success(
         self,
@@ -160,7 +160,7 @@ class TestAutomationEngine:
             engine._save_report.assert_called_once()
 
     @pytest.mark.skip(reason="Test needs update after refactoring - LLMBackendManager initialization issue")
-    @patch("src.auto_coder.pr_processor.process_pull_requests")
+    @patch("src.auto_coder.pr_processor.process_pull_request")
     @patch("src.auto_coder.issue_processor.process_issues")
     @patch("src.auto_coder.automation_engine.datetime")
     def test_run_jules_mode_success(

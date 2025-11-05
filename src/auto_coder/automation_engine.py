@@ -17,9 +17,9 @@ from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
 from .issue_processor import create_feature_issues, process_issues, process_single
 from .logger_config import get_logger
-from .pr_processor import _apply_pr_actions_directly as _pr_apply_actions
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
+from .pr_processor import process_pull_request
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -30,10 +30,10 @@ class AutomationEngine:
 
     def __init__(
         self,
-        github_client,
+        github_client: Any,
         dry_run: bool = False,
         config: Optional[AutomationConfig] = None,
-    ):
+    ) -> None:
         """Initialize automation engine."""
         self.github = github_client
         self.dry_run = dry_run
@@ -181,7 +181,7 @@ class AutomationEngine:
                 result["success"] = True
             elif candidate.get("type") == "pr":
                 # PR処理
-                result["actions"] = self._apply_pr_actions_directly(repo_name, candidate["data"])
+                result["actions"] = process_pull_request(self.github, self.config, self.dry_run, repo_name, candidate["data"])
                 result["success"] = True
         except Exception as e:
             result["error"] = str(e)
@@ -231,9 +231,9 @@ class AutomationEngine:
 
                         # Track results
                         if candidate["type"] == "issue":
-                            results["issues_processed"].append(result)
+                            results["issues_processed"].append(result)  # type: ignore
                         elif candidate["type"] == "pr":
-                            results["prs_processed"].append(result)
+                            results["prs_processed"].append(result)  # type: ignore
 
                         batch_processed += 1
                         total_processed += 1
@@ -244,7 +244,7 @@ class AutomationEngine:
                     except Exception as e:
                         error_msg = f"Failed to process candidate: {e}"
                         logger.error(error_msg)
-                        results["errors"].append(error_msg)
+                        results["errors"].append(error_msg)  # type: ignore
 
                 # If no candidates were processed in this batch, end the loop
                 if batch_processed == 0:
@@ -259,7 +259,7 @@ class AutomationEngine:
         except Exception as e:
             error_msg = f"Automation failed for {repo_name}: {e}"
             logger.error(error_msg)
-            results["errors"].append(error_msg)
+            results["errors"].append(error_msg)  # type: ignore
             return results
 
     def process_single(self, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]:
@@ -283,7 +283,7 @@ class AutomationEngine:
             repo_name,
         )
 
-    def fix_to_pass_tests(self, max_attempts: Optional[int] = None, message_backend_manager=None) -> Dict[str, Any]:
+    def fix_to_pass_tests(self, max_attempts: Optional[int] = None, message_backend_manager: Optional[Any] = None) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
         run_override = getattr(self, "_run_local_tests", None)
         apply_override = getattr(self, "_apply_workspace_test_fix", None)
@@ -329,9 +329,9 @@ class AutomationEngine:
                         return {"backend": backend, "model": model}
                 except (RuntimeError, AttributeError):
                     # Also try direct instance access
-                    manager = LLMBackendManager._instance
-                    if manager is not None:
-                        backend, model = manager.get_last_backend_and_model()
+                    llm_instance: Optional[Any] = LLMBackendManager._instance
+                    if llm_instance is not None:
+                        backend, model = llm_instance.get_last_backend_and_model()
                         return {"backend": backend, "model": model}
 
             # Manager not initialized
@@ -382,15 +382,6 @@ class AutomationEngine:
     def _get_pr_diff(self, repo_name: str, pr_number: int) -> str:
         """Get PR diff for analysis."""
         return _pr_get_diff(repo_name, pr_number, self.config)
-
-    def _apply_pr_actions_directly(self, repo_name: str, pr_data: Dict[str, Any]) -> List[str]:
-        """Ask LLM CLI to apply PR fixes directly; avoid posting PR comments."""
-        return _pr_apply_actions(
-            repo_name,
-            pr_data,
-            self.config,
-            self.dry_run,
-        )
 
     def _take_issue_actions(self, repo_name: str, issue_data: Dict[str, Any]) -> List[str]:
         """Take actions on an issue using direct LLM CLI analysis and implementation."""
