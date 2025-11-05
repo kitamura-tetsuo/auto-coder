@@ -1138,6 +1138,9 @@ def _apply_github_actions_fix(
     pr_number = pr_data["number"]
 
     try:
+        # Get commit log since branch creation
+        commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+
         # Create prompt for GitHub Actions error fix (no commit/push by LLM)
         fix_prompt = render_prompt(
             "pr.github_actions_fix",
@@ -1145,6 +1148,7 @@ def _apply_github_actions_fix(
             repo_name=repo_name,
             pr_title=pr_data.get("title", "Unknown"),
             github_logs=(github_logs or "")[: config.MAX_PROMPT_SIZE],
+            commit_log=commit_log or "(No commit history)",
         )
         logger.debug(
             "Prepared GitHub Actions fix prompt for PR #%s (preview: %s)",
@@ -1226,6 +1230,9 @@ def _apply_local_test_fix(
                 logger.info("Skipping LLM local test fix because no actionable errors were extracted")
                 return actions
 
+            # Get commit log since branch creation
+            commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+
             # Create prompt for local test error fix
             fix_prompt = render_prompt(
                 "pr.local_test_fix",
@@ -1234,6 +1241,7 @@ def _apply_local_test_fix(
                 pr_title=pr_data.get("title", "Unknown"),
                 error_summary=error_summary[: config.MAX_PROMPT_SIZE],
                 test_command=test_result.get("command", "pytest -q --maxfail=1"),
+                commit_log=commit_log or "(No commit history)",
             )
             logger.debug(
                 "Prepared local test fix prompt for PR #%s (preview: %s)",

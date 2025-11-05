@@ -47,6 +47,9 @@ pr:
     Merge Conflict Information:
     $conflict_info
 
+    Commit History Since Branch Creation:
+    $commit_log
+
     Please resolve these merge conflicts by:
     1. Examining the conflicted files
     2. When conflicts occur, prefer the newer code (the changes from the PR branch) over the older code (from the base branch). Choose the resolution that maintains the most recent implementation.
@@ -62,6 +65,9 @@ pr:
 
     Repository: $repo_name
     PR Title: $pr_title
+
+    Commit History Since Branch Creation:
+    $commit_log
 
     GitHub Actions Error Logs (truncated):
     $github_logs
@@ -96,6 +102,9 @@ pr:
     Repository: $repo_name
     PR Title: $pr_title
 
+    Commit History Since Branch Creation:
+    $commit_log
+
     Key Errors:
     $error_summary
 
@@ -104,7 +113,7 @@ pr:
 
     Please analyze the test failures and provide specific code fixes.
     Focus on making the tests pass while maintaining code quality.
-    All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes. 
+    All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
 
     After analyzing, apply the necessary fixes to the codebase.
 
@@ -117,6 +126,9 @@ pr:
 
     Changes Summary:
     $changes_summary
+
+    Commit History Since Branch Creation:
+    $commit_log
 
     Requirements:
     - Title: A clear, concise title (max 72 characters) that describes the changes
@@ -266,6 +278,9 @@ tests:
     Before writing the commit message, **first review the changes** by running:
     * `git diff` to inspect unstaged changes
     * `git diff --cached` to inspect staged changes
+
+    Commit History Since Branch Creation:
+    $commit_log
 
     Then, analyze the diff and write a high-quality Git commit message following these rules:
 

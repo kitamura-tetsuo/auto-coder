@@ -316,12 +316,16 @@ def _create_pr_for_issue(
         pr_body = None
 
         try:
+            # Get commit log since branch creation for PR message context
+            commit_log = get_commit_log(base_branch=base_branch)
+
             pr_message_prompt = render_prompt(
                 "pr.pr_message",
                 issue_number=issue_number,
                 issue_title=issue_title,
                 issue_body=issue_body[:500],
                 changes_summary=llm_response[:500],
+                commit_log=commit_log or "(No commit history)",
             )
             pr_message_response = run_message_prompt(pr_message_prompt)
 
