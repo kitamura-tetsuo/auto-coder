@@ -21,18 +21,22 @@ jobs:
           python-version: "3.11"
           cache: pip
           cache-dependency-path: pyproject.toml
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          uv sync --dev
       - name: Black (check)
-        run: black --check src/ tests/
+        run: uv run black --check src/ tests/
       - name: isort (check)
-        run: isort --check-only src/ tests/
+        run: uv run isort --check-only src/ tests/
       - name: Flake8
-        run: flake8 src/ tests/
+        run: uv run flake8 src/ tests/
       - name: Mypy
-        run: mypy src/
+        run: uv run mypy src/
 
   tests:
     name: Tests with Coverage
