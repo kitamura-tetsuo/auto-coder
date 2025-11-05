@@ -511,7 +511,6 @@ def test_progress_stage_with_set_and_push():
         ph._global_footer = original_footer
 
 
-
 def test_progress_footer_pr_color():
     """Test that PR displays in cyan color (ANSI 96m)."""
     footer = ProgressFooter()
