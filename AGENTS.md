@@ -35,8 +35,7 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 
 ### Dependency Management
 
-* Use `pip` or `poetry` for package management.
-* Manage `requirements.txt` or `pyproject.toml` properly.
+* Use `uv` for dependency management.
 
 ### Logging Configuration
 
