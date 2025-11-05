@@ -79,6 +79,28 @@ def extract_number_from_branch(branch_name: str) -> Optional[int]:
     return None
 
 
+def validate_branch_name(branch_name: str) -> None:
+    """
+    Validate that a branch name does not match the prohibited pr-<number> pattern.
+
+    Args:
+        branch_name: The branch name to validate
+
+    Raises:
+        ValueError: If the branch name matches the prohibited pattern
+    """
+    if not branch_name:
+        return
+
+    # Check if branch name matches the prohibited pr-<number> pattern
+    pattern = r"^pr-\d+$"
+    if re.match(pattern, branch_name, re.IGNORECASE):
+        raise ValueError(
+            f"Branch name '{branch_name}' matches the prohibited pattern 'pr-<number>'. "
+            f"Use 'issue-<number>' naming convention instead (e.g., 'issue-{branch_name.split('-')[1] if '-' in branch_name else '123'}')."
+        )
+
+
 def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50) -> str:
     """
     Get commit messages since the current branch diverged from the base branch.
@@ -359,6 +381,18 @@ def git_checkout_branch(
         CommandResult with the result of the checkout operation.
         success=True only if checkout succeeded AND current branch matches expected branch.
     """
+    # Validate branch name before proceeding
+    try:
+        validate_branch_name(branch_name)
+    except ValueError as e:
+        logger.error(str(e))
+        return CommandResult(
+            success=False,
+            stdout="",
+            stderr=str(e),
+            returncode=1,
+        )
+
     cmd = CommandExecutor()
 
     # Check for uncommitted changes before checkout

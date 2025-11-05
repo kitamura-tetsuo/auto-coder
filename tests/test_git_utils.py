@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.git_utils import extract_number_from_branch, get_commit_log, get_current_branch, get_current_repo_name, git_checkout_branch, git_commit_with_retry, git_push, is_git_repository, parse_github_repo_from_url, save_commit_failure_history
+from src.auto_coder.git_utils import extract_number_from_branch, get_commit_log, get_current_branch, get_current_repo_name, git_checkout_branch, git_commit_with_retry, git_push, is_git_repository, parse_github_repo_from_url, save_commit_failure_history, validate_branch_name
 from src.auto_coder.utils import CommandResult
 
 
@@ -1114,6 +1114,33 @@ class TestGitCheckoutBranch:
             # Should stop after commit fails
             assert mock_cmd.run_command.call_count == 4
 
+    def test_checkout_rejects_invalid_pr_branch_name(self):
+        """Test that checkout rejects branch names matching pr-<number> pattern."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Should not call any git commands if validation fails
+
+            result = git_checkout_branch("pr-123")
+
+            assert result.success is False
+            assert "prohibited pattern 'pr-<number>'" in result.stderr
+            assert "issue-123" in result.stderr
+            # Should not have called any git commands
+            mock_cmd.run_command.assert_not_called()
+
+    def test_checkout_rejects_invalid_pr_branch_name_case_insensitive(self):
+        """Test that checkout rejects pr-<number> pattern regardless of case."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+
+            result = git_checkout_branch("PR-456")
+
+            assert result.success is False
+            assert "prohibited pattern 'pr-<number>'" in result.stderr
+            mock_cmd.run_command.assert_not_called()
+
 
 class TestGetCurrentBranch:
     """Tests for get_current_branch function."""
@@ -1190,6 +1217,51 @@ class TestExtractNumberFromBranch:
         assert extract_number_from_branch("develop") is None
         assert extract_number_from_branch("") is None
         assert extract_number_from_branch(None) is None
+
+
+class TestValidateBranchName:
+    """Tests for validate_branch_name function."""
+
+    def test_validate_branch_name_valid_issue_pattern(self):
+        """Test that issue-<number> pattern is valid."""
+        validate_branch_name("issue-123")
+        validate_branch_name("issue-456")
+        validate_branch_name("feature/issue-789")  # With prefix
+        validate_branch_name("main")
+        validate_branch_name("feature-branch")
+        validate_branch_name("develop")
+        validate_branch_name("")  # Empty string should be valid
+
+    def test_validate_branch_name_invalid_pr_pattern(self):
+        """Test that pr-<number> pattern raises ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("pr-123")
+        assert "prohibited pattern 'pr-<number>'" in str(exc_info.value)
+        assert "issue-<number>" in str(exc_info.value)
+
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("PR-456")
+        assert "prohibited pattern 'pr-<number>'" in str(exc_info.value)
+
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("pr-789")
+        assert "prohibited pattern 'pr-<number>'" in str(exc_info.value)
+
+    def test_validate_branch_name_case_insensitive(self):
+        """Test that validation is case-insensitive for pr- pattern."""
+        with pytest.raises(ValueError):
+            validate_branch_name("PR-123")
+
+        with pytest.raises(ValueError):
+            validate_branch_name("Pr-456")
+
+    def test_validate_branch_name_suggestion_message(self):
+        """Test that error message provides helpful suggestion."""
+        with pytest.raises(ValueError) as exc_info:
+            validate_branch_name("pr-123")
+        error_msg = str(exc_info.value)
+        assert "pr-123" in error_msg
+        assert "issue-123" in error_msg
 
 
 class TestGetCommitLog:
