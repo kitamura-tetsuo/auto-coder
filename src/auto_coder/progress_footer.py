@@ -347,6 +347,8 @@ class ProgressContext:
         self.initial_stage = initial_stage
         self.related_issues = related_issues
         self.branch_name = branch_name
+        # Use ProgressStage context manager for automatic stage push/pop
+        self._progress_stage = None
 
     def __enter__(self):
         """Enter the context and display the initial footer."""
@@ -358,6 +360,9 @@ class ProgressContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and clear the footer."""
+        # Exit the ProgressStage context first
+        if self._progress_stage:
+            self._progress_stage.__exit__(exc_type, exc_val, exc_tb)
         newline_progress()
         clear_progress()
         return False
@@ -421,8 +426,15 @@ class ProgressStage:
             self.stage = args[2]
             self.related_issues = kwargs.get("related_issues")
             self.branch_name = kwargs.get("branch_name")
+        elif len(args) == 5:
+            # Full info: item_type, item_number, stage, related_issues, branch_name
+            self.item_type = args[0]
+            self.item_number = args[1]
+            self.stage = args[2]
+            self.related_issues = args[3]
+            self.branch_name = args[4]
         else:
-            raise ValueError("ProgressStage requires either 1 argument (stage) or 3 arguments (item_type, item_number, stage)")
+            raise ValueError("ProgressStage requires either 1 argument (stage), 3 arguments (item_type, item_number, stage), or 5 arguments (item_type, item_number, stage, related_issues, branch_name)")
 
     def __enter__(self):
         """Enter the context and push the stage."""
