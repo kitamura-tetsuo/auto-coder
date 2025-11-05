@@ -55,12 +55,20 @@ class ProgressFooter:
         Returns:
             Formatted footer string
         """
-        # Build the main item display: [Issue #num/PR #num/#branch_name]
-        main_display = f"\033[96m[{item_type} #{item_number}"
+        # Build the main item display with color based on item_type
+        if item_type.upper() == "PR":
+            # PR: cyan color
+            main_display = f"\033[96m[{item_type} #{item_number}"
+        elif item_type.upper() == "ISSUE":
+            # Issue: light purple/magenta
+            main_display = f"\033[95m[{item_type} #{item_number}"
+        else:
+            # Fallback: use cyan
+            main_display = f"\033[96m[{item_type} #{item_number}"
 
-        # Add branch name if available
+        # Add branch name if available (in dark red)
         if self._branch_name:
-            main_display += f"/{self._branch_name}"
+            main_display += f"\033[91m/{self._branch_name}\033[0m"
 
         main_display += "]\033[0m"
 

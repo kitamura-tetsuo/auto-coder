@@ -511,5 +511,80 @@ def test_progress_stage_with_set_and_push():
         ph._global_footer = original_footer
 
 
+
+def test_progress_footer_pr_color():
+    """Test that PR displays in cyan color (ANSI 96m)."""
+    footer = ProgressFooter()
+    formatted = footer._format_footer("PR", 123)
+    # Verify cyan color code is present: \033[96m
+    assert "\033[96m" in formatted
+    assert "PR" in formatted
+    assert "123" in formatted
+
+
+def test_progress_footer_issue_color():
+    """Test that Issue displays in light purple/magenta color (ANSI 95m)."""
+    footer = ProgressFooter()
+    formatted = footer._format_footer("Issue", 456)
+    # Verify purple color code is present: \033[95m
+    assert "\033[95m" in formatted
+    assert "Issue" in formatted
+    assert "456" in formatted
+
+
+def test_progress_footer_branch_name_color():
+    """Test that branch names display in dark red color (ANSI 91m)."""
+    footer = ProgressFooter()
+    footer._branch_name = "feature-branch"
+    formatted = footer._format_footer("PR", 789)
+    # Verify red color code is present: \033[91m
+    assert "\033[91m" in formatted
+    assert "feature-branch" in formatted
+    # Should have the color code before the branch name
+    assert "91m/feature-branch" in formatted
+
+
+def test_progress_footer_case_insensitive_item_type():
+    """Test that item type color coding works regardless of case."""
+    footer = ProgressFooter()
+
+    # Test lowercase "pr"
+    formatted = footer._format_footer("pr", 123)
+    assert "\033[96m" in formatted  # PR should be cyan
+
+    # Test lowercase "issue"
+    formatted = footer._format_footer("issue", 456)
+    assert "\033[95m" in formatted  # Issue should be purple
+
+    # Test mixed case "Pr"
+    formatted = footer._format_footer("Pr", 789)
+    assert "\033[96m" in formatted  # PR should be cyan
+
+    # Test mixed case "IsSuE"
+    formatted = footer._format_footer("IsSuE", 999)
+    assert "\033[95m" in formatted  # Issue should be purple
+
+
+def test_progress_footer_related_issues_color():
+    """Test that related issues remain in purple color (ANSI 95m)."""
+    footer = ProgressFooter()
+    footer._related_issues = [100, 200, 300]
+    formatted = footer._format_footer("PR", 123)
+
+    # Related issues should be in purple
+    assert "\033[95m[Issue #100, #200, #300]\033[0m" in formatted
+
+
+def test_progress_footer_stages_color():
+    """Test that stages remain in yellow color (ANSI 93m)."""
+    footer = ProgressFooter()
+    footer._stage_stack = ["Running tests", "Analyzing"]
+    formatted = footer._format_footer("PR", 123)
+
+    # Stages should be in yellow
+    assert "\033[93m" in formatted
+    assert "Running tests / Analyzing" in formatted
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
