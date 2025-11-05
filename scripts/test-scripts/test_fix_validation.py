@@ -22,16 +22,16 @@ def test_run_method_calls_functions():
         ('issues_processed"] = issues_result', 'issues_result is set to issues_processed'),
         ('prs_processed"] = prs_result', 'prs_result is set to prs_processed'),
     ]
-    
+
     all_passed = True
-    
+
     for check_text, description in checks:
         if check_text in content:
             print(f"✓ {description}")
         else:
             print(f"✗ {description} - not found: {check_text}")
             all_passed = False
-    
+
     return all_passed
 
 def test_old_candidates_code_removed():
@@ -48,16 +48,16 @@ def test_old_candidates_code_removed():
         'while True:',
         'candidates =',
     ]
-    
+
     all_removed = True
-    
+
     for pattern in old_code_patterns:
         if pattern in content:
             print(f"⚠ Old code remains: {pattern}")
             all_removed = False
         else:
             print(f"✓ Old code is removed: {pattern}")
-    
+
     return all_removed
 
 if __name__ == "__main__":

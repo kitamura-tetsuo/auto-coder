@@ -1,7 +1,7 @@
 """
-実行前の包括的な型チェック цель: Pythonで他の型ありの言語みたいに網羅的に型エラーを検出する
+Comprehensive Pre-execution Type Checking Goal: Comprehensively detect type errors in Python like other typed languages
 
-このファイルは、実行前に型エラーを検出するための包括的な方法を実演します。
+This file demonstrates comprehensive methods for detecting type errors before execution.
 """
 
 import ast
@@ -14,19 +14,19 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, Union
 
 # =============================================================================
-# 1. 型安全性向上のためのPython設定
+# 1. Python Configuration for Improved Type Safety
 # =============================================================================
 
 
 class ComprehensiveTypeChecker:
-    """実行前の包括的型チェックシステム"""
+    """Comprehensive pre-execution type checking system"""
 
     def __init__(self):
         self.errors = []
         self.warnings = []
 
     def run_all_type_checkers(self, target_file: str) -> Dict[str, Any]:
-        """複数の型チェックツールを順次実行"""
+        """Run multiple type checkers sequentially"""
         results = {
             "mypy": self._run_mypy(target_file),
             "pyright": self._run_pyright(target_file),
@@ -36,7 +36,7 @@ class ComprehensiveTypeChecker:
         return results
 
     def _run_mypy(self, target_file: str) -> Dict[str, Any]:
-        """Mypyで静的型チェック"""
+        """Run static type checking with Mypy"""
         try:
             cmd = [
                 sys.executable,
@@ -61,9 +61,9 @@ class ComprehensiveTypeChecker:
             return {"success": False, "error": str(e)}
 
     def _run_pyright(self, target_file: str) -> Dict[str, Any]:
-        """Pyrightで厳格型チェック"""
+        """Run strict type checking with Pyright"""
         try:
-            # pyproject.tomlから設定を読み取り
+            # Load configuration from pyproject.toml
             config = self._load_pyright_config()
 
             cmd = ["npx", "pyright", target_file, "--outputjson"]
@@ -89,7 +89,7 @@ class ComprehensiveTypeChecker:
             return {"success": False, "error": str(e)}
 
     def _run_pylint(self, target_file: str) -> Dict[str, Any]:
-        """Pylintで静的解析"""
+        """Run static analysis with Pylint"""
         try:
             cmd = [sys.executable, "-m", "pylint", target_file, "--output-format=json"]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -103,16 +103,16 @@ class ComprehensiveTypeChecker:
             return {"success": False, "error": str(e)}
 
     def _load_pyright_config(self) -> Dict[str, Any]:
-        """pyproject.tomlからPyright設定をロード"""
+        """Load Pyright configuration from pyproject.toml"""
         config_path = Path("pyproject.toml")
         if config_path.exists():
-            # 実際の設定パースはpyprojectライブラリを使用すべきですが、
-            # ここでは簡易実装
+            # Should use pyproject library for actual config parsing,
+            # but this is a simple implementation
             return {"strict": True}
         return {}
 
     def _run_custom_checks(self, target_file: str) -> Dict[str, Any]:
-        """カスタム型チェック（AST解析）"""
+        """Custom type checking (AST analysis)"""
         try:
             with open(target_file, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -127,20 +127,20 @@ class ComprehensiveTypeChecker:
     def _analyze_ast_for_type_issues(
         self, tree: ast.AST, filename: str
     ) -> List[Dict[str, Any]]:
-        """ASTを解析して既知の型問題を検出"""
+        """Analyze AST to detect known type issues"""
         errors = []
 
         class TypeIssueVisitor(ast.NodeVisitor):
             def visit_Call(self, node):
-                # 辞書型のオブジェクトで.get()メソッドを呼び出している箇所を検出
+                # Detect calls to .get() method on dictionary-type objects
                 if (
                     isinstance(node.func, ast.Attribute)
                     and node.func.attr == "get"
                     and hasattr(node, "lineno")
                 ):
 
-                    # 簡単なheuristic: 変数名が'checks'で、'success'が最初の引数の場合は要注意
-                    # 実際の実装では、より詳細な型追跡が必要
+                    # Simple heuristic: be careful if variable name is 'checks' and 'success' is the first argument
+                    # Actual implementation would require more detailed type tracking
                     errors.append(
                         {
                             "type": "potential_dict_access_on_dataclass",
@@ -159,19 +159,19 @@ class ComprehensiveTypeChecker:
 
 
 # =============================================================================
-# 2. 実行時の型検証デコレータ
+# 2. Runtime Type Validation Decorator
 # =============================================================================
 
 
 def runtime_type_check(func):
-    """実行時型チェックデコレータ"""
+    """Runtime type checking decorator"""
 
     def wrapper(*args, **kwargs):
-        # 関数の型注釈を取得
+        # Get function type annotations
         sig = inspect.signature(func)
         type_hints = sig.return_annotation
 
-        # 実行前の型チェック
+        # Pre-execution type checking
         for i, (param_name, param_value) in enumerate(
             zip(sig.parameters.values(), args)
         ):
@@ -179,16 +179,16 @@ def runtime_type_check(func):
                 expected_type = param_name.annotation
                 if not isinstance(param_value, expected_type):
                     print(
-                        f"型エラー in {func.__name__}: パラメータ '{param_name}' は {expected_type} であるべきですが、{type(param_value)} を受け取りました"
+                        f"Type error in {func.__name__}: Parameter '{param_name}' should be {expected_type}, but got {type(param_value)}"
                     )
 
         result = func(*args, **kwargs)
 
-        # 戻り値チェック
+        # Return value check
         if hasattr(type_hints, "__args__") and type_hints is not None:
             if not isinstance(result, type_hints):
                 print(
-                    f"型エラー in {func.__name__}: 戻り値は {type_hints} であるべきですが、{type(result)} を返しました"
+                    f"Type error in {func.__name__}: Return value should be {type_hints}, but got {type(result)}"
                 )
 
         return result
@@ -197,47 +197,47 @@ def runtime_type_check(func):
 
 
 # =============================================================================
-# 3. 具体的問題の解決例
+# 3. Example Problem Resolution
 # =============================================================================
 
 
 @dataclass
 class GitHubActionsStatusResult:
-    """GitHub Actions チェック結果"""
+    """GitHub Actions check result"""
 
     success: bool = True
     ids: List[int] = field(default_factory=list)
 
 
 # =============================================================================
-# 4. CI/CD用の包括的型チェックスクリプト
+# 4. Comprehensive Type Check Script for CI/CD
 # =============================================================================
 
 
 def main():
-    """メイン実行関数"""
+    """Main execution function"""
     target_file = "src/auto_coder/automation_engine.py"
 
     checker = ComprehensiveTypeChecker()
     results = checker.run_all_type_checkers(target_file)
 
-    print("=== 包括的型チェック結果 ===")
+    print("=== Comprehensive Type Check Results ===")
     total_errors = 0
 
     for tool_name, result in results.items():
         print(f"\n--- {tool_name.upper()} ---")
         if result["success"]:
-            print(f"✅ 成功")
+            print(f"✅ Success")
             if "errors_count" in result:
                 total_errors += result["errors_count"]
-                print(f"エラー数: {result['errors_count']}")
+                print(f"Error count: {result['errors_count']}")
         else:
-            print(f"❌ 失敗: {result.get('error', 'Unknown error')}")
+            print(f"❌ Failed: {result.get('error', 'Unknown error')}")
 
         if "output" in result and result["output"]:
-            print(f"出力: {result['output'][:500]}...")
+            print(f"Output: {result['output'][:500]}...")
 
-    print(f"\n総エラー数: {total_errors}")
+    print(f"\nTotal errors: {total_errors}")
     return total_errors == 0
 
 
