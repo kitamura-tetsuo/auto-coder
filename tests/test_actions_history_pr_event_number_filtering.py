@@ -67,7 +67,7 @@ def test_history_prefers_pull_request_event_runs():
 
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
-            # PR のコミット情報を返す
+            # Return PR commit information
             return _cmd_result(
                 True,
                 stdout=json.dumps(
