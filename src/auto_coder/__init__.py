@@ -2,6 +2,6 @@
 Auto-Coder: Automated application development using Gemini CLI and GitHub integration.
 """
 
-__version__ = "2025.11.5.20+gf9599f8"
+__version__ = "2025.11.5.22+g6a0e338"
 __author__ = "Auto-Coder Team"
 __description__ = "Automated application development using Gemini CLI and GitHub integration"
