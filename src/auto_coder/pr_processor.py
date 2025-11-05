@@ -158,7 +158,7 @@ def _process_pr_for_merge(
                 return processed_pr
 
         if dry_run:
-            # 単回実行ポリシーにより、分析フェーズは行わない
+            # Single execution policy - skip analysis phase
             processed_pr["actions_taken"].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
             return processed_pr
         else:

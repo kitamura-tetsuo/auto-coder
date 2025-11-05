@@ -136,7 +136,7 @@ class BackendManager(LLMBackendManagerBase):
                 try:
                     cli = self._get_or_create_client(name)
                     out: str = cli._run_llm_cli(prompt)
-                    # 実行に成功した場合のみ、直近利用したバックエンド/モデルを更新する
+                    # Only update recently used backend/model on successful execution
                     self._last_backend = name
                     self._last_model = getattr(cli, "model_name", None)
                     return out

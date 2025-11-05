@@ -798,7 +798,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
         owner, repo, run_id, job_id = m.groups()
         owner_repo = f"{owner}/{repo}"
 
-        # 1) 可能ならジョブ名を取得
+        # 1) Get job name if possible
         job_name = f"job-{job_id}"
         try:
             jobs_res = cmd.run_command(
@@ -814,7 +814,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
         except Exception:
             pass
 
-        # 1.5) 失敗ステップ名の特定（可能なら）
+        # 1.5) Identify failing step names (if possible)
         failing_step_names: set = set()
         try:
             job_detail = cmd.run_command(["gh", "api", f"repos/{owner_repo}/actions/jobs/{job_id}"], timeout=60)
@@ -828,7 +828,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         if nm:
                             failing_step_names.add(nm)
         except Exception:
-            # 取得できなくても先へ（従来のヒューリスティクスで抽出）
+            # Continue even if unable to get (extract using conventional heuristics)
             pass
 
         def _norm(s: str) -> str:
@@ -838,17 +838,17 @@ def get_github_actions_logs_from_url(url: str) -> str:
 
         def _file_matches_fail(step_file_label: str, content: str) -> bool:
             if not norm_fail_names:
-                return True  # フィルタ情報がない場合は全て許可（従来動作）
+                return True  # Allow all if no filter info (conventional behavior)
             lbl = _norm(step_file_label)
             if any(n and (n in lbl or lbl in n) for n in norm_fail_names):
                 return True
-            # コンテンツ先頭付近の見出しにステップ名が含まれていないか簡易チェック
+            # Simple check if step name is included in header near content start
             head = "\n".join(content.split("\n")[:8]).lower()
             return any(n and (n in head) for n in norm_fail_names)
 
-        # 2) まずは job ZIP ログを直接取得
-        # GitHub API の /logs エンドポイントはバイナリ（ZIP）を返すため、
-        # subprocess でバイナリとして取得する必要がある
+        # 2) First, get job ZIP logs directly
+        # GitHub API /logs endpoint returns binary (ZIP),
+        # so it needs to be obtained as binary via subprocess
         api_cmd = ["gh", "api", f"repos/{owner_repo}/actions/jobs/{job_id}/logs"]
         try:
             result = subprocess.run(
@@ -875,30 +875,30 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                     if not content:
                                         continue
                                     step_file_label = os.path.splitext(os.path.basename(name))[0]
-                                    # ステップフィルタ：失敗ステップのファイルのみ対象
+                                    # Step filter: target only files from failing steps
                                     if not _file_matches_fail(step_file_label, content):
                                         continue
-                                    # ジョブ全体のサマリ候補を収集（順序保持）
+                                    # Collect job-wide summary candidates (maintain order)
                                     for ln in content.split("\n"):
                                         ll = ln.lower()
                                         if ((" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll)) and any(ch.isdigit() for ch in ln):
                                             job_summary_lines.append(ln)
                                     step_name = step_file_label
-                                    # エラー関連の重要な情報を抽出
+                                    # Extract important error-related information
                                     snippet = _extract_error_context(content)
-                                    # 期待/受領の原文行を補強（厳密一致のため）
+                                    # Enhance with expected/received original lines (for strict matching)
                                     exp_lines = []
                                     for ln in content.split("\n"):
                                         if ("Expected substring:" in ln) or ("Received string:" in ln):
                                             exp_lines.append(ln)
                                     if exp_lines:
-                                        # バックスラッシュエスケープを除去した正規化行も付加
+                                        # Also add normalized lines with backslash escapes removed
                                         norm_lines = [ln.replace('\\"', '"') for ln in exp_lines]
                                         if "--- Expectation Details ---" not in snippet:
                                             snippet = (snippet + "\n\n--- Expectation Details ---\n" if snippet else "") + "\n".join(norm_lines)
                                         else:
                                             snippet = snippet + "\n" + "\n".join(norm_lines)
-                                    # エラーがないステップは出力しない（さらに厳格化）
+                                    # Don't output steps without errors (stricter)
                                     if snippet and snippet.strip():
                                         s = snippet
                                         s_lower = s.lower()
@@ -915,11 +915,11 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                         ):
                                             step_snippets.append(f"--- Step {step_name} ---\n{s}")
                             if step_snippets:
-                                # ジョブ全体のサマリを末尾に追加（最後に出現した順で最大数行）
+                                # Add job-wide summary at the end (up to max lines in order of last appearance)
                                 summary_block = ""
                                 summary_lines = []
                                 if job_summary_lines:
-                                    # 後方から重複排除し、最新の並びを再現
+                                    # Remove duplicates from back, reproduce latest order
                                     seen = set()
                                     uniq_rev = []
                                     for ln in reversed(job_summary_lines):
@@ -927,7 +927,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             seen.add(ln)
                                             uniq_rev.append(ln)
                                     summary_lines = list(reversed(uniq_rev))
-                                # ZIPから拾えなければ、テキストログからサマリを補完
+                                # If can't get from ZIP, supplement summary from text logs
                                 if not summary_lines:
                                     try:
                                         job_txt2 = cmd.run_command(
@@ -945,7 +945,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             timeout=120,
                                         )
                                         if job_txt2.returncode == 0 and job_txt2.stdout.strip():
-                                            # 失敗ステップ名でフィルタした行のみからサマリ抽出
+                                            # Extract summary only from lines filtered by failing step name
                                             for ln in job_txt2.stdout.split("\n"):
                                                 parts = ln.split("\t", 2)
                                                 if len(parts) >= 3:
@@ -967,7 +967,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                         pass
                                 body_str = "\n\n".join(step_snippets)
                                 if summary_lines:
-                                    # 本文に含まれる行はサマリから除外
+                                    # Exclude lines contained in body from summary
                                     filtered = [ln for ln in summary_lines[-15:] if ln not in body_str]
                                     summary_block = ("\n\n--- Summary ---\n" + "\n".join(filtered)) if filtered else ""
                                 else:
@@ -975,7 +975,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 body = body_str + summary_block
                                 body = slice_relevant_error_window(body)
                                 return f"=== Job {job_name} ({job_id}) ===\n" + body
-                            # step_snippetsが空の場合、全体からエラーコンテキストを抽出
+                            # If step_snippets is empty, extract error context from all
                             all_text = []
                             for name in zf.namelist():
                                 if name.lower().endswith(".txt"):
@@ -986,30 +986,30 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                             content = ""
                                         all_text.append(content)
                             combined = "\n".join(all_text)
-                            # エラーコンテキストを抽出
+                            # Extract error context
                             important = _extract_error_context(combined)
                             if not important or not important.strip():
-                                # エラーコンテキストが見つからない場合は、最初の1000文字を返す
+                                # If error context not found, return first 1000 characters
                                 important = combined[:1000]
                             important = slice_relevant_error_window(important)
                             return f"=== Job {job_name} ({job_id}) ===\n{important}"
                     except zipfile.BadZipFile:
-                        # ZIPファイルではなく、生のテキストログが返された場合
+                        # If ZIP file not returned, but raw text log returned
                         try:
                             content = result.stdout.decode("utf-8", errors="ignore")
                             if content and content.strip():
-                                # 失敗したステップのログのみを抽出
+                                # Extract only logs from failed steps
                                 snippet = _extract_failed_step_logs(content, list(failing_step_names))
                                 if snippet and snippet.strip():
                                     return f"=== Job {job_name} ({job_id}) ===\n{snippet}"
                                 else:
-                                    # 失敗したステップが見つからない場合は、従来の方法を使用
+                                    # Use conventional method if failed step not found
                                     snippet = _extract_error_context(content)
                                     if snippet and snippet.strip():
                                         snippet = slice_relevant_error_window(snippet)
                                         return f"=== Job {job_name} ({job_id}) ===\n{snippet}"
                                     else:
-                                        # エラーコンテキストが見つからない場合でも、全体を返す
+                                        # Return entire content even if error context not found
                                         snippet = slice_relevant_error_window(content)
                                         return f"=== Job {job_name} ({job_id}) ===\n{snippet}"
                         except Exception as e:
@@ -1017,7 +1017,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
         except Exception:
             pass
 
-        # 3) フォールバック: ジョブのテキストログ
+        # 3) Fallback: job text logs
         try:
             job_txt = cmd.run_command(
                 [
@@ -1035,7 +1035,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
             )
             if job_txt.returncode == 0 and job_txt.stdout.strip():
                 text_output = job_txt.stdout
-                # フォールバック（テキストログ）でも失敗ステップの行だけに絞り込む（タブ区切り形式に対応）
+                # Fallback (text log) also filter to lines from failed steps (supports tab-separated format)
                 text_for_extract = text_output
                 try:
                     if norm_fail_names:
@@ -1048,17 +1048,17 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 step_field = parts[1].strip().lower()
                                 if any(n and (n in step_field or step_field in n) for n in norm_fail_names):
                                     kept.append(ln)
-                        # ある程度の行がタブ形式でパースでき、かつフィルタ結果が得られた場合のみ適用
+                        # Only apply if sufficient lines can be parsed in tab format and filter results obtained
                         if parsed > 10 and kept:
                             text_for_extract = "\n".join(kept)
-                            # 見出しを付与（複数失敗ステップの場合は連結）
+                            # Add header (concatenate if multiple failed steps)
                             if failing_step_names:
                                 hdr = f"--- Step {', '.join(sorted(failing_step_names))} ---\n"
                                 text_for_extract = hdr + text_for_extract
                 except Exception:
                     pass
 
-                # 失敗ステップごとにブロックを分割して出力（テキストログ経路）
+                # Split and output blocks for each failed step (text log path)
                 blocks = []
                 if norm_fail_names:
                     step_to_lines = {}
@@ -1071,7 +1071,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                     if step_to_lines:
                         for step_key in sorted(step_to_lines.keys()):
                             body_lines = step_to_lines[step_key]
-                            # 各ブロックについて重要部分抽出＆期待/受領補強
+                            # For each block, extract important parts & enhance expected/received
                             body_text = "\n".join(body_lines)
                             # blk_imp = _extract_important_errors({'success': False, 'output': body_text, 'errors': ''})
                             blk_imp = body_text[:500]  # Simplified for now
@@ -1094,7 +1094,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 if blocks:
                     important = "\n\n".join(blocks)
 
-                # 期待/受領行を欠落させない
+                # Don't miss expected/received lines
                 # important = _extract_important_errors({'success': False, 'output': text_for_extract, 'errors': ''})
                 important = text_for_extract[:1000]  # Simplified for now
                 if ("Expected substring:" in text_for_extract) or ("Received string:" in text_for_extract) or ("expect(received)" in text_for_extract):
@@ -1112,16 +1112,16 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         else:
                             important = important + "\n" + "\n".join(norm_extra)
                 else:
-                    # 期待/受領が見つからない場合はフィルタ済みテキストからエラー近傍を抽出
+                    # If expected/received not found, extract error vicinity from filtered text
                     important = slice_relevant_error_window(text_for_extract)
-                # 末尾にプレイライトの集計（数行）を補足（全文走査し、順序を保つ）
+                # Supplement Playwright summary (few lines) at end (full scan, maintain order)
                 summary_lines = []
                 for ln in text_output.split("\n"):
                     ll = ln.lower()
                     if (" failed" in ll) or (" passed" in ll) or (" skipped" in ll) or (" did not run" in ll) or ("notice:" in ll) or ("error was not a part of any test" in ll) or ("command failed with exit code" in ll) or ("process completed with exit code" in ll):
                         summary_lines.append(ln)
                 if summary_lines:
-                    # 末尾にプレイライトの集計（数行）を補足（失敗ステップ行のみ、本文に含まれる行は除外）
+                    # Supplement Playwright summary (few lines) at end (only failed step lines, exclude lines in body)
                     summary_lines = []
                     for ln in text_output.split("\n"):
                         parts = ln.split("\t", 2)
@@ -1136,13 +1136,13 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         filtered = [ln for ln in summary_lines[-15:] if ln not in body_now]
                         if filtered:
                             important = important + ("\n\n--- Summary ---\n" if "--- Summary ---" not in important else "\n") + "\n".join(filtered)
-                # プレリュード切り捨て（最終整形）
+                # Truncate prelude (final formatting)
                 important = slice_relevant_error_window(important)
                 return f"=== Job {job_name} ({job_id}) ===\n{important}"
         except Exception:
             pass
 
-        # 4) さらにフォールバック: run 全体の失敗ログ
+        # 4) Further fallback: run-wide failure logs
         try:
             run_failed = cmd.run_command(
                 ["gh", "run", "view", run_id, "-R", owner_repo, "--log-failed"],
@@ -1155,10 +1155,10 @@ def get_github_actions_logs_from_url(url: str) -> str:
         except Exception:
             pass
 
-        # 5) 最後の手段: run ZIP
+        # 5) Last resort: run ZIP
         try:
-            # GitHub API の /logs エンドポイントはバイナリ（ZIP）を返すため、
-            # subprocess でバイナリとして取得する必要がある
+            # GitHub API /logs endpoint returns binary (ZIP), so
+            # it needs to be obtained as binary via subprocess
             result2 = subprocess.run(
                 ["gh", "api", f"repos/{owner_repo}/actions/runs/{run_id}/logs"],
                 capture_output=True,
@@ -1382,7 +1382,7 @@ def _get_github_actions_logs(
     search_history: Optional[bool] = None,
     **kwargs,
 ) -> str:
-    """GitHub Actions の失敗ジョブのログを gh api で取得し、エラー箇所を抜粋して返す。
+    """Get GitHub Actions failed job logs via gh api and return extracted error locations.
 
     Args:
         repo_name: Repository name in format 'owner/repo'
@@ -1397,7 +1397,7 @@ def _get_github_actions_logs(
     Returns:
         String containing GitHub Actions logs
 
-    呼び出し互換:
+    Call compatibility:
     - _get_github_actions_logs(repo, config, failed_checks)
     - _get_github_actions_logs(repo, config, failed_checks, pr_data)
     """
@@ -1430,7 +1430,7 @@ def _get_github_actions_logs(
         logger.info("Historical search failed or found no logs, falling back to current behavior")
 
     # Default behavior (or fallback from historical search)
-    # 引数パターンを解決
+    # Resolve argument patterns
     failed_checks: List[Dict[str, Any]] = []
     pr_data: Optional[Dict[str, Any]] = None
     if len(args) >= 1 and isinstance(args[0], list):
@@ -1438,32 +1438,32 @@ def _get_github_actions_logs(
     if len(args) >= 2 and isinstance(args[1], dict):
         pr_data = args[1]
     if not failed_checks:
-        # 不明な呼び出し
+        # Unknown call
         return "No detailed logs available"
 
     logs: List[str] = []
 
     try:
-        # 1) まず failed_checks の details_url から直接 run_id と job_id を抽出
-        # details_url の形式: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
-        # または https://github.com/<owner>/<repo>/runs/<job_id>
+        # 1) First extract run_id and job_id directly from failed_checks details_url
+        # details_url format: https://github.com/<owner>/<repo>/actions/runs/<run_id>/job/<job_id>
+        # or https://github.com/<owner>/<repo>/runs/<job_id>
         url_to_fetch: List[str] = []
         for check in failed_checks:
             details_url = check.get("details_url", "")
             if details_url and "github.com" in details_url and "/actions/runs/" in details_url:
-                # 正しい形式の URL が含まれている場合は直接使用
+                # Use directly if correct format URL is included
                 url_to_fetch.append(details_url)
                 logger.debug(f"Using details_url from failed_checks: {details_url}")
 
-        # 2) details_url から取得できた場合は、それを使用してログを取得
+        # 2) If can get from details_url, use it to get logs
         if url_to_fetch:
             for url in url_to_fetch:
                 unified = get_github_actions_logs_from_url(url)
                 logs.append(unified)
         else:
-            # 3) details_url が使えない場合は、従来の方法（PR ブランチの失敗した run を取得）
+            # 3) If details_url not usable, use conventional method (get failed run from PR branch)
             logger.debug("No valid details_url found in failed_checks, falling back to gh run list")
-            # PR ブランチを取得して、そのブランチの run のみを取得する（コミット履歴を検索）
+            # Get PR branch and get only runs from that branch (search commit history)
             branch_name = None
             if pr_data:
                 head = pr_data.get("head", {})
@@ -1480,7 +1480,7 @@ def _get_github_actions_logs(
                 "--json",
                 "databaseId,headBranch,conclusion,createdAt,status,displayTitle,url",
             ]
-            # ブランチが特定できた場合は、そのブランチの run のみを取得
+            # If branch can be identified, get only runs from that branch
             if branch_name:
                 run_list_cmd.extend(["--branch", branch_name])
             run_list = cmd.run_command(run_list_cmd, timeout=60)
@@ -1489,7 +1489,7 @@ def _get_github_actions_logs(
             if run_list.returncode == 0 and run_list.stdout.strip():
                 try:
                     runs = json.loads(run_list.stdout)
-                    # 失敗のみ抽出し、createdAt 降順
+                    # Extract only failures, descending by createdAt
                     failed_runs = [r for r in runs if (r.get("conclusion") == "failure")]
                     failed_runs.sort(key=lambda r: r.get("createdAt", ""), reverse=True)
                     if failed_runs:
@@ -1497,7 +1497,7 @@ def _get_github_actions_logs(
                 except Exception as e:
                     logger.debug(f"Failed to parse gh run list JSON: {e}")
 
-            # 4) run の失敗ジョブを抽出
+            # 4) Extract failed jobs from run
             failed_jobs: List[Dict[str, Any]] = []
             if run_id:
                 jobs_res = cmd.run_command(["gh", "run", "view", run_id, "--json", "jobs"], timeout=60)
@@ -1518,19 +1518,19 @@ def _get_github_actions_logs(
                     except Exception as e:
                         logger.debug(f"Failed to parse gh run view JSON: {e}")
 
-            # 5) 失敗ジョブごとに URL 経由の統一実装でログを取得
+            # 5) Get logs via unified implementation by URL for each failed job
             owner_repo = repo_name  # 'owner/repo'
             for job in failed_jobs:
                 job_id = job.get("id")
                 if not job_id:
                     continue
 
-                # URLルートの実装へ委譲（統一）
+                # Delegate to URL route implementation (unified)
                 url = f"https://github.com/{owner_repo}/actions/runs/{run_id}/job/{job_id}"
                 unified = get_github_actions_logs_from_url(url)
                 logs.append(unified)
 
-        # 6) フォールバック: run/job が取れない場合は failed_checks をそのまま整形
+        # 6) Fallback: if run/job cannot be retrieved, format failed_checks as is
         if not logs:
             for check in failed_checks:
                 check_name = check.get("name", "Unknown")
@@ -1555,23 +1555,23 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
         Concatenated logs for the failed steps
     """
     if not failed_step_names:
-        # 失敗したステップが特定できない場合は、従来の方法を使用
+        # Use conventional method if failed step cannot be identified
         return _extract_error_context(log_content)
 
     lines = log_content.split("\n")
     result_sections = []
 
     for step_name in failed_step_names:
-        # ステップのログを抽出
+        # Extract step logs
         step_lines = []
         in_step = False
         step_found = False
 
-        # ステップ名からキーワードを抽出
+        # Extract keywords from step name
         step_name_lower = step_name.lower()
         keywords = []
 
-        # 特定のステップ名に対するマッピング
+        # Mapping for specific step names
         if "lint" in step_name_lower and "functions" in step_name_lower:
             keywords = ["cd functions", "npm run lint", "eslint"]
         elif "cat log" in step_name_lower:
@@ -1581,17 +1581,17 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
         elif "test" in step_name_lower:
             keywords = ["test", "vitest", "jest", "playwright"]
         else:
-            # 一般的なケース: ステップ名の単語を使用
+            # General case: use words from step name
             keywords = [word for word in step_name_lower.split() if len(word) > 3]
 
         for i, line in enumerate(lines):
-            # ステップの開始を検出
+            # Detect step start
             if "##[group]Run" in line and not step_found:
-                # 前のステップを終了
+                # End previous step
                 if in_step:
                     break
 
-                # このステップの開始かチェック
+                # Check if this is step start
                 line_lower = line.lower()
                 if any(keyword in line_lower for keyword in keywords):
                     in_step = True
@@ -1599,18 +1599,18 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
                     step_lines.append(line)
                     continue
 
-            # ステップ内の行を収集
+            # Collect lines in step
             if in_step:
                 step_lines.append(line)
 
-                # 次のステップの開始を検出
+                # Detect next step start
                 if i > 0 and "##[group]Run" in line:
-                    # この行は次のステップなので除外
+                    # This line is next step, exclude
                     step_lines.pop()
                     break
 
         if step_lines:
-            # ANSIエスケープシーケンスとタイムスタンプを削除
+            # Remove ANSI escape sequences and timestamps
             cleaned_lines = [_clean_log_line(line) for line in step_lines]
             section = f"=== Step: {step_name} ===\n" + "\n".join(cleaned_lines)
             result_sections.append(section)
@@ -1618,7 +1618,7 @@ def _extract_failed_step_logs(log_content: str, failed_step_names: list) -> str:
     if result_sections:
         return "\n\n".join(result_sections)
     else:
-        # ステップが見つからない場合は、従来の方法を使用
+        # Use conventional method if step not found
         return _extract_error_context(log_content)
 
 
@@ -1637,7 +1637,7 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
 
     lines = content.split("\n")
 
-    # エラー関連のキーワード
+    # Error-related keywords
     error_keywords = [
         "error:",
         "failed",
@@ -1649,23 +1649,23 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
         "command failed with exit code",
         "process completed with exit code",
         "error was not a part of any test",
-        "eslint",  # ESLintエラーを特別扱い
+        "eslint",  # Treat ESLint errors specially
         "##[error]",
         "##[warning]",
     ]
 
-    # エラー関連の行を収集
+    # Collect error-related lines
     important_indices = []
-    eslint_blocks = []  # ESLintブロックを特別に収集
+    eslint_blocks = []  # Collect ESLint blocks specially
 
     for i, line in enumerate(lines):
         line_lower = line.lower()
 
-        # ESLintコマンド実行を検出
+        # Detect ESLint command execution
         if "eslint" in line_lower and (">" in line or "run" in line_lower):
-            # ESLintブロックの開始を記録
+            # Record ESLint block start
             eslint_start = i
-            # ESLintエラーの終わりを探す（"✖ N problems"まで）
+            # Find end of ESLint errors (up to "✖ N problems")
             eslint_end = i
             for j in range(i + 1, min(len(lines), i + 50)):
                 if "problems" in lines[j].lower() or "##[error]process completed" in lines[j].lower():
@@ -1677,33 +1677,33 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
             important_indices.append(i)
 
     if not important_indices and not eslint_blocks:
-        # エラーキーワードが見つからない場合は、全体を返す（最大max_lines行）
+        # If error keywords not found, return entire content (max max_lines lines)
         cleaned_lines = [_clean_log_line(line) for line in lines[:max_lines]]
         return "\n".join(cleaned_lines)
 
-    # エラー行の前後を含めて抽出
+    # Extract including before/after error lines
     context_lines = set()
 
-    # ESLintブロック全体を含める
+    # Include entire ESLint block
     for start, end in eslint_blocks:
         for i in range(start, end + 1):
             context_lines.add(i)
 
-    # その他のエラー行の前後を含める
+    # Include before/after other error lines
     for idx in important_indices:
-        # 各エラー行の前後10行を含める
+        # Include 10 lines before/after each error line
         start = max(0, idx - 10)
         end = min(len(lines), idx + 10)
         for i in range(start, end):
             context_lines.add(i)
 
-    # 行番号でソートして結合
+    # Sort and combine by line number
     sorted_indices = sorted(context_lines)
     result_lines = [_clean_log_line(lines[i]) for i in sorted_indices]
 
-    # 最大行数に制限
+    # Limit to max lines
     if len(result_lines) > max_lines:
-        # 最初の部分と最後の部分を含める
+        # Include first and last parts
         half = max_lines // 2
         result_lines = result_lines[:half] + ["... (omitted) ..."] + result_lines[-half:]
 
@@ -1757,11 +1757,11 @@ def _clean_log_line(line: str) -> str:
     """
     import re
 
-    # ANSIエスケープシーケンスを削除
+    # Remove ANSI escape sequences
     ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
     line = ansi_escape.sub("", line)
 
-    # タイムスタンプを削除（例: 2025-10-27T03:26:24.5806020Z）
+    # Remove timestamp (example: 2025-10-27T03:26:24.5806020Z)
     timestamp_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+")
     line = timestamp_pattern.sub("", line)
 
