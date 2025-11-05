@@ -53,7 +53,7 @@ jkl3456 Refactor code"""
         mock_git_result.stdout = mock_git_log
         mock_git_result.stderr = ""
 
-        # Setup mock for gh run list: 呼び出し順で各コミット相当の結果を返す
+        # Setup mock for gh run list: return results equivalent to each commit in call order
         list_call = {"i": 0}
 
         def run_command_side_effect(cmd, **kwargs):

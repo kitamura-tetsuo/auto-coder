@@ -1,4 +1,4 @@
-"""_extract_error_context関数のテスト"""
+_extract_error_context function test
 
 import pytest
 
@@ -6,8 +6,8 @@ from src.auto_coder.util.github_action import _extract_error_context
 
 
 def test_extract_error_context_with_playwright_error():
-    """Playwrightのエラーログから十分なコンテキストを抽出できることを確認"""
-    # 実際のPlaywrightエラーログに似たサンプル
+    """Verify that sufficient context can be extracted from Playwright error logs"""
+    # Sample similar to actual Playwright error logs
     log_content = """
 2025-10-27T03:25:50.0000000Z Running tests...
 2025-10-27T03:25:51.0000000Z 
@@ -38,24 +38,24 @@ def test_extract_error_context_with_playwright_error():
 
     result = _extract_error_context(log_content)
 
-    # エラーメッセージが含まれていることを確認
+    # Verify that error message is included
     assert "Error: expect(received).toContain(expected)" in result
     assert "Expected substring:" in result
     assert "Received string:" in result
     assert "fmt-url-label-links-a391b6c2.spec.ts" in result
 
-    # エラーの前後のコンテキストが含まれていることを確認
+    # Verify that context before and after error is included
     assert "URL label links" in result
     assert "expect(firstItemHtml).toContain" in result
 
-    # 行数が適切であることを確認（エラー行の前後10行を含む）
+    # Verify that line count is appropriate (includes 10 lines before and after error line)
     result_lines = result.split("\n")
-    assert len(result_lines) >= 20  # 最低でもエラー行の前後10行
-    assert len(result_lines) <= 500  # 最大500行
+    assert len(result_lines) >= 20  # At least 10 lines before and after error line
+    assert len(result_lines) <= 500  # Maximum 500 lines
 
 
 def test_extract_error_context_with_multiple_errors():
-    """複数のエラーがある場合に全てのエラーコンテキストを抽出できることを確認"""
+    """Verify that all error contexts can be extracted when there are multiple errors"""
     log_content = (
         """
 2025-10-27T03:25:50.0000000Z Running tests...
@@ -84,13 +84,13 @@ def test_extract_error_context_with_multiple_errors():
 
     result = _extract_error_context(log_content)
 
-    # 両方のエラーが含まれていることを確認
+    # Verify that both errors are included
     assert "Test 1 failed" in result
     assert "Test 2 failed" in result
     assert "test1.spec.ts" in result
     assert "test2.spec.ts" in result
 
-    # 両方のエラーの詳細が含まれていることを確認
+    # Verify that details of both errors are included
     assert "Expected: true" in result
     assert "Received: false" in result
     assert 'Expected substring: "hello"' in result
@@ -98,15 +98,15 @@ def test_extract_error_context_with_multiple_errors():
 
 
 def test_extract_error_context_with_long_log():
-    """長いログから重要な部分のみを抽出できることを確認"""
-    # 1000行のログを生成（最初の100行、エラー部分、最後の100行）
+    """Verify that only important parts are extracted from long logs"""
+    # Generate 1000 lines log (first 100 lines, error part, last 100 lines)
     log_lines = []
 
-    # 最初の100行（エラーなし）
+    # First 100 lines (no error)
     for i in range(100):
         log_lines.append(f"2025-10-27T03:25:{i:02d}.0000000Z   Setup line {i}")
 
-    # エラー部分
+    # Error part
     log_lines.extend(
         [
             "2025-10-27T03:26:00.0000000Z   1) [core] › e2e/core/critical-test.spec.ts:50:5 › Critical Test",
@@ -120,11 +120,11 @@ def test_extract_error_context_with_long_log():
         ]
     )
 
-    # 中間の700行（エラーなし）
+    # Middle 700 lines (no error)
     for i in range(700):
         log_lines.append(f"2025-10-27T03:27:{i%60:02d}.0000000Z   Middle line {i}")
 
-    # 最後の100行（エラーなし）
+    # Last 100 lines (no error)
     for i in range(100):
         log_lines.append(f"2025-10-27T03:28:{i:02d}.0000000Z   Cleanup line {i}")
 
@@ -132,37 +132,37 @@ def test_extract_error_context_with_long_log():
 
     result = _extract_error_context(log_content, max_lines=500)
 
-    # エラー部分が含まれていることを確認
+    # Verify that error part is included
     assert "Critical failure" in result
     assert "critical-test.spec.ts" in result
     assert 'Expected substring: "important data"' in result
     assert 'Received string: "wrong data"' in result
 
-    # 結果が最大行数以下であることを確認
+    # Verify that result is within max line count
     result_lines = result.split("\n")
     assert len(result_lines) <= 500
 
-    # エラーの前後のコンテキストが含まれていることを確認
+    # Verify that context before and after error is included
     assert "Critical Test" in result
 
 
 def test_extract_error_context_no_errors():
-    """エラーがない場合は最初の部分を返すことを確認"""
+    """Verify that first part is returned when there is no error"""
     log_content = "\n".join([f"2025-10-27T03:25:{i:02d}.0000000Z   Test line {i}" for i in range(600)])
 
     result = _extract_error_context(log_content, max_lines=500)
 
-    # 最大行数以下であることを確認
+    # Verify it is within max line count
     result_lines = result.split("\n")
     assert len(result_lines) <= 500
 
-    # 最初の部分が含まれていることを確認
+    # Verify that first part is included
     assert "Test line 0" in result
     assert "Test line 1" in result
 
 
 def test_extract_error_context_empty_log():
-    """空のログを処理できることを確認"""
+    """Verify that empty log can be processed"""
     result = _extract_error_context("")
     assert result == ""
 
@@ -171,7 +171,7 @@ def test_extract_error_context_empty_log():
 
 
 def test_extract_error_context_preserves_important_context():
-    """エラーの重要なコンテキストが保持されることを確認"""
+    """Verify that important context of error is preserved"""
     log_content = """
 2025-10-27T03:25:50.0000000Z Test setup started
 2025-10-27T03:25:51.0000000Z Navigating to page
@@ -193,14 +193,14 @@ def test_extract_error_context_preserves_important_context():
 
     result = _extract_error_context(log_content)
 
-    # エラーメッセージとその前後のコンテキストが含まれていることを確認
+    # Verify that error message and context before/after error are included
     assert "Button click test" in result
     assert "Error: expect(received).toContain(expected)" in result
     assert 'Expected substring: "Success message"' in result
     assert 'Received string: "Error: Network timeout"' in result
 
-    # エラーの前のセットアップ情報も含まれていることを確認（前10行）
+    # Verify that setup information before error is included (first 10 lines)
     assert "Waiting for response" in result or "Clicking button" in result
 
-    # エラーの後の情報も含まれていることを確認（後10行）
+    # Verify that information after error is included (last 10 lines)
     assert "button-click.spec.ts:30:31" in result

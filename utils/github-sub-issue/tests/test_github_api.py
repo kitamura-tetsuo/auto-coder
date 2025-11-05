@@ -176,7 +176,7 @@ class TestGitHubSubIssueAPI:
 
     @patch("subprocess.run")
     def test_create_sub_issue(self, mock_run: MagicMock) -> None:
-        """新しい sub-issue を作成できることを確認."""
+        """Verify that a new sub-issue can be created."""
         mock_run.side_effect = [
             # gh issue create
             MagicMock(stdout="https://github.com/owner/repo/issues/789\n", returncode=0),

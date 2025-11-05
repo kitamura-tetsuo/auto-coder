@@ -22,7 +22,7 @@ from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.github_client import GitHubClient
 
 
-# テストの安定化: 外部環境変数とユーザホームの影響を排除（CLIの挙動を一定にするため）
+# Test stabilization: eliminate external environment variables and user HOME influence (to ensure consistent CLI behavior)
 @pytest.fixture(autouse=True)
 def _clear_sensitive_env(monkeypatch, request):
     import tempfile
@@ -34,10 +34,10 @@ def _clear_sensitive_env(monkeypatch, request):
             monkeypatch.delenv(key, raising=False)
         return
 
-    # 影響のある環境変数をクリア
+    # Clear influential environment variables
     for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
         monkeypatch.delenv(key, raising=False)
-    # ホームディレクトリを一時ディレクトリに切り替え、~/.config/gh/hosts.yml 等の実ファイル影響を遮断
+    # Switch home directory to temporary directory, blocking effects of real files like ~/.config/gh/hosts.yml
     tmp_home = tempfile.mkdtemp(prefix="ac_test_home_")
     monkeypatch.setenv("HOME", tmp_home)
 
@@ -199,7 +199,7 @@ def temp_reports_dir(tmp_path):
     return str(reports_dir)
 
 
-# 実際の git/gh コマンドをテスト中に実行しないようにスタブする
+# Stub to prevent actual git/gh commands from being executed during testing
 @pytest.fixture(autouse=True)
 def stub_git_and_gh_commands(monkeypatch, request):
     import subprocess
@@ -220,7 +220,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
     def _as_text_or_bytes(text_output: str, text: bool):
         if text:
             return text_output, ""
-        # bytes 出力
+        # bytes output
         return text_output.encode("utf-8"), b""
 
     def fake_run(
@@ -332,13 +332,13 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     env=env,
                 )
 
-            # デフォルトの成功レスポンス
+            # Default success response
             out_text = ""
 
             if program == "git":
-                # 代表的な呼び出しに対する最小限の正常系出力
+                # Minimal normal output for representative calls
                 if isinstance(cmd, (list, tuple)) and "status" in cmd and "--porcelain" in cmd:
-                    out_text = ""  # 変更なし
+                    out_text = ""  # No changes
                 elif isinstance(cmd, (list, tuple)) and "rev-parse" in cmd:
                     out_text = "main"
                 elif isinstance(cmd, (list, tuple)) and "merge-base" in cmd:
@@ -347,26 +347,26 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     out_text = ""
             elif program == "gh":
                 if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "auth" and cmd[2] == "status":
-                    # 認証なしをシミュレーション（トークン未設定のテストを通すため）
+                    # Simulate no authentication (to pass tests without token)
                     return types.SimpleNamespace(stdout="", stderr="not logged in", returncode=1)
                 if isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "pr" and cmd[2] == "checks":
-                    # タブ区切り形式の一例（PASS）
+                    # Example of tab-separated format (PASS)
                     out_text = "CI / build\tPASS\t1m\thttps://example/check\n"
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "list":
                     out_text = "[]"
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 3 and cmd[1] == "run" and cmd[2] == "view" and "--json" in cmd:
                     out_text = '{"jobs":[]}'
                 elif isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[1] == "api":
-                    # zip ログ取得など。text=False の呼び出しにも対応
-                    pass  # 出力は下で text フラグに応じて生成
+                    # Get zip logs, etc. Also supports text=False calls
+                    pass  # Output will be generated below based on text flag
                 else:
                     out_text = ""
             else:  # gemini/codex/uv
-                # --version チェックや exec をダミー成功
+                # Dummy success for --version check and exec
                 out_text = ""
 
             if isinstance(cmd, (list, tuple)) and len(cmd) >= 2 and cmd[0] == "gh" and cmd[1] == "api":
-                # API 呼び出しはバイナリ or テキスト空出力でOK
+                # API calls are OK with binary or text empty output
                 if text:
                     stdout, stderr = _as_text_or_bytes("", True)
                 else:
@@ -379,7 +379,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
             return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
         except Exception:
-            # 想定外は元の run にフォールバック
+            # Unexpected cases fall back to original run
             return orig_run(
                 cmd,
                 capture_output=capture_output,
@@ -408,7 +408,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
                 class DummyPopen:
                     def __init__(self):
-                        # stdout をイテレータにして、逐次読み取りを安全に終了
+                        # Make stdout an iterator, safely end sequential reading
                         self._lines = [""]
                         self.stdout = iter(self._lines)
                         self.stderr = iter([""])
@@ -421,7 +421,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                         return 0
 
                 return DummyPopen()
-            # universal_newlines は Python3.12 で text と同義。両方指定の齟齬を避ける
+            # universal_newlines is synonymous with text in Python3.12. Avoid conflicts with both specified
             if universal_newlines is not None and text is None:
                 text = bool(universal_newlines)
             return orig_popen(

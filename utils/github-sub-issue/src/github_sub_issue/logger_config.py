@@ -9,7 +9,7 @@ def setup_logger(verbose: bool = False) -> None:
     """ロガーを設定する.
 
     Args:
-        verbose: 詳細ログを有効にするかどうか
+        verbose: Whether to enable verbose logging
     """
     # デフォルトのハンドラーを削除
     logger.remove()

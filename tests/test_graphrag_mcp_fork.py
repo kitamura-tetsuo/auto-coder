@@ -182,7 +182,7 @@ def test_fork_info_in_bundled_mcp():
             assert fork_info.exists(), "FORK_INFO.md should exist in bundled MCP server"
             content = fork_info.read_text()
             assert "rileylemm/graphrag_mcp" in content
-            assert "Fork" in content or "fork" in content or "フォーク" in content
+            assert "Fork" in content or "fork" in content or "fork" in content
         else:
             pytest.skip("Bundled MCP server not found (development mode)")
     except ImportError:

@@ -11,9 +11,9 @@ def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", return
 
 
 def test_history_uses_branch_filter_when_commit_runs_empty():
-    """commit指定でランが見つからない場合でも、ブランチで正しくフィルタされることを確認する。
+    """Verify that branch filtering works correctly even when --commit finds no runs.
 
-    回帰: PR #73 の履歴チェックが PR #133 の Run を誤って参照してしまう不具合の防止。
+    Regression: Prevent PR #73's history check from incorrectly referencing PR #133's Run.
     """
     config = AutomationConfig()
 
@@ -26,11 +26,11 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         },
     }
 
-    # 1) --commit ではヒットしない
+    # 1) --commit will not hit
     commit_run_list = _cmd_result(True, stdout="[]", stderr="", returncode=0)
 
-    # 2) 通常の run list は、他PRの新しいRunと、対象PRの古いRunが混在
-    other_pr_run_id = 19024332818  # 実例に近い形式
+    # 2) Normal run list mixes other PR's new Run and target PR's old Run
+    other_pr_run_id = 19024332818  # Format close to real example
     target_pr_run_id = 18000000000
 
     run_list_payload = [
@@ -57,7 +57,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
     ]
     run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
-    # 3) run view (jobs) は、対象PRのRunのみ参照されることを期待
+    # 3) run view (jobs) should reference only target PR's Run
     jobs_payload_target = {
         "jobs": [
             {
@@ -73,7 +73,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
 
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
-            # PR のコミット情報を返す
+            # Return PR commit information
             return _cmd_result(
                 True,
                 stdout=json.dumps(
@@ -91,7 +91,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
             if call_count["list"] == 1:
-                # 1回目（commit 相当）はヒットしない
+                # 1st time (equivalent to commit) will not hit
                 return commit_run_list
             # 2回目（フォールバック）は候補が返る
             return run_list_result
@@ -104,7 +104,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
                     stderr="",
                     returncode=0,
                 )
-            # 万が一他PRのRunを取りに来ても空で返しておく
+            # In case it fetches another PR's Run, return empty
             return _cmd_result(True, stdout=json.dumps({"jobs": []}), stderr="", returncode=0)
         raise AssertionError(f"Unexpected command: {cmd}")
 
@@ -112,12 +112,12 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
-    # GitHubActionsStatusResultにはsuccessとidsのみ存在
+    # GitHubActionsStatusResult has only success and ids
     assert isinstance(result.ids, list)
 
 
 def test_history_filters_to_branch_even_with_head_sha_present():
-    """head.sha が存在しても commit でヒットしない場合、ブランチで確実に絞り込む。"""
+    """When head.sha exists but doesn't hit in commit, filter by branch for sure."""
     config = AutomationConfig()
 
     pr_data = {
@@ -131,7 +131,7 @@ def test_history_filters_to_branch_even_with_head_sha_present():
 
     commit_run_list = _cmd_result(True, stdout="[]", stderr="", returncode=0)
 
-    # 同じブランチ(push)と異なるブランチ(PR)を混在させる
+    # Mix same branch (push) and different branches (PR)
     run_list_payload = [
         {
             "databaseId": 3001,
@@ -171,7 +171,7 @@ def test_history_filters_to_branch_even_with_head_sha_present():
 
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
-            # PR のコミット情報を返す
+            # Return PR commit information
             return _cmd_result(
                 True,
                 stdout=json.dumps(
@@ -189,12 +189,12 @@ def test_history_filters_to_branch_even_with_head_sha_present():
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
             if call_count["list"] == 1:
-                # 1回目（commit 相当）はヒットしない
+                # 1st time (equivalent to commit) will not hit
                 return commit_run_list
-            # 2回目（フォールバック）は候補が返る
+            # 2nd time (fallback) returns candidates
             return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
-            # ブランチで絞られた 3000 のみが参照されるはず
+            # Should reference only 3000 filtered by branch
             run_id = int(cmd[3])
             assert run_id == 3000, f"unexpected run viewed: {run_id}"
             return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
@@ -204,5 +204,5 @@ def test_history_filters_to_branch_even_with_head_sha_present():
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
-    # GitHubActionsStatusResultにはsuccessとidsのみ存在
+    # GitHubActionsStatusResult has only success and ids
     assert isinstance(result.ids, list)
