@@ -68,6 +68,7 @@ class GitHubClient:
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
+        self._initialized = True
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
@@ -89,7 +90,7 @@ class GitHubClient:
         return cls._instance
 
     @classmethod
-    def get_instance(cls, token: str=None, disable_labels: bool = False):
+    def get_instance(cls, token: str = None, disable_labels: bool = False):
         """Get the singleton instance of GitHubClient.
 
         On the first call, this creates and returns the singleton instance.
@@ -108,7 +109,7 @@ class GitHubClient:
                 if cls._instance is None:
                     instance = cls.__new__(cls)
                     # Only call __init__ if not already initialized
-                    if not hasattr(instance, '_initialized') or not instance._initialized:
+                    if not hasattr(instance, "_initialized") or not instance._initialized:
                         instance.__init__(token, disable_labels)
                     cls._instance = instance
         return cls._instance
