@@ -615,27 +615,27 @@ def _apply_issue_actions_directly(
                 actions.append(f"Added analysis comment to issue #{issue_data['number']}")
 
             # Commit any changes made
-            push_progress_stage("Committing changes")
-            commit_action = commit_and_push_changes(
-                {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
-                repo_name=repo_name,
-                issue_number=issue_data["number"],
-            )
-            actions.append(commit_action)
+            with ProgressStage("Committing changes"):
+                commit_action = commit_and_push_changes(
+                    {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
+                    repo_name=repo_name,
+                    issue_number=issue_data["number"],
+                )
+                actions.append(commit_action)
 
             # Create PR if this is a regular issue (not a PR)
             if "head_branch" not in issue_data and target_branch:
-                push_progress_stage("Creating PR")
-                pr_creation_result = _create_pr_for_issue(
-                    repo_name=repo_name,
-                    issue_data=issue_data,
-                    work_branch=target_branch,
-                    base_branch=pr_base_branch,
-                    llm_response=response,
-                    github_client=github_client,
-                    dry_run=dry_run,
-                )
-                actions.append(pr_creation_result)
+                with ProgressStage("Creating PR"):
+                    pr_creation_result = _create_pr_for_issue(
+                        repo_name=repo_name,
+                        issue_data=issue_data,
+                        work_branch=target_branch,
+                        base_branch=pr_base_branch,
+                        llm_response=response,
+                        github_client=github_client,
+                        dry_run=dry_run,
+                    )
+                    actions.append(pr_creation_result)
         else:
             actions.append("LLM CLI did not provide a clear response for issue analysis")
 
@@ -828,8 +828,8 @@ def process_single(
             else:
                 try:
                     set_progress_item("Issue", number)
-                    push_progress_stage("Getting issue details")
-                    issue_data = github_client.get_issue_details_by_number(repo_name, number)
+                    with ProgressStage("Getting issue details"):
+                        issue_data = github_client.get_issue_details_by_number(repo_name, number)
 
                     # Add @auto-coder label now that we're actually going to process this issue
                     if not dry_run:
@@ -850,20 +850,20 @@ def process_single(
                     try:
                         if jules_mode:
                             # Mimic jules mode behavior
-                            push_progress_stage("Adding jules label")
-                            current_labels = issue_data.get("labels", [])
-                            if "jules" not in current_labels:
-                                if not dry_run:
-                                    github_client.add_labels_to_issue(repo_name, number, ["jules"])
-                                    processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
+                            with ProgressStage("Adding jules label"):
+                                current_labels = issue_data.get("labels", [])
+                                if "jules" not in current_labels:
+                                    if not dry_run:
+                                        github_client.add_labels_to_issue(repo_name, number, ["jules"])
+                                        processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
+                                    else:
+                                        processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{number}")
                                 else:
-                                    processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{number}")
-                            else:
-                                processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
+                                    processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
                         else:
-                            push_progress_stage("Processing")
-                            actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
-                            processed_issue["actions_taken"] = actions
+                            with ProgressStage("Processing"):
+                                actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
+                                processed_issue["actions_taken"] = actions
                     finally:
                         # Remove @auto-coder label after processing
                         if not dry_run:
