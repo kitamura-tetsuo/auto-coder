@@ -144,7 +144,7 @@ def _process_pr_for_merge(
         "priority": "merge",
         "analysis": None,
     }
-    github_client = getattr(config, 'github_client', None)
+    github_client = getattr(config, "github_client", None)
     labeled = False
 
     try:
@@ -190,7 +190,7 @@ def _process_pr_for_fixes(
 ) -> Dict[str, Any]:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr: Dict[str, Any] = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
-    github_client = getattr(config, 'github_client', None)
+    github_client = getattr(config, "github_client", None)
     labeled = False
 
     try:
