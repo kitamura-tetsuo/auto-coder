@@ -67,15 +67,9 @@ def test_history_handles_missing_pullRequests_field_gracefully():
             # Handle gh pr view command for commits
             return _cmd_result(
                 True,
-                stdout=json.dumps({
-                    "commits": [
-                        {
-                            "oid": "abc123def456"
-                        }
-                    ]
-                }),
+                stdout=json.dumps({"commits": [{"oid": "abc123def456"}]}),
                 stderr="",
-                returncode=0
+                returncode=0,
             )
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1
@@ -158,15 +152,9 @@ def test_history_handles_empty_pullRequests_list_gracefully():
             # Handle gh pr view command for commits
             return _cmd_result(
                 True,
-                stdout=json.dumps({
-                    "commits": [
-                        {
-                            "oid": "cafebabefeed"
-                        }
-                    ]
-                }),
+                stdout=json.dumps({"commits": [{"oid": "cafebabefeed"}]}),
                 stderr="",
-                returncode=0
+                returncode=0,
             )
         if cmd[:3] == ["gh", "run", "list"]:
             call_count["list"] += 1

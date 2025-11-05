@@ -28,8 +28,6 @@ def test_create_pr_prompt_is_action_oriented_no_comments(
     assert test_repo_name in prompt
 
 
-
-
 """Tests for automation engine functionality."""
 
 
@@ -43,9 +41,6 @@ class TestAutomationEngine:
         assert engine.github == mock_github_client
         assert engine.dry_run is True
         assert engine.config.REPORTS_DIR == "reports"
-
-
-
 
 
 class TestAutomationConfig:

@@ -113,11 +113,11 @@ def render_prompt(
     }
     try:
         rendered_prompt = template.safe_substitute(safe_params)
-        
+
         # Load prompts to get header
         prompts = load_prompts(path)
         header = prompts.get("header", "")
-        
+
         # Prepend header to the rendered prompt
         if header:
             return f"{header.rstrip()}\n\n{rendered_prompt}"
