@@ -1,28 +1,28 @@
 # Graph Builder
 
-TypeScript と Python のコードベースを解析して Neo4j グラフデータベース用のデータを生成するツールです。
+A tool that analyzes TypeScript and Python codebases to generate data for Neo4j graph databases.
 
-## 概要
+## Overview
 
-このツールは、TypeScript と Python のプロジェクトを解析し、以下を抽出します:
+This tool analyzes TypeScript and Python projects and extracts the following:
 
-- **ノード**: File, Module, Function, Method, Class, Interface, Type
-- **エッジ**: IMPORTS, CALLS, CONTAINS, EXTENDS, IMPLEMENTS
+- **Nodes**: File, Module, Function, Method, Class, Interface, Type
+- **Edges**: IMPORTS, CALLS, CONTAINS, EXTENDS, IMPLEMENTS
 
-各ノードには以下の情報が含まれます:
+Each node includes the following information:
 
-- `id`: 一意識別子（SHA1ハッシュの16文字）
-- `kind`: ノードの種類
-- `fqname`: 完全修飾名（例: `src/user/service.ts:UserService.getUserById`）
-- `sig`: 型シグネチャ（例: `(string)->Promise<User>`）
-- `short`: 要約（30-80トークン、JSDocまたは自動生成）
-- `complexity`: 循環的複雑度
-- `tokens_est`: 推定トークン数
-- `tags`: 副作用タグ（IO, DB, NETWORK, ASYNC, PURE）
+- `id`: Unique identifier (16-character SHA1 hash)
+- `kind`: Node type
+- `fqname`: Fully qualified name (e.g., `src/user/service.ts:UserService.getUserById`)
+- `sig`: Type signature (e.g., `(string)->Promise<User>`)
+- `short`: Summary (30-80 tokens, JSDoc or auto-generated)
+- `complexity`: Cyclomatic complexity
+- `tokens_est`: Estimated token count
+- `tags`: Side effect tags (IO, DB, NETWORK, ASYNC, PURE)
 
-## インストール
+## Installation
 
-### TypeScript版
+### TypeScript Version
 
 ```bash
 cd graph-builder
@@ -30,118 +30,118 @@ npm install
 npm run build
 ```
 
-### Python版
+### Python Version
 
 ```bash
 cd graph-builder
-# 依存関係は標準ライブラリのみ
+# Dependencies: Python standard library only
 ```
 
-## 使い方
+## Usage
 
-### TypeScript版
+### TypeScript Version
 
 ```bash
-# プロジェクトをスキャン
+# Scan a project
 node dist/cli.js scan --project ./my-project --out ./out --languages typescript,python
 
-# CSV出力（Neo4j bulk import用）
+# CSV output (for Neo4j bulk import)
 node dist/cli.js emit-csv --out ./out
 
-# JSON出力（バッチ操作用）
+# JSON output (for batch operations)
 node dist/cli.js emit-json --out ./out
 
-# Git差分から変更を検出
+# Detect changes from git diff
 node dist/cli.js diff --since HEAD~1 --out ./out
 ```
 
-### Python版
+### Python Version
 
 ```bash
-# プロジェクトをスキャン
+# Scan a project
 python3 src/cli_python.py scan --project ./my-project --out ./out
 
-# CSV出力（Neo4j bulk import用）
+# CSV output (for Neo4j bulk import)
 python3 src/cli_python.py emit-csv --out ./out
 
-# JSON出力（バッチ操作用）
+# JSON output (for batch operations)
 python3 src/cli_python.py emit-json --out ./out
 
-# Git差分から変更を検出
+# Detect changes from git diff
 python3 src/cli_python.py diff --since HEAD~1 --out ./out
 ```
 
-## コマンドオプション
+## Command Options
 
 ### scan
 
-プロジェクトをスキャンしてグラフデータを抽出します。
+Scan a project and extract graph data.
 
 ```bash
 graph-builder scan [options]
 ```
 
-**オプション:**
+**Options:**
 
-- `--project <path>`: プロジェクトのパス（デフォルト: `.`）
-- `--out <path>`: 出力ディレクトリ（デフォルト: `./out`）
-- `--mode <mode>`: スキャンモード `full` または `diff`（デフォルト: `full`）
-- `--since <ref>`: diff モード用の Git リファレンス
-- `--limit <number>`: 処理するファイル数の制限
-- `--batch-size <number>`: 出力のバッチサイズ（デフォルト: `500`）
-- `--languages <langs>`: スキャンする言語（カンマ区切り: `typescript,python`）
+- `--project <path>`: Project path (default: `.`)
+- `--out <path>`: Output directory (default: `./out`)
+- `--mode <mode>`: Scan mode `full` or `diff` (default: `full`)
+- `--since <ref>`: Git reference for diff mode
+- `--limit <number>`: Limit on number of files to process
+- `--batch-size <number>`: Output batch size (default: `500`)
+- `--languages <langs>`: Languages to scan (comma-separated: `typescript,python`)
 
 ### emit-csv
 
-Neo4j bulk import 用の CSV ファイルを出力します。
+Output CSV files for Neo4j bulk import.
 
 ```bash
 graph-builder emit-csv [options]
 ```
 
-**オプション:**
+**Options:**
 
-- `--out <path>`: 出力ディレクトリ（デフォルト: `./out`）
+- `--out <path>`: Output directory (default: `./out`)
 
-**出力ファイル:**
+**Output Files:**
 
-- `nodes.csv`: ノードデータ
-- `rels.csv`: エッジデータ
+- `nodes.csv`: Node data
+- `rels.csv`: Edge data
 
 ### emit-json
 
-バッチ操作用の JSON ファイルを出力します。
+Output JSON files for batch operations.
 
 ```bash
 graph-builder emit-json [options]
 ```
 
-**オプション:**
+**Options:**
 
-- `--out <path>`: 出力ディレクトリ（デフォルト: `./out`）
+- `--out <path>`: Output directory (default: `./out`)
 
-**出力ファイル:**
+**Output Files:**
 
-- `batch-{timestamp}.json`: バッチデータ
+- `batch-{timestamp}.json`: Batch data
 
 ### diff
 
-Git の変更から差分を生成します。
+Generate diffs from git changes.
 
 ```bash
 graph-builder diff [options]
 ```
 
-**オプション:**
+**Options:**
 
-- `--since <ref>`: 比較する Git リファレンス（デフォルト: `HEAD~1`）
-- `--out <path>`: 出力ディレクトリ（デフォルト: `./out`）
+- `--since <ref>`: Git reference to compare (default: `HEAD~1`)
+- `--out <path>`: Output directory (default: `./out`)
 
-**出力ファイル:**
+**Output Files:**
 
-- `diff-{commit}.json`: 差分データ
+- `diff-{commit}.json`: Diff data
 
-## 出力スキーマ
+## Output Schema
 
 ### nodes.csv
 
@@ -208,16 +208,16 @@ a1b2c3d4e5f6,aabbcc112233,CALLS,1,"[{""file"":""src/user/service.ts"",""line"":4
 }
 ```
 
-## Neo4j へのインポート
+## Neo4j Import
 
-### Bulk Import（初回ロード）
+### Bulk Import (Initial Load)
 
 ```bash
-# CSVファイルを生成
+# Generate CSV files
 graph-builder scan --project ./my-project --out ./out
 graph-builder emit-csv --out ./out
 
-# Neo4j にインポート
+# Import into Neo4j
 neo4j-admin import \
   --nodes=./out/nodes.csv \
   --relationships=./out/rels.csv \
@@ -225,14 +225,14 @@ neo4j-admin import \
   --array-delimiter=';'
 ```
 
-### オンライン/差分更新（UNWIND）
+### Online/Incremental Updates (UNWIND)
 
 ```bash
-# JSONバッチファイルを生成
+# Generate JSON batch files
 graph-builder scan --project ./my-project --out ./out
 graph-builder emit-json --out ./out
 
-# Cypherクエリで読み込み
+# Load via Cypher query
 CALL apoc.load.json('file:///out/batch-*.json') YIELD value
 UNWIND value.nodes AS node
 MERGE (n {id: node.id})
@@ -245,9 +245,9 @@ MERGE (from)-[r:CALLS]->(to)
 SET r.count = edge.count
 ```
 
-## CI/CD 連携
+## CI/CD Integration
 
-### GitHub Actions の例
+### GitHub Actions Example
 
 ```yaml
 name: Update Code Graph
@@ -284,7 +284,7 @@ jobs:
           path: ./artifacts/diff-*.json
 ```
 
-## テスト
+## Testing
 
 ### TypeScript
 
@@ -298,21 +298,21 @@ npm test
 python3 src/tests/test_python_scanner.py
 ```
 
-## 既知の制限
+## Known Limitations
 
-- **シンボル未解決**: 外部ライブラリや動的インポートは `unresolved: true` タグが付きます
-- **型推論**: TypeScript の複雑な型推論は完全にはサポートされていません
-- **Python の型ヒント**: 型ヒントがない場合は `Any` として扱われます
+- **Unresolved Symbols**: External libraries or dynamic imports are tagged with `unresolved: true`
+- **Type Inference**: Complex TypeScript type inference is not fully supported
+- **Python Type Hints**: Types without hints are treated as `Any`
 
-## ライセンス
+## License
 
 MIT
 
-## 貢献
+## Contributing
 
-プルリクエストを歓迎します！
+Pull requests are welcome!
 
-## サポート
+## Support
 
-問題が発生した場合は、GitHub Issues で報告してください。
+If you encounter issues, please report them on GitHub Issues.
 

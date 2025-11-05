@@ -99,7 +99,7 @@ class GitHubSubIssueAPI:
         Args:
             parent_ref: 親 issue の参照 (番号または URL)
             sub_issue_ref: sub-issue の参照 (番号または URL)
-            replace_parent: 既存の親を置き換えるかどうか
+            replace_parent: Whether to replace existing parent
 
         Returns:
             API レスポンス
@@ -263,7 +263,7 @@ class GitHubSubIssueAPI:
         labels: Optional[List[str]] = None,
         assignees: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """新しい sub-issue を作成.
+        """Create a new sub-issue.
 
         Args:
             parent_ref: 親 issue の参照 (番号または URL)

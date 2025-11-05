@@ -11,7 +11,7 @@ def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", return
 
 
 def test_history_prefers_pull_request_event_runs():
-    """event フィールドが存在する場合、pull_request の run を優先する。さらに run view の pullRequests に対象 PR が含まれるもののみ採用する。"""
+    """When event field exists, prefer pull_request runs. Also, only adopt runs where run view's pullRequests include the target PR."""
     config = AutomationConfig()
 
     pr_number = 321
@@ -24,7 +24,7 @@ def test_history_prefers_pull_request_event_runs():
         },
     }
 
-    # run list: push の新しい run と pull_request の古い run（同一ブランチ）
+    # run list: new push run and old pull_request run (same branch)
     push_run_id = 4400
     pr_run_id = 4300
     run_list_payload = [
@@ -53,7 +53,7 @@ def test_history_prefers_pull_request_event_runs():
     ]
     run_list_result = _cmd_result(True, stdout=json.dumps(run_list_payload), stderr="", returncode=0)
 
-    # run view の応答: push の方は対象 PR を含まない / pull_request の方は含む
+    # run view response: push does not include target PR / pull_request includes it
     jobs_payload = {
         "jobs": [
             {
@@ -83,7 +83,7 @@ def test_history_prefers_pull_request_event_runs():
                 returncode=0,
             )
         if cmd[:3] == ["gh", "run", "list"]:
-            # 現在の実装に合わせた単一の呼び出し
+            # Single call matching current implementation
             return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
             run_id = int(cmd[3])
@@ -116,7 +116,7 @@ def test_history_prefers_pull_request_event_runs():
 
 
 def test_history_limits_to_runs_referencing_target_pr():
-    """pullRequests に対象 PR 番号が含まれない run はスキップし、含まれる run だけを採用する。"""
+    """Skip runs that don't include target PR number in pullRequests, only adopt runs that do."""
     config = AutomationConfig()
 
     pr_number = 555
@@ -129,8 +129,8 @@ def test_history_limits_to_runs_referencing_target_pr():
         },
     }
 
-    run_a = 5100  # 新しいが対象PRを含まない
-    run_b = 5000  # 古いが対象PRを含む
+    run_a = 5100  # New but doesn't include target PR
+    run_b = 5000  # Old but includes target PR
     run_list_payload = [
         {
             "databaseId": run_a,

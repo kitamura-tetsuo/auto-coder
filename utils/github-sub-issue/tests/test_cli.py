@@ -145,7 +145,7 @@ class TestCLI:
 
     @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
     def test_list_command_empty(self, mock_api_class: MagicMock) -> None:
-        """list コマンドで sub-issue がない場合の動作を確認."""
+        """Verify behavior when list command has no sub-issues."""
         mock_api = MagicMock()
         mock_api.list_sub_issues.return_value = []
         mock_api_class.return_value = mock_api

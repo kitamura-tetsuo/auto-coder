@@ -1,38 +1,38 @@
-# Global Backend Manager 使用方法
+# Global Backend Manager Usage
 
-## 概要
+## Overview
 
-グローバルなシングルトンとしてどこからでもLLMバックエンドマネージャーを使用できるようにしました。
+This enables the LLM backend manager to be used globally as a singleton from anywhere.
 
-## 利用できるグローバル関数
+## Available Global Functions
 
-### メインLLM操作用
+### Main LLM Operations
 
 ```python
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt, get_llm_backend_and_model
 
-# LLMバックエンドの取得（初回のみ初期化が必要）
+# Get LLM backend (initialization required only once)
 manager = get_llm_backend_manager(
     default_backend="codex",
     default_client=client,
     factories={"codex": lambda: client}
 )
 
-# プロンプト実行
+# Execute prompt
 response = run_llm_prompt("your prompt here")
 
-# 直近のバックエンド情報取得
+# Get latest backend information
 backend, model = get_llm_backend_and_model()
 ```
 
-## LLMBackendManager クラス
+## LLMBackendManager Class
 
-### 基本的なシングルトンアクセス
+### Basic Singleton Access
 
 ```python
 from auto_coder.backend_manager import LLMBackendManager
 
-# LLMバックエンドの取得
+# Get LLM backend
 manager = LLMBackendManager.get_llm_instance(
     default_backend="gemini",
     default_client=client,
@@ -40,34 +40,34 @@ manager = LLMBackendManager.get_llm_instance(
 )
 ```
 
-## 使用例
+## Usage Examples
 
-### 基本的な使用パターン
+### Basic Usage Pattern
 
 ```python
-# 1. インポート
+# 1. Import
 from auto_coder.backend_manager import (
     LLMBackendManager,
     get_llm_backend_manager,
     run_llm_prompt,
 )
 
-# 2. 初期化（一度だけ実行）
+# 2. Initialization (execute only once)
 manager = LLMBackendManager.get_llm_instance(
     default_backend="gemini",
     default_client=gemini_client,
     factories={"gemini": lambda: gemini_client}
 )
 
-# 3. 使用
+# 3. Usage
 response = run_llm_prompt("Generate some code")
 
-# 4. バックエンド情報の取得
+# 4. Get backend information
 backend, model = get_llm_backend_and_model()
 print(f"Using {backend} with model {model}")
 ```
 
-### エラーハンドリング
+### Error Handling
 
 ```python
 try:
@@ -79,20 +79,20 @@ try:
 except RuntimeError as e:
     print(f"Initialization error: {e}")
 
-# 初回呼び出しではパラメータが必須
-manager = get_llm_backend_manager()  # RuntimeError が発生
+# Initial call requires parameters
+manager = get_llm_backend_manager()  # RuntimeError occurs
 
-# 二回目以降はパラメータなしで呼び出し可能
-manager = get_llm_backend_manager()  # 既存のインスタンスを返す
+# Subsequent calls can be made without parameters
+manager = get_llm_backend_manager()  # Returns existing instance
 ```
 
-## スレッドセーフ性
+## Thread Safety
 
-すべての関数はスレッドセーフに設計されており、複数のスレッドから同時にアクセスしても安全です。
+All functions are designed to be thread-safe and can be safely accessed from multiple threads simultaneously.
 
-## 注意事項
+## Important Notes
 
-1. **初期化は一度だけ**: 初回呼び出し時にのみ初期化パラメータが必要です
-2. **リソース管理**: アプリケーション終了時は適切にクリーンアップしてください
-3. **設定変更**: `force_reinitialize=True` で設定を変更できます
-4. **後方互換性**: 既存の `LLMBackendManager.get_llm_instance()` も繼續利用可能です
+1. **Initialization Only Once**: Initialization parameters are required only on the first call
+2. **Resource Management**: Please clean up appropriately when the application exits
+3. **Configuration Changes**: Configuration can be changed with `force_reinitialize=True`
+4. **Backward Compatibility**: Existing `LLMBackendManager.get_llm_instance()` can continue to be used
