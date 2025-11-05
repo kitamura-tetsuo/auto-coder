@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
@@ -700,7 +700,10 @@ def generate_commit_message_via_llm(
         if manager is None:
             return ""
 
-        prompt = render_prompt("tests.commit_message")
+        # Get commit log since branch creation for commit message context
+        commit_log = get_commit_log()
+
+        prompt = render_prompt("tests.commit_message", commit_log=commit_log or "(No commit history)")
 
         response = manager._run_llm_cli(prompt)
         if not response:

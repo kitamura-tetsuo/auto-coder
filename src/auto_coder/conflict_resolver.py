@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 from auto_coder.backend_manager import run_llm_prompt
 
 from .automation_config import AutomationConfig
-from .git_utils import git_commit_with_retry, git_push
+from .git_utils import get_commit_log, git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor, CommandResult
@@ -77,8 +77,11 @@ def resolve_merge_conflicts_with_llm(
     actions: List[str] = []
 
     try:
-        # Create a prompt for LLM to resolve conflicts
+        # Get commit log since branch creation
         base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
+        commit_log = get_commit_log(base_branch=base_branch)
+
+        # Create a prompt for LLM to resolve conflicts
         prompt = render_prompt(
             "pr.merge_conflict_resolution",
             base_branch=base_branch,
@@ -86,6 +89,7 @@ def resolve_merge_conflicts_with_llm(
             pr_title=pr_data.get("title", "Unknown"),
             pr_body=(pr_data.get("body") or "")[:500],
             conflict_info=conflict_info,
+            commit_log=commit_log or "(No commit history)",
         )
         logger.debug(
             "Generated merge-conflict resolution prompt for PR #%s (preview: %s)",
