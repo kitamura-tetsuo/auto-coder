@@ -12,7 +12,7 @@ from auto_coder.util.github_action import get_detailed_checks_from_history
 from .automation_config import AutomationConfig
 from .git_utils import commit_and_push_changes, ensure_pushed, get_commit_log, git_checkout_branch, switch_to_branch
 from .logger_config import get_logger
-from .progress_footer import ProgressStage, newline_progress, push_progress_stage, set_progress_item
+from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
@@ -615,18 +615,18 @@ def _apply_issue_actions_directly(
                 actions.append(f"Added analysis comment to issue #{issue_data['number']}")
 
             # Commit any changes made
-            push_progress_stage("Committing changes")
-            commit_action = commit_and_push_changes(
-                {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
-                repo_name=repo_name,
-                issue_number=issue_data["number"],
-            )
-            actions.append(commit_action)
+            with ProgressStage("Committing changes"):
+                commit_action = commit_and_push_changes(
+                    {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
+                    repo_name=repo_name,
+                    issue_number=issue_data["number"],
+                )
+                actions.append(commit_action)
 
             # Create PR if this is a regular issue (not a PR)
             if "head_branch" not in issue_data and target_branch:
-                push_progress_stage("Creating PR")
-                pr_creation_result = _create_pr_for_issue(
+                with ProgressStage("Creating PR"):
+                    pr_creation_result = _create_pr_for_issue(
                     repo_name=repo_name,
                     issue_data=issue_data,
                     work_branch=target_branch,
@@ -828,64 +828,67 @@ def process_single(
             else:
                 try:
                     set_progress_item("Issue", number)
-                    push_progress_stage("Getting issue details")
-                    issue_data = github_client.get_issue_details_by_number(repo_name, number)
+                    with ProgressStage("Getting issue details"):
+                        issue_data = github_client.get_issue_details_by_number(repo_name, number)
 
-                    # Add @auto-coder label now that we're actually going to process this issue
-                    if not dry_run:
-                        if not github_client.try_add_work_in_progress_label(repo_name, number):
-                            msg = f"Skipping issue #{number} - @auto-coder label was just added by another instance"
-                            logger.info(msg)
-                            result["errors"].append(msg)
-                            newline_progress()
-                            return result
-
-                    processed_issue = {
-                        "issue_data": issue_data,
-                        "analysis": None,
-                        "solution": None,
-                        "actions_taken": [],
-                    }
-
-                    try:
-                        if jules_mode:
-                            # Mimic jules mode behavior
-                            push_progress_stage("Adding jules label")
-                            current_labels = issue_data.get("labels", [])
-                            if "jules" not in current_labels:
-                                if not dry_run:
-                                    github_client.add_labels_to_issue(repo_name, number, ["jules"])
-                                    processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
-                                else:
-                                    processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{number}")
-                            else:
-                                processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
-                        else:
-                            push_progress_stage("Processing")
-                            actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
-                            processed_issue["actions_taken"] = actions
-                    finally:
-                        # Remove @auto-coder label after processing
+                        # Add @auto-coder label now that we're actually going to process this issue
                         if not dry_run:
-                            try:
-                                github_client.remove_labels_from_issue(repo_name, number, ["@auto-coder"])
-                            except Exception as e:
-                                logger.warning(f"Failed to remove @auto-coder label from issue #{number}: {e}")
-                        # Clear progress header after processing
-                        newline_progress()
+                            if not github_client.try_add_work_in_progress_label(repo_name, number):
+                                msg = f"Skipping issue #{number} - @auto-coder label was just added by another instance"
+                                logger.info(msg)
+                                result["errors"].append(msg)
+                                newline_progress()
+                                return result
 
-                    result["issues_processed"].append(processed_issue)
-                except Exception as e:
-                    msg = f"Failed to process issue #{number}: {e}"
-                    logger.error(msg)
-                    # Try to remove @auto-coder label on error
+                        processed_issue = {
+                            "issue_data": issue_data,
+                            "analysis": None,
+                            "solution": None,
+                            "actions_taken": [],
+                        }
+
+                        try:
+                            if jules_mode:
+                                # Mimic jules mode behavior
+                                with ProgressStage("Adding jules label"):
+                                    current_labels = issue_data.get("labels", [])
+                                    if "jules" not in current_labels:
+                                        if not dry_run:
+                                            github_client.add_labels_to_issue(repo_name, number, ["jules"])
+                                            processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
+                                        else:
+                                            processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{number}")
+                                    else:
+                                        processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
+                            else:
+                                with ProgressStage("Processing"):
+                                    actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
+                                    processed_issue["actions_taken"] = actions
+                        except Exception as e:
+                            logger.warning(f"Error processing issue actions: {e}")
+                            processed_issue["actions_taken"].append(f"Error: {e}")
+                finally:
+                    # Remove @auto-coder label after processing
                     if not dry_run:
                         try:
                             github_client.remove_labels_from_issue(repo_name, number, ["@auto-coder"])
-                        except Exception:
-                            pass
-                    result["errors"].append(msg)
+                        except Exception as e:
+                            logger.warning(f"Failed to remove @auto-coder label from issue #{number}: {e}")
+                    # Clear progress header after processing
                     newline_progress()
+
+                result["issues_processed"].append(processed_issue)
+            except Exception as e:
+                msg = f"Failed to process issue #{number}: {e}"
+                logger.error(msg)
+                # Try to remove @auto-coder label on error
+                if not dry_run:
+                    try:
+                        github_client.remove_labels_from_issue(repo_name, number, ["@auto-coder"])
+                    except Exception:
+                        pass
+                result["errors"].append(msg)
+                newline_progress()
         except Exception as e:
             msg = f"Error in process_single: {e}"
             logger.error(msg)

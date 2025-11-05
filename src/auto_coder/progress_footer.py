@@ -369,13 +369,16 @@ class ProgressContext:
 
     def update_stage(self, stage: str) -> None:
         """
-        Update the processing stage by popping old and pushing new.
+        Update the processing stage by replacing the context manager.
 
         Args:
             stage: New processing stage
         """
-        pop_progress_stage()
-        push_progress_stage(stage)
+        # Exit the current ProgressStage and enter a new one
+        if self._progress_stage:
+            self._progress_stage.__exit__(None, None, None)
+        self._progress_stage = ProgressStage(stage)
+        self._progress_stage.__enter__()
 
 
 class ProgressStage:
@@ -428,22 +431,24 @@ class ProgressStage:
 
     def __enter__(self):
         """Enter the context and push the stage."""
+        footer = get_progress_footer()
         if self.item_type and self.item_number:
             # Set item info and push stage
             set_progress_item(self.item_type, self.item_number, self.related_issues, self.branch_name)
-            push_progress_stage(self.stage)
+            footer.push_stage(self.stage)
         else:
             # Just push stage
-            push_progress_stage(self.stage)
+            footer.push_stage(self.stage)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the context and pop the stage."""
+        footer = get_progress_footer()
         if self.item_type and self.item_number:
             # Pop stage and clear item info
-            pop_progress_stage()
+            footer.pop_stage()
             clear_progress()
         else:
             # Just pop stage
-            pop_progress_stage()
+            footer.pop_stage()
         return False
