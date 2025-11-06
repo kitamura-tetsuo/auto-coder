@@ -16,6 +16,7 @@ class TestIssueProcessorSkipLinked:
         """Test that _process_issues_normal skips issues with linked PRs."""
         # Setup
         mock_github_client = Mock()
+        mock_github_client.disable_labels = False  # Explicitly set to False to avoid Mock truthiness
         mock_issue1 = Mock()
         mock_issue1.number = 123
         mock_issue2 = Mock()
