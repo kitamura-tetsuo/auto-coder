@@ -65,6 +65,10 @@ class AutomationConfig:
     # Default: True (dependency checking enabled)
     CHECK_DEPENDENCIES: bool = True
 
+    # Run automation in dry-run mode without making changes
+    # Default: False (make actual changes)
+    DRY_RUN: bool = False
+
     # Search through commit history for GitHub Actions logs when latest commit doesn't trigger Actions
     # Default: True (search history enabled)
     SEARCH_GITHUB_ACTIONS_HISTORY: bool = True
@@ -77,7 +81,3 @@ class AutomationConfig:
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True
-
-    # Dry run mode - when True, skip actual operations
-    # Default: False (perform actual operations)
-    DRY_RUN: bool = False
