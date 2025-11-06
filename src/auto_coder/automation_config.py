@@ -77,3 +77,7 @@ class AutomationConfig:
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True
+
+    # Dry run mode - when True, skip actual operations
+    # Default: False (perform actual operations)
+    DRY_RUN: bool = False

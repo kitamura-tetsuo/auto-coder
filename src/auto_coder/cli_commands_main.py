@@ -213,7 +213,7 @@ def process_issues(
         initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
-    github_client = GitHubClient.get_instance(github_token_final, disable_labels=disable_labels)
+    github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
     # Use global LLMBackendManager for main backend
     from auto_coder.backend_manager import get_llm_backend_manager
 
@@ -272,10 +272,10 @@ def process_issues(
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
     engine_config.DISABLE_LABELS = bool(disable_labels)
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
+    engine_config.DRY_RUN = bool(dry_run)
 
     automation_engine = AutomationEngine(
         github_client,
-        dry_run=dry_run,
         config=engine_config,
     )
 
@@ -513,7 +513,7 @@ def create_feature_issues(
         initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
-    github_client = GitHubClient.get_instance(github_token_final, disable_labels=disable_labels)
+    github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
     manager = build_backend_manager(
         selected_backends,
         primary_backend,
@@ -681,7 +681,7 @@ def fix_to_pass_tests_command(
     try:
         from .github_client import GitHubClient as _GH
 
-        github_client = _GH("", disable_labels=disable_labels)
+        github_client = _GH("", disable_labels=bool(disable_labels))
     except Exception:
         # Fallback to a minimal stand-in (never used)
         class _Dummy:
@@ -725,7 +725,9 @@ def fix_to_pass_tests_command(
         logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
         click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
 
-    engine = AutomationEngine(github_client, dry_run=dry_run)
+    engine_config = AutomationConfig()
+    engine_config.DRY_RUN = bool(dry_run)
+    engine = AutomationEngine(github_client, config=engine_config)
 
     try:
         result = engine.fix_to_pass_tests(max_attempts=max_attempts, message_backend_manager=message_manager)

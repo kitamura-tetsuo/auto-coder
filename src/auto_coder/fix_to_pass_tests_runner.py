@@ -106,7 +106,7 @@ def _write_llm_output_log(
     return log_path
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
     """Derive backend/model identifiers from the provided LLM client."""
 
@@ -294,7 +294,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def apply_test_stability_fix(
     config: AutomationConfig,
     test_file: str,
@@ -359,7 +359,7 @@ def apply_test_stability_fix(
         )
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def apply_workspace_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
@@ -434,7 +434,6 @@ def apply_workspace_test_fix(
 
 def fix_to_pass_tests(
     config: AutomationConfig,
-    dry_run: bool = False,
     max_attempts: Optional[int] = None,
     llm_backend_manager: Optional["BackendManager"] = None,
     message_backend_manager: Optional["BackendManager"] = None,
@@ -494,7 +493,7 @@ def fix_to_pass_tests(
             logger.info(msg)
             summary["messages"].append(msg)
             summary["success"] = True
-            if not dry_run:
+            if not config.DRY_RUN:
                 cleanup_llm_task_file()
             return summary
 
@@ -511,7 +510,7 @@ def fix_to_pass_tests(
                 test_result["full_suite_result"],
                 test_result,
                 llm_backend_manager,
-                dry_run,
+                config.DRY_RUN,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
@@ -521,13 +520,13 @@ def fix_to_pass_tests(
                 config,
                 test_result,
                 llm_backend_manager,
-                dry_run,
+                config.DRY_RUN,
                 current_test_file=current_test_file,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
 
-        if dry_run:
+        if config.DRY_RUN:
             # In dry-run we do not commit; just continue attempts
             continue
 
@@ -570,7 +569,7 @@ def fix_to_pass_tests(
             pass_msg = f"Local tests passed on attempt {attempt}"
             logger.info(pass_msg)
             summary["messages"].append(pass_msg)
-            if not dry_run:
+            if not config.DRY_RUN:
                 cleanup_pending = True
         else:
             # Compute change ratios between pre-fix and post-fix results
@@ -613,7 +612,8 @@ def fix_to_pass_tests(
             summary["messages"].append(errmsg)
             break
 
-        llm_backend_manager.switch_to_default_backend()
+        if llm_backend_manager is not None:
+            llm_backend_manager.switch_to_default_backend()
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
             llm_backend_manager=llm_backend_manager,
@@ -623,7 +623,7 @@ def fix_to_pass_tests(
             commit_msg = format_commit_message(config, action_msg, attempt)
 
         # Commit the changes with the generated message using centralized helper
-        if not dry_run and commit_msg:
+        if not config.DRY_RUN and commit_msg:
             commit_res = git_commit_with_retry(commit_msg)
             if not commit_res.success:
                 # Save history and exit immediately
@@ -648,7 +648,7 @@ def fix_to_pass_tests(
             summary["success"] = True
 
             # Push changes to remote
-            if not dry_run:
+            if not config.DRY_RUN:
                 logger.info("Tests passed, pushing changes to remote...")
                 push_result = git_push()
                 if push_result.success:
@@ -727,7 +727,7 @@ def generate_commit_message_via_llm(
                     first_line = lines[0].strip()
                     if first_line and len(first_line) < 20 and " " not in first_line:
                         content = "\n".join(lines[1:]).strip()
-                return content
+                return str(content)
 
         # Take first non-empty line, sanitize length
         for line in response.splitlines():
@@ -760,7 +760,7 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
     return f"Auto-Coder: {base}"
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def extract_important_errors(test_result: Dict[str, Any]) -> str:
     """Extract important error information from test output.
 
@@ -802,9 +802,9 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
                         start = j
                         break
                 end = min(len(lines), idx_expect + 60)
-                block = "\n".join(lines[start:end])
-                if block:
-                    return block
+                block_str = "\n".join(lines[start:end])
+                if block_str:
+                    return block_str
         except Exception:
             pass
 
@@ -836,7 +836,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
                 if header_regex.search(s):
                     end_idx = j
                     break
-            block = lines[start_idx:end_idx]
+            block: list[str] = lines[start_idx:end_idx]
             # Check if it includes expectation/received lines or the corresponding expect line
             if any(expect_regex.search(b) for b in block) or any(".spec.ts" in b for b in block):
                 blocks.append("\n".join(block))
