@@ -90,13 +90,7 @@ class GraphRAGDockerManager:
             pass
 
         # Docker compose is not available
-        error_msg = (
-            "Docker Compose is not available.\n"
-            "Please install Docker Compose:\n"
-            "  - For Docker Desktop: Docker Compose is included\n"
-            "  - For Docker Engine: Install docker-compose-plugin\n"
-            "    Ubuntu/Debian: sudo apt-get install docker-compose-plugin"
-        )
+        error_msg = "Docker Compose is not available.\n" "Please install Docker Compose:\n" "  - For Docker Desktop: Docker Compose is included\n" "  - For Docker Engine: Install docker-compose-plugin\n" "    Ubuntu/Debian: sudo apt-get install docker-compose-plugin"
         logger.error(error_msg)
         raise RuntimeError(error_msg)
 
