@@ -170,8 +170,6 @@ def _process_issues_normal(
         return []
 
 
-
-
 def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
@@ -266,7 +264,6 @@ def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run:
     except Exception as e:
         logger.error(f"Failed to process issues in jules mode for {repo_name}: {e}")
         return []
-
 
 
 def _take_issue_actions(
