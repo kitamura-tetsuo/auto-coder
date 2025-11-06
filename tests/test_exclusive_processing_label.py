@@ -247,6 +247,9 @@ class TestIssueProcessorExclusiveProcessing:
         }
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
         # Mock has_linked_pr to return False (no linked PR)
         mock_github_client.has_linked_pr.return_value = False
         # Simulate label successfully added
@@ -280,6 +283,9 @@ class TestIssueProcessorExclusiveProcessing:
         }
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
         mock_github_client.try_add_work_in_progress_label.return_value = True
         mock_github_client.has_linked_pr.return_value = False
         # Simulate error during processing
@@ -430,6 +436,9 @@ class TestProcessSingleWithAutoCoderLabel:
         mock_github_client.get_issue_details_by_number.return_value = issue_data
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
         # Mock has_linked_pr to return False (no linked PR)
         mock_github_client.has_linked_pr.return_value = False
         # Simulate label successfully added (should still try to add even if present)
@@ -506,6 +515,9 @@ class TestProcessSingleWithAutoCoderLabel:
         mock_github_client.get_issue_details_by_number.return_value = issue_data
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
         # Mock has_linked_pr to return False (no linked PR)
         mock_github_client.has_linked_pr.return_value = False
         # Simulate label successfully added

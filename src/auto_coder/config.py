@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     max_prs_per_run: int = Field(default=-1, json_schema_extra={"env": "MAX_PRS_PER_RUN"})  # -1 means unlimited
     dry_run: bool = Field(default=False, json_schema_extra={"env": "DRY_RUN"})
 
+    # Dependency management settings
+    check_dependencies: bool = Field(default=True, json_schema_extra={"env": "CHECK_DEPENDENCIES"})
+
     # Logging settings
     log_level: str = Field(default="INFO", json_schema_extra={"env": "LOG_LEVEL"})
     log_format: str = Field(

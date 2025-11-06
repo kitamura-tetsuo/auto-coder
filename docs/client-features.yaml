@@ -164,6 +164,13 @@ features:
     - Skips issues when 5+ open issues without sub-issues are present
     - Single-item processing via --only (URL or number)
     - Auto-resume when on a non-main branch with an associated PR/Issue
+  dependency_management:
+    - description: Automatic dependency checking for issue processing
+    - patterns: Supports "Depends on: #123", "depends on #456", "blocked by #789" patterns (case-insensitive)
+    - behavior: Skips issues with unresolved dependencies (dependency issues still open)
+    - configurable: CHECK_DEPENDENCIES flag (default: enabled)
+    - error_handling: Missing or inaccessible dependency issues are treated as unresolved
+
   fix_loop:
     - Re-run tests and apply LLM fixes until success or max attempts
     - Default max attempts (engine): 30
@@ -198,6 +205,7 @@ config:
     IGNORE_DEPENDABOT_PRS: false
     FORCE_CLEAN_BEFORE_CHECKOUT: false
     DISABLE_LABELS: false
+    CHECK_DEPENDENCIES: true
     SEARCH_GITHUB_ACTIONS_HISTORY: true
     ENABLE_ACTIONS_HISTORY_FALLBACK: true
     MERGE_METHOD: "--squash"

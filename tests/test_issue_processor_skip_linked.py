@@ -45,6 +45,10 @@ class TestIssueProcessorSkipLinked:
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
 
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
+
         # Issue 123 has a linked PR, issue 456 does not
         mock_github_client.has_linked_pr.side_effect = [True, False]
 
@@ -117,6 +121,10 @@ class TestIssueProcessorSkipLinked:
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
 
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
+
         # Neither issue has a linked PR
         mock_github_client.has_linked_pr.return_value = False
 
@@ -176,6 +184,10 @@ class TestIssueProcessorSkipLinked:
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
 
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
+
         # Both issues have linked PRs
         mock_github_client.has_linked_pr.return_value = True
 
@@ -220,6 +232,10 @@ class TestIssueProcessorSkipLinked:
 
         # Mock get_open_sub_issues to return empty list (no sub-issues)
         mock_github_client.get_open_sub_issues.return_value = []
+
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
 
         # has_linked_pr returns False on exception (as per implementation)
         mock_github_client.has_linked_pr.return_value = False

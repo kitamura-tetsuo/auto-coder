@@ -879,3 +879,169 @@ class TestGitHubClient:
 
         # Assert
         assert result == []
+
+    def test_get_issue_dependencies_with_depends_on(self, mock_github_token):
+        """Test extracting dependencies with 'Depends on:' pattern."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case 1: "Depends on: #123"
+        body = "This issue depends on another issue.\nDepends on: #123"
+        result = client.get_issue_dependencies(body)
+        assert result == [123]
+
+    def test_get_issue_dependencies_with_lowercase(self, mock_github_token):
+        """Test extracting dependencies with lowercase 'depends on'."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        body = "This issue depends on #456\ndepends on #789"
+        result = client.get_issue_dependencies(body)
+        assert result == [456, 789]
+
+    def test_get_issue_dependencies_with_blocked_by(self, mock_github_token):
+        """Test extracting dependencies with 'blocked by' pattern."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        body = "This issue is blocked by #100\nBlocked by: #200"
+        result = client.get_issue_dependencies(body)
+        assert result == [100, 200]
+
+    def test_get_issue_dependencies_multiple_issues(self, mock_github_token):
+        """Test extracting multiple dependencies with commas."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        body = "Depends on #100, #200, and #300"
+        result = client.get_issue_dependencies(body)
+        assert result == [100, 200, 300]
+
+    def test_get_issue_dependencies_no_dependencies(self, mock_github_token):
+        """Test extracting dependencies when none exist."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        body = "This is a regular issue with no dependencies."
+        result = client.get_issue_dependencies(body)
+        assert result == []
+
+    def test_get_issue_dependencies_empty_body(self, mock_github_token):
+        """Test extracting dependencies from empty body."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        result = client.get_issue_dependencies("")
+        assert result == []
+
+    def test_get_issue_dependencies_none_body(self, mock_github_token):
+        """Test extracting dependencies from None body."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        result = client.get_issue_dependencies(None)
+        assert result == []
+
+    def test_get_issue_dependencies_removes_duplicates(self, mock_github_token):
+        """Test that duplicate dependencies are removed."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        body = "Depends on #100\nAlso depends on #100"
+        result = client.get_issue_dependencies(body)
+        assert result == [100]
+
+    def test_get_issue_dependencies_case_insensitive(self, mock_github_token):
+        """Test that dependency extraction is case-insensitive."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        body = "DEPENDS ON #100\nDepends On #200"
+        result = client.get_issue_dependencies(body)
+        assert result == [100, 200]
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_check_issue_dependencies_resolved_all_closed(self, mock_github_class, mock_github_token):
+        """Test checking dependencies when all are resolved (closed)."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock get_issue_details_by_number to return closed issues
+        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
+            mock_get_details.side_effect = [
+                {"number": 100, "state": "closed"},
+                {"number": 200, "state": "closed"},
+            ]
+
+            # Execute
+            result = client.check_issue_dependencies_resolved("test/repo", [100, 200])
+
+            # Assert
+            assert result == []
+            assert mock_get_details.call_count == 2
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_check_issue_dependencies_resolved_some_open(self, mock_github_class, mock_github_token):
+        """Test checking dependencies when some are unresolved (open)."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock get_issue_details_by_number to return mixed states
+        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
+            mock_get_details.side_effect = [
+                {"number": 100, "state": "closed"},
+                {"number": 200, "state": "open"},
+                {"number": 300, "state": "closed"},
+            ]
+
+            # Execute
+            result = client.check_issue_dependencies_resolved("test/repo", [100, 200, 300])
+
+            # Assert
+            assert result == [200]
+            assert mock_get_details.call_count == 3
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_check_issue_dependencies_resolved_all_open(self, mock_github_class, mock_github_token):
+        """Test checking dependencies when all are unresolved (open)."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock get_issue_details_by_number to return all open issues
+        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
+            mock_get_details.side_effect = [
+                {"number": 100, "state": "open"},
+                {"number": 200, "state": "open"},
+            ]
+
+            # Execute
+            result = client.check_issue_dependencies_resolved("test/repo", [100, 200])
+
+            # Assert
+            assert result == [100, 200]
+            assert mock_get_details.call_count == 2
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_check_issue_dependencies_resolved_empty_list(self, mock_github_class, mock_github_token):
+        """Test checking dependencies with empty list."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Execute
+        result = client.check_issue_dependencies_resolved("test/repo", [])
+
+        # Assert
+        assert result == []
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_check_issue_dependencies_resolved_error_handling(self, mock_github_class, mock_github_token):
+        """Test error handling when checking dependencies."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock get_issue_details_by_number to raise exception
+        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
+            mock_get_details.side_effect = GithubException(404, "Issue not found")
+
+            # Execute
+            result = client.check_issue_dependencies_resolved("test/repo", [99999])
+
+            # Assert - missing issue is considered unresolved
+            assert result == [99999]
+            assert mock_get_details.call_count == 1

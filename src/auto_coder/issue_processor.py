@@ -86,6 +86,25 @@ def _process_issues_normal(
                         newline_progress()
                         continue
 
+                # Skip if issue has unresolved dependencies
+                if config.CHECK_DEPENDENCIES:
+                    with ProgressStage("Checking dependencies"):
+                        dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""))
+                        if dependencies:
+                            unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
+                            if unresolved:
+                                logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
+                                processed_issues.append(
+                                    {
+                                        "issue_data": issue_data,
+                                        "actions_taken": [f"Skipped - has unresolved dependencies: {unresolved}"],
+                                    }
+                                )
+                                newline_progress()
+                                continue
+                            else:
+                                logger.info(f"All dependencies for issue #{issue_number} are resolved")
+
                 # Skip if issue already has a linked PR
                 with ProgressStage("Checking linked PR"):
                     if github_client.has_linked_pr(repo_name, issue_number):
@@ -178,6 +197,23 @@ def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run:
                         }
                     )
                     continue
+
+                # Skip if issue has unresolved dependencies
+                if config.CHECK_DEPENDENCIES:
+                    dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""))
+                    if dependencies:
+                        unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
+                        if unresolved:
+                            logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
+                            processed_issues.append(
+                                {
+                                    "issue_data": issue_data,
+                                    "actions_taken": [f"Skipped - has unresolved dependencies: {unresolved}"],
+                                }
+                            )
+                            continue
+                        else:
+                            logger.info(f"All dependencies for issue #{issue_number} are resolved")
 
                 # Use LabelManager context manager to handle @auto-coder label automatically
                 with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
