@@ -508,7 +508,6 @@ def fix_to_pass_tests(
                 test_result["full_suite_result"],
                 test_result,
                 llm_backend_manager,
-                config.DRY_RUN,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
@@ -518,7 +517,6 @@ def fix_to_pass_tests(
                 config,
                 test_result,
                 llm_backend_manager,
-                config.DRY_RUN,
                 current_test_file=current_test_file,
             )
             action_msg = fix_response.summary
@@ -725,7 +723,7 @@ def generate_commit_message_via_llm(
                     first_line = lines[0].strip()
                     if first_line and len(first_line) < 20 and " " not in first_line:
                         content = "\n".join(lines[1:]).strip()
-                return str(content)
+                return str(content) if content else ""
 
         # Take first non-empty line, sanitize length
         for line in response.splitlines():
@@ -834,10 +832,10 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
                 if header_regex.search(s):
                     end_idx = j
                     break
-            block: list[str] = lines[start_idx:end_idx]
+            block = "\n".join(lines[start_idx:end_idx])
             # Check if it includes expectation/received lines or the corresponding expect line
-            if any(expect_regex.search(b) for b in block) or any(".spec.ts" in b for b in block):
-                blocks.append("\n".join(block))
+            if any(expect_regex.search(b) for b in lines[start_idx:end_idx]) or any(".spec.ts" in b for b in lines[start_idx:end_idx]):
+                blocks.append(block)
         if blocks:
             result = "\n\n".join(blocks)
             # Append expectation/received lines if not included

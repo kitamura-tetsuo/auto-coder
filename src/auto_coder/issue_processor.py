@@ -307,7 +307,7 @@ def _apply_issue_actions_directly(
             set_progress_item("Issue", issue_number)
 
             # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
-            target_branch = None
+            target_branch: str
             pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
 
             # Store current branch to ensure we can track where we started
@@ -321,7 +321,7 @@ def _apply_issue_actions_directly(
 
             if "head_branch" in issue_data:
                 # For PRs, switch to head_branch
-                target_branch = issue_data.get("head_branch")
+                target_branch = issue_data.get("head_branch") or ""
                 logger.info(f"Switching to PR branch: {target_branch}")
             else:
                 # For regular issues, determine work branch
