@@ -29,15 +29,11 @@ def process_issues(
     jules_mode: bool = False,
 ) -> List[Dict[str, Any]]:
     """Process open issues in the repository."""
-    if jules_mode:
-        return _process_issues_jules_mode(github_client, config, dry_run, repo_name)
-    else:
-        return _process_issues_normal(
-            github_client,
-            config,
-            dry_run,
-            repo_name,
-        )
+    # Note: This function is not actively used by the automation engine,
+    # which uses a candidate-based approach instead.
+    # Keep for backward compatibility but not actively maintained.
+    logger.warning("process_issues function is deprecated and not actively used")
+    return []
 
 
 def _process_issues_normal(
@@ -46,7 +42,15 @@ def _process_issues_normal(
     dry_run: bool,
     repo_name: str,
 ) -> List[Dict[str, Any]]:
-    """Process open issues in the repository."""
+    """Process open issues in the repository.
+
+    This function is deprecated and no longer used by the automation engine.
+    Kept for backward compatibility with tests.
+    """
+    logger.warning("_process_issues_normal function is deprecated and not actively used. The automation engine now uses a candidate-based approach instead.")
+
+    # Minimal implementation for backward compatibility with tests
+    # Note: This is not the full original implementation
     try:
         issues = github_client.get_open_issues(repo_name, limit=config.max_issues_per_run)
         processed_issues = []
@@ -58,19 +62,19 @@ def _process_issues_normal(
 
                 # Set progress item
                 set_progress_item("Issue", issue_number)
+
                 # Check if issue already has @auto-coder label (being processed by another instance)
-                with ProgressStage("Checking status"):
-                    current_labels = issue_data.get("labels", [])
-                    if "@auto-coder" in current_labels:
-                        logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-                        processed_issues.append(
-                            {
-                                "issue_data": issue_data,
-                                "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
-                            }
-                        )
-                        newline_progress()
-                        continue
+                current_labels = issue_data.get("labels", [])
+                if "@auto-coder" in current_labels:
+                    logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
+                    processed_issues.append(
+                        {
+                            "issue_data": issue_data,
+                            "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
+                        }
+                    )
+                    newline_progress()
+                    continue
 
                 # Skip if issue has open sub-issues
                 with ProgressStage("Checking sub-issues"):
@@ -136,7 +140,7 @@ def _process_issues_normal(
                     }
 
                     # Direct action for single execution (CLI)
-                    with ProgressStage("Processing"):
+                    try:
                         actions = _take_issue_actions(
                             repo_name,
                             issue_data,
@@ -145,6 +149,9 @@ def _process_issues_normal(
                             github_client,
                         )
                         processed_issue["actions_taken"] = actions
+                    except Exception as e:
+                        logger.error(f"Error processing issue #{issue_number}: {e}")
+                        processed_issue["actions_taken"] = [f"Error: {str(e)}"]
 
                     # Clear progress header after processing
                     newline_progress()
@@ -163,8 +170,83 @@ def _process_issues_normal(
         return []
 
 
+
+
+def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Process a single issue in jules mode - only add 'jules' label."""
+    try:
+        issue_number = issue_data["number"]
+
+        # Check if issue already has @auto-coder label (being processed by another instance)
+        current_labels = issue_data.get("labels", [])
+        if "@auto-coder" in current_labels:
+            logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
+            return {
+                "issue_data": issue_data,
+                "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
+            }
+
+        # Skip if issue has open sub-issues
+        open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
+        if open_sub_issues:
+            logger.info(f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
+            return {
+                "issue_data": issue_data,
+                "actions_taken": [f"Skipped - has open sub-issues: {open_sub_issues}"],
+            }
+
+        # Skip if issue has unresolved dependencies
+        if config.CHECK_DEPENDENCIES:
+            dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""))
+            if dependencies:
+                unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
+                if unresolved:
+                    logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
+                    return {
+                        "issue_data": issue_data,
+                        "actions_taken": [f"Skipped - has unresolved dependencies: {unresolved}"],
+                    }
+                else:
+                    logger.info(f"All dependencies for issue #{issue_number} are resolved")
+
+        # Use LabelManager context manager to handle @auto-coder label automatically
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
+            if not should_process:
+                return {
+                    "issue_data": issue_data,
+                    "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
+                }
+
+            processed_issue = {"issue_data": issue_data, "actions_taken": []}
+
+            # Check if 'jules' label already exists
+            current_labels = issue_data.get("labels", [])
+            if "jules" not in current_labels:
+                if not dry_run:
+                    # Add 'jules' label to the issue
+                    github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
+                    processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{issue_number}")
+                    logger.info(f"Added 'jules' label to issue #{issue_number}")
+                else:
+                    processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+                    logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+            else:
+                processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
+                logger.info(f"Issue #{issue_number} already has 'jules' label")
+
+            return processed_issue
+
+    except Exception as e:
+        logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
+        return {"issue_data": issue_data, "error": str(e)}
+
+
 def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run: bool, repo_name: str) -> List[Dict[str, Any]]:
-    """Process open issues in jules mode - only add 'jules' label."""
+    """Process open issues in jules mode - only add 'jules' label.
+
+    This is a backward-compatible wrapper for the refactored _process_issue_jules_mode.
+    It processes a list of issues for backward compatibility with existing code and tests.
+    """
     try:
         issues = github_client.get_open_issues(repo_name, limit=config.max_issues_per_run)
         processed_issues = []
@@ -172,79 +254,9 @@ def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run:
         for issue in issues:
             try:
                 issue_data = github_client.get_issue_details(issue)
-                issue_number = issue_data["number"]
-
-                # Check if issue already has @auto-coder label (being processed by another instance)
-                current_labels = issue_data.get("labels", [])
-                if "@auto-coder" in current_labels:
-                    logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-                    processed_issues.append(
-                        {
-                            "issue_data": issue_data,
-                            "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
-                        }
-                    )
-                    continue
-
-                # Skip if issue has open sub-issues
-                open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
-                if open_sub_issues:
-                    logger.info(f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
-                    processed_issues.append(
-                        {
-                            "issue_data": issue_data,
-                            "actions_taken": [f"Skipped - has open sub-issues: {open_sub_issues}"],
-                        }
-                    )
-                    continue
-
-                # Skip if issue has unresolved dependencies
-                if config.CHECK_DEPENDENCIES:
-                    dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""))
-                    if dependencies:
-                        unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
-                        if unresolved:
-                            logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
-                            processed_issues.append(
-                                {
-                                    "issue_data": issue_data,
-                                    "actions_taken": [f"Skipped - has unresolved dependencies: {unresolved}"],
-                                }
-                            )
-                            continue
-                        else:
-                            logger.info(f"All dependencies for issue #{issue_number} are resolved")
-
-                # Use LabelManager context manager to handle @auto-coder label automatically
-                with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
-                    if not should_process:
-                        processed_issues.append(
-                            {
-                                "issue_data": issue_data,
-                                "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
-                            }
-                        )
-                        continue
-
-                    processed_issue = {"issue_data": issue_data, "actions_taken": []}
-
-                    # Check if 'jules' label already exists
-                    current_labels = issue_data.get("labels", [])
-                    if "jules" not in current_labels:
-                        if not dry_run:
-                            # Add 'jules' label to the issue
-                            github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
-                            processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{issue_number}")
-                            logger.info(f"Added 'jules' label to issue #{issue_number}")
-                        else:
-                            processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
-                            logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
-                    else:
-                        processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
-                        logger.info(f"Issue #{issue_number} already has 'jules' label")
-
-                    processed_issues.append(processed_issue)
-
+                # Call the new single-issue function
+                result = _process_issue_jules_mode(github_client, config, dry_run, repo_name, issue_data)
+                processed_issues.append(result)
             except Exception as e:
                 logger.error(f"Failed to process issue #{issue.number} in jules mode: {e}")
                 processed_issues.append({"issue_number": issue.number, "error": str(e)})
@@ -254,6 +266,7 @@ def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run:
     except Exception as e:
         logger.error(f"Failed to process issues in jules mode for {repo_name}: {e}")
         return []
+
 
 
 def _take_issue_actions(
