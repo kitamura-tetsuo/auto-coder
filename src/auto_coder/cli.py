@@ -9,14 +9,24 @@ try:
     from dotenv import load_dotenv
 except ImportError:
     # Fallback if python-dotenv is not installed
-    def load_dotenv():
+    from os import PathLike
+    from typing import IO
+
+    def load_dotenv(
+        dotenv_path: str | PathLike[str] | None = ...,  # type: ignore[assignment]
+        stream: IO[str] | None = ...,  # type: ignore[assignment]
+        verbose: bool = ...,  # type: ignore[assignment]
+        override: bool = ...,  # type: ignore[assignment]
+        interpolate: bool = ...,  # type: ignore[assignment]
+        encoding: str | None = ...,  # type: ignore[assignment]
+    ) -> bool:
         """No-op function when python-dotenv is not installed."""
-        pass
+        return False
 
 
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_graphrag import graphrag_group
-from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
+from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
 from .cli_commands_utils import auth_status, get_actions_logs, migrate_branches
@@ -36,7 +46,6 @@ def main() -> None:
 
 
 # Register main commands
-main.add_command(process_issues)
 main.add_command(create_feature_issues)
 main.add_command(fix_to_pass_tests_command)
 main.add_command(get_actions_logs)
