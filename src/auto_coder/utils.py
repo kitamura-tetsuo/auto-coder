@@ -21,6 +21,124 @@ logger = get_logger(__name__)
 VERBOSE_ENV_FLAG = "AUTOCODER_VERBOSE"
 
 
+def is_running_in_container() -> bool:
+    """Robustly detect if running inside a container.
+
+    Uses multiple detection methods to determine if we're running in a container:
+    1. Check for /.dockerenv file (Docker)
+    2. Check for /run/.containerenv file (Podman)
+    3. Check for container environment variables
+    4. Check for container-specific cgroup entries
+    5. Check for container-specific parent process names
+
+    This method is environment-agnostic and works across:
+    - Docker containers
+    - Podman containers
+    - Kubernetes pods
+    - GitHub Actions (Linux runners in containers)
+    - Other container runtimes
+
+    Returns:
+        True if running in a container, False otherwise
+    """
+    # Method 1: Check for /.dockerenv (Docker)
+    try:
+        from pathlib import Path
+
+        if Path("/.dockerenv").exists():
+            logger.debug("Container detected: /.dockerenv exists")
+            return True
+    except Exception:
+        pass
+
+    # Method 2: Check for /run/.containerenv (Podman)
+    try:
+        from pathlib import Path
+
+        if Path("/run/.containerenv").exists():
+            logger.debug("Container detected: /run/.containerenv exists")
+            return True
+    except Exception:
+        pass
+
+    # Method 3: Check environment variables set by containers
+    container_env_vars = [
+        "container",  # Docker sets this to "docker" or "docker-runc"
+        "DOCKER_CONTAINER",  # Custom env var sometimes used
+        "KUBERNETES_SERVICE_HOST",  # Kubernetes
+        "KUBERNETES_NAMESPACE",  # Kubernetes
+    ]
+
+    for env_var in container_env_vars:
+        if os.environ.get(env_var):
+            logger.debug(f"Container detected: {env_var} environment variable is set")
+            return True
+
+    # Method 4: Check cgroup for container indicators
+    try:
+        with open("/proc/self/cgroup", "r") as f:
+            cgroup_content = f.read()
+            # Look for container-specific cgroup entries
+            if any(
+                marker in cgroup_content
+                for marker in [
+                    "/docker/",
+                    "/docker-",
+                    "/kubepods/",
+                    "/kubepods/burstable/",
+                    "/lxc/",
+                    "/containerd/",
+                ]
+            ):
+                logger.debug("Container detected: cgroup contains container markers")
+                return True
+    except Exception:
+        pass
+
+    # Method 5: Check for 1 as init process (typical in containers)
+    try:
+        with open("/proc/1/cmdline", "r") as f:
+            cmdline = f.read()
+            # In containers, PID 1 is often the container runtime or the main process
+            if cmdline and len(cmdline.split("\x00")) <= 2:
+                logger.debug("Container detected: PID 1 has limited command line")
+                return True
+    except Exception:
+        pass
+
+    # Method 6: Check parent process for container indicators
+    try:
+        with open("/proc/self/stat", "r") as f:
+            stat_content = f.read()
+            # Extract parent process ID (PPid)
+            parts = stat_content.split()
+            if len(parts) >= 4:
+                ppid = int(parts[3])
+                # Check parent's command line
+                try:
+                    with open(f"/proc/{ppid}/cmdline", "r") as parent_cmdline:
+                        parent_cmd = parent_cmdline.read()
+                        if any(
+                            marker in parent_cmd.lower()
+                            for marker in [
+                                "dockerd",
+                                "containerd",
+                                "runc",
+                                "podman",
+                                "docker-proxy",
+                            ]
+                        ):
+                            logger.debug("Container detected: parent process is container runtime")
+                            return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    logger.debug("Not running in a container")
+    return False
+
+
 @dataclass
 class CommandResult:
     """Result of a command execution."""

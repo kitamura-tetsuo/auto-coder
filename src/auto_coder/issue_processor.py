@@ -99,42 +99,38 @@ def _process_issues_normal(
                         newline_progress()
                         continue
 
-                # Add @auto-coder label and process with automatic cleanup
-                try:
-                    with LabelManager(github_client, repo_name, issue_number, "issue", dry_run, config):
-                        processed_issue = {
-                            "issue_data": issue_data,
-                            "actions_taken": [],
-                        }
+                # Use LabelManager context manager to handle @auto-coder label automatically
+                with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
+                    if not should_process:
+                        processed_issues.append(
+                            {
+                                "issue_data": issue_data,
+                                "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
+                            }
+                        )
+                        newline_progress()
+                        continue
 
-                        # Direct action for single execution (CLI)
-                        with ProgressStage("Processing"):
-                            actions = _take_issue_actions(
-                                repo_name,
-                                issue_data,
-                                config,
-                                dry_run,
-                                github_client,
-                            )
-                            processed_issue["actions_taken"] = actions
-                    # Label is automatically removed when exiting the context manager
+                    processed_issue = {
+                        "issue_data": issue_data,
+                        "actions_taken": [],
+                    }
+
+                    # Direct action for single execution (CLI)
+                    with ProgressStage("Processing"):
+                        actions = _take_issue_actions(
+                            repo_name,
+                            issue_data,
+                            config,
+                            dry_run,
+                            github_client,
+                        )
+                        processed_issue["actions_taken"] = actions
+
+                    # Clear progress header after processing
                     newline_progress()
                     processed_issues.append(processed_issue)
-                except LabelOperationError:
-                    # Another instance is processing this issue
-                    logger.info(f"Skipping issue #{issue_number} - @auto-coder label was just added by another instance")
-                    processed_issues.append(
-                        {
-                            "issue_data": issue_data,
-                            "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
-                        }
-                    )
-                    newline_progress()
-                except Exception as e:
-                    logger.error(f"Failed to process issue #{issue.number}: {e}")
-                    processed_issues.append({"issue_number": issue.number, "error": str(e)})
-                    # Clear progress header on error
-                    newline_progress()
+
             except Exception as e:
                 logger.error(f"Failed to process issue #{issue.number}: {e}")
                 processed_issues.append({"issue_number": issue.number, "error": str(e)})
@@ -183,39 +179,36 @@ def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run:
                     )
                     continue
 
-                # Add @auto-coder label and process with automatic cleanup
-                try:
-                    with LabelManager(github_client, repo_name, issue_number, "issue", dry_run, config):
-                        processed_issue = {"issue_data": issue_data, "actions_taken": []}
+                # Use LabelManager context manager to handle @auto-coder label automatically
+                with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
+                    if not should_process:
+                        processed_issues.append(
+                            {
+                                "issue_data": issue_data,
+                                "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
+                            }
+                        )
+                        continue
 
-                        # Check if 'jules' label already exists
-                        current_labels = issue_data.get("labels", [])
-                        if "jules" not in current_labels:
-                            if not dry_run:
-                                # Add 'jules' label to the issue
-                                github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
-                                processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{issue_number}")
-                                logger.info(f"Added 'jules' label to issue #{issue_number}")
-                            else:
-                                processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
-                                logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+                    processed_issue = {"issue_data": issue_data, "actions_taken": []}
+
+                    # Check if 'jules' label already exists
+                    current_labels = issue_data.get("labels", [])
+                    if "jules" not in current_labels:
+                        if not dry_run:
+                            # Add 'jules' label to the issue
+                            github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
+                            processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{issue_number}")
+                            logger.info(f"Added 'jules' label to issue #{issue_number}")
                         else:
-                            processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
-                            logger.info(f"Issue #{issue_number} already has 'jules' label")
-                    # Label is automatically removed when exiting the context manager
+                            processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+                            logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+                    else:
+                        processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
+                        logger.info(f"Issue #{issue_number} already has 'jules' label")
+
                     processed_issues.append(processed_issue)
-                except LabelOperationError:
-                    # Another instance is processing this issue
-                    logger.info(f"Skipping issue #{issue_number} - @auto-coder label was just added by another instance")
-                    processed_issues.append(
-                        {
-                            "issue_data": issue_data,
-                            "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to process issue #{issue.number} in jules mode: {e}")
-                    processed_issues.append({"issue_number": issue.number, "error": str(e)})
+
             except Exception as e:
                 logger.error(f"Failed to process issue #{issue.number} in jules mode: {e}")
                 processed_issues.append({"issue_number": issue.number, "error": str(e)})
@@ -809,46 +802,52 @@ def process_single(
                     with ProgressStage("Getting issue details"):
                         issue_data = github_client.get_issue_details_by_number(repo_name, number)
 
-                    # Add @auto-coder label and process with automatic cleanup
-                    try:
-                        with LabelManager(github_client, repo_name, number, "issue", dry_run, config):
-                            processed_issue = {
-                                "issue_data": issue_data,
-                                "analysis": None,
-                                "solution": None,
-                                "actions_taken": [],
-                            }
+                    # For process_single, we want to process the issue even if @auto-coder label exists
+                    # So we try to add the label unconditionally, but don't skip if it already exists
+                    if not dry_run:
+                        # Try to add the label (don't check if it exists first, as we want to process regardless)
+                        if hasattr(github_client, "try_add_work_in_progress_label"):
+                            github_client.try_add_work_in_progress_label(repo_name, number, label="@auto-coder")
+                    else:
+                        logger.info(f"[DRY RUN] Would add '@auto-coder' label to issue #{number}")
 
-                            if jules_mode:
-                                # Mimic jules mode behavior
-                                with ProgressStage("Adding jules label"):
-                                    current_labels = issue_data.get("labels", [])
-                                    if "jules" not in current_labels:
-                                        if not dry_run:
-                                            github_client.add_labels_to_issue(repo_name, number, ["jules"])
-                                            processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
-                                        else:
-                                            processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{number}")
-                                    else:
-                                        processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
+                    # Always proceed with processing for process_single
+                    should_process = True
+
+                    processed_issue = {
+                        "issue_data": issue_data,
+                        "analysis": None,
+                        "solution": None,
+                        "actions_taken": [],
+                    }
+
+                    if jules_mode:
+                        # Mimic jules mode behavior
+                        with ProgressStage("Adding jules label"):
+                            current_labels = issue_data.get("labels", [])
+                            if "jules" not in current_labels:
+                                if not dry_run:
+                                    github_client.add_labels_to_issue(repo_name, number, ["jules"])
+                                    processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
+                                else:
+                                    processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{number}")
                             else:
-                                with ProgressStage("Processing"):
-                                    actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
-                                    processed_issue["actions_taken"] = actions
-                        # Label is automatically removed when exiting the context manager
-                        newline_progress()
-                        result["issues_processed"].append(processed_issue)
-                    except LabelOperationError:
-                        # Another instance is processing this issue
-                        msg = f"Skipping issue #{number} - @auto-coder label was just added by another instance"
-                        logger.info(msg)
-                        result["errors"].append(msg)
-                        newline_progress()
-                    except Exception as e:
-                        msg = f"Failed to process issue #{number}: {e}"
-                        logger.error(msg)
-                        result["errors"].append(msg)
-                        newline_progress()
+                                processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
+                    else:
+                        with ProgressStage("Processing"):
+                            actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
+                            processed_issue["actions_taken"] = actions
+
+                    # Clear progress header after processing
+                    newline_progress()
+
+                    # Remove the @auto-coder label after processing
+                    from .label_manager import remove_label
+
+                    remove_label(github_client, repo_name, number, item_type="issue", dry_run=dry_run, config=config)
+
+                    result["issues_processed"].append(processed_issue)
+
                 except Exception as e:
                     msg = f"Failed to process issue #{number}: {e}"
                     logger.error(msg)

@@ -30,6 +30,15 @@ def docker_manager(mock_executor):
             return manager
 
 
+@pytest.fixture
+def mock_subprocess_health():
+    """Fixture to mock subprocess.run for health checks."""
+    with mock.patch("subprocess.run") as mock_run:
+        # Mock successful health checks
+        mock_run.return_value = mock.MagicMock(returncode=0, stdout=b"healthy\n", stderr=b"")
+        yield mock_run
+
+
 def test_init_default_compose_file():
     """Test initialization with default compose file."""
     with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
@@ -175,12 +184,9 @@ def test_get_status(docker_manager):
     assert status == {"neo4j": True, "qdrant": False}
 
 
-def test_check_neo4j_health_success(docker_manager):
+def test_check_neo4j_health_success(docker_manager, mock_subprocess_health):
     """Test Neo4j health check success."""
-    with mock.patch("subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(returncode=0, stdout=b"healthy\n")
-        result = docker_manager._check_neo4j_health()
-
+    result = docker_manager._check_neo4j_health()
     assert result is True
 
 
@@ -201,12 +207,9 @@ def test_check_neo4j_health_exception(docker_manager):
     assert result is False
 
 
-def test_check_qdrant_health_success(docker_manager):
+def test_check_qdrant_health_success(docker_manager, mock_subprocess_health):
     """Test Qdrant health check success."""
-    with mock.patch("subprocess.run") as mock_run:
-        mock_run.return_value = mock.MagicMock(returncode=0, stdout=b"healthy\n")
-        result = docker_manager._check_qdrant_health()
-
+    result = docker_manager._check_qdrant_health()
     assert result is True
 
 
@@ -283,6 +286,34 @@ def test_detect_docker_compose_command_not_found():
     with mock.patch("subprocess.run") as mock_run:
         # Both commands fail
         mock_run.return_value = mock.MagicMock(returncode=1)
+
+        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+            with pytest.raises(
+                RuntimeError,
+                match="Neither 'docker compose' nor 'docker-compose' is available",
+            ):
+                GraphRAGDockerManager()
+
+
+def test_detect_docker_compose_command_timeout():
+    """Test detection when command times out."""
+    with mock.patch("subprocess.run") as mock_run:
+        # Simulate timeout
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="docker compose version", timeout=5)
+
+        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+            with pytest.raises(
+                RuntimeError,
+                match="Neither 'docker compose' nor 'docker-compose' is available",
+            ):
+                GraphRAGDockerManager()
+
+
+def test_detect_docker_compose_command_exception():
+    """Test detection when command raises exception."""
+    with mock.patch("subprocess.run") as mock_run:
+        # Simulate command not found
+        mock_run.side_effect = FileNotFoundError("docker: command not found")
 
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
@@ -374,7 +405,7 @@ def test_run_docker_compose_no_retry_when_disabled(docker_manager, mock_executor
 
 def test_get_current_container_id_in_container(docker_manager):
     """Test getting container ID when running in container."""
-    with mock.patch("os.path.exists", return_value=True):
+    with mock.patch("src.auto_coder.graphrag_docker_manager.is_running_in_container", return_value=True):
         with mock.patch("builtins.open", mock.mock_open(read_data="abc123def456\n")):
             container_id = docker_manager._get_current_container_id()
 
@@ -383,7 +414,7 @@ def test_get_current_container_id_in_container(docker_manager):
 
 def test_get_current_container_id_not_in_container(docker_manager):
     """Test getting container ID when not running in container."""
-    with mock.patch("os.path.exists", return_value=False):
+    with mock.patch("src.auto_coder.graphrag_docker_manager.is_running_in_container", return_value=False):
         container_id = docker_manager._get_current_container_id()
 
     assert container_id is None
