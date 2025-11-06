@@ -10,7 +10,7 @@ from auto_coder.backend_manager import get_llm_backend_manager, run_message_prom
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
-from .git_utils import commit_and_push_changes, ensure_pushed, get_commit_log, git_checkout_branch, switch_to_branch
+from .git_utils import branch_context, commit_and_push_changes, ensure_pushed, get_commit_log
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -481,26 +481,24 @@ def _apply_issue_actions_directly(
         # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
         target_branch = None
         pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
+
+        # Store current branch to ensure we can track where we started
+        initial_branch = None
+        try:
+            result = cmd.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+            if result.success:
+                initial_branch = result.stdout.strip()
+        except Exception:
+            pass
+
         if "head_branch" in issue_data:
             # For PRs, switch to head_branch
             target_branch = issue_data.get("head_branch")
             logger.info(f"Switching to PR branch: {target_branch}")
-
-            # Switch to branch
-            checkout_result = git_checkout_branch(target_branch)
-            if checkout_result.success:
-                actions.append(f"Switched to branch: {target_branch}")
-                logger.info(f"Successfully switched to branch: {target_branch}")
-            else:
-                # Exit if branch switching fails
-                error_msg = f"Failed to switch to branch {target_branch}: {checkout_result.stderr}"
-                actions.append(error_msg)
-                logger.error(error_msg)
-                return actions
         else:
-            # For regular issues, create a work branch
+            # For regular issues, determine work branch
             work_branch = f"issue-{issue_number}"
-            logger.info(f"Creating work branch for issue: {work_branch}")
+            logger.info(f"Determining work branch for issue: {work_branch}")
 
             # Check for parent issue
             parent_issue_number = github_client.get_parent_issue(repo_name, issue_number)
@@ -519,142 +517,98 @@ def _apply_issue_actions_directly(
                     base_branch = parent_branch
                     pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
                     logger.info(f"Parent branch {parent_branch} exists, using it as base")
-
-                    # Update branch to latest state
-                    switch_result = switch_to_branch(parent_branch, pull_after_switch=True)
-                    if not switch_result.success:
-                        logger.warning(f"Failed to pull latest changes from {parent_branch}: {switch_result.stderr}")
                 else:
                     # Create parent issue branch if it doesn't exist
                     logger.info(f"Parent branch {parent_branch} does not exist, creating it")
 
-                    # First switch to default branch
-                    switch_main_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
-                    if not switch_main_result.success:
-                        error_msg = f"Failed to switch to main branch {config.MAIN_BRANCH}: {switch_main_result.stderr}"
-                        actions.append(error_msg)
-                        logger.error(error_msg)
-                        return actions
-
                     # Create parent issue branch (automatically pushed to remote)
-                    create_parent_result = git_checkout_branch(parent_branch, create_new=True)
-                    if create_parent_result.success:
+                    with branch_context(parent_branch, create_new=True):
                         actions.append(f"Created and published parent branch: {parent_branch}")
                         logger.info(f"Successfully created and published parent branch: {parent_branch}")
 
-                        base_branch = parent_branch
-                        pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
-                    else:
-                        logger.warning(f"Failed to create parent branch {parent_branch}: {create_parent_result.stderr}")
-                        # Use default branch if parent branch creation fails
-                        base_branch = config.MAIN_BRANCH
+                    base_branch = parent_branch
+                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
 
             # Check if work branch already exists
             check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])
 
             if check_work_branch.returncode == 0:
-                # If work branch exists, switch to it
-                logger.info(f"Work branch {work_branch} already exists, switching to it")
-                checkout_existing_result = git_checkout_branch(work_branch)
-                if checkout_existing_result.success:
-                    actions.append(f"Switched to existing work branch: {work_branch}")
-                    logger.info(f"Switched to existing work branch: {work_branch}")
-                    target_branch = work_branch
-                else:
-                    error_msg = f"Failed to switch to existing work branch {work_branch}: {checkout_existing_result.stderr}"
-                    actions.append(error_msg)
-                    logger.error(error_msg)
-                    return actions
+                # Work branch exists
+                logger.info(f"Work branch {work_branch} already exists, will switch to it")
+                target_branch = work_branch
             else:
-                # If work branch doesn't exist, create new from base branch
-                logger.info(f"Work branch {work_branch} does not exist, creating from {base_branch}")
+                # Work branch doesn't exist, will create it
+                logger.info(f"Work branch {work_branch} does not exist, will create from {base_branch}")
+                target_branch = work_branch
 
-                # Switch to base branch
-                switch_base_result = switch_to_branch(base_branch, pull_after_switch=True)
-                if not switch_base_result.success:
-                    error_msg = f"Failed to switch to base branch {base_branch}: {switch_base_result.stderr}"
-                    actions.append(error_msg)
-                    logger.error(error_msg)
-                    return actions
+        # Now perform all work on the target branch using branch_context
+        with branch_context(target_branch, create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
+            # Get commit log since branch creation
+            with ProgressStage("Getting commit log"):
+                commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
-                # Create and switch to work branch
-                checkout_new_result = git_checkout_branch(work_branch, create_new=True)
-                if checkout_new_result.success:
-                    actions.append(f"Created and switched to work branch: {work_branch} from {base_branch}")
-                    logger.info(f"Successfully created work branch: {work_branch} from {base_branch}")
-                    target_branch = work_branch
+            # Create a comprehensive prompt for LLM CLI
+            action_prompt = render_prompt(
+                "issue.action",
+                repo_name=repo_name,
+                issue_number=issue_data.get("number", "unknown"),
+                issue_title=issue_data.get("title", "Unknown"),
+                issue_body=(issue_data.get("body") or "")[:10000],
+                issue_labels=", ".join(issue_data.get("labels", [])),
+                issue_state=issue_data.get("state", "open"),
+                issue_author=issue_data.get("author", "unknown"),
+                commit_log=commit_log or "(No commit history)",
+            )
+            logger.debug(
+                "Prepared issue-action prompt for #%s (preview: %s)",
+                issue_data.get("number", "unknown"),
+                action_prompt[:160].replace("\n", " "),
+            )
+
+            # Use LLM CLI to analyze and take actions
+            logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
+
+            # Call LLM client
+            response = get_llm_backend_manager()._run_llm_cli(action_prompt)
+
+            # Parse the response
+            if response and len(response.strip()) > 0:
+                actions.append(f"LLM CLI analyzed and took action on issue: {response[:200]}...")
+
+                # Check if LLM indicated the issue should be closed
+                if "closed" in response.lower() or "duplicate" in response.lower() or "invalid" in response.lower():
+                    # Close the issue
+                    # github_client.close_issue(repo_name, issue_data['number'], f"Auto-Coder Analysis: {response[:500]}...")
+                    actions.append(f"Closed issue #{issue_data['number']} based on analysis")
                 else:
-                    error_msg = f"Failed to create work branch {work_branch}: {checkout_new_result.stderr}"
-                    actions.append(error_msg)
-                    logger.error(error_msg)
-                    return actions
+                    # Add analysis comment
+                    # github_client.add_comment_to_issue(repo_name, issue_data['number'], f"## 🤖 Auto-Coder Analysis\n\n{response}")
+                    actions.append(f"Added analysis comment to issue #{issue_data['number']}")
 
-        # Get commit log since branch creation
-        with ProgressStage("Getting commit log"):
-            commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
-
-        # Create a comprehensive prompt for LLM CLI
-        action_prompt = render_prompt(
-            "issue.action",
-            repo_name=repo_name,
-            issue_number=issue_data.get("number", "unknown"),
-            issue_title=issue_data.get("title", "Unknown"),
-            issue_body=(issue_data.get("body") or "")[:10000],
-            issue_labels=", ".join(issue_data.get("labels", [])),
-            issue_state=issue_data.get("state", "open"),
-            issue_author=issue_data.get("author", "unknown"),
-            commit_log=commit_log or "(No commit history)",
-        )
-        logger.debug(
-            "Prepared issue-action prompt for #%s (preview: %s)",
-            issue_data.get("number", "unknown"),
-            action_prompt[:160].replace("\n", " "),
-        )
-
-        # Use LLM CLI to analyze and take actions
-        logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
-
-        # Call LLM client
-        response = get_llm_backend_manager()._run_llm_cli(action_prompt)
-
-        # Parse the response
-        if response and len(response.strip()) > 0:
-            actions.append(f"LLM CLI analyzed and took action on issue: {response[:200]}...")
-
-            # Check if LLM indicated the issue should be closed
-            if "closed" in response.lower() or "duplicate" in response.lower() or "invalid" in response.lower():
-                # Close the issue
-                # github_client.close_issue(repo_name, issue_data['number'], f"Auto-Coder Analysis: {response[:500]}...")
-                actions.append(f"Closed issue #{issue_data['number']} based on analysis")
-            else:
-                # Add analysis comment
-                # github_client.add_comment_to_issue(repo_name, issue_data['number'], f"## 🤖 Auto-Coder Analysis\n\n{response}")
-                actions.append(f"Added analysis comment to issue #{issue_data['number']}")
-
-            # Commit any changes made
-            with ProgressStage("Committing changes"):
-                commit_action = commit_and_push_changes(
-                    {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
-                    repo_name=repo_name,
-                    issue_number=issue_data["number"],
-                )
-                actions.append(commit_action)
-
-            # Create PR if this is a regular issue (not a PR)
-            if "head_branch" not in issue_data and target_branch:
-                with ProgressStage("Creating PR"):
-                    pr_creation_result = _create_pr_for_issue(
+                # Commit any changes made
+                with ProgressStage("Committing changes"):
+                    commit_action = commit_and_push_changes(
+                        {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
                         repo_name=repo_name,
-                        issue_data=issue_data,
-                        work_branch=target_branch,
-                        base_branch=pr_base_branch,
-                        llm_response=response,
-                        github_client=github_client,
-                        dry_run=dry_run,
+                        issue_number=issue_data["number"],
                     )
-                actions.append(pr_creation_result)
-        else:
-            actions.append("LLM CLI did not provide a clear response for issue analysis")
+                    actions.append(commit_action)
+
+                # Create PR if this is a regular issue (not a PR)
+                if "head_branch" not in issue_data and target_branch:
+                    with ProgressStage("Creating PR"):
+                        pr_creation_result = _create_pr_for_issue(
+                            repo_name=repo_name,
+                            issue_data=issue_data,
+                            work_branch=target_branch,
+                            base_branch=pr_base_branch,
+                            llm_response=response,
+                            github_client=github_client,
+                            dry_run=dry_run,
+                        )
+                    actions.append(pr_creation_result)
+            else:
+                actions.append("LLM CLI did not provide a clear response for issue analysis")
 
     except Exception as e:
         logger.error(f"Error applying issue actions directly: {e}")
@@ -818,16 +772,11 @@ def process_single(
                         logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
 
                         # Switch to main branch with pull
-                        switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
-                        if switch_result.success:
+                        with branch_context(config.MAIN_BRANCH):
                             logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                            # Exit the program
-                            logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
-                            sys.exit(0)
-                        else:
-                            logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
-                            result["errors"].append(f"Failed to switch to main branch: {switch_result.stderr}")
-                            return result
+                        # Exit the program
+                        logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
+                        sys.exit(0)
 
                     actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
                     processed_pr = {
@@ -928,14 +877,11 @@ def process_single(
                             logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
 
                             # Switch to main branch with pull
-                            switch_result = switch_to_branch(config.MAIN_BRANCH, pull_after_switch=True)
-                            if switch_result.success:
+                            with branch_context(config.MAIN_BRANCH):
                                 logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                                # Exit the program
-                                logger.info(f"Exiting after closing {item_type} #{item_number}")
-                                sys.exit(0)
-                            else:
-                                logger.error(f"Failed to switch to {config.MAIN_BRANCH} branch: {switch_result.stderr}")
+                            # Exit the program
+                            logger.info(f"Exiting after closing {item_type} #{item_number}")
+                            sys.exit(0)
         except Exception as e:
             logger.warning(f"Failed to check/handle closed item state: {e}")
 
