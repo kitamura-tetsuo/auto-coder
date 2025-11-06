@@ -1,5 +1,6 @@
 """Tests for LabelManager context manager."""
 
+import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -265,3 +266,136 @@ class TestLabelManager:
 
         # Label should NOT be removed (since it wasn't added)
         mock_github_client.remove_labels_from_issue.assert_not_called()
+
+    def test_label_manager_network_error_on_label_check(self):
+        """Test that LabelManager handles network errors during label check."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        # Simulate network error during has_label check
+        mock_github_client.has_label.side_effect = Exception("Network error")
+        # But check_label_exists should fallback and return False
+        mock_github_client.get_issue_details_by_number.return_value = {"labels": []}
+
+        config = AutomationConfig()
+
+        # Use LabelManager - should still proceed even if check fails
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+            # Should still return True to allow processing
+            assert should_process is True
+
+    def test_label_manager_exception_in_exit_does_not_propagate(self):
+        """Test that exceptions in __exit__ don't propagate to caller."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+        # Simulate error during cleanup
+        mock_github_client.remove_labels_from_issue.side_effect = Exception("Cleanup error")
+
+        config = AutomationConfig()
+
+        # __exit__ should not raise the exception
+        try:
+            with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+                assert should_process is True
+        except Exception as e:
+            pytest.fail(f"__exit__ should not propagate exceptions, but got: {e}")
+
+    def test_label_manager_with_retry_delay(self):
+        """Test that custom retry_delay is respected."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        # First attempt fails, second succeeds
+        mock_github_client.try_add_work_in_progress_label.side_effect = [Exception("API error"), True]
+
+        config = AutomationConfig()
+
+        # Use custom retry_delay
+        start = time.time()
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=2, retry_delay=0.1) as should_process:
+            assert should_process is True
+        elapsed = time.time() - start
+
+        # Should wait at least 0.1 seconds for retry
+        assert elapsed >= 0.1, f"Expected at least 0.1s delay, got {elapsed:.4f}s"
+
+    def test_label_manager_zero_retries(self):
+        """Test LabelManager with max_retries=0 (no retries attempted)."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        # Always fails
+        mock_github_client.try_add_work_in_progress_label.side_effect = Exception("API error")
+
+        config = AutomationConfig()
+
+        # Use with max_retries=0
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=0) as should_process:
+            # Should still return True (fail open) - loop doesn't execute when max_retries=0
+            assert should_process is True
+        # Should NOT be called at all (range(0) is empty)
+        assert mock_github_client.try_add_work_in_progress_label.call_count == 0
+
+    def test_label_manager_with_string_item_number(self):
+        """Test LabelManager with string item number (e.g., GitHub issue numbers as strings)."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+
+        config = AutomationConfig()
+
+        # Use string item number
+        with LabelManager(mock_github_client, "owner/repo", "123", item_type="issue", config=config) as should_process:
+            assert should_process is True
+            mock_github_client.try_add_work_in_progress_label.assert_called_once_with("owner/repo", "123", label="@auto-coder")
+
+        # Label should be removed
+        mock_github_client.remove_labels_from_issue.assert_called_once_with("owner/repo", "123", ["@auto-coder"])
+
+    def test_label_manager_nested_contexts_different_items(self):
+        """Test that nested LabelManager contexts work for different items."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+
+        config = AutomationConfig()
+
+        # Nested contexts for different items
+        with LabelManager(mock_github_client, "owner/repo", 1, item_type="issue", config=config) as should_process_1:
+            assert should_process_1 is True
+
+            # Inner context for different item
+            with LabelManager(mock_github_client, "owner/repo", 2, item_type="issue", config=config) as should_process_2:
+                assert should_process_2 is True
+
+        # Both should have been processed
+        assert mock_github_client.try_add_work_in_progress_label.call_count == 2
+        assert mock_github_client.remove_labels_from_issue.call_count == 2
+
+    def test_label_manager_fallback_to_get_issue_details(self):
+        """Test that LabelManager falls back to get_issue_details when has_label is not available."""
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        # has_label is not a real method (just a Mock attribute)
+        mock_github_client.has_label = Mock()  # This will be detected as not a real method
+        # get_issue_details should work
+        mock_github_client.get_issue_details_by_number.return_value = {"labels": []}
+        mock_github_client.try_add_work_in_progress_label.return_value = True
+
+        config = AutomationConfig()
+
+        # Use LabelManager - should use fallback
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+            assert should_process is True
+            # Should have called get_issue_details
+            mock_github_client.get_issue_details_by_number.assert_called_once()
