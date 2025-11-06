@@ -21,7 +21,7 @@ from auto_coder.util.github_action import DetailedChecksResult, _check_github_ac
 from .automation_config import AutomationConfig
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
-from .git_utils import get_commit_log, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import branch_context, get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
@@ -555,18 +555,10 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
             log_action(f"Failed to fetch PR #{pr_number} branch", False, fetch_result.stderr)
             return False
 
-        # Force checkout the branch (create or reset)
-        checkout_result = git_checkout_branch(branch_name, create_new=True, base_branch=branch_name)
-        if checkout_result.success:
+        # Force checkout the branch (create or reset) using branch_context
+        with branch_context(branch_name, create_new=True):
             log_action(f"Successfully manually checked out PR #{pr_number}")
             return True
-        else:
-            log_action(
-                f"Failed to manually checkout PR #{pr_number}",
-                False,
-                checkout_result.stderr,
-            )
-            return False
 
     except Exception as e:
         logger.error(f"Error manually checking out PR #{pr_number}: {e}")
