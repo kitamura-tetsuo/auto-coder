@@ -858,7 +858,7 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
     except Exception:
         pass
 
-    # 2) Keyword-based fallback extraction (improved over legacy logic)
+    # 2) Keyword-based fallback extraction
     important_lines = []
     # Keywords that indicate important error information
     error_keywords = [
