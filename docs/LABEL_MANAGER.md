@@ -129,52 +129,50 @@ class LabelManager:
 
 **Methods:**
 
-- `check_and_add_label() -> bool`: Check if label exists and add it if not
-- `remove_label() -> bool`: Remove label from issue/PR
-- `verify_label_exists() -> bool`: Check if label exists on issue/PR
+- `verify_label_exists() -> bool`: Check if label exists on issue/PR (private helper)
 
 **Context Manager Protocol:**
 
-- `__enter__() -> LabelManager`: Adds label and returns self
+- `__enter__() -> bool`: Adds label and returns True if processing should continue
 - `__exit__(exc_type, exc_val, exc_tb)`: Removes label and cleans up
 
 ### LabelOperationError
 
 Exception raised when label operations fail or another instance is processing the item.
 
-## Migration from Legacy Functions
+## Legacy Function Removal
 
-The old utility functions are deprecated but still available for backward compatibility:
+The legacy utility functions `check_and_add_label()`, `remove_label()`, and `check_label_exists()` have been removed.
+Please use the `LabelManager` context manager instead, which provides a cleaner and more reliable API for label management.
 
 ```python
-# OLD (deprecated)
-from src.auto_coder.label_manager import check_and_add_label, remove_label
-
-check_and_add_label(github_client, "owner/repo", 123, "issue", False, config)
-remove_label(github_client, "owner/repo", 123, "issue", False, config)
-
-# NEW (recommended)
+# Use LabelManager context manager
 from src.auto_coder.label_manager import LabelManager
 
-with LabelManager(github_client, "owner/repo", 123, "issue", False, config) as lm:
+with LabelManager(github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+    if not should_process:
+        return  # Another instance is processing
+
     # Process issue
-    pass
-# Label automatically managed
+    # Label is automatically managed
+# Label automatically removed on exit
 ```
+
+## Benefits
+
+1. **Reduced Code**: Eliminates try/finally blocks for cleanup
+2. **Better Safety**: Guaranteed cleanup even on exceptions
+3. **Race Detection**: Automatic detection of concurrent processing
+4. **Retry Logic**: Built-in retry with exponential backoff
+5. **Maintainability**: Single source of truth for label operations
+6. **Type Safety**: Clear type hints and documentation
+7. **Testability**: Easy to test with mocked GitHub client
+
+## Performance
+
+- Minimal overhead: one additional object allocation
 
 ## Implementation Details
-
-### Retry Logic
-
-The LabelManager implements exponential backoff retry for API failures:
-
-```python
-# Example retry sequence
-attempt 1: immediate call
-attempt 2: wait 0.5s
-attempt 3: wait 1.0s
-attempt 4: wait 2.0s
-```
 
 ### Thread Safety
 

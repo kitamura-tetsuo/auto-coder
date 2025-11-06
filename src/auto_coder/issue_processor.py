@@ -21,22 +21,7 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def process_issues(
-    github_client,
-    config: AutomationConfig,
-    dry_run: bool,
-    repo_name: str,
-    jules_mode: bool = False,
-) -> List[Dict[str, Any]]:
-    """Process open issues in the repository."""
-    # Note: This function is not actively used by the automation engine,
-    # which uses a candidate-based approach instead.
-    # Keep for backward compatibility but not actively maintained.
-    logger.warning("process_issues function is deprecated and not actively used")
-    return []
-
-
-def _process_issues_normal(
+def _process_issue_jules_mode(
     github_client,
     config: AutomationConfig,
     dry_run: bool,
@@ -237,33 +222,6 @@ def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: 
     except Exception as e:
         logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
         return {"issue_data": issue_data, "error": str(e)}
-
-
-def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run: bool, repo_name: str) -> List[Dict[str, Any]]:
-    """Process open issues in jules mode - only add 'jules' label.
-
-    This is a backward-compatible wrapper for the refactored _process_issue_jules_mode.
-    It processes a list of issues for backward compatibility with existing code and tests.
-    """
-    try:
-        issues = github_client.get_open_issues(repo_name, limit=config.max_issues_per_run)
-        processed_issues = []
-
-        for issue in issues:
-            try:
-                issue_data = github_client.get_issue_details(issue)
-                # Call the new single-issue function
-                result = _process_issue_jules_mode(github_client, config, dry_run, repo_name, issue_data)
-                processed_issues.append(result)
-            except Exception as e:
-                logger.error(f"Failed to process issue #{issue.number} in jules mode: {e}")
-                processed_issues.append({"issue_number": issue.number, "error": str(e)})
-
-        return processed_issues
-
-    except Exception as e:
-        logger.error(f"Failed to process issues in jules mode for {repo_name}: {e}")
-        return []
 
 
 def _take_issue_actions(
