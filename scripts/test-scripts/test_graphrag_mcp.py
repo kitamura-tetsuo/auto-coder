@@ -49,7 +49,8 @@ def test_graphrag_mcp():
         "params": {
             "name": "find_symbol",
             "arguments": {
-                "fqname": "src/auto_coder/mcp_servers/graphrag_mcp/server.py::main"
+                "fqname": "src/auto_coder/mcp_servers/graphrag_mcp/server.py::main",
+                "session_id": "test_session_123"
             }
         }
     }

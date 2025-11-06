@@ -443,30 +443,35 @@ mcp:
 
     Available Tools:
 
-    1. find_symbol(fqname):
+    1. find_symbol(fqname, session_id):
        - Find a specific symbol by fully qualified name
-       - Example: find_symbol("src/utils.ts::calculateHash")
+       - Example: find_symbol("src/utils.ts::calculateHash", session_id="session_123")
        - Returns: id, kind, signature, complexity, location, etc.
+       - Note: session_id is required for repository isolation
 
-    2. get_call_graph(symbol_id, direction='both', depth=1):
+    2. get_call_graph(symbol_id, session_id, direction='both', depth=1):
        - Analyze function/method call relationships
+       - session_id: Session ID for repository isolation (required)
        - direction: 'callers' | 'callees' | 'both'
        - depth: 1-3 (higher = more indirect relationships)
        - Returns: nodes (related symbols) and edges (call relationships)
 
-    3. get_dependencies(file_path):
+    3. get_dependencies(file_path, session_id):
        - Analyze file import relationships
-       - Example: get_dependencies("src/utils.ts")
+       - Example: get_dependencies("src/utils.ts", session_id="session_123")
        - Returns: imports (what this file imports) and imported_by (who imports this)
+       - Note: session_id is required for repository isolation
 
-    4. impact_analysis(symbol_ids, max_depth=2):
+    4. impact_analysis(symbol_ids, session_id, max_depth=2):
        - Analyze impact of changing symbols
+       - session_id: Session ID for repository isolation (required)
        - Finds all affected symbols via CALLS/IMPORTS/EXTENDS/IMPLEMENTS
        - Returns: affected_symbols, affected_files, impact_summary
 
-    5. semantic_code_search(query, limit=10, kind_filter=None):
+    5. semantic_code_search(query, session_id, limit=10, kind_filter=None):
        - Search code using natural language
-       - Example: semantic_code_search("hash calculation functions", kind_filter=["Function"])
+       - session_id: Session ID for repository isolation (required)
+       - Example: semantic_code_search("hash calculation functions", "session_123", kind_filter=["Function"])
        - Returns: semantically similar symbols with scores
 
     Graph Schema (ts-morph):
@@ -480,6 +485,7 @@ mcp:
     - Use get_call_graph to understand function relationships
     - Use impact_analysis before making changes to assess scope
     - Use get_dependencies to understand module structure
+    - Always provide session_id for repository isolation
 
     MCP Resources:
     - https://graphrag.db/schema/neo4j - Detailed Neo4j schema with node/edge definitions
