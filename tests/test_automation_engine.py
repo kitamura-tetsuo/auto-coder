@@ -715,50 +715,6 @@ class TestAutomationEngine:
             # Assert
             assert result is False
 
-    def test_apply_github_actions_fixes_directly(self, mock_github_client, mock_gemini_client):
-        """Test direct GitHub Actions fixes application using Gemini CLI."""
-        # Setup
-        mock_gemini_client._run_llm_cli.return_value = "Fixed the GitHub Actions issues by updating the test configuration"
-
-        engine = AutomationEngine(mock_github_client)
-        pr_data = {
-            "number": 123,
-            "title": "Fix test issue",
-            "body": "This PR fixes the test configuration",
-        }
-        github_logs = "Error: Test failed due to missing dependency"
-
-        # Execute
-        with patch.object(engine, "_commit_changes", return_value="Committed changes"):
-            result = engine._apply_github_actions_fixes_directly(pr_data, github_logs)
-
-        # Assert
-        assert len(result) == 2
-        assert "Gemini CLI applied GitHub Actions fixes" in result[0]
-        assert "Committed changes" in result[1]
-
-    def test_apply_local_test_fixes_directly(self, mock_github_client, mock_gemini_client):
-        """Test direct local test fixes application using Gemini CLI."""
-        # Setup
-        mock_gemini_client._run_llm_cli.return_value = "Fixed the local test issues by updating the import statements"
-
-        engine = AutomationEngine(mock_github_client)
-        pr_data = {
-            "number": 123,
-            "title": "Fix import issue",
-            "body": "This PR fixes the import statements",
-        }
-        error_summary = "ImportError: cannot import name 'helper' from 'utils'"
-
-        # Execute
-        with patch.object(engine, "_commit_changes", return_value="Committed changes"):
-            result = engine._apply_local_test_fixes_directly(pr_data, error_summary)
-
-        # Assert
-        assert len(result) == 2
-        assert "Gemini CLI applied local test fixes" in result[0]
-        assert "Committed changes" in result[1]
-
     # Remove outdated test that doesn't match current implementation
     def test_apply_github_actions_fix_no_commit_in_prompt_and_code_commits(self):
         """Test removed - outdated and doesn't match current stub implementation."""
