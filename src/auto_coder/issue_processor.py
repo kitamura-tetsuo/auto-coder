@@ -11,7 +11,7 @@ from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
-from .git_utils import branch_context, commit_and_push_changes, ensure_pushed, get_commit_log
+from .git_utils import branch_context, commit_and_push_changes, get_commit_log
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -305,17 +305,6 @@ def _apply_issue_actions_directly(
         try:
             # Set progress item at the start
             set_progress_item("Issue", issue_number)
-
-            # Ensure any unpushed commits are pushed before starting
-            with ProgressStage("Checking unpushed commits"):
-                logger.info("Checking for unpushed commits before processing issue...")
-                push_result = ensure_pushed()
-                if push_result.success and "No unpushed commits" not in push_result.stdout:
-                    actions.append(f"Pushed unpushed commits: {push_result.stdout}")
-                    logger.info("Successfully pushed unpushed commits")
-                elif not push_result.success:
-                    logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
-                    actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
 
             # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
             target_branch = None
