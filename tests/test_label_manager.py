@@ -310,18 +310,13 @@ class TestLabelManager:
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
         # First attempt fails, second succeeds
-        mock_github_client.try_add_work_in_progress_label.side_effect = [
-            Exception("API error"),
-            True
-        ]
+        mock_github_client.try_add_work_in_progress_label.side_effect = [Exception("API error"), True]
 
         config = AutomationConfig()
 
         # Use custom retry_delay
         start = time.time()
-        with LabelManager(
-            mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=2, retry_delay=0.1
-        ) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=2, retry_delay=0.1) as should_process:
             assert should_process is True
         elapsed = time.time() - start
 
@@ -340,9 +335,7 @@ class TestLabelManager:
         config = AutomationConfig()
 
         # Use with max_retries=0
-        with LabelManager(
-            mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=0
-        ) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=0) as should_process:
             # Should still return True (fail open) - loop doesn't execute when max_retries=0
             assert should_process is True
         # Should NOT be called at all (range(0) is empty)
@@ -359,9 +352,7 @@ class TestLabelManager:
         config = AutomationConfig()
 
         # Use string item number
-        with LabelManager(
-            mock_github_client, "owner/repo", "123", item_type="issue", config=config
-        ) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", "123", item_type="issue", config=config) as should_process:
             assert should_process is True
             mock_github_client.try_add_work_in_progress_label.assert_called_once_with("owner/repo", "123", label="@auto-coder")
 

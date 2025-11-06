@@ -50,9 +50,7 @@ class TestLabelManagerPerformance:
 
         def label_manager_operation(operation_id):
             """Perform a label manager operation."""
-            with LabelManager(
-                mock_github_client, "owner/repo", operation_id, item_type="issue", config=config
-            ) as should_process:
+            with LabelManager(mock_github_client, "owner/repo", operation_id, item_type="issue", config=config) as should_process:
                 return should_process
 
         # Run 100 concurrent operations
@@ -80,17 +78,13 @@ class TestLabelManagerPerformance:
         mock_github_client.has_label.return_value = False
 
         # Simulate failures that require retries
-        mock_github_client.try_add_work_in_progress_label.side_effect = [
-            Exception("API error") for _ in range(2)
-        ] + [True]  # Success on third attempt
+        mock_github_client.try_add_work_in_progress_label.side_effect = [Exception("API error") for _ in range(2)] + [True]  # Success on third attempt
 
         config = AutomationConfig()
 
         # Measure time with retries
         start = time.perf_counter()
-        with LabelManager(
-            mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=3, retry_delay=0.01
-        ) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=3, retry_delay=0.01) as should_process:
             assert should_process is True
         end = time.perf_counter()
         retry_time = end - start
@@ -116,9 +110,7 @@ class TestLabelManagerPerformance:
             """Perform multiple label manager operations."""
             results = []
             for i in range(operations_per_thread):
-                with LabelManager(
-                    mock_github_client, f"owner/repo", thread_id * 1000 + i, item_type="issue", config=config
-                ) as should_process:
+                with LabelManager(mock_github_client, f"owner/repo", thread_id * 1000 + i, item_type="issue", config=config) as should_process:
                     results.append(should_process)
             return results
 
@@ -154,10 +146,7 @@ class TestLabelManagerPerformance:
         config = AutomationConfig()
 
         # Create multiple LabelManager instances
-        managers = [
-            LabelManager(mock_github_client, "owner/repo", i, item_type="issue", config=config)
-            for i in range(100)
-        ]
+        managers = [LabelManager(mock_github_client, "owner/repo", i, item_type="issue", config=config) for i in range(100)]
 
         # Measure approximate size
         total_size = sum(sys.getsizeof(m) for m in managers)
@@ -200,9 +189,7 @@ class TestLabelManagerPerformance:
         start = time.perf_counter()
 
         for i in range(iterations):
-            with LabelManager(
-                mock_github_client, "owner/repo", i, item_type="issue", config=config
-            ) as should_process:
+            with LabelManager(mock_github_client, "owner/repo", i, item_type="issue", config=config) as should_process:
                 pass
 
         label_manager_time = time.perf_counter() - start
@@ -227,9 +214,7 @@ class TestLabelManagerPerformance:
         start = time.perf_counter()
 
         for i in range(iterations):
-            with LabelManager(
-                mock_github_client, "owner/repo", i, item_type="issue", dry_run=True, config=config
-            ) as should_process:
+            with LabelManager(mock_github_client, "owner/repo", i, item_type="issue", dry_run=True, config=config) as should_process:
                 assert should_process is True
 
         dry_run_time = time.perf_counter() - start
@@ -260,7 +245,7 @@ class TestLabelManagerPerformance:
                 assert should_process is True
             end = time.perf_counter()
             # The entire context manager time includes cleanup
-            total_cleanup_time += (end - start)
+            total_cleanup_time += end - start
 
         avg_time = total_cleanup_time / iterations
         # Should be fast (under 0.01 seconds total including cleanup)
@@ -283,9 +268,7 @@ class TestLabelManagerPerformance:
         start = time.perf_counter()
 
         for i in range(iterations):
-            with LabelManager(
-                mock_github_client, "owner/repo", i, item_type=item_type, config=config
-            ) as should_process:
+            with LabelManager(mock_github_client, "owner/repo", i, item_type=item_type, config=config) as should_process:
                 assert should_process is True
 
         end = time.perf_counter()
