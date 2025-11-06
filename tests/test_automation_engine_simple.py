@@ -9,7 +9,9 @@ from src.auto_coder.utils import CommandExecutor
 
 
 def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+    config.DRY_RUN = True
+    engine = AutomationEngine(mock_github_client, config=config)
     prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
 
     assert "Do NOT post any comments" in prompt
@@ -38,7 +40,9 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
     )
 
     # For dry_run=True, the function should not call LLM but should still function
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+    config.DRY_RUN = True
+    engine = AutomationEngine(mock_github_client, config=config)
 
     # Stub diff generation
     with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
@@ -50,7 +54,6 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
             test_repo_name,
             sample_pr_data,
             engine.config,
-            True,  # dry_run=True explicitly
         )
 
         # No comment should be posted
@@ -69,10 +72,12 @@ class TestAutomationEngine:
 
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+        config.DRY_RUN = True
+        engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
-        assert engine.dry_run is True
+        assert engine.config.DRY_RUN is True
         assert engine.config.REPORTS_DIR == "reports"
 
     def test_run_success(
@@ -99,7 +104,9 @@ class TestAutomationEngine:
             mock_github_client.get_open_issues.return_value = []
             mock_github_client.disable_labels = False
 
-            engine = AutomationEngine(mock_github_client, dry_run=True)
+            config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
             engine._save_report = Mock()
 
             # Execute
@@ -142,7 +149,9 @@ class TestAutomationEngine:
             mock_github_client.get_open_issues.return_value = []
             mock_github_client.disable_labels = False
 
-            engine = AutomationEngine(mock_github_client, dry_run=True)
+            config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
             engine._save_report = Mock()
 
             # Execute
@@ -195,7 +204,9 @@ class TestAutomationEngine:
                 "_process_single_candidate",
                 side_effect=Exception("Test error"),
             ):
-                engine = AutomationEngine(mock_github_client, dry_run=True)
+                config = AutomationConfig()
+                config.DRY_RUN = True
+                engine = AutomationEngine(mock_github_client, config=config)
                 engine._save_report = Mock()
 
                 # Execute

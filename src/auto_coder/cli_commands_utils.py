@@ -6,6 +6,7 @@ from typing import Optional
 import click
 
 from .auth_utils import get_auth_status, get_github_token
+from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .git_utils import get_current_repo_name, is_git_repository, migrate_pr_branches
 from .github_client import GitHubClient
@@ -225,9 +226,12 @@ def migrate_branches(
     if not is_git_repository():
         raise click.ClickException("Not in a Git repository. Please run from within a Git repository.")
 
+    # Create config with DRY_RUN set based on actual_dry_run
+    config = AutomationConfig(DRY_RUN=actual_dry_run)
+
     # Perform the migration
     results = migrate_pr_branches(
-        dry_run=actual_dry_run,
+        config,
         delete_after_merge=not no_delete,
         force=force,
     )

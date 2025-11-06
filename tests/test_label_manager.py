@@ -53,9 +53,10 @@ class TestLabelManager:
         mock_github_client.has_label.return_value = False
 
         config = AutomationConfig()
+        config.DRY_RUN = True
 
         # Use LabelManager context manager with dry_run=True
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", dry_run=True, config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
             assert should_process is True
             # No actual API calls should be made
             mock_github_client.try_add_work_in_progress_label.assert_not_called()

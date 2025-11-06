@@ -71,7 +71,6 @@ def resolve_merge_conflicts_with_llm(
     pr_data: Dict[str, Any],
     conflict_info: str,
     config: AutomationConfig,
-    dry_run: bool,
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
@@ -146,9 +145,8 @@ def _perform_base_branch_merge_and_conflict_resolution(
     pr_number: int,
     base_branch: str,
     config: AutomationConfig,
-    repo_name: str = None,
-    pr_data: Dict[str, Any] = None,
-    dry_run: bool = False,
+    repo_name: Optional[str] = None,
+    pr_data: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Perform base branch merge and resolve conflicts using LLM.
 
@@ -158,7 +156,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
         True if conflicts were resolved successfully, False otherwise
     """
     try:
-        if dry_run:
+        if config.DRY_RUN:
             logger.info(f"[DRY RUN] Would resolve merge conflicts for PR #{pr_number}")
             return True
 
@@ -225,15 +223,14 @@ def _perform_base_branch_merge_and_conflict_resolution(
             logger.info(f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve")
 
             # Get conflict information
-            conflict_info = scan_conflict_markers()
+            conflict_info = "\n".join(scan_conflict_markers())
 
             # Use LLM to resolve conflicts
             if pr_data is None:
                 pr_data = {"number": pr_number, "base_branch": base_branch}
-            else:
-                pr_data = {**pr_data, "base_branch": base_branch}
+            pr_data = {**pr_data, "base_branch": base_branch}
 
-            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config, False)
+            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, "\n".join(conflict_info), config)
 
             # Log the resolution actions
             for action in resolve_actions:
@@ -254,7 +251,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
         return False
 
 
-def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig, llm_client=None) -> bool:
+def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig, llm_client: Optional[Any] = None) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch.
 
     This function has been moved from pr_processor.py to conflict_resolver.py for better organization.
@@ -273,7 +270,7 @@ def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automatio
             base_branch = config.MAIN_BRANCH
 
         # Use the common subroutine
-        return _perform_base_branch_merge_and_conflict_resolution(pr_number, base_branch, config, llm_client, repo_name, pr_data)
+        return _perform_base_branch_merge_and_conflict_resolution(pr_number, base_branch, config, repo_name, pr_data)
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
@@ -484,7 +481,6 @@ def resolve_package_json_dependency_conflicts(
     pr_data: Dict[str, Any],
     conflict_info: str,
     config: AutomationConfig,
-    dry_run: bool,
     eligible_paths: Optional[List[str]] = None,
 ) -> List[str]:
     """Resolve package.json dependency-only conflicts by merging dependency sections.
@@ -589,7 +585,7 @@ def resolve_package_json_dependency_conflicts(
     return actions
 
 
-def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool) -> List[str]:
+def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig) -> List[str]:
     """Resolve package-lock.json conflicts by deleting and regenerating the file.
 
     Monorepo-friendly: for each conflicted lockfile, if a sibling package.json exists,

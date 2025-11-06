@@ -9,9 +9,10 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 from urllib.parse import urlparse
 
+from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import get_message_backend_manager, run_message_prompt
 
 try:
@@ -389,7 +390,7 @@ def git_checkout_branch(
     branch_exists = False
     if create_new:
         list_result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
-        branch_exists = list_result.success and list_result.stdout.strip()
+        branch_exists = bool(list_result.success and list_result.stdout.strip())
 
     # Validate branch name only when creating a NEW branch that doesn't exist
     # Existing branches with pr-<number> pattern can be checked out without validation
@@ -1168,7 +1169,6 @@ def commit_and_push_changes(
     Returns:
         Action message describing the commit result
     """
-    global cmd  # Use the existing CommandExecutor instance
     cmd = CommandExecutor()
 
     summary = result_data.get("summary", "Auto-Coder: Automated changes")
@@ -1276,8 +1276,8 @@ def get_branches_by_pattern(pattern: str, cwd: Optional[str] = None, remote: boo
 
 
 def migrate_pr_branches(
+    config: AutomationConfig,
     cwd: Optional[str] = None,
-    dry_run: bool = True,
     delete_after_merge: bool = True,
     force: bool = False,
 ) -> Dict[str, Any]:
@@ -1292,8 +1292,8 @@ def migrate_pr_branches(
     5. Deletes the pr-xx branch after successful merge (if delete_after_merge is True)
 
     Args:
+        config: AutomationConfig instance
         cwd: Optional working directory for git command
-        dry_run: If True, only report what would be done without making changes
         delete_after_merge: If True, delete pr-<number> branch after successful merge
         force: If True, proceed even if there are merge conflicts
 
@@ -1306,7 +1306,7 @@ def migrate_pr_branches(
         - 'conflicts': List of branches with merge conflicts
     """
     cmd = CommandExecutor()
-    results = {
+    results: Dict[str, Any] = {
         "success": True,
         "migrated": [],
         "skipped": [],
@@ -1314,7 +1314,7 @@ def migrate_pr_branches(
         "conflicts": [],
     }
 
-    logger.info(f"Starting branch migration (dry_run={dry_run}, delete_after_merge={delete_after_merge})")
+    logger.info(f"Starting branch migration (dry_run={config.DRY_RUN}, delete_after_merge={delete_after_merge})")
 
     # Get all pr-<number> branches
     pr_branches = get_branches_by_pattern("pr-*", cwd=cwd, remote=False)
@@ -1341,7 +1341,7 @@ def migrate_pr_branches(
 
         logger.info(f"Processing: {branch_name} -> {issue_branch_name}")
 
-        if dry_run:
+        if config.DRY_RUN:
             logger.info(f"[DRY RUN] Would migrate {branch_name} to {issue_branch_name}")
             # Check if issue branch exists
             if branch_exists(issue_branch_name, cwd=cwd):
@@ -1489,7 +1489,7 @@ def branch_context(
     create_new: bool = False,
     base_branch: Optional[str] = None,
     cwd: Optional[str] = None,
-):
+) -> Generator[None, None, None]:
     """
     Context manager for Git branch management.
 
