@@ -2,6 +2,121 @@
 set -Eeuo pipefail
 
 # -----------------------------------------------------------------------------
+# Environment detection and setup
+# -----------------------------------------------------------------------------
+# Detect CI environment and set appropriate flags
+
+echo "Detecting CI environment..."
+
+# Check if running in CI
+IS_CI=0
+if [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-}" = "true" ]; then
+    IS_CI=1
+    echo "[INFO] Running in CI environment (GitHub Actions or other CI)"
+else
+    echo "[INFO] Running in local development environment"
+fi
+
+# Check if running in a container
+IN_CONTAINER=0
+if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
+    IN_CONTAINER=1
+    echo "[INFO] Running inside a container"
+else
+    echo "[INFO] Running on host system"
+fi
+
+# Set test environment isolation variables
+export AUTOCODER_TEST_IN_CONTAINER="${IN_CONTAINER}"
+export AUTOCODER_TEST_IS_CI="${IS_CI}"
+
+echo ""
+echo "Environment configuration:"
+echo "  CI environment: ${IS_CI}"
+echo "  Container: ${IN_CONTAINER}"
+echo ""
+
+# -----------------------------------------------------------------------------
+# Dependency checking
+# -----------------------------------------------------------------------------
+# Check for required CLI dependencies and provide helpful warnings
+
+check_cli_dependency() {
+    local cmd=$1
+    local name=$2
+    local optional=${3:-false}
+
+    if command -v "$cmd" >/dev/null 2>&1; then
+        echo "[INFO] $name is available"
+        return 0
+    else
+        if [ "$optional" = "true" ]; then
+            echo "[WARN] $name is not available (optional dependency)"
+            return 1
+        else
+            echo "[ERROR] $name is not available (required dependency)"
+            return 2
+        fi
+    fi
+}
+
+echo "Checking CLI dependencies..."
+CLI_DEPS_OK=0
+
+# Check for Node.js (optional, used by graph-builder TypeScript CLI)
+if check_cli_dependency "node" "Node.js" "true"; then
+    NODE_VERSION=$(node --version 2>/dev/null || echo "unknown")
+    echo "       Node.js version: $NODE_VERSION"
+fi
+
+# Check for Python 3 (required)
+if ! check_cli_dependency "python3" "Python 3" "false"; then
+    CLI_DEPS_OK=1
+fi
+
+PYTHON_VERSION=$(python3 --version 2>/dev/null || echo "unknown")
+echo "       Python version: $PYTHON_VERSION"
+
+# Check for graph-builder (optional)
+GRAPH_BUILDER_FOUND=false
+if [ -d "./src/auto_coder/graph_builder" ]; then
+    echo "[INFO] graph-builder found in ./src/auto_coder/graph_builder"
+    GRAPH_BUILDER_FOUND=true
+elif [ -d "./graph-builder" ]; then
+    echo "[INFO] graph-builder found in ./graph-builder"
+    GRAPH_BUILDER_FOUND=true
+elif [ -d "$HOME/graph-builder" ]; then
+    echo "[INFO] graph-builder found in $HOME/graph-builder"
+    GRAPH_BUILDER_FOUND=true
+else
+    echo "[WARN] graph-builder not found in common locations"
+    echo "       Searched: ./src/auto_coder/graph_builder, ./graph-builder, ~/graph-builder"
+fi
+
+# Summary
+echo ""
+echo "Dependency check summary:"
+if [ $CLI_DEPS_OK -eq 0 ]; then
+    echo "[OK] Core dependencies are available"
+else
+    echo "[ERROR] Some required dependencies are missing"
+fi
+
+if [ "$GRAPH_BUILDER_FOUND" = "true" ]; then
+    echo "[OK] graph-builder is available"
+else
+    echo "[INFO] graph-builder not found - tests will use fallback Python indexing"
+fi
+
+echo ""
+
+# Continue with test execution even if some optional dependencies are missing
+if [ $CLI_DEPS_OK -ne 0 ]; then
+    echo "[ERROR] Cannot continue without required dependencies"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
 # Runner selection
 # -----------------------------------------------------------------------------
 # Prefer uv runner for consistent, reproducible environments.
@@ -23,7 +138,8 @@ if [ "${AC_USE_LOCAL_VENV:-0}" = "1" ]; then
 fi
 
 # Always sync dependencies with uv when available
-if [ "$USE_UV" -eq 1 ]; then
+# Skip sync in CI to avoid conflicts with pre-synced environment
+if [ "$USE_UV" -eq 1 ] && [ "${GITHUB_ACTIONS:-}" != "true" ] && [ "${CI:-}" != "true" ]; then
   uv sync -q
   uv pip install -q -e .[test]
 fi
@@ -32,8 +148,8 @@ RUN=""
 if [ "$USE_UV" -eq 1 ]; then
   RUN="uv run"
 else
-  echo "[WARN] uv is not installed. Falling back to system Python's pytest.\n" \
-       "       Ensure Python 3.11 is active and dependencies are installed." >&2
+  printf "[WARN] uv is not installed. Falling back to system Python's pytest.\n"
+  printf "       Ensure Python 3.11 is active and dependencies are installed.\n" >&2
 fi
 
 
@@ -42,7 +158,7 @@ if [ $# -eq 1 ]; then
     SPECIFIC_TEST_FILE=$1
     if [ -f "$SPECIFIC_TEST_FILE" ]; then
         echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
-        $RUN pytest -v --tb=short "$SPECIFIC_TEST_FILE"
+        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE"
         exit $?
     else
         echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
@@ -57,7 +173,7 @@ TEST_OUTPUT_FILE=$(mktemp)
 # Don't exit on errors - we want to capture the exit code
 set +e
 
-$RUN pytest -q --tb=short | tee "$TEST_OUTPUT_FILE"
+$RUN pytest -q --tb=short --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
 EXIT_CODE=${PIPESTATUS[0]}
 
 # Re-enable exit on errors
@@ -81,7 +197,7 @@ if [ $EXIT_CODE -ne 0 ]; then
     # If we found a failed test, run only that test
     if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
         echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        $RUN pytest -v --tb=short "$FIRST_FAILED_TEST"
+        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
         RESULT=$?
         rm "$TEST_OUTPUT_FILE"
         exit $RESULT

@@ -28,13 +28,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from auto_coder.logger_config import get_logger
+from auto_coder.utils import is_running_in_container
 
 logger = get_logger(__name__)
-
-
-def is_running_in_container() -> bool:
-    """Determine if running in a container"""
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
 def run_docker_command(args: list[str]) -> subprocess.CompletedProcess:
