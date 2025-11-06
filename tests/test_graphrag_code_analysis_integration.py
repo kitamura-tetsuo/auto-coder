@@ -464,23 +464,23 @@ class TestGraphRAGCodeAnalysisIntegration:
     @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._run_graph_builder")
     @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_graph_in_neo4j")
     @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_embeddings_in_qdrant")
-    def test_index_codebase_integration(self, mock_qdrant, mock_neo4j, mock_builder, tmp_path):
+    @patch("src.auto_coder.graphrag_index_manager.is_running_in_container")
+    def test_index_codebase_integration(self, mock_is_container, mock_qdrant, mock_neo4j, mock_builder, tmp_path):
         """Test full _index_codebase integration."""
         graph_data = {
             "nodes": [{"id": "n1", "kind": "Function"}],
             "edges": [{"from": "n1", "to": "n2", "type": "CALLS"}],
         }
         mock_builder.return_value = graph_data
+        # Mock is_running_in_container to return False
+        mock_is_container.return_value = False
 
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
-
-        # Mock is_running_in_container to return False
-        with patch("os.path.exists", return_value=False):
-            manager._index_codebase()
+        manager._index_codebase()
 
         # Verify all steps were called
         mock_builder.assert_called_once()
-        # in_container should be False based on mocked os.path.exists
+        # in_container should be False based on mocked is_running_in_container
         mock_neo4j.assert_called_once_with(graph_data, False)
         mock_qdrant.assert_called_once_with(graph_data, False)
 
