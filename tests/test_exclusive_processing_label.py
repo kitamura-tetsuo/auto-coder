@@ -278,6 +278,8 @@ class TestIssueProcessorExclusiveProcessing:
             "title": "Test Issue",
             "labels": [],
         }
+        # Mock get_open_sub_issues to return empty list (no sub-issues)
+        mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.try_add_work_in_progress_label.return_value = True
         mock_github_client.has_linked_pr.return_value = False
         # Simulate error during processing
