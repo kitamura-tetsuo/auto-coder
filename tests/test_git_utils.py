@@ -1767,7 +1767,7 @@ class TestMigratePrBranches:
                 returncode=0,
             )
 
-            results = migrate_pr_branches(cwd="/custom/path", dry_run=True)
+            results = migrate_pr_branches(cwd="/custom/path")
 
             assert results["success"] is True
             # Verify cwd was passed to git commands

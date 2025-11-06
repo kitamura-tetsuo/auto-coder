@@ -725,10 +725,8 @@ def fix_to_pass_tests_command(
         logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
         click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
 
-    # Configure engine behavior flags
     engine_config = AutomationConfig()
     engine_config.DRY_RUN = bool(dry_run)
-
     engine = AutomationEngine(github_client, config=engine_config)
 
     try:

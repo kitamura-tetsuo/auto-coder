@@ -87,8 +87,7 @@ class LabelManager:
         item_number: Issue or PR number
         item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
         label_name: Name of the label to manage, defaults to '@auto-coder'
-        dry_run: If True, skip actual label operations, defaults to False
-        config: AutomationConfig instance (optional)
+        config: AutomationConfig instance
         max_retries: Maximum number of retries for label operations, defaults to 3
         retry_delay: Delay in seconds between retries, defaults to 1.0
 
@@ -107,7 +106,6 @@ class LabelManager:
         item_number: Union[int, str],
         item_type: str = "issue",
         label_name: str = "@auto-coder",
-        dry_run: bool = False,
         config: Any = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
@@ -120,8 +118,7 @@ class LabelManager:
             item_number: Issue or PR number
             item_type: Type of item ('issue' or 'pr')
             label_name: Name of the label to manage
-            dry_run: If True, skip actual label operations
-            config: AutomationConfig instance (optional)
+            config: AutomationConfig instance
             max_retries: Maximum number of retries for label operations
             retry_delay: Delay in seconds between retries
         """
@@ -130,7 +127,6 @@ class LabelManager:
         self.item_number = item_number
         self.item_type = item_type
         self.label_name = label_name
-        self.dry_run = dry_run
         self.config = config
         self.max_retries = max_retries
         self.retry_delay = retry_delay
@@ -166,7 +162,7 @@ class LabelManager:
                         return False
 
                     # Try to add the label
-                    if self.dry_run:
+                    if self.config.DRY_RUN:
                         logger.info(f"[DRY RUN] Would add '{self.label_name}' label to {self.item_type} #{self.item_number}")
                         self._label_added = True
                         return True
@@ -209,7 +205,7 @@ class LabelManager:
             # Remove the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    if self.dry_run:
+                    if self.config.DRY_RUN:
                         logger.info(f"[DRY RUN] Would remove '{self.label_name}' label from {self.item_type} #{self.item_number}")
                         return
 
