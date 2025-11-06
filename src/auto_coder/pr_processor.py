@@ -22,7 +22,7 @@ from .automation_config import AutomationConfig
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
 from .git_utils import get_commit_log, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
-from .label_manager import check_and_add_label, remove_label
+from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -149,31 +149,29 @@ def _process_pr_for_merge(
     github_client = GitHubClient.get_instance()
 
     try:
-        # Try to add @auto-coder label
-        if not check_and_add_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
+        # Use LabelManager to ensure @auto-coder label is added and properly managed
+        try:
+            with LabelManager(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
+                if dry_run:
+                    # Single execution policy - skip analysis phase
+                    processed_pr["actions_taken"].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
+                    return processed_pr
+                else:
+                    # Since Actions are passing, attempt direct merge
+                    merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
+                    if merge_result:
+                        processed_pr["actions_taken"].append(f"Successfully merged PR #{pr_data['number']}")
+                    else:
+                        processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
+                    return processed_pr
+        except LabelOperationError:
             logger.info(f"Skipping PR #{pr_data['number']} - already has @auto-coder label")
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
-            return processed_pr
-
-        if dry_run:
-            # Single execution policy - skip analysis phase
-            processed_pr["actions_taken"].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
-            return processed_pr
-        else:
-            # Since Actions are passing, attempt direct merge
-            merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
-            if merge_result:
-                processed_pr["actions_taken"].append(f"Successfully merged PR #{pr_data['number']}")
-            else:
-                processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
             return processed_pr
 
     except Exception as e:
         processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for merge: {str(e)}")
         return processed_pr
-    finally:
-        # Remove @auto-coder label after processing
-        remove_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config)
 
 
 def _process_pr_for_fixes(
@@ -187,22 +185,19 @@ def _process_pr_for_fixes(
     github_client = GitHubClient.get_instance()
 
     try:
-        # Try to add @auto-coder label
-        if not check_and_add_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
+        # Use LabelManager to ensure @auto-coder label is added and properly managed
+        try:
+            with LabelManager(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
+                # Use the existing PR actions logic for fixing issues
+                with ProgressStage("Fixing issues"):
+                    actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
+                processed_pr["actions_taken"] = actions
+        except LabelOperationError:
             logger.info(f"Skipping PR #{pr_data['number']} - already has @auto-coder label")
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
-            return processed_pr
-
-        # Use the existing PR actions logic for fixing issues
-        with ProgressStage("Fixing issues"):
-            actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
-        processed_pr["actions_taken"] = actions
 
     except Exception as e:
         processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for fixes: {str(e)}")
-    finally:
-        # Remove @auto-coder label after processing
-        remove_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config)
 
     return processed_pr
 
