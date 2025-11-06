@@ -15,7 +15,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
-from .issue_processor import create_feature_issues, process_issues, process_single
+from .issue_processor import create_feature_issues, process_single
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff

@@ -8,7 +8,6 @@ consistent error handling and logging.
 import inspect
 import threading
 import time
-import warnings
 from contextlib import contextmanager
 from typing import Any, Generator, Optional, Union
 
@@ -59,107 +58,7 @@ def _is_real_method(obj: Any, method_name: str) -> bool:
         return False
 
 
-# Utility functions for centralized label management
-def check_and_add_label(
-    github_client: Any,
-    repo_name: str,
-    item_number: Union[int, str],
-    item_type: str = "issue",
-    dry_run: bool = False,
-    config: Any = None,
-) -> bool:
-    """Check if @auto-coder label exists and add it if not.
-
-    .. deprecated::
-        Use LabelManager context manager instead. This function will be removed in a future version.
-
-    This function provides unified label check/add logic across the codebase.
-
-    Args:
-        github_client: GitHub client instance
-        repo_name: Repository name (owner/repo)
-        item_number: Issue or PR number
-        item_type: Type of item ('issue' or 'pr')
-        dry_run: If True, skip actual label operations
-        config: AutomationConfig instance (optional)
-
-    Returns:
-        True if label was added or already exists (should skip), False if another instance will process
-    """
-    warnings.warn(
-        "check_and_add_label() is deprecated. Use LabelManager context manager instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    # Use LabelManager internally
-    try:
-        with LabelManager(github_client, repo_name, item_number, item_type=item_type, dry_run=dry_run, config=config, label_name="@auto-coder") as lm:
-            # Label added successfully, return True
-            pass
-        return True
-    except LabelOperationError:
-        # Another instance is processing
-        return False
-
-
-def remove_label(
-    github_client: Any,
-    repo_name: str,
-    item_number: Union[int, str],
-    item_type: str = "issue",
-    dry_run: bool = False,
-    config: Any = None,
-) -> None:
-    """Remove @auto-coder label from issue/PR.
-
-    .. deprecated::
-        Use LabelManager context manager instead. This function will be removed in a future version.
-
-    This function provides unified label removal logic across the codebase.
-
-    Args:
-        github_client: GitHub client instance
-        repo_name: Repository name (owner/repo)
-        item_number: Issue or PR number
-        item_type: Type of item ('issue' or 'pr')
-        dry_run: If True, skip actual label operations
-        config: AutomationConfig instance (optional)
-    """
-    warnings.warn(
-        "remove_label() is deprecated. Use LabelManager context manager instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-
-    label_name = "@auto-coder"
-
-    # Check if labels are disabled
-    if hasattr(github_client, "disable_labels") and github_client.disable_labels:
-        logger.debug(f"Labels disabled - skipping label removal for {item_type} #{item_number}")
-        return
-
-    if config and hasattr(config, "DISABLE_LABELS") and config.DISABLE_LABELS:
-        logger.debug(f"Labels disabled via config - skipping label removal for {item_type} #{item_number}")
-        return
-
-    # Remove the label
-    if dry_run:
-        logger.info(f"[DRY RUN] Would remove '{label_name}' label from {item_type} #{item_number}")
-        return
-
-    if hasattr(github_client, "remove_labels_from_issue"):
-        try:
-            github_client.remove_labels_from_issue(repo_name, item_number, [label_name])
-            logger.info(f"Removed '{label_name}' label from {item_type} #{item_number}")
-        except Exception as e:
-            logger.error(f"Failed to remove '{label_name}' label from {item_type} #{item_number}: {e}")
-            raise
-    else:
-        logger.warning(f"GitHub client does not support label removal")
-
-
-def check_label_exists(
+def _check_label_exists(
     github_client: Any,
     repo_name: str,
     item_number: Union[int, str],
@@ -168,8 +67,7 @@ def check_label_exists(
 ) -> bool:
     """Check if a specific label exists on an issue/PR.
 
-    .. deprecated::
-        Use LabelManager context manager instead. This function will be removed in a future version.
+    This is a private helper function used internally by LabelManager.
 
     Args:
         github_client: GitHub client instance
@@ -308,7 +206,7 @@ class LabelManager:
             for attempt in range(self.max_retries):
                 try:
                     # Check if label already exists
-                    if check_label_exists(
+                    if _check_label_exists(
                         self.github_client,
                         self.repo_name,
                         self.item_number,
