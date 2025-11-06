@@ -272,10 +272,10 @@ def process_issues(
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
     engine_config.DISABLE_LABELS = bool(disable_labels)
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
+    engine_config.DRY_RUN = dry_run
 
     automation_engine = AutomationEngine(
         github_client,
-        dry_run=dry_run,
         config=engine_config,
     )
 
@@ -725,7 +725,9 @@ def fix_to_pass_tests_command(
         logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
         click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
 
-    engine = AutomationEngine(github_client, dry_run=dry_run)
+    engine_config = AutomationConfig()
+    engine_config.DRY_RUN = dry_run
+    engine = AutomationEngine(github_client, config=engine_config)
 
     try:
         result = engine.fix_to_pass_tests(max_attempts=max_attempts, message_backend_manager=message_manager)

@@ -33,7 +33,9 @@ def fix_test_automation_engine():
     # Mock the LLM response
     mock_gemini_client._run_llm_cli.return_value = "This looks good. Thanks for the contribution! I reviewed the changes and here is my analysis."
 
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+    config.DRY_RUN = True
+    engine = AutomationEngine(mock_github_client, config=config)
 
     # Stub diff generation
     with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
@@ -57,7 +59,9 @@ def fix_test_automation_engine():
 ):
     from src.auto_coder.pr_processor import _apply_pr_actions_directly
     
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+    config.DRY_RUN = True
+    engine = AutomationEngine(mock_github_client, config=config)
 
     # Stub diff generation and backend manager
     with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):

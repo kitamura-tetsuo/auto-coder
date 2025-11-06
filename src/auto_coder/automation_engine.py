@@ -31,13 +31,12 @@ class AutomationEngine:
     def __init__(
         self,
         github_client: Any,
-        dry_run: bool = False,
         config: Optional[AutomationConfig] = None,
     ) -> None:
         """Initialize automation engine."""
         self.github = github_client
-        self.dry_run = dry_run
         self.config = config or AutomationConfig()
+        self.dry_run = self.config.DRY_RUN
         self.cmd = CommandExecutor()
 
         # Note: Report directories are created per repository,

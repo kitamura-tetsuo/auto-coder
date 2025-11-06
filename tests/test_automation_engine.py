@@ -11,7 +11,9 @@ from src.auto_coder.utils import CommandExecutor
 
 
 def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
     prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
 
     assert "Do NOT post any comments" in prompt
@@ -40,7 +42,9 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
     )
 
     # For dry_run=True, the function should not call LLM but should still function
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
 
     # Stub diff generation
     with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
@@ -71,7 +75,9 @@ class TestAutomationEngine:
 
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+        config.DRY_RUN = True
+        engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
         assert engine.dry_run is True
@@ -133,7 +139,9 @@ class TestAutomationEngine:
             mock_process_issues.return_value = [{"issue_data": {"number": 1}, "actions_taken": ["Test action"]}]
             mock_process_prs.return_value = [{"pr_data": {"number": 1}, "actions_taken": ["Test action"]}]
 
-            engine = AutomationEngine(mock_github_client, dry_run=True)
+            config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
             engine._save_report = Mock()
 
             # Execute
@@ -208,7 +216,9 @@ class TestAutomationEngine:
             }
         ]
 
-        engine = AutomationEngine(mock_github_client, dry_run=False)
+        config = AutomationConfig()
+            config.DRY_RUN = False
+            engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
         result = engine.create_feature_issues(test_repo_name)
@@ -233,7 +243,9 @@ class TestAutomationEngine:
         # Setup
         mock_create_feature_issues.return_value = [{"title": sample_feature_suggestion["title"], "dry_run": True}]
 
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
         result = engine.create_feature_issues(test_repo_name)
@@ -360,7 +372,9 @@ class TestAutomationEngine:
     def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test issue actions in dry run mode."""
         # Setup
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
         result = engine._take_issue_actions("test/repo", sample_issue_data)
@@ -989,7 +1003,9 @@ class TestAutomationEngineExtended:
     def test_fix_pr_issues_with_testing_success(self, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with successful local tests."""
         # Setup
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
         pr_data = {"number": 123, "title": "Test PR"}
         github_logs = "Test failed: assertion error"
 
@@ -1027,7 +1043,9 @@ class TestAutomationEngineExtended:
     def test_fix_pr_issues_with_testing_retry(self, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with retry logic."""
         # Setup
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+            config.DRY_RUN = True
+            engine = AutomationEngine(mock_github_client, config=config)
         pr_data = {"number": 123, "title": "Test PR"}
         github_logs = "Test failed: assertion error"
 
