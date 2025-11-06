@@ -316,14 +316,15 @@ class QwenClient(LLMClientBase):
 
         return providers
 
-    def _run_gemini_cli(self, prompt: str) -> str:
-        """Temporary alias for backward compatibility.
-        Prefer calling _run_qwen_cli going forward; this delegates to _run_qwen_cli.
-        """
-        return self._run_qwen_cli(prompt)
-
     def _run_llm_cli(self, prompt: str) -> str:
-        """Neutral alias: delegate to _run_qwen_cli (migration helper)."""
+        """Execute LLM with the given prompt.
+
+        Args:
+            prompt: The prompt to send to the LLM
+
+        Returns:
+            The LLM's response as a string
+        """
         return self._run_qwen_cli(prompt)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----

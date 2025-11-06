@@ -18,8 +18,7 @@ logger = get_logger(__name__)
 class GitHubClient:
     """GitHub API client for managing issues and pull requests.
 
-    Implements a thread-safe singleton pattern. Use get_instance() to get the singleton,
-    or use the constructor for backward compatibility (which creates the singleton lazily).
+    Implements a thread-safe singleton pattern. Use get_instance() to get the singleton.
 
     Usage Pattern:
     -------------
@@ -37,18 +36,11 @@ class GitHubClient:
        # client is client2  # True, uses first instance
        ```
 
-    3. Backward compatibility: Constructor also creates singleton
-       ```python
-       client = GitHubClient("your-token")
-       # Equivalent to get_instance("your-token")
-       ```
-
     Important Notes:
     ---------------
     - Thread-safe: Can be called from multiple threads simultaneously
     - Parameters are only used on first call; subsequent calls return the same instance
     - Use reset_singleton() in tests to clear the instance
-    - The constructor is kept for backward compatibility but behaves as a singleton
     """
 
     # Class variable to hold the singleton instance
@@ -64,7 +56,6 @@ class GitHubClient:
             token: GitHub API token
             disable_labels: If True, all label operations are no-ops
         """
-        # No locking here - __new__ handles thread safety
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
@@ -72,18 +63,10 @@ class GitHubClient:
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
 
-        This method is called when creating a new instance. It ensures only one
-        instance is created across all threads.
-
-        Note: This method should NOT acquire cls._lock since it's called from
-        get_instance which already holds the lock. Acquiring the lock here
-        would cause a deadlock.
+        This method ensures only one instance is created across all threads.
         """
-        # __new__ should not use locks to avoid deadlock with get_instance
-        # Only create a new instance if _instance is None
         if cls._instance is None:
             instance = super().__new__(cls)
-            # Mark as not initialized yet so __init__ will run
             instance._initialized = False
             return instance
         return cls._instance
@@ -102,12 +85,10 @@ class GitHubClient:
         Returns:
             The singleton instance of GitHubClient
         """
-        # Single check without double-checked locking to avoid complexity
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     instance = cls.__new__(cls)
-                    # Only call __init__ if not already initialized
                     if not hasattr(instance, "_initialized") or not instance._initialized:
                         instance.__init__(token, disable_labels)
                     cls._instance = instance
@@ -117,8 +98,7 @@ class GitHubClient:
     def reset_singleton(cls) -> None:
         """Reset the singleton instance.
 
-        This method is primarily for testing purposes to ensure tests don't
-        interfere with each other. Use with caution in production code.
+        Use reset_singleton() in tests to clear the instance.
         """
         with cls._lock:
             cls._instance = None
