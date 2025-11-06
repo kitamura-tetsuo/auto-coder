@@ -31,13 +31,12 @@ class AutomationEngine:
     def __init__(
         self,
         github_client: Any,
-        dry_run: bool = False,
         config: Optional[AutomationConfig] = None,
     ) -> None:
         """Initialize automation engine."""
         self.github = github_client
-        self.dry_run = dry_run
         self.config = config or AutomationConfig()
+        self.dry_run = self.config.DRY_RUN
         self.cmd = CommandExecutor()
 
         # Note: Report directories are created per repository,
@@ -191,7 +190,7 @@ class AutomationEngine:
                 result["success"] = True
             elif candidate.get("type") == "pr":
                 # PR processing
-                result["actions"] = process_pull_request(self.github, self.config, self.dry_run, repo_name, candidate["data"])
+                result["actions"] = process_pull_request(self.github, self.config, self.config.DRY_RUN, repo_name, candidate["data"])
                 result["success"] = True
         except Exception as e:
             result["error"] = str(e)
@@ -277,7 +276,7 @@ class AutomationEngine:
         return process_single(
             self.github,
             self.config,
-            self.dry_run,
+            self.config.DRY_RUN,
             repo_name,
             target_type,
             number,
@@ -289,7 +288,7 @@ class AutomationEngine:
         return create_feature_issues(
             self.github,
             self.config,
-            self.dry_run,
+            self.config.DRY_RUN,
             repo_name,
         )
 
@@ -308,14 +307,14 @@ class AutomationEngine:
                     fix_to_pass_tests_runner_module.apply_workspace_test_fix = apply_override
                 return fix_to_pass_tests(
                     self.config,
-                    self.dry_run,
+                    self.config.DRY_RUN,
                     max_attempts,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
                 fix_to_pass_tests_runner_module.apply_workspace_test_fix = original_apply
 
-        return fix_to_pass_tests(self.config, self.dry_run, max_attempts)
+        return fix_to_pass_tests(self.config, self.config.DRY_RUN, max_attempts)
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
         """Get LLM backend and model information.
@@ -401,7 +400,7 @@ class AutomationEngine:
             repo_name,
             issue_data,
             self.config,
-            self.dry_run,
+            self.config.DRY_RUN,
             self.github,
         )
 
@@ -413,7 +412,7 @@ class AutomationEngine:
             repo_name,
             issue_data,
             self.config,
-            self.dry_run,
+            self.config.DRY_RUN,
             self.github,
         )
 
