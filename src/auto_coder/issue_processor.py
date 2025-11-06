@@ -479,7 +479,7 @@ def create_feature_issues(
         )
 
         # Generate feature suggestions
-        suggestions: List[Dict[str, Any]] = []  # gemini_client.suggest_features(repo_context)
+        suggestions = gemini_client.suggest_features(repo_context)
 
         created_issues = []
         for suggestion in suggestions:
