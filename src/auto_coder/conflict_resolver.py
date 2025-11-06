@@ -228,10 +228,9 @@ def _perform_base_branch_merge_and_conflict_resolution(
             # Use LLM to resolve conflicts
             if pr_data is None:
                 pr_data = {"number": pr_number, "base_branch": base_branch}
-            else:
-                pr_data = {**pr_data, "base_branch": base_branch}
+            pr_data = {**pr_data, "base_branch": base_branch}
 
-            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config)
+            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, "\n".join(conflict_info), config)
 
             # Log the resolution actions
             for action in resolve_actions:
