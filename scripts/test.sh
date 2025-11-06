@@ -103,7 +103,8 @@ if [ "${AC_USE_LOCAL_VENV:-0}" = "1" ]; then
 fi
 
 # Always sync dependencies with uv when available
-if [ "$USE_UV" -eq 1 ]; then
+# Skip sync in CI to avoid conflicts with pre-synced environment
+if [ "$USE_UV" -eq 1 ] && [ "${GITHUB_ACTIONS:-}" != "true" ] && [ "${CI:-}" != "true" ]; then
   uv sync -q
   uv pip install -q -e .[test]
 fi
@@ -112,8 +113,8 @@ RUN=""
 if [ "$USE_UV" -eq 1 ]; then
   RUN="uv run"
 else
-  echo "[WARN] uv is not installed. Falling back to system Python's pytest.\n" \
-       "       Ensure Python 3.11 is active and dependencies are installed." >&2
+  printf "[WARN] uv is not installed. Falling back to system Python's pytest.\n"
+  printf "       Ensure Python 3.11 is active and dependencies are installed.\n" >&2
 fi
 
 
