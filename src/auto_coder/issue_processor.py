@@ -4,14 +4,14 @@ Issue processing functionality for Auto-Coder automation engine.
 
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
+from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
-from .github_client import GitHubClient
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -22,7 +22,23 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
+class ProcessResult(TypedDict):
+    repository: str
+    timestamp: str
+    dry_run: bool
+    jules_mode: bool
+    issues_processed: List[Dict[str, Any]]
+    prs_processed: List[Dict[str, Any]]
+    errors: List[str]
+
+
+class ProcessedIssueResult(TypedDict, total=False):
+    issue_data: Dict[str, Any]
+    actions_taken: List[str]
+    error: str
+
+
+def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, repo_name: str, issue_data: Dict[str, Any]) -> ProcessedIssueResult:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
         issue_number = issue_data["number"]
@@ -60,7 +76,7 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
                     logger.info(f"All dependencies for issue #{issue_number} are resolved")
 
         # Use LabelManager context manager to handle @auto-coder label automatically
-        with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
             if not should_process:
                 return {
                     "issue_data": issue_data,
@@ -72,7 +88,7 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
             # Check if 'jules' label already exists
             current_labels = issue_data.get("labels", [])
             if "jules" not in current_labels:
-                if not dry_run:
+                if not config.DRY_RUN:
                     # Add 'jules' label to the issue
                     github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
                     processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{issue_number}")
@@ -84,7 +100,7 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
                 processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
                 logger.info(f"Issue #{issue_number} already has 'jules' label")
 
-            return processed_issue
+            return processed_issue  # type: ignore[return-value]
 
     except Exception as e:
         logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
@@ -95,7 +111,6 @@ def _take_issue_actions(
     repo_name: str,
     issue_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
     github_client: GitHubClient,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
@@ -103,7 +118,7 @@ def _take_issue_actions(
     issue_number = issue_data["number"]
 
     try:
-        if dry_run:
+        if config.DRY_RUN:
             actions.append(f"[DRY RUN] Would analyze and take actions on issue #{issue_number}")
         else:
             # Ask LLM CLI to analyze the issue and take appropriate actions
@@ -111,7 +126,6 @@ def _take_issue_actions(
                 repo_name,
                 issue_data,
                 config,
-                dry_run,
                 github_client,
             )
             actions.extend(action_results)
@@ -130,7 +144,7 @@ def _create_pr_for_issue(
     base_branch: str,
     llm_response: str,
     github_client: GitHubClient,
-    dry_run: bool = False,
+    config: AutomationConfig,
 ) -> str:
     """
     Create a pull request for the issue.
@@ -192,7 +206,7 @@ def _create_pr_for_issue(
         if closes_keyword not in pr_body:
             pr_body = f"{closes_keyword}\n\n{pr_body}"
 
-        if dry_run:
+        if config.DRY_RUN:
             return f"[DRY RUN] Would create PR: {pr_title}"
 
         # Create PR using gh CLI
@@ -281,12 +295,11 @@ def _apply_issue_actions_directly(
     repo_name: str,
     issue_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
     github_client: GitHubClient,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     issue_number = issue_data.get("number", "unknown")
-    with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
+    with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
         actions = []
 
         try:
@@ -357,6 +370,7 @@ def _apply_issue_actions_directly(
                     target_branch = work_branch
 
             # Now perform all work on the target branch using branch_context
+            assert target_branch is not None, "target_branch must be set before using branch_context"
             with branch_context(target_branch, create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
                 # Get commit log since branch creation
                 with ProgressStage("Getting commit log"):
@@ -419,7 +433,7 @@ def _apply_issue_actions_directly(
                                 base_branch=pr_base_branch,
                                 llm_response=response,
                                 github_client=github_client,
-                                dry_run=dry_run,
+                                config=config,
                             )
                         actions.append(pr_creation_result)
                 else:
@@ -434,9 +448,8 @@ def _apply_issue_actions_directly(
 def create_feature_issues(
     github_client: GitHubClient,
     config: AutomationConfig,
-    dry_run: bool,
     repo_name: str,
-    gemini_client: Optional[Any] = None,
+    gemini_client: Any = None,
 ) -> List[Dict[str, Any]]:
     """Analyze repository and create feature enhancement issues."""
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
@@ -459,7 +472,7 @@ def create_feature_issues(
 
         created_issues = []
         for suggestion in suggestions:
-            if not dry_run:
+            if not config.DRY_RUN:
                 try:
                     issue = github_client.create_issue(
                         repo_name=repo_name,
@@ -531,12 +544,11 @@ def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
 def process_single(
     github_client: GitHubClient,
     config: AutomationConfig,
-    dry_run: bool,
     repo_name: str,
     target_type: str,
     number: int,
     jules_mode: bool = False,
-) -> Dict[str, Any]:
+) -> ProcessResult:
     """Process a single issue or PR by number.
 
     target_type: 'issue' | 'pr' | 'auto'
@@ -544,10 +556,10 @@ def process_single(
     """
     with ProgressStage("Processing single PR/IS"):
         logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
-        result: Dict[str, Any] = {
+        result: ProcessResult = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
-            "dry_run": dry_run,
+            "dry_run": config.DRY_RUN,
             "jules_mode": jules_mode,
             "issues_processed": [],
             "prs_processed": [],
@@ -593,7 +605,7 @@ def process_single(
                         logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
                         sys.exit(0)
 
-                    actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
+                    actions = _take_pr_actions(repo_name, pr_data, config)
                     processed_pr = {
                         "pr_data": pr_data,
                         "actions_taken": actions,
@@ -617,7 +629,7 @@ def process_single(
                     # to add/remove the label, but we proceed regardless of whether another instance is processing
                     from .label_manager import LabelManager
 
-                    with LabelManager(github_client, repo_name, number, item_type="issue", dry_run=dry_run, config=config) as should_process:
+                    with LabelManager(github_client, repo_name, number, item_type="issue", config=config) as should_process:
                         # Note: We always process for process_single, even if should_process is False
 
                         processed_issue: Dict[str, Any] = {
@@ -632,7 +644,7 @@ def process_single(
                             with ProgressStage("Adding jules label"):
                                 current_labels = issue_data.get("labels", [])
                                 if "jules" not in current_labels:
-                                    if not dry_run:
+                                    if not config.DRY_RUN:
                                         github_client.add_labels_to_issue(repo_name, number, ["jules"])
                                         processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
                                     else:
@@ -641,7 +653,7 @@ def process_single(
                                     processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
                         else:
                             with ProgressStage("Processing"):
-                                actions = _take_issue_actions(repo_name, issue_data, config, dry_run, github_client)
+                                actions = _take_issue_actions(repo_name, issue_data, config, github_client)
                                 processed_issue["actions_taken"] = actions
 
                         # Clear progress header after processing
@@ -663,9 +675,9 @@ def process_single(
         # If so, switch to main branch, pull, and exit
         try:
             # Check if we processed exactly one item
-            if not dry_run and (result["issues_processed"] or result["prs_processed"]):
+            if not config.DRY_RUN and (result["issues_processed"] or result["prs_processed"]):
                 # Get the processed item
-                processed_item = None
+                processed_item: Dict[str, Any]
                 item_number = None
                 item_type = None
 

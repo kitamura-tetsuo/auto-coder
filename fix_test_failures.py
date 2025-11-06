@@ -5,7 +5,7 @@ Script to fix test failures systematically after refactoring.
 
 import re
 
-def fix_test_automation_engine():
+def fix_test_automation_engine() -> None:
     """Fix test_automation_engine.py test failures."""
     
     # Read the current file
@@ -33,7 +33,7 @@ def fix_test_automation_engine():
     # Mock the LLM response
     mock_gemini_client._run_llm_cli.return_value = "This looks good. Thanks for the contribution! I reviewed the changes and here is my analysis."
 
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    engine = AutomationEngine(mock_github_client, config=AutomationConfig(DRY_RUN=True))
 
     # Stub diff generation
     with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
@@ -57,7 +57,7 @@ def fix_test_automation_engine():
 ):
     from src.auto_coder.pr_processor import _apply_pr_actions_directly
     
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    engine = AutomationEngine(mock_github_client, config=AutomationConfig(DRY_RUN=True))
 
     # Stub diff generation and backend manager
     with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
@@ -116,7 +116,7 @@ def fix_test_automation_engine():
     
     print("Fixed test_automation_engine.py")
 
-def fix_exclusive_processing_label():
+def fix_exclusive_processing_label() -> None:
     """Fix test_exclusive_processing_label.py test failures."""
     
     # Read the current file
@@ -146,7 +146,7 @@ def fix_exclusive_processing_label():
     
     print("Fixed test_exclusive_processing_label.py")
 
-def fix_issue_processor_skip_sub_issues():
+def fix_issue_processor_skip_sub_issues() -> None:
     """Fix test_issue_processor_skip_sub_issues.py test failures."""
     
     # Read the current file

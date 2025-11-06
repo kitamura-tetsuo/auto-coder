@@ -31,12 +31,10 @@ class AutomationEngine:
     def __init__(
         self,
         github_client: Any,
-        dry_run: bool = False,
         config: Optional[AutomationConfig] = None,
     ) -> None:
         """Initialize automation engine."""
         self.github = github_client
-        self.dry_run = dry_run
         self.config = config or AutomationConfig()
         self.cmd = CommandExecutor()
 
@@ -191,7 +189,7 @@ class AutomationEngine:
                 result["success"] = True
             elif candidate.get("type") == "pr":
                 # PR processing
-                result["actions"] = process_pull_request(self.github, self.config, self.dry_run, repo_name, candidate["data"])
+                result["actions"] = process_pull_request(self.github, self.config, repo_name, candidate["data"])
                 result["success"] = True
         except Exception as e:
             result["error"] = str(e)
@@ -209,7 +207,7 @@ class AutomationEngine:
         results = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
-            "dry_run": self.dry_run,
+            "dry_run": self.config.DRY_RUN,
             "jules_mode": jules_mode,
             "llm_backend": llm_backend_info["backend"],
             "llm_model": llm_backend_info["model"],
@@ -277,7 +275,6 @@ class AutomationEngine:
         return process_single(
             self.github,
             self.config,
-            self.dry_run,
             repo_name,
             target_type,
             number,
@@ -289,7 +286,6 @@ class AutomationEngine:
         return create_feature_issues(
             self.github,
             self.config,
-            self.dry_run,
             repo_name,
         )
 
@@ -400,7 +396,6 @@ class AutomationEngine:
             repo_name,
             issue_data,
             self.config,
-            self.dry_run,
             self.github,
         )
 
@@ -412,7 +407,6 @@ class AutomationEngine:
             repo_name,
             issue_data,
             self.config,
-            self.dry_run,
             self.github,
         )
 
@@ -761,14 +755,6 @@ class AutomationEngine:
                 "error": str(e),
             }
 
-    def _apply_github_actions_fixes_directly(self, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
-        """Apply GitHub Actions fixes directly."""
-        return ["Gemini CLI applied GitHub Actions fixes", "Committed changes"]
-
-    def _apply_local_test_fixes_directly(self, pr_data: Dict[str, Any], error_summary: str) -> List[str]:
-        """Apply local test fixes directly."""
-        return ["Gemini CLI applied local test fixes", "Committed changes"]
-
     def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
         """Apply GitHub Actions fix."""
         actions = []
@@ -790,12 +776,12 @@ class AutomationEngine:
             actions.append(f"Applied GitHub Actions fix")
 
             # Commit the changes using the centralized commit logic
-            commit_result = self._commit_with_message(f"Auto-Coder: Fix GitHub Actions issues for PR #{pr_data.get('number', 'N/A')}")
+            commit_result = git_commit_with_retry(f"Auto-Coder: Fix GitHub Actions issues for PR #{pr_data.get('number', 'N/A')}")
             if commit_result.success:
                 actions.append("Committed changes")
 
                 # Push the changes
-                push_result = self._push_current_branch()
+                push_result = git_push()
                 if push_result.success:
                     actions.append("Pushed changes")
                 else:
@@ -811,48 +797,6 @@ class AutomationEngine:
     def _format_direct_fix_comment(self, pr_data: Dict[str, Any], github_logs: str, fix_actions: List[str]) -> str:
         """Format direct fix comment."""
         return f"Auto-Coder Applied GitHub Actions Fixes\n\n**PR:** #{pr_data['number']} - {pr_data['title']}\n\nError: {github_logs}\n\nFixes applied: {', '.join(fix_actions)}"
-
-    def _commit_with_message(self, message: str) -> Any:
-        """Commit with specific message."""
-        from subprocess import CompletedProcess
-
-        return CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-
-    def _push_current_branch(self) -> Any:
-        """Push current branch."""
-        from subprocess import CompletedProcess
-
-        return CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-
-    def _handle_pr_merge(self, repo_name: str, pr_data: Dict[str, Any], analysis: Dict[str, Any]) -> List[str]:
-        """Handle PR merge process."""
-        return ["All GitHub Actions checks passed", "Would merge PR"]
-
-    def _fix_pr_issues_with_testing(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
-        """Fix PR issues with testing."""
-        return ["Applied fix", "Tests passed"]
-
-    def _checkout_pr_branch(self, repo_name: str, pr_data: Dict[str, Any]) -> bool:
-        """Checkout PR branch."""
-        return True
-
-    def _poll_pr_mergeable(
-        self,
-        repo_name: str,
-        pr_number: int,
-        timeout_seconds: int = 30,
-        interval: int = 2,
-    ) -> bool:
-        """Poll PR mergeable status."""
-        return True
-
-    def _get_allowed_merge_methods(self, repo_name: str) -> List[str]:
-        """Get allowed merge methods for repository."""
-        return ["--merge", "--squash", "--rebase"]
-
-    def _merge_pr(self, repo_name: str, pr_number: int, pr_data: Dict[str, Any]) -> bool:
-        """Merge PR."""
-        return True
 
     def parse_commit_history_with_actions(self, repo_name: str, search_depth: int = 10) -> List[Dict[str, Any]]:
         """Parse git commit history and identify commits that triggered GitHub Actions.

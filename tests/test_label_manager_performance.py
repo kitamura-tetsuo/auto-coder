@@ -214,7 +214,7 @@ class TestLabelManagerPerformance:
         start = time.perf_counter()
 
         for i in range(iterations):
-            with LabelManager(mock_github_client, "owner/repo", i, item_type="issue", dry_run=True, config=config) as should_process:
+            with LabelManager(mock_github_client, "owner/repo", i, item_type="issue", config=config) as should_process:
                 assert should_process is True
 
         dry_run_time = time.perf_counter() - start

@@ -37,7 +37,6 @@ cmd = CommandExecutor()
 def process_pull_request(
     github_client: Any,
     config: AutomationConfig,
-    dry_run: bool,
     repo_name: str,
     pr_data: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -91,7 +90,6 @@ def process_pull_request(
                             repo_name,
                             pr_data,
                             config,
-                            dry_run,
                         )
                     processed_pr.update(processed_pr_result)
                 else:
@@ -99,7 +97,7 @@ def process_pull_request(
                     processed_pr["priority"] = "fix"
 
                     # Process for fixes
-                    processed_pr_result = _process_pr_for_fixes(repo_name, pr_data, config, dry_run)
+                    processed_pr_result = _process_pr_for_fixes(repo_name, pr_data, config)
                     processed_pr.update(processed_pr_result)
 
             finally:
@@ -137,7 +135,6 @@ def _process_pr_for_merge(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
 ) -> Dict[str, Any]:
     """Process a PR for quick merging when GitHub Actions are passing."""
     processed_pr: Dict[str, Any] = {
@@ -149,12 +146,12 @@ def _process_pr_for_merge(
     github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
-    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config) as should_process:
+    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config) as should_process:
         if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        if dry_run:
+        if config.DRY_RUN:
             # Single execution policy - skip analysis phase
             processed_pr["actions_taken"].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
             return processed_pr
@@ -172,21 +169,20 @@ def _process_pr_for_fixes(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
 ) -> Dict[str, Any]:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
     processed_pr: Dict[str, Any] = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
     github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
-    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config) as should_process:
+    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config) as should_process:
         if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
         # Use the existing PR actions logic for fixing issues
         with ProgressStage("Fixing issues"):
-            actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
+            actions = _take_pr_actions(repo_name, pr_data, config)
         processed_pr["actions_taken"] = actions
 
     return processed_pr
@@ -196,20 +192,19 @@ def _take_pr_actions(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
 ) -> List[str]:
     """Take actions on a PR including merge handling and analysis."""
     actions = []
     pr_number = pr_data["number"]
 
     try:
-        if dry_run:
+        if config.DRY_RUN:
             logger.debug("Dry run requested for PR #%s; skipping merge workflow", pr_number)
             return [f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}"]
 
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(repo_name, pr_data, config, dry_run, {})
+        merge_actions = _handle_pr_merge(repo_name, pr_data, config, {})
         actions.extend(merge_actions)
 
         # If merge process completed successfully (PR was merged), skip analysis
@@ -219,7 +214,7 @@ def _take_pr_actions(
             actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
         else:
             # Only do Gemini analysis if merge process didn't complete
-            analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config, dry_run)
+            analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config)
             actions.extend(analysis_results)
 
     except Exception as e:
@@ -232,7 +227,6 @@ def _apply_pr_actions_directly(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
 ) -> List[str]:
     """Ask LLM CLI to apply PR fixes directly; avoid posting PR comments.
 
@@ -245,7 +239,7 @@ def _apply_pr_actions_directly(
 
     try:
         # Handle dry run mode - skip actual LLM processing
-        if dry_run:
+        if config.DRY_RUN:
             actions.append(f"[DRY RUN] Would apply PR actions directly for PR #{pr_number}")
             return actions
 
@@ -385,7 +379,6 @@ def _handle_pr_merge(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
     analysis: Dict[str, Any],
 ) -> List[str]:
     """Handle PR merge process following the intended flow."""
@@ -406,7 +399,7 @@ def _handle_pr_merge(
         if github_checks.success and detailed_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
-            if not dry_run:
+            if not config.DRY_RUN:
                 merge_result = _merge_pr(repo_name, pr_number, analysis, config)
                 if merge_result:
                     actions.append(f"Successfully merged PR #{pr_number}")
@@ -434,7 +427,7 @@ def _handle_pr_merge(
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
                 github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
-                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, dry_run, github_logs)
+                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -442,7 +435,7 @@ def _handle_pr_merge(
             return actions
         else:
             actions.append(f"[Policy] Performing base branch update for PR #{pr_number} before fixes (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=False)")
-            update_actions = _update_with_base_branch(repo_name, pr_data, config, dry_run)
+            update_actions = _update_with_base_branch(repo_name, pr_data, config)
             actions.extend(update_actions)
 
             # Step 6: If base branch update required pushing changes, skip to next PR
@@ -459,7 +452,7 @@ def _handle_pr_merge(
                 if failed_checks:
                     # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
                     github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, dry_run, github_logs)
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -577,7 +570,6 @@ def _update_with_base_branch(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
 ) -> List[str]:
     """Update PR branch with latest base branch commits.
 
@@ -1030,7 +1022,6 @@ def _fix_pr_issues_with_testing(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
     github_logs: str,
 ) -> List[str]:
     """Fix PR issues using GitHub Actions logs first, then local testing loop."""
@@ -1041,7 +1032,7 @@ def _fix_pr_issues_with_testing(
         # Step 1: Initial fix using GitHub Actions logs
         actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
 
-        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, dry_run, github_logs)
+        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
         actions.extend(initial_fix_actions)
 
         # Step 2: Local testing and iterative fixing loop
@@ -1082,7 +1073,7 @@ def _fix_pr_issues_with_testing(
                         actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
                         break
                     else:
-                        local_fix_actions = _apply_local_test_fix(repo_name, pr_data, config, dry_run, test_result)
+                        local_fix_actions = _apply_local_test_fix(repo_name, pr_data, config, test_result)
                         actions.extend(local_fix_actions)
 
     except Exception as e:
@@ -1095,7 +1086,6 @@ def _apply_github_actions_fix(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
     github_logs: str,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
@@ -1125,7 +1115,7 @@ def _apply_github_actions_fix(
             fix_prompt[:160].replace("\n", " "),
         )
 
-        if not dry_run:
+        if not config.DRY_RUN:
 
             # Use LLM backend manager to run the prompt
             logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
@@ -1178,7 +1168,6 @@ def _apply_local_test_fix(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    dry_run: bool,
     test_result: Dict[str, Any],
 ) -> List[str]:
     """Apply fix using local test failure logs.
@@ -1218,7 +1207,7 @@ def _apply_local_test_fix(
                 fix_prompt[:160].replace("\n", " "),
             )
 
-            if dry_run:
+            if config.DRY_RUN:
                 actions.append(f"[DRY RUN] Would apply local test fix for PR #{pr_number}")
                 return actions
 

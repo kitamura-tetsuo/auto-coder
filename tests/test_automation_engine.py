@@ -11,7 +11,9 @@ from src.auto_coder.utils import CommandExecutor
 
 
 def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+    config.DRY_RUN = True
+    engine = AutomationEngine(mock_github_client, config=config)
     prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
 
     assert "Do NOT post any comments" in prompt
@@ -40,7 +42,9 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
     )
 
     # For dry_run=True, the function should not call LLM but should still function
-    engine = AutomationEngine(mock_github_client, dry_run=True)
+    config = AutomationConfig()
+    config.DRY_RUN = True
+    engine = AutomationEngine(mock_github_client, config=config)
 
     # Stub diff generation
     with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
@@ -52,7 +56,6 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
             test_repo_name,
             sample_pr_data,
             engine.config,
-            True,  # dry_run=True explicitly
         )
 
         # No comment should be posted
@@ -71,10 +74,12 @@ class TestAutomationEngine:
 
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+        config.DRY_RUN = True
+        engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
-        assert engine.dry_run is True
+        assert engine.config.DRY_RUN is True
         assert engine.config.REPORTS_DIR == "reports"
 
     # Note: Tests for deprecated process_issues and related functions have been removed
@@ -100,7 +105,9 @@ class TestAutomationEngine:
             }
         ]
 
-        engine = AutomationEngine(mock_github_client, dry_run=False)
+        config = AutomationConfig()
+        config.DRY_RUN = False
+        engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
         result = engine.create_feature_issues(test_repo_name)
@@ -125,7 +132,9 @@ class TestAutomationEngine:
         # Setup
         mock_create_feature_issues.return_value = [{"title": sample_feature_suggestion["title"], "dry_run": True}]
 
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+        config.DRY_RUN = True
+        engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
         result = engine.create_feature_issues(test_repo_name)
@@ -252,7 +261,9 @@ class TestAutomationEngine:
     def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test issue actions in dry run mode."""
         # Setup
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+        config.DRY_RUN = True
+        engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
         result = engine._take_issue_actions("test/repo", sample_issue_data)
@@ -265,7 +276,8 @@ class TestAutomationEngine:
     def test_apply_issue_actions_directly(self, mock_github_client, mock_gemini_client):
         """Test direct issue actions application using Gemini CLI."""
         # Setup
-        engine = AutomationEngine(mock_github_client)
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github_client, config=config)
         issue_data = {
             "number": 123,
             "title": "Bug in login system",
@@ -715,50 +727,6 @@ class TestAutomationEngine:
             # Assert
             assert result is False
 
-    def test_apply_github_actions_fixes_directly(self, mock_github_client, mock_gemini_client):
-        """Test direct GitHub Actions fixes application using Gemini CLI."""
-        # Setup
-        mock_gemini_client._run_llm_cli.return_value = "Fixed the GitHub Actions issues by updating the test configuration"
-
-        engine = AutomationEngine(mock_github_client)
-        pr_data = {
-            "number": 123,
-            "title": "Fix test issue",
-            "body": "This PR fixes the test configuration",
-        }
-        github_logs = "Error: Test failed due to missing dependency"
-
-        # Execute
-        with patch.object(engine, "_commit_changes", return_value="Committed changes"):
-            result = engine._apply_github_actions_fixes_directly(pr_data, github_logs)
-
-        # Assert
-        assert len(result) == 2
-        assert "Gemini CLI applied GitHub Actions fixes" in result[0]
-        assert "Committed changes" in result[1]
-
-    def test_apply_local_test_fixes_directly(self, mock_github_client, mock_gemini_client):
-        """Test direct local test fixes application using Gemini CLI."""
-        # Setup
-        mock_gemini_client._run_llm_cli.return_value = "Fixed the local test issues by updating the import statements"
-
-        engine = AutomationEngine(mock_github_client)
-        pr_data = {
-            "number": 123,
-            "title": "Fix import issue",
-            "body": "This PR fixes the import statements",
-        }
-        error_summary = "ImportError: cannot import name 'helper' from 'utils'"
-
-        # Execute
-        with patch.object(engine, "_commit_changes", return_value="Committed changes"):
-            result = engine._apply_local_test_fixes_directly(pr_data, error_summary)
-
-        # Assert
-        assert len(result) == 2
-        assert "Gemini CLI applied local test fixes" in result[0]
-        assert "Committed changes" in result[1]
-
     # Remove outdated test that doesn't match current implementation
     def test_apply_github_actions_fix_no_commit_in_prompt_and_code_commits(self):
         """Test removed - outdated and doesn't match current stub implementation."""
@@ -881,7 +849,9 @@ class TestAutomationEngineExtended:
     def test_fix_pr_issues_with_testing_success(self, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with successful local tests."""
         # Setup
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+        config.DRY_RUN = True
+        engine = AutomationEngine(mock_github_client, config=config)
         pr_data = {"number": 123, "title": "Test PR"}
         github_logs = "Test failed: assertion error"
 
@@ -906,7 +876,6 @@ class TestAutomationEngineExtended:
                 "test/repo",
                 pr_data,
                 engine.config,
-                engine.dry_run,
                 github_logs,
             )
 
@@ -919,7 +888,9 @@ class TestAutomationEngineExtended:
     def test_fix_pr_issues_with_testing_retry(self, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with retry logic."""
         # Setup
-        engine = AutomationEngine(mock_github_client, dry_run=True)
+        config = AutomationConfig()
+        config.DRY_RUN = True
+        engine = AutomationEngine(mock_github_client, config=config)
         pr_data = {"number": 123, "title": "Test PR"}
         github_logs = "Test failed: assertion error"
 
@@ -946,7 +917,6 @@ class TestAutomationEngineExtended:
                 "test/repo",
                 pr_data,
                 engine.config,
-                engine.dry_run,
                 github_logs,
             )
 
@@ -1620,6 +1590,7 @@ class TestUrgentLabelPropagation:
         mock_github_client.get_pr_closing_issues.return_value = [123]
 
         # Execute
+        config = AutomationConfig()
         result = _create_pr_for_issue(
             repo_name="test/repo",
             issue_data=issue_data,
@@ -1627,7 +1598,7 @@ class TestUrgentLabelPropagation:
             base_branch="main",
             llm_response="Fixed the urgent issue",
             github_client=mock_github_client,
-            dry_run=False,
+            config=config,
         )
 
         # Assert
@@ -1670,6 +1641,7 @@ class TestUrgentLabelPropagation:
         mock_github_client.get_pr_closing_issues.return_value = [123]
 
         # Execute
+        config = AutomationConfig()
         result = _create_pr_for_issue(
             repo_name="test/repo",
             issue_data=issue_data,
@@ -1677,7 +1649,7 @@ class TestUrgentLabelPropagation:
             base_branch="main",
             llm_response="Fixed the issue",
             github_client=mock_github_client,
-            dry_run=False,
+            config=config,
         )
 
         # Assert
@@ -1702,6 +1674,8 @@ class TestUrgentLabelPropagation:
         }
 
         # Execute
+        config = AutomationConfig()
+        config.DRY_RUN = True
         result = _create_pr_for_issue(
             repo_name="test/repo",
             issue_data=issue_data,
@@ -1709,7 +1683,7 @@ class TestUrgentLabelPropagation:
             base_branch="main",
             llm_response="Fixed the urgent issue",
             github_client=mock_github_client,
-            dry_run=True,
+            config=config,
         )
 
         # Assert

@@ -223,7 +223,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             logger.info(f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve")
 
             # Get conflict information
-            conflict_info = scan_conflict_markers()
+            conflict_info = "\n".join(scan_conflict_markers())
 
             # Use LLM to resolve conflicts
             if pr_data is None:
@@ -251,7 +251,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
         return False
 
 
-def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig, llm_client: Any = None) -> bool:
+def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: AutomationConfig, llm_client: Optional[Any] = None) -> bool:
     """Resolve merge conflicts for a PR by checking it out and merging with its base branch.
 
     This function has been moved from pr_processor.py to conflict_resolver.py for better organization.

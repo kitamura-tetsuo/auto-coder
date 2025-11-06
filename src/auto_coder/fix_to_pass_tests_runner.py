@@ -798,9 +798,9 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
                         start = j
                         break
                 end = min(len(lines), idx_expect + 60)
-                block = "\n".join(lines[start:end])
-                if block:
-                    return block
+                block_str = "\n".join(lines[start:end])
+                if block_str:
+                    return block_str
         except Exception:
             pass
 
