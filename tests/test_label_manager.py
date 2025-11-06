@@ -1,7 +1,8 @@
 """Tests for LabelManager context manager."""
 
 import time
-from unittest.mock import Mock, patch, call
+from unittest.mock import Mock, call, patch
+
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
@@ -86,9 +87,7 @@ class TestLabelManager:
         assert result is True
         assert lm._label_added is True
         assert lm._should_cleanup is True
-        mock_github.try_add_work_in_progress_label.assert_called_once_with(
-            "owner/repo", 123, label="@auto-coder"
-        )
+        mock_github.try_add_work_in_progress_label.assert_called_once_with("owner/repo", 123, label="@auto-coder")
 
     def test_label_manager_check_and_add_label_already_exists(self):
         """Test checking label when it already exists."""
@@ -105,9 +104,7 @@ class TestLabelManager:
         result = lm.check_and_add_label()
 
         assert result is False
-        mock_github.try_add_work_in_progress_label.assert_called_once_with(
-            "owner/repo", 123, label="@auto-coder"
-        )
+        mock_github.try_add_work_in_progress_label.assert_called_once_with("owner/repo", 123, label="@auto-coder")
 
     def test_label_manager_check_and_add_label_dry_run(self):
         """Test checking and adding label in dry run mode."""
@@ -156,9 +153,7 @@ class TestLabelManager:
         result = lm.remove_label()
 
         assert result is True
-        mock_github.remove_labels_from_issue.assert_called_once_with(
-            "owner/repo", 123, ["@auto-coder"]
-        )
+        mock_github.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
 
     def test_label_manager_remove_label_dry_run(self):
         """Test removing label in dry run mode."""
@@ -229,6 +224,8 @@ class TestLabelManager:
         """Test verifying label on PR."""
         mock_github = Mock()
         mock_github.get_pr_details_by_number.return_value = {"labels": ["@auto-coder", "bug"]}
+        # Explicitly set has_label to return None to test fallback behavior
+        mock_github.has_label = None
 
         lm = LabelManager(
             github_client=mock_github,
@@ -246,6 +243,8 @@ class TestLabelManager:
         """Test verifying label on issue."""
         mock_github = Mock()
         mock_github.get_issue_details_by_number.return_value = {"labels": ["bug"]}
+        # Explicitly set has_label to return None to test fallback behavior
+        mock_github.has_label = None
 
         lm = LabelManager(
             github_client=mock_github,
@@ -274,9 +273,7 @@ class TestLabelManager:
             assert lm._should_cleanup is True
 
         # Verify label was removed on exit
-        mock_github.remove_labels_from_issue.assert_called_once_with(
-            "owner/repo", 123, ["@auto-coder"]
-        )
+        mock_github.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
 
     def test_label_manager_context_manager_skips_on_false(self):
         """Test context manager raises exception when label already exists."""
@@ -311,9 +308,7 @@ class TestLabelManager:
                 raise RuntimeError("Test exception")
 
         # Verify label was still removed despite exception
-        mock_github.remove_labels_from_issue.assert_called_once_with(
-            "owner/repo", 123, ["@auto-coder"]
-        )
+        mock_github.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
 
     def test_label_manager_context_manager_dry_run(self):
         """Test context manager with dry run."""
@@ -406,9 +401,7 @@ class TestLabelManager:
         result = lm.check_and_add_label()
 
         assert result is True
-        mock_github.try_add_work_in_progress_label.assert_called_once_with(
-            "owner/repo", 123, label="custom-label"
-        )
+        mock_github.try_add_work_in_progress_label.assert_called_once_with("owner/repo", 123, label="custom-label")
 
     def test_label_manager_github_client_missing_method(self):
         """Test LabelManager when GitHub client is missing required methods."""
@@ -532,7 +525,8 @@ class TestLabelManagerIntegration:
 
         # Verify state is isolated
         assert lm1.item_number != lm2.item_number
-        assert lm1._should_cleanup == lm2._should_cleanup == False
+        assert lm1._should_cleanup is False
+        assert lm2._should_cleanup is False
 
         lm1.check_and_add_label()
         lm2.check_and_add_label()
