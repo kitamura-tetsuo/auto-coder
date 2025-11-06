@@ -73,6 +73,7 @@ dev = [
     { name = "isort" },
     { name = "mypy" },
     { name = "pre-commit" },
+    { name = "pytest" },
 ]
 test = [
     { name = "pytest" },
@@ -114,6 +115,7 @@ dev = [
     { name = "isort", specifier = ">=5.0.0" },
     { name = "mypy", specifier = ">=1.0.0" },
     { name = "pre-commit", specifier = ">=4.3.0" },
+    { name = "pytest", specifier = ">=8.4.2" },
 ]
 test = [
     { name = "pytest", specifier = ">=7.0.0" },

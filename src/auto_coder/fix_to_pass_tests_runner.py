@@ -226,6 +226,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         cmd_list = ["bash", config.TEST_SCRIPT_PATH]
         logger.info(f"Running local tests via script: {config.TEST_SCRIPT_PATH}")
         result = cmd.run_command(cmd_list, timeout=cmd.DEFAULT_TIMEOUTS["test"])
+        logger.info(f"Finished local tests. {'Passed' if result.success else 'Failed'}")
 
         # If the test run failed, try to extract the first failed test file and run it via the script
         if not result.success:

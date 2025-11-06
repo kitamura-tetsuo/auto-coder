@@ -7,7 +7,7 @@ consistent error handling and logging.
 
 import time
 import warnings
-from typing import Any, Union
+from typing import Any, Callable, Literal, Optional, Union
 
 from .logger_config import get_logger
 
@@ -92,15 +92,15 @@ class LabelManager:
         Returns:
             True if labels are disabled, False otherwise
         """
-        if hasattr(self.github_client, "disable_labels") and self.github_client.disable_labels:
+        if hasattr(self.github_client, "disable_labels") and self.github_client.disable_labels is True:
             return True
 
-        if self.config and hasattr(self.config, "DISABLE_LABELS") and self.config.DISABLE_LABELS:
+        if self.config and hasattr(self.config, "DISABLE_LABELS") and self.config.DISABLE_LABELS is True:
             return True
 
         return False
 
-    def _retry_operation(self, operation, *args, **kwargs):
+    def _retry_operation(self, operation: Callable, *args: Any, **kwargs: Any) -> Any:
         """Retry an operation with exponential backoff.
 
         Args:
@@ -121,11 +121,8 @@ class LabelManager:
             except Exception as e:
                 last_exception = e
                 if attempt < self.max_retries - 1:
-                    wait_time = self.retry_delay * (2 ** attempt)  # Exponential backoff
-                    logger.warning(
-                        f"Label operation failed (attempt {attempt + 1}/{self.max_retries}): {e}. "
-                        f"Retrying in {wait_time:.2f}s..."
-                    )
+                    wait_time = self.retry_delay * (2**attempt)  # Exponential backoff
+                    logger.warning(f"Label operation failed (attempt {attempt + 1}/{self.max_retries}): {e}. " f"Retrying in {wait_time:.2f}s...")
                     time.sleep(wait_time)
                 else:
                     logger.error(f"Label operation failed after {self.max_retries} attempts: {e}")
@@ -161,9 +158,7 @@ class LabelManager:
                     self._label_added = True
                     self._should_cleanup = True
                 else:
-                    logger.info(
-                        f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label was just added by another instance"
-                    )
+                    logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label was just added by another instance")
                 return bool(result)
 
             logger.error(f"GitHub client does not support try_add_work_in_progress_label")
@@ -213,7 +208,7 @@ class LabelManager:
             True if label exists, False otherwise
         """
         try:
-            if hasattr(self.github_client, "has_label"):
+            if hasattr(self.github_client, "has_label") and callable(self.github_client.has_label):
                 return bool(
                     self._retry_operation(
                         self.github_client.has_label,
@@ -270,14 +265,11 @@ class LabelManager:
 
         # If result is False, another instance is processing this item
         if not result:
-            raise LabelOperationError(
-                f"Another instance is already processing {self.item_type} #{self.item_number} "
-                f"(label '{self.label_name}' was just added)"
-            )
+            raise LabelOperationError(f"Another instance is already processing {self.item_type} #{self.item_number} " f"(label '{self.label_name}' was just added)")
 
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: Optional[type], exc_val: Optional[BaseException], exc_tb: Optional[Any]) -> Literal[False]:
         """Exit the context manager and cleanup resources.
 
         Always removes the label if it was added and cleanup is needed.
