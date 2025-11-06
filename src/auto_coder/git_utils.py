@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1480,3 +1481,99 @@ def migrate_pr_branches(
 
     logger.info(f"Branch migration completed. Migrated: {len(results['migrated'])}, Skipped: {len(results['skipped'])}, Failed: {len(results['failed'])}")
     return results
+
+
+@contextmanager
+def branch_context(
+    branch_name: str,
+    create_new: bool = False,
+    base_branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+):
+    """
+    Context manager for Git branch management.
+
+    This context manager automatically switches to the specified branch on entry
+    and returns to the main branch on exit (even if an exception occurs).
+
+    Args:
+        branch_name: Name of the branch to switch to
+        create_new: If True, creates a new branch with -b flag
+        base_branch: If create_new is True and base_branch is specified, creates
+                     the new branch from base_branch (using -B flag)
+        cwd: Optional working directory for the git command
+
+    Example Usage:
+        # Work on a feature branch
+        with branch_context("feature/issue-123"):
+            # Perform work on feature/issue-123 branch
+            # Branch is automatically pulled on entry
+            perform_work()
+        # Automatically back on main branch after exiting context
+
+        # Create and work on new branch
+        with branch_context("feature/new-feature", create_new=True, base_branch="main"):
+            # New branch created from main
+            # Automatic pull after switch
+            perform_work()
+        # Automatically returns to main
+
+    Raises:
+        Exception: Propagates any exceptions from branch operations
+    """
+    # Store the current branch to return to on exit
+    original_branch = get_current_branch(cwd=cwd)
+
+    if not original_branch:
+        raise RuntimeError("Failed to get current branch before switching")
+
+    # If already on the target branch, just yield without switching
+    if original_branch == branch_name and not create_new:
+        logger.info(f"Already on branch '{branch_name}', staying on current branch")
+        try:
+            yield
+        finally:
+            # Even if we're already on the branch, still need to handle cleanup properly
+            pass
+        return
+
+    try:
+        # On entry: switch to the target branch with automatic pull
+        logger.info(f"Switching to branch '{branch_name}'")
+        switch_result = switch_to_branch(
+            branch_name=branch_name,
+            create_new=create_new,
+            base_branch=base_branch,
+            cwd=cwd,
+            publish=True,  # Default to publishing new branches
+            pull_after_switch=True,  # Always pull after switch
+        )
+
+        if not switch_result.success:
+            raise RuntimeError(f"Failed to switch to branch '{branch_name}': {switch_result.stderr}")
+
+        # Yield control to the with block
+        yield
+
+    finally:
+        # On exit: always return to the original branch
+        # First, check if we're still in a git repository
+        if is_git_repository(cwd):
+            # Check if the current branch is different from the original
+            current_branch = get_current_branch(cwd=cwd)
+
+            if current_branch != original_branch:
+                logger.info(f"Returning to original branch '{original_branch}'")
+                return_result = switch_to_branch(
+                    branch_name=original_branch,
+                    cwd=cwd,
+                    pull_after_switch=True,  # Always pull after switch
+                )
+
+                if not return_result.success:
+                    logger.warning(f"Failed to return to branch '{original_branch}': {return_result.stderr}")
+                    # Don't raise here - we're in cleanup mode
+            else:
+                logger.info(f"Already on branch '{original_branch}', no need to switch back")
+        else:
+            logger.warning("Not in a git repository during cleanup, cannot return to original branch")
