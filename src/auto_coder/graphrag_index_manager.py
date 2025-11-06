@@ -260,6 +260,98 @@ class GraphRAGIndexManager:
 
         logger.info("Successfully indexed codebase into Neo4j and Qdrant")
 
+    def _check_cli_tool_availability(self, command: list[str]) -> tuple[bool, Optional[str]]:
+        """Check if a CLI tool is available and working.
+
+        Args:
+            command: Command to check (e.g., ["node", "--version"])
+
+        Returns:
+            Tuple of (is_available, version_info) where version_info is version string or error message
+        """
+        try:
+            result = subprocess.run(
+                command + ["--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                version = result.stdout.strip() or result.stderr.strip()
+                return True, version
+            return False, f"Command failed with return code {result.returncode}"
+        except subprocess.TimeoutExpired:
+            return False, "Command timed out"
+        except FileNotFoundError:
+            return False, "Command not found"
+        except Exception as e:
+            return False, f"Error: {e}"
+
+    def _check_graph_builder_cli_compatibility(self, graph_builder_path: Path, cli_type: str) -> tuple[bool, str]:
+        """Check if a graph-builder CLI is compatible and working.
+
+        Args:
+            graph_builder_path: Path to graph-builder directory
+            cli_type: Type of CLI ("typescript", "python")
+
+        Returns:
+            Tuple of (is_compatible, message)
+        """
+        try:
+            if cli_type == "typescript":
+                # Check for node
+                node_available, node_version = self._check_cli_tool_availability(["node"])
+                if not node_available:
+                    return False, f"Node.js not available: {node_version}"
+
+                # Check TypeScript CLI
+                ts_cli_bundle = graph_builder_path / "dist" / "cli.bundle.js"
+                ts_cli = graph_builder_path / "dist" / "cli.js"
+                cli_path = ts_cli_bundle if ts_cli_bundle.exists() else ts_cli
+
+                if not cli_path.exists():
+                    return False, f"TypeScript CLI not found at {cli_path}"
+
+                # Test the CLI
+                result = subprocess.run(
+                    ["node", str(cli_path), "scan", "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    return False, f"CLI test failed: {result.stderr}"
+
+                return True, f"TypeScript CLI compatible (Node {node_version})"
+
+            elif cli_type == "python":
+                # Check for python3
+                python_available, python_version = self._check_cli_tool_availability(["python3"])
+                if not python_available:
+                    return False, f"Python3 not available: {python_version}"
+
+                # Check Python CLI
+                py_cli = graph_builder_path / "src" / "cli_python.py"
+                if not py_cli.exists():
+                    return False, f"Python CLI not found at {py_cli}"
+
+                # Test the CLI
+                result = subprocess.run(
+                    ["python3", str(py_cli), "scan", "--help"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode != 0:
+                    return False, f"CLI test failed: {result.stderr}"
+
+                return True, f"Python CLI compatible (Python {python_version})"
+
+            return False, f"Unknown CLI type: {cli_type}"
+
+        except Exception as e:
+            return False, f"Compatibility check failed: {e}"
+
     def _run_graph_builder(self) -> dict:
         """Run graph-builder to analyze codebase.
 
@@ -276,6 +368,40 @@ class GraphRAGIndexManager:
             return self._fallback_python_indexing()
 
         logger.info(f"Found graph-builder at: {graph_builder_path}")
+
+        # Check CLI compatibility before running
+        ts_cli_bundle = graph_builder_path / "dist" / "cli.bundle.js"
+        ts_cli = graph_builder_path / "dist" / "cli.js"
+        py_cli = graph_builder_path / "src" / "cli_python.py"
+
+        # Try TypeScript CLI first (preferred)
+        if ts_cli_bundle.exists() or ts_cli.exists():
+            is_compatible, message = self._check_graph_builder_cli_compatibility(graph_builder_path, "typescript")
+            if is_compatible:
+                logger.info(f"TypeScript CLI validation: {message}")
+            else:
+                logger.warning(f"TypeScript CLI not compatible: {message}")
+                # Try Python CLI as fallback
+                if py_cli.exists():
+                    is_compatible, message = self._check_graph_builder_cli_compatibility(graph_builder_path, "python")
+                    if is_compatible:
+                        logger.info(f"Python CLI validation: {message}")
+                    else:
+                        logger.warning(f"Python CLI not compatible: {message}, falling back to simple indexing")
+                        return self._fallback_python_indexing()
+                else:
+                    logger.warning("No compatible CLI found, falling back to simple indexing")
+                    return self._fallback_python_indexing()
+        elif py_cli.exists():
+            is_compatible, message = self._check_graph_builder_cli_compatibility(graph_builder_path, "python")
+            if is_compatible:
+                logger.info(f"Python CLI validation: {message}")
+            else:
+                logger.warning(f"Python CLI not compatible: {message}, falling back to simple indexing")
+                return self._fallback_python_indexing()
+        else:
+            logger.warning("No CLI found in graph-builder, falling back to simple indexing")
+            return self._fallback_python_indexing()
 
         # Create temporary output directory
         import tempfile
