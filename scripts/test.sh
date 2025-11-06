@@ -2,6 +2,41 @@
 set -Eeuo pipefail
 
 # -----------------------------------------------------------------------------
+# Environment detection and setup
+# -----------------------------------------------------------------------------
+# Detect CI environment and set appropriate flags
+
+echo "Detecting CI environment..."
+
+# Check if running in CI
+IS_CI=0
+if [ "${GITHUB_ACTIONS:-}" = "true" ] || [ "${CI:-}" = "true" ]; then
+    IS_CI=1
+    echo "[INFO] Running in CI environment (GitHub Actions or other CI)"
+else
+    echo "[INFO] Running in local development environment"
+fi
+
+# Check if running in a container
+IN_CONTAINER=0
+if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
+    IN_CONTAINER=1
+    echo "[INFO] Running inside a container"
+else
+    echo "[INFO] Running on host system"
+fi
+
+# Set test environment isolation variables
+export AUTOCODER_TEST_IN_CONTAINER="${IN_CONTAINER}"
+export AUTOCODER_TEST_IS_CI="${IS_CI}"
+
+echo ""
+echo "Environment configuration:"
+echo "  CI environment: ${IS_CI}"
+echo "  Container: ${IN_CONTAINER}"
+echo ""
+
+# -----------------------------------------------------------------------------
 # Dependency checking
 # -----------------------------------------------------------------------------
 # Check for required CLI dependencies and provide helpful warnings

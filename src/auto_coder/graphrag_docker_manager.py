@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from .logger_config import get_logger
-from .utils import CommandExecutor, CommandResult
+from .utils import CommandExecutor, CommandResult, is_running_in_container
 
 logger = get_logger(__name__)
 
@@ -362,8 +362,8 @@ class GraphRAGDockerManager:
         Returns:
             Container ID if running in container, None otherwise
         """
-        # Check if running in container
-        if not (os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")):
+        # Check if running in container using robust detection
+        if not is_running_in_container():
             return None
 
         try:

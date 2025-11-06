@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from .logger_config import get_logger
+from .utils import is_running_in_container
 
 logger = get_logger(__name__)
 
@@ -233,11 +234,7 @@ class GraphRAGIndexManager:
             logger.info("Install with: pip install qdrant-client sentence-transformers neo4j")
             raise
 
-        # Determine if running in container
-        def is_running_in_container() -> bool:
-            """Check if running inside a Docker container."""
-            return os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-
+        # Determine if running in container using robust detection
         in_container = is_running_in_container()
 
         # Step 1: Run graph-builder to analyze codebase
