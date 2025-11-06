@@ -148,31 +148,24 @@ def _process_pr_for_merge(
     }
     github_client = GitHubClient.get_instance()
 
-    try:
-        # Use LabelManager to ensure @auto-coder label is added and properly managed
-        try:
-            with LabelManager(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
-                if dry_run:
-                    # Single execution policy - skip analysis phase
-                    processed_pr["actions_taken"].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
-                    return processed_pr
-                else:
-                    # Since Actions are passing, attempt direct merge
-                    merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
-                    if merge_result:
-                        processed_pr["actions_taken"].append(f"Successfully merged PR #{pr_data['number']}")
-                    else:
-                        processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
-                    return processed_pr
-        except LabelOperationError:
-            logger.info(f"Skipping PR #{pr_data['number']} - already has @auto-coder label")
+    # Use LabelManager context manager to handle @auto-coder label automatically
+    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config) as should_process:
+        if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-    except Exception as e:
-        processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for merge: {str(e)}")
-        return processed_pr
-
+        if dry_run:
+            # Single execution policy - skip analysis phase
+            processed_pr["actions_taken"].append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
+            return processed_pr
+        else:
+            # Since Actions are passing, attempt direct merge
+            merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
+            if merge_result:
+                processed_pr["actions_taken"].append(f"Successfully merged PR #{pr_data['number']}")
+            else:
+                processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
+            return processed_pr
 
 def _process_pr_for_fixes(
     repo_name: str,
@@ -184,20 +177,16 @@ def _process_pr_for_fixes(
     processed_pr: Dict[str, Any] = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
     github_client = GitHubClient.get_instance()
 
-    try:
-        # Use LabelManager to ensure @auto-coder label is added and properly managed
-        try:
-            with LabelManager(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
-                # Use the existing PR actions logic for fixing issues
-                with ProgressStage("Fixing issues"):
-                    actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
-                processed_pr["actions_taken"] = actions
-        except LabelOperationError:
-            logger.info(f"Skipping PR #{pr_data['number']} - already has @auto-coder label")
+    # Use LabelManager context manager to handle @auto-coder label automatically
+    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config) as should_process:
+        if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
+            return processed_pr
 
-    except Exception as e:
-        processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for fixes: {str(e)}")
+        # Use the existing PR actions logic for fixing issues
+        with ProgressStage("Fixing issues"):
+            actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
+        processed_pr["actions_taken"] = actions
 
     return processed_pr
 
