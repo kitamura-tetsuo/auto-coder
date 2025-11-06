@@ -22,7 +22,7 @@ from .automation_config import AutomationConfig
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
 from .git_utils import get_commit_log, git_checkout_branch, git_commit_with_retry, git_push, save_commit_failure_history
-from .label_manager import check_and_add_label, remove_label
+from .label_manager import LabelManager
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
@@ -148,10 +148,11 @@ def _process_pr_for_merge(
     }
     github_client = GitHubClient.get_instance()
 
-    try:
-        # Try to add @auto-coder label
-        if not check_and_add_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
-            logger.info(f"Skipping PR #{pr_data['number']} - already has @auto-coder label")
+    # Use LabelManager context manager to handle @auto-coder label automatically
+    with LabelManager(
+        github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config
+    ) as should_process:
+        if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
@@ -168,13 +169,6 @@ def _process_pr_for_merge(
                 processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
             return processed_pr
 
-    except Exception as e:
-        processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for merge: {str(e)}")
-        return processed_pr
-    finally:
-        # Remove @auto-coder label after processing
-        remove_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config)
-
 
 def _process_pr_for_fixes(
     repo_name: str,
@@ -186,10 +180,11 @@ def _process_pr_for_fixes(
     processed_pr: Dict[str, Any] = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
     github_client = GitHubClient.get_instance()
 
-    try:
-        # Try to add @auto-coder label
-        if not check_and_add_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config):
-            logger.info(f"Skipping PR #{pr_data['number']} - already has @auto-coder label")
+    # Use LabelManager context manager to handle @auto-coder label automatically
+    with LabelManager(
+        github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config
+    ) as should_process:
+        if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
@@ -197,12 +192,6 @@ def _process_pr_for_fixes(
         with ProgressStage("Fixing issues"):
             actions = _take_pr_actions(repo_name, pr_data, config, dry_run)
         processed_pr["actions_taken"] = actions
-
-    except Exception as e:
-        processed_pr["actions_taken"].append(f"Error processing PR #{pr_data['number']} for fixes: {str(e)}")
-    finally:
-        # Remove @auto-coder label after processing
-        remove_label(github_client, repo_name, pr_data["number"], "pr", dry_run, config)
 
     return processed_pr
 
