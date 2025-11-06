@@ -255,15 +255,9 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             # Only treat as error if there's no output and no known informational message
             log_action(f"Failed to get PR checks for #{pr_number}", False, result.stderr)
 
-            # If current PR checks failed and fallback is enabled, try historical search
-            if getattr(config, "ENABLE_ACTIONS_HISTORY_FALLBACK", False):
-                logger.info(f"Current PR checks failed for #{pr_number}, attempting historical fallback...")
-                return _check_github_actions_status_from_history(repo_name, pr_data, config)
-            else:
-                return GitHubActionsStatusResult(
-                    success=False,
-                    ids=[],
-                )
+            # If current PR checks failed, try historical search
+            logger.info(f"Current PR checks failed for #{pr_number}, attempting historical fallback...")
+            return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         # Parse text output to extract check information
         checks_output = result.stdout.strip()
@@ -329,7 +323,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                         if status in ["pending", "in_progress"]:
                             failed_checks.append({"name": name, "conclusion": status, "details_url": url})
             else:
-                # Legacy format: "✓ check-name" or "✗ check-name" or "- check-name"
+                # Check format: "✓ check-name" or "✗ check-name" or "- check-name"
                 if line.startswith("✓"):
                     # Successful check
                     name = line[2:].strip()
@@ -390,15 +384,9 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
 
     except Exception as e:
         logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
-        # If there's an exception and fallback is enabled, try historical search
-        if getattr(config, "ENABLE_ACTIONS_HISTORY_FALLBACK", False):
-            logger.info(f"Exception during PR checks for #{pr_number}, attempting historical fallback...")
-            return _check_github_actions_status_from_history(repo_name, pr_data, config)
-        else:
-            return GitHubActionsStatusResult(
-                success=False,
-                ids=[],
-            )
+        # Try historical search on exception
+        logger.info(f"Exception during PR checks for #{pr_number}, attempting historical fallback...")
+        return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
 
 # --- Common helpers for historical GitHub Actions processing ---
@@ -1391,8 +1379,8 @@ def _get_github_actions_logs(
         search_history: Optional parameter to enable historical search.
                        If None, uses config.SEARCH_GITHUB_ACTIONS_HISTORY.
                        If True, searches through commit history for logs.
-                       If False, uses current state only (backward compatible).
-        **kwargs: Additional keyword arguments (ignored for compatibility)
+                       If False, uses current state only.
+        **kwargs: Additional keyword arguments (for future use)
 
     Returns:
         String containing GitHub Actions logs
@@ -1401,7 +1389,7 @@ def _get_github_actions_logs(
     - _get_github_actions_logs(repo, config, failed_checks)
     - _get_github_actions_logs(repo, config, failed_checks, pr_data)
     """
-    # Determine search_history value (backward compatible)
+    # Determine search_history value
     if search_history is None:
         search_history = config.SEARCH_GITHUB_ACTIONS_HISTORY
 

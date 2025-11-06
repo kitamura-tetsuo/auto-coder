@@ -408,7 +408,7 @@ class TestAutomationEngine:
         mock_github_client,
         mock_gemini_client,
     ):
-        """Test successful report saving without repo_name (legacy behavior)."""
+        """Test successful report saving without repo_name."""
         # Setup
         mock_join.return_value = "reports/test_report.json"
         mock_file = Mock()
