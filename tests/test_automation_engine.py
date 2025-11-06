@@ -718,7 +718,7 @@ class TestAutomationEngine:
     def test_apply_github_actions_fixes_directly(self, mock_github_client, mock_gemini_client):
         """Test direct GitHub Actions fixes application using Gemini CLI."""
         # Setup
-        mock_gemini_client._run_gemini_cli.return_value = "Fixed the GitHub Actions issues by updating the test configuration"
+        mock_gemini_client._run_llm_cli.return_value = "Fixed the GitHub Actions issues by updating the test configuration"
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {
@@ -740,7 +740,7 @@ class TestAutomationEngine:
     def test_apply_local_test_fixes_directly(self, mock_github_client, mock_gemini_client):
         """Test direct local test fixes application using Gemini CLI."""
         # Setup
-        mock_gemini_client._run_gemini_cli.return_value = "Fixed the local test issues by updating the import statements"
+        mock_gemini_client._run_llm_cli.return_value = "Fixed the local test issues by updating the import statements"
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {

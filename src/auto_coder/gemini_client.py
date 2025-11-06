@@ -79,13 +79,11 @@ class GeminiClient(LLMClientBase):
         """Escape @ characters in prompt for Gemini."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_gemini_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
         try:
-            # Escape @ characters in prompt for Gemini
             escaped_prompt = self._escape_prompt(prompt)
 
-            # Run gemini CLI with prompt via stdin and additional prompt parameter
             cmd = [
                 "gemini",
                 "--yolo",
@@ -96,13 +94,11 @@ class GeminiClient(LLMClientBase):
                 escaped_prompt,
             ]
 
-            # Warn that we are invoking an LLM (keep calls minimized)
             logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
             logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
             logger.info("=" * 60)
 
-            # Streaming-time usage limit detection via callback
             usage_markers = (
                 "rate limit",
                 "quota",
@@ -131,7 +127,6 @@ class GeminiClient(LLMClientBase):
             full_output = full_output.strip()
             low = full_output.lower()
 
-            # Detect usage/rate limit conditions
             usage_markers = (
                 "rate limit",
                 "quota",
@@ -145,7 +140,6 @@ class GeminiClient(LLMClientBase):
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
 
-            # Even with 0, detect soft limit messages (some CLIs log 429 but exit 0)
             if any(m in low for m in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
@@ -153,7 +147,7 @@ class GeminiClient(LLMClientBase):
         except AutoCoderUsageLimitError:
             raise
         except Exception as e:
-            if "timed out" not in str(e):  # Don't mention timeout since we removed it
+            if "timed out" not in str(e):
                 raise RuntimeError(f"Failed to run Gemini CLI: {e}")
             raise
 
@@ -168,7 +162,7 @@ class GeminiClient(LLMClientBase):
                 text = getattr(resp, "text", "")
                 suggestions = self._parse_feature_suggestions(text)
             else:
-                response_text = self._run_gemini_cli(prompt)
+                response_text = self._run_llm_cli(prompt)
                 suggestions = self._parse_feature_suggestions(response_text)
             logger.info(f"Generated {len(suggestions)} feature suggestions")
             return suggestions
@@ -204,7 +198,7 @@ class GeminiClient(LLMClientBase):
             recent_prs=repo_context.get("recent_prs", []),
         )
 
-    # ===== SDK-based analysis helpers (disabled per LLM execution policy) =====
+    # SDK-based analysis helpers removed per LLM execution policy.
     # analyze_issue / analyze_pull_request / generate_solution are intentionally removed.
     # The system must not perform analysis-only LLM calls. Single-run direct actions are used instead.
 
@@ -251,9 +245,6 @@ class GeminiClient(LLMClientBase):
         except json.JSONDecodeError:
             return []
 
-    def _run_llm_cli(self, prompt: str) -> str:
-        """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
-        return self._run_gemini_cli(prompt)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Gemini CLI.

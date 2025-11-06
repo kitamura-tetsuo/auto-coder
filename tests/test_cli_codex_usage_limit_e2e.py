@@ -49,14 +49,14 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
         def main() -> int:
             client = CodexClient()
             try:
-                client._run_gemini_cli("Detect usage limit condition")
-            except AutoCoderUsageLimitError as exc:  # noqa: PERF203 - clarity first in e2e script
+                client._run_llm_cli("Detect usage limit condition")
+            except AutoCoderUsageLimitError as exc:
                 print(f"CAUGHT_USAGE_LIMIT: {exc}")
                 return 0
-            except Exception as exc:  # pragma: no cover - defensive path for subprocess validation
+            except Exception as exc:
                 print(f"UNEXPECTED_EXCEPTION: {exc}", file=os.sys.stderr)
                 return 2
-            else:  # pragma: no cover - ensures failure if limit is not detected
+            else:
                 print("NO_USAGE_LIMIT_DETECTED", file=os.sys.stderr)
                 return 1
 

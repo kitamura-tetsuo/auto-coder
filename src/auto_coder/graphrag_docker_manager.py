@@ -76,7 +76,6 @@ class GraphRAGDockerManager:
         Raises:
             RuntimeError: If docker compose command is not available
         """
-        # Try 'docker compose' command
         try:
             result = subprocess.run(
                 ["docker", "compose", "version"],
@@ -89,8 +88,27 @@ class GraphRAGDockerManager:
         except Exception:
             pass
 
-        # Docker compose is not available
-        error_msg = "Docker Compose is not available.\n" "Please install Docker Compose:\n" "  - For Docker Desktop: Docker Compose is included\n" "  - For Docker Engine: Install docker-compose-plugin\n" "    Ubuntu/Debian: sudo apt-get install docker-compose-plugin"
+        try:
+            result = subprocess.run(
+                ["docker-compose", "version"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.debug("Using 'docker-compose' command")
+                return ["docker-compose"]
+        except Exception:
+            pass
+
+        # Neither command is available
+        error_msg = (
+            "Neither 'docker compose' nor 'docker-compose' is available.\n"
+            "Please install Docker Compose:\n"
+            "  - For Docker Desktop: Docker Compose is included\n"
+            "  - For Docker Engine: Install docker-compose-plugin\n"
+            "    Ubuntu/Debian: sudo apt-get install docker-compose-plugin\n"
+            "    Or install standalone: https://docs.docker.com/compose/install/"
+        )
         logger.error(error_msg)
         raise RuntimeError(error_msg)
 

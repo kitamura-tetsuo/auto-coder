@@ -59,8 +59,8 @@ def test_codex_mcp_client_graphrag_enabled(monkeypatch):
     assert isinstance(client.graphrag_integration, GraphRAGMCPIntegration)
 
 
-def test_run_gemini_cli_graphrag_ensure_ready_success(monkeypatch):
-    """Test _run_gemini_cli with GraphRAG ensure_ready success."""
+def test_run_llm_cli_graphrag_ensure_ready_success(monkeypatch):
+    """Test _run_llm_cli with GraphRAG ensure_ready success."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
@@ -88,15 +88,15 @@ def test_run_gemini_cli_graphrag_ensure_ready_success(monkeypatch):
     mock_exec_proc.wait.return_value = 0
 
     with mock.patch("subprocess.Popen", return_value=mock_exec_proc):
-        result = client._run_gemini_cli("test prompt")
+        result = client._run_llm_cli("test prompt")
 
     assert "output line 1" in result
     assert "output line 2" in result
     mock_integration.ensure_ready.assert_called_once()
 
 
-def test_run_gemini_cli_graphrag_ensure_ready_failure(monkeypatch):
-    """Test _run_gemini_cli with GraphRAG ensure_ready failure."""
+def test_run_llm_cli_graphrag_ensure_ready_failure(monkeypatch):
+    """Test _run_llm_cli with GraphRAG ensure_ready failure."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
@@ -124,15 +124,15 @@ def test_run_gemini_cli_graphrag_ensure_ready_failure(monkeypatch):
     mock_exec_proc.wait.return_value = 0
 
     with mock.patch("subprocess.Popen", return_value=mock_exec_proc):
-        result = client._run_gemini_cli("test prompt")
+        result = client._run_llm_cli("test prompt")
 
     # Should continue despite GraphRAG failure
     assert "output line" in result
     mock_integration.ensure_ready.assert_called_once()
 
 
-def test_run_gemini_cli_graphrag_ensure_ready_exception(monkeypatch):
-    """Test _run_gemini_cli with GraphRAG ensure_ready exception."""
+def test_run_llm_cli_graphrag_ensure_ready_exception(monkeypatch):
+    """Test _run_llm_cli with GraphRAG ensure_ready exception."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
@@ -160,15 +160,15 @@ def test_run_gemini_cli_graphrag_ensure_ready_exception(monkeypatch):
     mock_exec_proc.wait.return_value = 0
 
     with mock.patch("subprocess.Popen", return_value=mock_exec_proc):
-        result = client._run_gemini_cli("test prompt")
+        result = client._run_llm_cli("test prompt")
 
     # Should continue despite GraphRAG exception
     assert "output line" in result
     mock_integration.ensure_ready.assert_called_once()
 
 
-def test_run_gemini_cli_no_graphrag(monkeypatch):
-    """Test _run_gemini_cli without GraphRAG integration."""
+def test_run_llm_cli_no_graphrag(monkeypatch):
+    """Test _run_llm_cli without GraphRAG integration."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
@@ -191,6 +191,6 @@ def test_run_gemini_cli_no_graphrag(monkeypatch):
     mock_exec_proc.wait.return_value = 0
 
     with mock.patch("subprocess.Popen", return_value=mock_exec_proc):
-        result = client._run_gemini_cli("test prompt")
+        result = client._run_llm_cli("test prompt")
 
     assert "output line" in result

@@ -5,7 +5,6 @@ across the codebase, eliminating scattered label operation code and providing
 consistent error handling and logging.
 """
 
-import inspect
 import threading
 import time
 from contextlib import contextmanager
@@ -20,42 +19,6 @@ class LabelOperationError(Exception):
     """Exception raised when label operations fail."""
 
     pass
-
-
-def _is_real_method(obj: Any, method_name: str) -> bool:
-    """Check if an object has a real method (not an unconfigured Mock attribute).
-
-    Args:
-        obj: Object to check
-        method_name: Name of the method to check
-
-    Returns:
-        True if the object has a real method with the given name, False otherwise
-    """
-    try:
-        # Import Mock and sentinel here to avoid circular import
-        from unittest.mock import DEFAULT, Mock
-
-        # Get the attribute
-        attr = getattr(obj, method_name, None)
-
-        # If the object is a Mock, check if the method is configured
-        if isinstance(obj, Mock):
-            # For Mock objects, check if the method is a configured Mock
-            mock_attr = attr
-            if isinstance(mock_attr, Mock):
-                # Check if this Mock attribute has been configured
-                # Configured mocks have _mock_return_value not set to DEFAULT
-                return mock_attr._mock_return_value is not DEFAULT
-
-        # For non-Mock objects, check if it's callable and is a method or function
-        if callable(attr):
-            # Check if it's a bound method or function (real method)
-            return inspect.ismethod(attr) or inspect.isfunction(attr)
-
-        return False
-    except Exception:
-        return False
 
 
 def _check_label_exists(
@@ -80,31 +43,17 @@ def _check_label_exists(
         True if label exists, False otherwise
     """
     try:
-        # Check if has_label method exists (not just a Mock attribute)
-        if _is_real_method(github_client, "has_label"):
-            return bool(github_client.has_label(repo_name, item_number, label_name))
-
-        # Fallback: get issue/PR details and check labels
         if item_type.lower() == "pr":
-            if _is_real_method(github_client, "get_pr_details_by_number"):
-                pr_data = github_client.get_pr_details_by_number(repo_name, item_number)
-                labels = pr_data.get("labels", [])
-            else:
-                logger.warning(f"GitHub client does not support PR details retrieval")
-                return False
+            pr_data = github_client.get_pr_details_by_number(repo_name, item_number)
+            labels = pr_data.get("labels", [])
         else:
-            if _is_real_method(github_client, "get_issue_details_by_number"):
-                issue_data = github_client.get_issue_details_by_number(repo_name, item_number)
-                labels = issue_data.get("labels", [])
-            else:
-                logger.warning(f"GitHub client does not support issue details retrieval")
-                return False
+            issue_data = github_client.get_issue_details_by_number(repo_name, item_number)
+            labels = issue_data.get("labels", [])
 
         return label_name in labels
 
     except Exception as e:
         logger.error(f"Failed to check label '{label_name}' on {item_type} #{item_number}: {e}")
-        # On error, return False to allow processing to continue
         return False
 
 
@@ -222,21 +171,14 @@ class LabelManager:
                         self._label_added = True
                         return True
 
-                    # Use the GitHub client's method to add the label
-                    if hasattr(self.github_client, "try_add_work_in_progress_label"):
-                        result = self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
-                        if result:
-                            logger.info(f"Added '{self.label_name}' label to {self.item_type} #{self.item_number}")
-                            self._label_added = True
-                            return True
-                        else:
-                            # Label was just added by another instance
-                            logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label was just added by another instance")
-                            return False
-                    else:
-                        logger.error(f"GitHub client does not support try_add_work_in_progress_label")
-                        # On error, allow processing to continue
+                    result = self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
+                    if result:
+                        logger.info(f"Added '{self.label_name}' label to {self.item_type} #{self.item_number}")
+                        self._label_added = True
                         return True
+                    else:
+                        logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label was just added by another instance")
+                        return False
 
                 except Exception as e:
                     if attempt < self.max_retries - 1:
@@ -271,13 +213,9 @@ class LabelManager:
                         logger.info(f"[DRY RUN] Would remove '{self.label_name}' label from {self.item_type} #{self.item_number}")
                         return
 
-                    if hasattr(self.github_client, "remove_labels_from_issue"):
-                        self.github_client.remove_labels_from_issue(self.repo_name, self.item_number, [self.label_name])
-                        logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
-                        return
-                    else:
-                        logger.warning(f"GitHub client does not support label removal")
-                        return
+                    self.github_client.remove_labels_from_issue(self.repo_name, self.item_number, [self.label_name])
+                    logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
+                    return
 
                 except Exception as e:
                     if attempt < self.max_retries - 1:
@@ -294,12 +232,10 @@ class LabelManager:
         Returns:
             True if labels are disabled, False otherwise
         """
-        # Check if labels are disabled via GitHub client
-        if hasattr(self.github_client, "disable_labels") and self.github_client.disable_labels:
+        if self.github_client.disable_labels:
             return True
 
-        # Check if labels are disabled via config
-        if self.config and hasattr(self.config, "DISABLE_LABELS") and self.config.DISABLE_LABELS:
+        if self.config and self.config.DISABLE_LABELS:
             return True
 
         return False

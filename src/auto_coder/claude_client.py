@@ -13,10 +13,7 @@ logger = get_logger(__name__)
 
 
 class ClaudeClient(LLMClientBase):
-    """Claude CLI client for analyzing issues and generating solutions.
-
-    Note: Provides a GeminiClient-compatible surface for integration.
-    """
+    """Claude CLI client for analyzing issues and generating solutions."""
 
     def __init__(self, model_name: str = "sonnet"):
         """Initialize Claude CLI client.
@@ -26,10 +23,9 @@ class ClaudeClient(LLMClientBase):
         """
         self.model_name = model_name or "sonnet"
         self.default_model = self.model_name
-        self.conflict_model = "sonnet"  # Use sonnet for faster conflict resolution
+        self.conflict_model = "sonnet"
         self.timeout = None
 
-        # Check if claude CLI is available
         try:
             result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
@@ -50,15 +46,11 @@ class ClaudeClient(LLMClientBase):
             self.model_name = self.default_model
 
     def _escape_prompt(self, prompt: str) -> str:
-        """Escape special characters that may confuse shell/CLI.
-        Keep behavior aligned with other clients for consistency.
-        """
+        """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_gemini_cli(self, prompt: str) -> str:
-        """Run claude CLI with the given prompt and show real-time output.
-        The method name matches GeminiClient for compatibility with AutomationEngine.
-        """
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Run claude CLI with the given prompt and show real-time output."""
         try:
             escaped_prompt = self._escape_prompt(prompt)
             cmd = [
@@ -71,7 +63,6 @@ class ClaudeClient(LLMClientBase):
                 escaped_prompt,
             ]
 
-            # Warn that we are invoking an LLM (minimize calls)
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
             logger.info(f"🤖 Running: claude --print --dangerously-skip-permissions " f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]")
@@ -104,12 +95,10 @@ class ClaudeClient(LLMClientBase):
             full_output = full_output.strip()
             low = full_output.lower()
             if result.returncode != 0:
-                # Detect usage/rate limit patterns
                 if any(marker in low for marker in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"claude CLI failed with return code {result.returncode}\n{full_output}")
 
-            # Even with 0, some CLIs may print limit messages
             if any(marker in low for marker in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
@@ -117,10 +106,6 @@ class ClaudeClient(LLMClientBase):
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to run claude CLI: {e}")
-
-    def _run_llm_cli(self, prompt: str) -> str:
-        """Neutral alias: delegate to _run_gemini_cli (migration helper)."""
-        return self._run_gemini_cli(prompt)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Claude CLI.
