@@ -149,9 +149,7 @@ def _process_pr_for_merge(
     github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
-    with LabelManager(
-        github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config
-    ) as should_process:
+    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config) as should_process:
         if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
@@ -181,9 +179,7 @@ def _process_pr_for_fixes(
     github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
-    with LabelManager(
-        github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config
-    ) as should_process:
+    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", dry_run=dry_run, config=config) as should_process:
         if not should_process:
             processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
