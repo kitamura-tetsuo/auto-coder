@@ -76,7 +76,7 @@ class TestIssueProcessorSkipLinked:
         mock_github_client.has_linked_pr.assert_any_call("test/repo", 456)
 
         # Verify @auto-coder label was only added for issue 456 (not for issue 123 which was skipped)
-        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("test/repo", 456)
+        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("test/repo", 456, label="@auto-coder")
 
         # Verify _take_issue_actions was only called for issue 456
         assert mock_take_actions.call_count == 1
