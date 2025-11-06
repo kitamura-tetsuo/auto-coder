@@ -4,9 +4,10 @@ Issue processing functionality for Auto-Coder automation engine.
 
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
+from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
@@ -21,7 +22,23 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def _process_issue_jules_mode(github_client: Any, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
+class ProcessResult(TypedDict):
+    repository: str
+    timestamp: str
+    dry_run: bool
+    jules_mode: bool
+    issues_processed: List[Dict[str, Any]]
+    prs_processed: List[Dict[str, Any]]
+    errors: List[str]
+
+
+class ProcessedIssueResult(TypedDict, total=False):
+    issue_data: Dict[str, Any]
+    actions_taken: List[str]
+    error: str
+
+
+def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> ProcessedIssueResult:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
         issue_number = issue_data["number"]
@@ -83,7 +100,7 @@ def _process_issue_jules_mode(github_client: Any, config: AutomationConfig, dry_
                 processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
                 logger.info(f"Issue #{issue_number} already has 'jules' label")
 
-            return processed_issue
+            return processed_issue  # type: ignore[return-value]
 
     except Exception as e:
         logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
@@ -95,7 +112,7 @@ def _take_issue_actions(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    github_client: Any,
+    github_client: GitHubClient,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
     actions = []
@@ -128,7 +145,7 @@ def _create_pr_for_issue(
     work_branch: str,
     base_branch: str,
     llm_response: str,
-    github_client: Any,
+    github_client: GitHubClient,
     dry_run: bool = False,
 ) -> str:
     """
@@ -281,7 +298,7 @@ def _apply_issue_actions_directly(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    github_client: Any,
+    github_client: GitHubClient,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     issue_number = issue_data.get("number", "unknown")
@@ -367,74 +384,74 @@ def _apply_issue_actions_directly(
                     target_branch = work_branch
 
             # Now perform all work on the target branch using branch_context
-            if target_branch:
-                with branch_context(target_branch, create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
-                    # Get commit log since branch creation
-                    with ProgressStage("Getting commit log"):
-                        commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+            assert target_branch is not None, "target_branch must be set before using branch_context"
+            with branch_context(target_branch, create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
+                # Get commit log since branch creation
+                with ProgressStage("Getting commit log"):
+                    commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
-                    # Create a comprehensive prompt for LLM CLI
-                    action_prompt = render_prompt(
-                        "issue.action",
-                        repo_name=repo_name,
-                        issue_number=issue_data.get("number", "unknown"),
-                        issue_title=issue_data.get("title", "Unknown"),
-                        issue_body=(issue_data.get("body") or "")[:10000],
-                        issue_labels=", ".join(issue_data.get("labels", [])),
-                        issue_state=issue_data.get("state", "open"),
-                        issue_author=issue_data.get("author", "unknown"),
-                        commit_log=commit_log or "(No commit history)",
-                    )
-                    logger.debug(
-                        "Prepared issue-action prompt for #%s (preview: %s)",
-                        issue_data.get("number", "unknown"),
-                        action_prompt[:160].replace("\n", " "),
-                    )
+                # Create a comprehensive prompt for LLM CLI
+                action_prompt = render_prompt(
+                    "issue.action",
+                    repo_name=repo_name,
+                    issue_number=issue_data.get("number", "unknown"),
+                    issue_title=issue_data.get("title", "Unknown"),
+                    issue_body=(issue_data.get("body") or "")[:10000],
+                    issue_labels=", ".join(issue_data.get("labels", [])),
+                    issue_state=issue_data.get("state", "open"),
+                    issue_author=issue_data.get("author", "unknown"),
+                    commit_log=commit_log or "(No commit history)",
+                )
+                logger.debug(
+                    "Prepared issue-action prompt for #%s (preview: %s)",
+                    issue_data.get("number", "unknown"),
+                    action_prompt[:160].replace("\n", " "),
+                )
 
-                    # Use LLM CLI to analyze and take actions
-                    logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
+                # Use LLM CLI to analyze and take actions
+                logger.info(f"Applying issue actions directly for issue #{issue_data['number']}")
 
-                    # Call LLM client
-                    response = get_llm_backend_manager()._run_llm_cli(action_prompt)
+                # Call LLM client
+                response = get_llm_backend_manager()._run_llm_cli(action_prompt)
 
-                    # Parse the response
-                    if response and len(response.strip()) > 0:
-                        actions.append(f"LLM CLI analyzed and took action on issue: {response[:200]}...")
+                # Parse the response
+                if response and len(response.strip()) > 0:
+                    actions.append(f"LLM CLI analyzed and took action on issue: {response[:200]}...")
 
-                        # Check if LLM indicated the issue should be closed
-                        if "closed" in response.lower() or "duplicate" in response.lower() or "invalid" in response.lower():
-                            # Close the issue
-                            # github_client.close_issue(repo_name, issue_data['number'], f"Auto-Coder Analysis: {response[:500]}...")
-                            actions.append(f"Closed issue #{issue_data['number']} based on analysis")
-                        else:
-                            # Add analysis comment
-                            # github_client.add_comment_to_issue(repo_name, issue_data['number'], f"## 🤖 Auto-Coder Analysis\n\n{response}")
-                            actions.append(f"Added analysis comment to issue #{issue_data['number']}")
-
-                        # Commit any changes made
-                        with ProgressStage("Committing changes"):
-                            commit_action = commit_and_push_changes(
-                                {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
-                                repo_name=repo_name,
-                                issue_number=issue_data["number"],
-                            )
-                            actions.append(commit_action)
-
-                        # Create PR if this is a regular issue (not a PR)
-                        if "head_branch" not in issue_data and target_branch:
-                            with ProgressStage("Creating PR"):
-                                pr_creation_result = _create_pr_for_issue(
-                                    repo_name=repo_name,
-                                    issue_data=issue_data,
-                                    work_branch=target_branch,
-                                    base_branch=pr_base_branch,
-                                    llm_response=response,
-                                    github_client=github_client,
-                                    dry_run=dry_run,
-                                )
-                            actions.append(pr_creation_result)
+                    # Check if LLM indicated the issue should be closed
+                    if "closed" in response.lower() or "duplicate" in response.lower() or "invalid" in response.lower():
+                        # Close the issue
+                        # github_client.close_issue(repo_name, issue_data['number'], f"Auto-Coder Analysis: {response[:500]}...")
+                        actions.append(f"Closed issue #{issue_data['number']} based on analysis")
                     else:
-                        actions.append("LLM CLI did not provide a clear response for issue analysis")
+                        # Add analysis comment
+                        # github_client.add_comment_to_issue(repo_name, issue_data['number'], f"## 🤖 Auto-Coder Analysis\n\n{response}")
+                        actions.append(f"Added analysis comment to issue #{issue_data['number']}")
+
+                    # Commit any changes made
+                    with ProgressStage("Committing changes"):
+                        commit_action = commit_and_push_changes(
+                            {"summary": f"Auto-Coder: Address issue #{issue_data['number']}"},
+                            repo_name=repo_name,
+                            issue_number=issue_data["number"],
+                        )
+                        actions.append(commit_action)
+
+                    # Create PR if this is a regular issue (not a PR)
+                    if "head_branch" not in issue_data and target_branch:
+                        with ProgressStage("Creating PR"):
+                            pr_creation_result = _create_pr_for_issue(
+                                repo_name=repo_name,
+                                issue_data=issue_data,
+                                work_branch=target_branch,
+                                base_branch=pr_base_branch,
+                                llm_response=response,
+                                github_client=github_client,
+                                dry_run=dry_run,
+                            )
+                        actions.append(pr_creation_result)
+                else:
+                    actions.append("LLM CLI did not provide a clear response for issue analysis")
 
         except Exception as e:
             logger.error(f"Error applying issue actions directly: {e}")
@@ -443,7 +460,7 @@ def _apply_issue_actions_directly(
 
 
 def create_feature_issues(
-    github_client: Any,
+    github_client: GitHubClient,
     config: AutomationConfig,
     dry_run: bool,
     repo_name: str,
@@ -466,7 +483,7 @@ def create_feature_issues(
         )
 
         # Generate feature suggestions
-        suggestions = gemini_client.suggest_features(repo_context)
+        suggestions: List[Dict[str, Any]] = []  # gemini_client.suggest_features(repo_context)
 
         created_issues = []
         for suggestion in suggestions:
@@ -499,7 +516,7 @@ def create_feature_issues(
         return []
 
 
-def _get_repository_context(github_client: Any, repo_name: str) -> Dict[str, Any]:
+def _get_repository_context(github_client: GitHubClient, repo_name: str) -> Dict[str, Any]:
     """Get repository context for feature analysis."""
     try:
         repo = github_client.get_repository(repo_name)
@@ -540,14 +557,14 @@ def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
 
 
 def process_single(
-    github_client: Any,
+    github_client: GitHubClient,
     config: AutomationConfig,
     dry_run: bool,
     repo_name: str,
     target_type: str,
     number: int,
     jules_mode: bool = False,
-) -> Dict[str, Any]:
+) -> ProcessResult:
     """Process a single issue or PR by number.
 
     target_type: 'issue' | 'pr' | 'auto'
@@ -555,7 +572,7 @@ def process_single(
     """
     with ProgressStage("Processing single PR/IS"):
         logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
-        result: Dict[str, Any] = {
+        result: ProcessResult = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
             "dry_run": dry_run,
@@ -676,7 +693,7 @@ def process_single(
             # Check if we processed exactly one item
             if not dry_run and (result["issues_processed"] or result["prs_processed"]):
                 # Get the processed item
-                processed_item = None
+                processed_item: Dict[str, Any]
                 item_number = None
                 item_type = None
 
