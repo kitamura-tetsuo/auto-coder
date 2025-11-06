@@ -28,7 +28,7 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
 
         client = CodexClient()
-        _ = client._run_gemini_cli("hello world")
+        _ = client._run_llm_cli("hello world")
         # We cannot easily capture loguru here without handler tweaks; rely on absence of exceptions
         # The warn path is at least executed without error.
 
@@ -40,7 +40,7 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "line1\nline2\n", "", 0)
 
         client = CodexClient()
-        output = client._run_gemini_cli("hello world")
+        output = client._run_llm_cli("hello world")
         assert "line1" in output and "line2" in output
 
     @patch("subprocess.run")
@@ -52,4 +52,4 @@ class TestCodexClient:
 
         client = CodexClient()
         with pytest.raises(RuntimeError):
-            client._run_gemini_cli("hello world")
+            client._run_llm_cli("hello world")

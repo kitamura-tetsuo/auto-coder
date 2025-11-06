@@ -39,7 +39,7 @@ def test_gemini_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run):
 
     client = GeminiClient(model_name="gemini-2.5-pro")
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_gemini_cli("hi")
+        client._run_llm_cli("hi")
 
 
 @patch("subprocess.run")
@@ -50,7 +50,7 @@ def test_gemini_raises_usage_limit_on_message_even_zero(mock_run_command, mock_r
 
     client = GeminiClient(model_name="gemini-2.5-pro")
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_gemini_cli("hi")
+        client._run_llm_cli("hi")
 
 
 @patch("subprocess.run")
@@ -62,7 +62,7 @@ def test_gemini_raises_usage_limit_on_zero_with_429_only(mock_run_command, mock_
 
     client = GeminiClient(model_name="gemini-2.5-pro")
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_gemini_cli("hi")
+        client._run_llm_cli("hi")
 
 
 @patch("subprocess.run")
@@ -73,7 +73,7 @@ def test_gemini_raises_usage_limit_on_zero_with_resource_exhausted(mock_run_comm
 
     client = GeminiClient(model_name="gemini-2.5-pro")
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_gemini_cli("hi")
+        client._run_llm_cli("hi")
 
 
 @patch("subprocess.run")
@@ -84,7 +84,7 @@ def test_codex_raises_usage_limit_on_message_even_zero(mock_run_command, mock_ru
 
     client = CodexClient()
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_gemini_cli("hello")
+        client._run_llm_cli("hello")
 
 
 @patch("subprocess.run")
@@ -95,7 +95,7 @@ def test_codex_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run):
 
     client = CodexClient()
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_gemini_cli("hello")
+        client._run_llm_cli("hello")
 
 
 @patch("subprocess.run")
@@ -107,6 +107,6 @@ def test_codex_raises_usage_limit_on_upgrade_to_pro_message(mock_run_command, mo
 
     client = CodexClient()
     with pytest.raises(AutoCoderUsageLimitError) as excinfo:
-        client._run_gemini_cli("hello")
+        client._run_llm_cli("hello")
 
     assert "usage limit" in str(excinfo.value).lower()

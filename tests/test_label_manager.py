@@ -33,21 +33,16 @@ class TestLabelManager:
         mock_github_client.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
 
     def test_label_manager_skips_when_label_already_exists(self):
-        """Test that context manager returns False when label already exists."""
-        # Setup mocks
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
-        mock_github_client.has_label.return_value = True  # Label already exists
+        mock_github_client.get_issue_details_by_number.return_value = {"labels": ["@auto-coder"]}
 
         config = AutomationConfig()
 
-        # Use LabelManager context manager
         with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
             assert should_process is False
-            # try_add_work_in_progress_label should NOT be called
             mock_github_client.try_add_work_in_progress_label.assert_not_called()
 
-        # Label should NOT be removed (since it wasn't added by us)
         mock_github_client.remove_labels_from_issue.assert_not_called()
 
     def test_label_manager_dry_run(self):
@@ -251,21 +246,18 @@ class TestLabelManager:
         assert mock_github_client.remove_labels_from_issue.call_count == 5
 
     def test_label_manager_no_label_added_flag(self):
-        """Test that _label_added flag is properly managed."""
-        # Setup mocks
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
-        mock_github_client.has_label.return_value = True  # Label already exists
+        mock_github_client.get_issue_details_by_number.return_value = {"labels": []}
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         config = AutomationConfig()
 
-        # Use LabelManager
         with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
-            assert should_process is False
-            # Label was not added, so _label_added should be False
+            assert should_process is True
+            mock_github_client.try_add_work_in_progress_label.assert_called_once()
 
-        # Label should NOT be removed (since it wasn't added)
-        mock_github_client.remove_labels_from_issue.assert_not_called()
+        mock_github_client.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
 
     def test_label_manager_network_error_on_label_check(self):
         """Test that LabelManager handles network errors during label check."""

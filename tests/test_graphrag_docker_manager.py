@@ -268,23 +268,23 @@ def test_detect_docker_compose_command_docker_compose():
 
 
 def test_detect_docker_compose_command_docker_compose_legacy():
-    """Test detection of legacy 'docker-compose' command."""
+    """Test detection when both 'docker compose' and 'docker-compose' fail."""
     with mock.patch("subprocess.run") as mock_run:
-        # First call (docker compose) fails, second call (docker-compose) succeeds
-        mock_run.side_effect = [
-            mock.MagicMock(returncode=1),  # docker compose fails
-            mock.MagicMock(returncode=0),  # docker-compose succeeds
-        ]
+        # Both docker compose and docker-compose fail
+        mock_run.return_value = mock.MagicMock(returncode=1)
 
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
-            manager = GraphRAGDockerManager()
-            assert manager._docker_compose_cmd == ["docker-compose"]
+            with pytest.raises(
+                RuntimeError,
+                match="Neither 'docker compose' nor 'docker-compose' is available",
+            ):
+                GraphRAGDockerManager()
 
 
 def test_detect_docker_compose_command_not_found():
-    """Test when neither docker compose command is found."""
+    """Test when docker compose command is not found."""
     with mock.patch("subprocess.run") as mock_run:
-        # Both commands fail
+        # docker compose command fails
         mock_run.return_value = mock.MagicMock(returncode=1)
 
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):

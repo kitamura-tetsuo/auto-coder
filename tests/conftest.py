@@ -551,21 +551,6 @@ def isolated_graphrag_session(mock_graphrag_integration):
 
 
 @pytest.fixture
-def compatibility_graphrag_setup():
-    """Setup for backward compatibility testing."""
-    from unittest.mock import Mock
-
-    from src.auto_coder.graphrag_mcp_integration import BackwardCompatibilityLayer, GraphRAGMCPIntegration
-
-    # Get the mocked GraphRAGMCPIntegration (already patched by autouse fixture)
-    mock_integration = GraphRAGMCPIntegration()
-
-    # Setup existing behavior for compatibility tests
-    compat_layer = BackwardCompatibilityLayer(mock_integration)
-    return compat_layer
-
-
-@pytest.fixture
 def mock_code_tool():
     """Mock CodeAnalysisTool for testing."""
     from unittest.mock import Mock

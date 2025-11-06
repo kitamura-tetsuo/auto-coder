@@ -180,12 +180,15 @@ class AuggieClient(LLMClientBase):
             raise AutoCoderUsageLimitError(full_output)
         return full_output
 
-    def _run_gemini_cli(self, prompt: str) -> str:
-        """Compatibility shim for legacy call sites."""
-        return self._run_auggie_cli(prompt)
-
     def _run_llm_cli(self, prompt: str) -> str:
-        """BackendManager entry-point."""
+        """Execute LLM with the given prompt.
+
+        Args:
+            prompt: The prompt to send to the LLM
+
+        Returns:
+            The LLM's response as a string
+        """
         return self._run_auggie_cli(prompt)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:

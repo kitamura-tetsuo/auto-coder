@@ -368,29 +368,6 @@ class TestSearchGitHubActionsLogsFromHistory:
 class TestGetGitHubActionsLogs:
     """Test cases for enhanced _get_github_actions_logs function."""
 
-    def test_backward_compatibility_search_history_false(self):
-        """Test backward compatibility when search_history=False."""
-        config = AutomationConfig()
-        config.SEARCH_GITHUB_ACTIONS_HISTORY = False
-
-        failed_checks = [
-            {
-                "name": "test-job",
-                "conclusion": "failure",
-                "details_url": "https://github.com/test/repo/actions/runs/123/job/456",
-            }
-        ]
-
-        with patch("src.auto_coder.util.github_action.get_github_actions_logs_from_url") as mock_get_logs:
-            mock_get_logs.return_value = "Current run logs"
-
-            # Call without search_history parameter (should use config default)
-            result = _get_github_actions_logs("test/repo", config, failed_checks)
-
-            # Should use current behavior, not search history
-            assert "Current run logs" in result
-            mock_get_logs.assert_called_once()
-
     def test_historical_search_enabled(self):
         """Test historical search when enabled."""
         config = AutomationConfig()
@@ -459,14 +436,14 @@ class TestGetGitHubActionsLogs:
                 assert "Logs" in result
                 mock_search.assert_called_once()
 
-    def test_explicit_search_history_parameter_overrides_config(self):
-        """Test that explicit search_history parameter overrides config."""
+    def test_explicit_search_history_parameter_false(self):
+        """Test that explicit search_history=False disables historical search."""
         config = AutomationConfig()
         config.SEARCH_GITHUB_ACTIONS_HISTORY = True  # Config says True
 
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
-        # Call with explicit False (should override config)
+        # Call with explicit False (should disable historical search)
         result = _get_github_actions_logs("test/repo", config, failed_checks, search_history=False)
 
         # Should use current behavior, not search history

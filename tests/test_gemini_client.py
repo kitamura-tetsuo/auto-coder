@@ -19,7 +19,7 @@ class TestGeminiClient:
         mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
 
         client = GeminiClient(mock_gemini_api_key)
-        _ = client._run_gemini_cli("hello")
+        _ = client._run_llm_cli("hello")
         assert mock_logger.warning.called
         assert "LLM invocation" in str(mock_logger.warning.call_args[0][0])
 

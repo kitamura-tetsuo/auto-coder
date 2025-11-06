@@ -48,36 +48,21 @@ class GraphRAGDockerManager:
             FileNotFoundError: If docker-compose.graphrag.yml is not found in package
         """
         try:
-            # Try Python 3.9+ importlib.resources API
-            if hasattr(resources, "files"):
-                package_files = resources.files("auto_coder")
-                compose_resource = package_files / "docker-compose.graphrag.yml"
+            # Get compose file from package resources
+            package_files = resources.files("auto_coder")
+            compose_resource = package_files / "docker-compose.graphrag.yml"
 
-                # Read the content and write to a temporary file
-                compose_content = compose_resource.read_text()
+            # Read the content and write to a temporary file
+            compose_content = compose_resource.read_text()
 
-                # Create a temporary file that persists
-                temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
-                temp_dir.mkdir(exist_ok=True)
-                compose_file = temp_dir / "docker-compose.graphrag.yml"
-                compose_file.write_text(compose_content)
+            # Create a temporary file that persists
+            temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
+            temp_dir.mkdir(exist_ok=True)
+            compose_file = temp_dir / "docker-compose.graphrag.yml"
+            compose_file.write_text(compose_content)
 
-                logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
-                return str(compose_file)
-            else:
-                # Fallback for older Python versions
-                import pkg_resources
-
-                compose_content = pkg_resources.resource_string("auto_coder", "docker-compose.graphrag.yml").decode("utf-8")
-
-                # Create a temporary file that persists
-                temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
-                temp_dir.mkdir(exist_ok=True)
-                compose_file = temp_dir / "docker-compose.graphrag.yml"
-                compose_file.write_text(compose_content)
-
-                logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
-                return str(compose_file)
+            logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
+            return str(compose_file)
         except Exception as e:
             logger.error(f"Failed to extract docker-compose.graphrag.yml from package: {e}")
             raise FileNotFoundError("docker-compose.graphrag.yml not found in package. " "Please ensure the package is installed correctly.") from e
@@ -86,12 +71,11 @@ class GraphRAGDockerManager:
         """Detect which docker compose command is available.
 
         Returns:
-            List of command parts for docker compose (either ['docker', 'compose'] or ['docker-compose'])
+            List of command parts for docker compose (['docker', 'compose'])
 
         Raises:
-            RuntimeError: If neither docker compose command is available
+            RuntimeError: If docker compose command is not available
         """
-        # Try 'docker compose' (newer Docker CLI plugin)
         try:
             result = subprocess.run(
                 ["docker", "compose", "version"],
@@ -101,19 +85,6 @@ class GraphRAGDockerManager:
             if result.returncode == 0:
                 logger.debug("Using 'docker compose' command")
                 return ["docker", "compose"]
-        except Exception:
-            pass
-
-        # Try 'docker-compose' (legacy standalone)
-        try:
-            result = subprocess.run(
-                ["docker-compose", "version"],
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                logger.debug("Using 'docker-compose' command")
-                return ["docker-compose"]
         except Exception:
             pass
 
@@ -147,19 +118,17 @@ class GraphRAGDockerManager:
         return any(indicator in stderr_lower for indicator in permission_indicators)
 
     def _run_docker_compose(self, args: list[str], timeout: int = 60, retry_with_sudo: bool = True) -> CommandResult:
-        """Run docker-compose command.
+        """Run docker compose command.
 
         Args:
-            args: Arguments to pass to docker-compose
+            args: Arguments to pass to docker compose
             timeout: Command timeout in seconds
             retry_with_sudo: If True, retry with sudo on permission error
 
         Returns:
             CommandResult with execution results
         """
-        # For 'docker compose', the -f flag must come after 'compose'
-        # For 'docker-compose', the -f flag comes after 'docker-compose'
-        # Both cases are handled the same way: cmd + ["-f", file] + args
+        # The -f flag must come after 'compose'
         cmd = self._docker_compose_cmd + ["-f", self.compose_file] + args
         logger.debug(f"Running docker compose command: {' '.join(cmd)}")
         result = self.executor.run_command(cmd, timeout=timeout)
