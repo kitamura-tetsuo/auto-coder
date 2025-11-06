@@ -60,6 +60,7 @@ class AutomationEngine:
         from .pr_processor import _extract_linked_issues_from_pr_body
 
         candidates: List[Dict[str, Any]] = []
+        candidates_count = 0
 
         # Collect PR candidates
         prs = self.github.get_open_pull_requests(repo_name)
@@ -67,17 +68,18 @@ class AutomationEngine:
             pr_data = self.github.get_pr_details(pr)
             labels = pr_data.get("labels", []) or []
 
-            # Skip if has @auto-coder label
-            if "@auto-coder" in labels:
-                continue
-
-            # Skip PRs created by bots (dependabot, renovate, etc.)
+            # Ignore PRs created by bots (dependabot, renovate, etc.)
             author = pr_data.get("author")
             if author:
                 # List common bot author names
                 bot_authors = ["app/dependabot", "dependabot-preview", "renovate-bot", "dependabot[bot]"]
                 if author in bot_authors or author.endswith("[bot]"):
                     continue
+            candidates_count += 1
+
+            # Skip if has @auto-coder label
+            if "@auto-coder" in labels:
+                continue
 
             # Calculate priority
             checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
@@ -97,7 +99,7 @@ class AutomationEngine:
                 }
             )
 
-        if len(candidates) < 5:
+        if candidates_count < 5:
             # Collect issue candidates
             issues = self.github.get_open_issues(repo_name)
             for issue in issues:
