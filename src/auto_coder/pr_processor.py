@@ -640,7 +640,6 @@ def _update_with_base_branch(
                 config,
                 repo_name,
                 pr_data,
-                dry_run,
             )
 
             if conflict_resolved:
