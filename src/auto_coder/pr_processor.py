@@ -998,7 +998,6 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
                 {"number": pr_number, "base_branch": base_branch},
                 conflict_info,
                 config,
-                False,
             )
 
             # Log the resolution actions
