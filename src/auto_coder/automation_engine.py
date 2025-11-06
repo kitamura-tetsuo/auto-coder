@@ -315,7 +315,7 @@ class AutomationEngine:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
                 fix_to_pass_tests_runner_module.apply_workspace_test_fix = original_apply
 
-        return fix_to_pass_tests(self.config, self.dry_run, max_attempts)
+        return fix_to_pass_tests(self.config, max_attempts)
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
         """Get LLM backend and model information.

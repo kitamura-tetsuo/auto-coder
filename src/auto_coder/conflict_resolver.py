@@ -71,7 +71,6 @@ def resolve_merge_conflicts_with_llm(
     pr_data: Dict[str, Any],
     conflict_info: str,
     config: AutomationConfig,
-    dry_run: bool,
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
@@ -148,7 +147,6 @@ def _perform_base_branch_merge_and_conflict_resolution(
     config: AutomationConfig,
     repo_name: str = None,
     pr_data: Dict[str, Any] = None,
-    dry_run: bool = False,
 ) -> bool:
     """Perform base branch merge and resolve conflicts using LLM.
 
@@ -158,7 +156,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
         True if conflicts were resolved successfully, False otherwise
     """
     try:
-        if dry_run:
+        if config.DRY_RUN:
             logger.info(f"[DRY RUN] Would resolve merge conflicts for PR #{pr_number}")
             return True
 
@@ -233,7 +231,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             else:
                 pr_data = {**pr_data, "base_branch": base_branch}
 
-            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config, False)
+            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config)
 
             # Log the resolution actions
             for action in resolve_actions:
@@ -484,7 +482,6 @@ def resolve_package_json_dependency_conflicts(
     pr_data: Dict[str, Any],
     conflict_info: str,
     config: AutomationConfig,
-    dry_run: bool,
     eligible_paths: Optional[List[str]] = None,
 ) -> List[str]:
     """Resolve package.json dependency-only conflicts by merging dependency sections.
@@ -589,7 +586,7 @@ def resolve_package_json_dependency_conflicts(
     return actions
 
 
-def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig, dry_run: bool) -> List[str]:
+def resolve_package_lock_conflicts(pr_data: Dict[str, Any], conflict_info: str, config: AutomationConfig) -> List[str]:
     """Resolve package-lock.json conflicts by deleting and regenerating the file.
 
     Monorepo-friendly: for each conflicted lockfile, if a sibling package.json exists,

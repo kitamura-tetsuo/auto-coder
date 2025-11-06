@@ -301,7 +301,6 @@ def apply_test_stability_fix(
     full_suite_result: Dict[str, Any],
     isolated_result: Dict[str, Any],
     llm_backend_manager: "BackendManager",
-    dry_run: bool = False,
 ) -> WorkspaceFixResult:
     """Ask the LLM to fix test stability/dependency issues.
 
@@ -321,7 +320,7 @@ def apply_test_stability_fix(
             isolated_test_output=isolated_output[: config.MAX_PROMPT_SIZE // 2],
         )
 
-        if dry_run:
+        if config.DRY_RUN:
             return WorkspaceFixResult(
                 summary="[DRY RUN] Would apply test stability fixes",
                 raw_response=None,
@@ -364,7 +363,6 @@ def apply_workspace_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
     llm_backend_manager: "BackendManager",
-    dry_run: bool = False,
     current_test_file: Optional[str] = None,
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures."""
@@ -389,7 +387,7 @@ def apply_workspace_test_fix(
         )
         logger.debug(f"0")
 
-        if dry_run:
+        if config.DRY_RUN:
             return WorkspaceFixResult(
                 summary="[DRY RUN] Would apply fixes for local test failures",
                 raw_response=None,
@@ -434,7 +432,6 @@ def apply_workspace_test_fix(
 
 def fix_to_pass_tests(
     config: AutomationConfig,
-    dry_run: bool = False,
     max_attempts: Optional[int] = None,
     llm_backend_manager: Optional["BackendManager"] = None,
     message_backend_manager: Optional["BackendManager"] = None,
@@ -494,7 +491,7 @@ def fix_to_pass_tests(
             logger.info(msg)
             summary["messages"].append(msg)
             summary["success"] = True
-            if not dry_run:
+            if not config.DRY_RUN:
                 cleanup_llm_task_file()
             return summary
 
@@ -511,7 +508,6 @@ def fix_to_pass_tests(
                 test_result["full_suite_result"],
                 test_result,
                 llm_backend_manager,
-                dry_run,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
@@ -521,13 +517,12 @@ def fix_to_pass_tests(
                 config,
                 test_result,
                 llm_backend_manager,
-                dry_run,
                 current_test_file=current_test_file,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
 
-        if dry_run:
+        if config.DRY_RUN:
             # In dry-run we do not commit; just continue attempts
             continue
 
@@ -570,7 +565,7 @@ def fix_to_pass_tests(
             pass_msg = f"Local tests passed on attempt {attempt}"
             logger.info(pass_msg)
             summary["messages"].append(pass_msg)
-            if not dry_run:
+            if not config.DRY_RUN:
                 cleanup_pending = True
         else:
             # Compute change ratios between pre-fix and post-fix results
@@ -623,7 +618,7 @@ def fix_to_pass_tests(
             commit_msg = format_commit_message(config, action_msg, attempt)
 
         # Commit the changes with the generated message using centralized helper
-        if not dry_run and commit_msg:
+        if not config.DRY_RUN and commit_msg:
             commit_res = git_commit_with_retry(commit_msg)
             if not commit_res.success:
                 # Save history and exit immediately
@@ -648,7 +643,7 @@ def fix_to_pass_tests(
             summary["success"] = True
 
             # Push changes to remote
-            if not dry_run:
+            if not config.DRY_RUN:
                 logger.info("Tests passed, pushing changes to remote...")
                 push_result = git_push()
                 if push_result.success:

@@ -1276,8 +1276,8 @@ def get_branches_by_pattern(pattern: str, cwd: Optional[str] = None, remote: boo
 
 
 def migrate_pr_branches(
+    config: AutomationConfig,
     cwd: Optional[str] = None,
-    dry_run: bool = True,
     delete_after_merge: bool = True,
     force: bool = False,
 ) -> Dict[str, Any]:
@@ -1292,8 +1292,8 @@ def migrate_pr_branches(
     5. Deletes the pr-xx branch after successful merge (if delete_after_merge is True)
 
     Args:
+        config: AutomationConfig instance
         cwd: Optional working directory for git command
-        dry_run: If True, only report what would be done without making changes
         delete_after_merge: If True, delete pr-<number> branch after successful merge
         force: If True, proceed even if there are merge conflicts
 
@@ -1314,7 +1314,7 @@ def migrate_pr_branches(
         "conflicts": [],
     }
 
-    logger.info(f"Starting branch migration (dry_run={dry_run}, delete_after_merge={delete_after_merge})")
+    logger.info(f"Starting branch migration (dry_run={config.DRY_RUN}, delete_after_merge={delete_after_merge})")
 
     # Get all pr-<number> branches
     pr_branches = get_branches_by_pattern("pr-*", cwd=cwd, remote=False)
@@ -1341,7 +1341,7 @@ def migrate_pr_branches(
 
         logger.info(f"Processing: {branch_name} -> {issue_branch_name}")
 
-        if dry_run:
+        if config.DRY_RUN:
             logger.info(f"[DRY RUN] Would migrate {branch_name} to {issue_branch_name}")
             # Check if issue branch exists
             if branch_exists(issue_branch_name, cwd=cwd):
