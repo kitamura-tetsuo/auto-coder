@@ -268,15 +268,15 @@ def test_detect_docker_compose_command_docker_compose():
 
 
 def test_detect_docker_compose_command_docker_compose_legacy():
-    """Test detection of legacy 'docker-compose' command is no longer supported."""
+    """Test detection when both 'docker compose' and 'docker-compose' fail."""
     with mock.patch("subprocess.run") as mock_run:
-        # docker compose fails
+        # Both docker compose and docker-compose fail
         mock_run.return_value = mock.MagicMock(returncode=1)
 
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
-                match="Docker Compose is not available",
+                match="Neither 'docker compose' nor 'docker-compose' is available",
             ):
                 GraphRAGDockerManager()
 
@@ -290,7 +290,7 @@ def test_detect_docker_compose_command_not_found():
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
-                match="Docker Compose is not available",
+                match="Neither 'docker compose' nor 'docker-compose' is available",
             ):
                 GraphRAGDockerManager()
 
@@ -304,7 +304,7 @@ def test_detect_docker_compose_command_timeout():
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
-                match="Docker Compose is not available",
+                match="Neither 'docker compose' nor 'docker-compose' is available",
             ):
                 GraphRAGDockerManager()
 
@@ -318,7 +318,7 @@ def test_detect_docker_compose_command_exception():
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
-                match="Docker Compose is not available",
+                match="Neither 'docker compose' nor 'docker-compose' is available",
             ):
                 GraphRAGDockerManager()
 

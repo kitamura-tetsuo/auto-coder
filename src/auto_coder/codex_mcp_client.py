@@ -406,7 +406,6 @@ class CodexMCPClient(LLMClientBase):
         except Exception as e:
             raise RuntimeError(f"Failed to run codex exec under MCP session: {e}")
 
-
     def close(self) -> None:
         """Terminate the persistent MCP process if running."""
         try:

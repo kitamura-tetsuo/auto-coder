@@ -245,7 +245,6 @@ class GeminiClient(LLMClientBase):
         except json.JSONDecodeError:
             return []
 
-
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Gemini CLI.
 

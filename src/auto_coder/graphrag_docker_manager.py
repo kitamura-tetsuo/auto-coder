@@ -88,18 +88,6 @@ class GraphRAGDockerManager:
         except Exception:
             pass
 
-        try:
-            result = subprocess.run(
-                ["docker-compose", "version"],
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                logger.debug("Using 'docker-compose' command")
-                return ["docker-compose"]
-        except Exception:
-            pass
-
         # Neither command is available
         error_msg = (
             "Neither 'docker compose' nor 'docker-compose' is available.\n"
