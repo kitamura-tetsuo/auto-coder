@@ -802,18 +802,17 @@ def process_single(
                     with ProgressStage("Getting issue details"):
                         issue_data = github_client.get_issue_details_by_number(repo_name, number)
 
-                    # Use LabelManager context manager to handle @auto-coder label automatically
                     # For process_single, we want to process the issue even if @auto-coder label exists
-                    # So we use check_and_add_label which doesn't skip when label exists
-                    from .label_manager import check_and_add_label
+                    # So we try to add the label unconditionally, but don't skip if it already exists
+                    if not dry_run:
+                        # Try to add the label (don't check if it exists first, as we want to process regardless)
+                        if hasattr(github_client, "try_add_work_in_progress_label"):
+                            github_client.try_add_work_in_progress_label(repo_name, number, label="@auto-coder")
+                    else:
+                        logger.info(f"[DRY RUN] Would add '@auto-coder' label to issue #{number}")
 
-                    should_process = check_and_add_label(github_client, repo_name, number, item_type="issue", dry_run=dry_run, config=config)
-                    if not should_process:
-                        msg = f"Skipping issue #{number} - @auto-coder label was just added by another instance"
-                        logger.info(msg)
-                        result["errors"].append(msg)
-                        newline_progress()
-                        return result
+                    # Always proceed with processing for process_single
+                    should_process = True
 
                     processed_issue = {
                         "issue_data": issue_data,

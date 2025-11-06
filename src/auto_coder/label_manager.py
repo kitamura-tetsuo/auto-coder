@@ -8,6 +8,7 @@ consistent error handling and logging.
 import inspect
 import threading
 import time
+import warnings
 from contextlib import contextmanager
 from typing import Any, Generator, Optional, Union
 
@@ -93,7 +94,7 @@ def check_and_add_label(
 
     # Use LabelManager internally
     try:
-        with LabelManager(github_client, repo_name, item_number, item_type, dry_run, config) as lm:
+        with LabelManager(github_client, repo_name, item_number, item_type=item_type, dry_run=dry_run, config=config, label_name="@auto-coder") as lm:
             # Label added successfully, return True
             pass
         return True
@@ -131,9 +132,31 @@ def remove_label(
         stacklevel=2,
     )
 
-    # Use LabelManager internally
-    lm = LabelManager(github_client, repo_name, item_number, item_type, dry_run, config)
-    lm.remove_label()
+    label_name = "@auto-coder"
+
+    # Check if labels are disabled
+    if hasattr(github_client, "disable_labels") and github_client.disable_labels:
+        logger.debug(f"Labels disabled - skipping label removal for {item_type} #{item_number}")
+        return
+
+    if config and hasattr(config, "DISABLE_LABELS") and config.DISABLE_LABELS:
+        logger.debug(f"Labels disabled via config - skipping label removal for {item_type} #{item_number}")
+        return
+
+    # Remove the label
+    if dry_run:
+        logger.info(f"[DRY RUN] Would remove '{label_name}' label from {item_type} #{item_number}")
+        return
+
+    if hasattr(github_client, "remove_labels_from_issue"):
+        try:
+            github_client.remove_labels_from_issue(repo_name, item_number, [label_name])
+            logger.info(f"Removed '{label_name}' label from {item_type} #{item_number}")
+        except Exception as e:
+            logger.error(f"Failed to remove '{label_name}' label from {item_type} #{item_number}: {e}")
+            raise
+    else:
+        logger.warning(f"GitHub client does not support label removal")
 
 
 def check_label_exists(

@@ -167,6 +167,7 @@ def _process_pr_for_merge(
                 processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
             return processed_pr
 
+
 def _process_pr_for_fixes(
     repo_name: str,
     pr_data: Dict[str, Any],
