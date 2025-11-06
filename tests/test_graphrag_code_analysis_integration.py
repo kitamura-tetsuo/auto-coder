@@ -30,66 +30,50 @@ class TestGraphRAGCodeAnalysisIntegration:
         assert result.exists()
         assert (result / "src").exists()
 
-    def test_find_graph_builder_in_auto_coder(self, tmp_path):
-        """Test finding graph-builder in auto-coder installation directory."""
-        # Create a fake auto-coder structure with graph-builder
-        fake_auto_coder_dir = tmp_path / "auto-coder"
-        fake_auto_coder_dir.mkdir()
-        (fake_auto_coder_dir / "auto_coder").mkdir()
-
-        # Create graph-builder in auto-coder directory
-        graph_builder_dir = fake_auto_coder_dir / "graph-builder"
+    def test_find_graph_builder_using_test_override(self, tmp_path):
+        """Test finding graph-builder using test path override."""
+        # Create a fake graph-builder structure
+        graph_builder_dir = tmp_path / "graph-builder"
         graph_builder_dir.mkdir()
         (graph_builder_dir / "src").mkdir()
         (graph_builder_dir / "src" / "cli_python.py").touch()
 
-        # Create a fake graphrag_index_manager.py file
-        fake_manager_file = fake_auto_coder_dir / "auto_coder" / "graphrag_index_manager.py"
-        fake_manager_file.touch()
+        # Use dependency injection instead of complex mocking
+        manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+        manager.set_graph_builder_path_for_testing(graph_builder_dir)
+
+        result = manager._find_graph_builder()
+
+        assert result is not None
+        assert result == graph_builder_dir
+        assert result.exists()
+
+    def test_find_graph_builder_validation_failure(self, tmp_path):
+        """Test graph-builder validation with missing required files."""
+        # Create an incomplete graph-builder structure (missing src directory)
+        incomplete_dir = tmp_path / "incomplete-graph-builder"
+        incomplete_dir.mkdir()
 
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+        manager.set_graph_builder_path_for_testing(incomplete_dir)
 
-        # Mock __file__ to point to our fake manager file
-        with patch("pathlib.Path.__new__") as mock_path:
+        result = manager._find_graph_builder()
 
-            def path_new(cls, *args, **kwargs):
-                if args and args[0] == "__file__":
-                    return Path(fake_manager_file)
-                return Path(*args, **kwargs)
-
-            mock_path.side_effect = path_new
-
-            # Directly test with the fake auto-coder directory
-            auto_coder_dir = fake_manager_file.parent.parent
-            result_path = auto_coder_dir / "graph-builder"
-
-            assert result_path.exists()
-            assert (result_path / "src" / "cli_python.py").exists()
+        # Should not find graph-builder due to validation failure
+        assert result is None
 
     def test_find_graph_builder_not_found(self, tmp_path):
-        """Test graph-builder not found."""
-        # Use a directory that definitely doesn't have graph-builder
-        isolated_dir = tmp_path / "isolated"
-        isolated_dir.mkdir()
+        """Test graph-builder not found in isolated environment."""
+        # Use an override path that doesn't exist to force "not found"
+        nonexistent_path = tmp_path / "nonexistent" / "graph-builder"
 
-        manager = GraphRAGIndexManager(repo_path=str(isolated_dir))
+        # Set override path to a nonexistent directory
+        manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+        manager.set_graph_builder_path_for_testing(nonexistent_path)
 
-        # Mock Path.__file__ to point to a location without graph-builder
-        # Mock Path.home() to return tmp_path so it doesn't find real graph-builder
-        with patch("pathlib.Path.home", return_value=tmp_path):
-            with patch("pathlib.Path.cwd", return_value=isolated_dir):
-                # Mock __file__ to point to isolated directory
-                with patch.object(Path, "__new__") as mock_path:
+        result = manager._find_graph_builder()
 
-                    def path_new(cls, *args, **kwargs):
-                        if args and str(args[0]).endswith("graphrag_index_manager.py"):
-                            return isolated_dir / "graphrag_index_manager.py"
-                        return Path.__new__(cls, *args, **kwargs)
-
-                    mock_path.side_effect = path_new
-                    result = manager._find_graph_builder()
-
-        # Should not find graph-builder in isolated environment
+        # Should not find graph-builder when override path doesn't exist
         assert result is None
 
     def test_fallback_python_indexing(self, tmp_path):
@@ -150,14 +134,14 @@ class TestGraphRAGCodeAnalysisIntegration:
 
             mock_run.side_effect = write_output
 
+            # Use dependency injection instead of patching
             manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+            manager.set_graph_builder_path_for_testing(graph_builder_dir)
 
-            # Patch _find_graph_builder to return our test directory
-            with patch.object(manager, "_find_graph_builder", return_value=graph_builder_dir):
-                # Patch tempfile to use our controlled directory
-                with patch("tempfile.TemporaryDirectory") as mock_temp:
-                    mock_temp.return_value.__enter__.return_value = temp_dir
-                    result = manager._run_graph_builder()
+            # Patch tempfile to use our controlled directory
+            with patch("tempfile.TemporaryDirectory") as mock_temp:
+                mock_temp.return_value.__enter__.return_value = temp_dir
+                result = manager._run_graph_builder()
 
             assert result == graph_data
             assert len(result["nodes"]) == 1
@@ -193,12 +177,13 @@ class TestGraphRAGCodeAnalysisIntegration:
 
             mock_run.side_effect = write_output
 
+            # Use dependency injection instead of patching
             manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+            manager.set_graph_builder_path_for_testing(graph_builder_dir)
 
-            with patch.object(manager, "_find_graph_builder", return_value=graph_builder_dir):
-                with patch("tempfile.TemporaryDirectory") as mock_temp:
-                    mock_temp.return_value.__enter__.return_value = temp_dir
-                    result = manager._run_graph_builder()
+            with patch("tempfile.TemporaryDirectory") as mock_temp:
+                mock_temp.return_value.__enter__.return_value = temp_dir
+                result = manager._run_graph_builder()
 
             assert result == graph_data
 
@@ -223,10 +208,11 @@ class TestGraphRAGCodeAnalysisIntegration:
         # Mock subprocess to fail
         mock_run.return_value = MagicMock(returncode=1, stderr="Error running graph-builder")
 
+        # Use dependency injection instead of patching
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
+        manager.set_graph_builder_path_for_testing(graph_builder_dir)
 
-        with patch.object(manager, "_find_graph_builder", return_value=graph_builder_dir):
-            result = manager._run_graph_builder()
+        result = manager._run_graph_builder()
 
         # Should fall back to simple Python indexing
         assert "nodes" in result
