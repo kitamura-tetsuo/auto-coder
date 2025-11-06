@@ -44,6 +44,7 @@ def is_running_in_container() -> bool:
     # Method 1: Check for /.dockerenv (Docker)
     try:
         from pathlib import Path
+
         if Path("/.dockerenv").exists():
             logger.debug("Container detected: /.dockerenv exists")
             return True
@@ -53,6 +54,7 @@ def is_running_in_container() -> bool:
     # Method 2: Check for /run/.containerenv (Podman)
     try:
         from pathlib import Path
+
         if Path("/run/.containerenv").exists():
             logger.debug("Container detected: /run/.containerenv exists")
             return True
@@ -77,14 +79,17 @@ def is_running_in_container() -> bool:
         with open("/proc/self/cgroup", "r") as f:
             cgroup_content = f.read()
             # Look for container-specific cgroup entries
-            if any(marker in cgroup_content for marker in [
-                "/docker/",
-                "/docker-",
-                "/kubepods/",
-                "/kubepods/burstable/",
-                "/lxc/",
-                "/containerd/",
-            ]):
+            if any(
+                marker in cgroup_content
+                for marker in [
+                    "/docker/",
+                    "/docker-",
+                    "/kubepods/",
+                    "/kubepods/burstable/",
+                    "/lxc/",
+                    "/containerd/",
+                ]
+            ):
                 logger.debug("Container detected: cgroup contains container markers")
                 return True
     except Exception:
@@ -113,13 +118,16 @@ def is_running_in_container() -> bool:
                 try:
                     with open(f"/proc/{ppid}/cmdline", "r") as parent_cmdline:
                         parent_cmd = parent_cmdline.read()
-                        if any(marker in parent_cmd.lower() for marker in [
-                            "dockerd",
-                            "containerd",
-                            "runc",
-                            "podman",
-                            "docker-proxy",
-                        ]):
+                        if any(
+                            marker in parent_cmd.lower()
+                            for marker in [
+                                "dockerd",
+                                "containerd",
+                                "runc",
+                                "podman",
+                                "docker-proxy",
+                            ]
+                        ):
                             logger.debug("Container detected: parent process is container runtime")
                             return True
                 except Exception:
