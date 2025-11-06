@@ -308,7 +308,6 @@ class AutomationEngine:
                     fix_to_pass_tests_runner_module.apply_workspace_test_fix = apply_override
                 return fix_to_pass_tests(
                     self.config,
-                    self.dry_run,
                     max_attempts,
                 )
             finally:

@@ -106,7 +106,7 @@ def _write_llm_output_log(
     return log_path
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
     """Derive backend/model identifiers from the provided LLM client."""
 
@@ -294,7 +294,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def apply_test_stability_fix(
     config: AutomationConfig,
     test_file: str,
@@ -358,7 +358,7 @@ def apply_test_stability_fix(
         )
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def apply_workspace_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
@@ -608,7 +608,8 @@ def fix_to_pass_tests(
             summary["messages"].append(errmsg)
             break
 
-        llm_backend_manager.switch_to_default_backend()
+        if llm_backend_manager is not None:
+            llm_backend_manager.switch_to_default_backend()
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
             llm_backend_manager=llm_backend_manager,
@@ -722,7 +723,7 @@ def generate_commit_message_via_llm(
                     first_line = lines[0].strip()
                     if first_line and len(first_line) < 20 and " " not in first_line:
                         content = "\n".join(lines[1:]).strip()
-                return content
+                return str(content) if content else ""
 
         # Take first non-empty line, sanitize length
         for line in response.splitlines():
@@ -755,7 +756,7 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
     return f"Auto-Coder: {base}"
 
 
-@log_calls
+@log_calls  # type: ignore[misc]
 def extract_important_errors(test_result: Dict[str, Any]) -> str:
     """Extract important error information from test output.
 
@@ -831,10 +832,10 @@ def extract_important_errors(test_result: Dict[str, Any]) -> str:
                 if header_regex.search(s):
                     end_idx = j
                     break
-            block = lines[start_idx:end_idx]
+            block = "\n".join(lines[start_idx:end_idx])
             # Check if it includes expectation/received lines or the corresponding expect line
-            if any(expect_regex.search(b) for b in block) or any(".spec.ts" in b for b in block):
-                blocks.append("\n".join(block))
+            if any(expect_regex.search(b) for b in lines[start_idx:end_idx]) or any(".spec.ts" in b for b in lines[start_idx:end_idx]):
+                blocks.append(block)
         if blocks:
             result = "\n\n".join(blocks)
             # Append expectation/received lines if not included
