@@ -610,3 +610,93 @@ def mock_backend_manager():
     )
 
     return mock_manager
+
+
+# GraphRAG Index Manager Test Fixtures
+
+
+@pytest.fixture
+def graph_builder_structure(tmp_path):
+    """Create a minimal valid graph-builder structure for testing.
+
+    Args:
+        tmp_path: pytest tmp_path fixture
+
+    Returns:
+        Path to the created graph-builder directory
+    """
+    graph_builder_dir = tmp_path / "graph-builder"
+    graph_builder_dir.mkdir()
+    (graph_builder_dir / "src").mkdir()
+    (graph_builder_dir / "src" / "cli_python.py").touch()
+    return graph_builder_dir
+
+
+@pytest.fixture
+def graph_builder_typescript_structure(tmp_path):
+    """Create a TypeScript graph-builder structure for testing.
+
+    Args:
+        tmp_path: pytest tmp_path fixture
+
+    Returns:
+        Path to the created graph-builder directory with TypeScript CLI
+    """
+    graph_builder_dir = tmp_path / "graph-builder"
+    graph_builder_dir.mkdir()
+    (graph_builder_dir / "src").mkdir()
+    (graph_builder_dir / "dist").mkdir()
+    (graph_builder_dir / "dist" / "cli.js").touch()
+    return graph_builder_dir
+
+
+@pytest.fixture
+def graph_builder_bundle_structure(tmp_path):
+    """Create a bundled TypeScript graph-builder structure for testing.
+
+    Args:
+        tmp_path: pytest tmp_path fixture
+
+    Returns:
+        Path to the created graph-builder directory with bundled TypeScript CLI
+    """
+    graph_builder_dir = tmp_path / "graph-builder"
+    graph_builder_dir.mkdir()
+    (graph_builder_dir / "src").mkdir()
+    (graph_builder_dir / "dist").mkdir()
+    (graph_builder_dir / "dist" / "cli.bundle.js").touch()
+    return graph_builder_dir
+
+
+@pytest.fixture
+def graph_rag_index_manager(tmp_path):
+    """Create a GraphRAGIndexManager instance for testing.
+
+    Args:
+        tmp_path: pytest tmp_path fixture
+
+    Returns:
+        GraphRAGIndexManager instance
+    """
+    from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
+
+    # Create a temporary state file
+    state_file = tmp_path / "test_state.json"
+    return GraphRAGIndexManager(repo_path=str(tmp_path), index_state_file=str(state_file))
+
+
+@pytest.fixture
+def graph_rag_index_manager_with_override(graph_builder_structure):
+    """Create a GraphRAGIndexManager with graph-builder path override.
+
+    Args:
+        graph_builder_structure: graph_builder_structure fixture
+
+    Returns:
+        GraphRAGIndexManager instance with override set
+    """
+    from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
+
+    manager = GraphRAGIndexManager()
+    manager.set_graph_builder_path_for_testing(graph_builder_structure)
+    return manager

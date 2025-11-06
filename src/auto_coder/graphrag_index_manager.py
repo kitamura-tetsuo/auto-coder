@@ -35,6 +35,16 @@ class GraphRAGIndexManager:
             # Default to .auto-coder/graphrag_index_state.json in repository
             index_state_file = str(self.repo_path / ".auto-coder" / "graphrag_index_state.json")
         self.index_state_file = Path(index_state_file)
+        # Override path for testing - set to None for normal operation
+        self._override_graph_builder_path: Optional[Path] = None
+
+    def set_graph_builder_path_for_testing(self, path: Optional[Path]) -> None:
+        """Set a custom path for graph-builder (for testing purposes).
+
+        Args:
+            path: Path to use for graph-builder, or None to use automatic detection
+        """
+        self._override_graph_builder_path = path
 
     def _get_codebase_hash(self) -> str:
         """Calculate hash of codebase to detect changes.
@@ -365,14 +375,23 @@ class GraphRAGIndexManager:
                 logger.debug(f"Traceback: {traceback.format_exc()}")
                 return self._fallback_python_indexing()
 
-    def _find_graph_builder(self) -> Optional[Path]:
-        """Find graph-builder installation.
+    def _get_auto_coder_package_dir(self) -> Path:
+        """Get the auto-coder package directory where this module is located.
+
+        This is a separate method to make testing easier.
 
         Returns:
-            Path to graph-builder directory or executable, or None if not found
+            Path to the auto-coder package directory
         """
-        # Get auto-coder installation directory (where this file is located)
-        auto_coder_pkg_dir = Path(__file__).parent
+        return Path(__file__).parent
+
+    def _get_graph_builder_candidates(self) -> list[Path]:
+        """Get list of candidate paths to search for graph-builder.
+
+        Returns:
+            List of candidate Path objects to check
+        """
+        auto_coder_pkg_dir = self._get_auto_coder_package_dir()
 
         # Check common local directory locations
         # Priority: In-package > Target repository > Current directory > Home directory
@@ -383,32 +402,74 @@ class GraphRAGIndexManager:
             Path.home() / "graph-builder",  # Home directory
         ]
 
+        return candidates
+
+    def _validate_graph_builder_path(self, candidate: Path) -> tuple[bool, str]:
+        """Validate if a path contains a valid graph-builder installation.
+
+        Args:
+            candidate: Path to validate
+
+        Returns:
+            Tuple of (is_valid, reason) where reason explains why it's valid/invalid
+        """
+        if not candidate.exists():
+            return False, f"Path does not exist: {candidate}"
+
+        if not candidate.is_dir():
+            return False, f"Path is not a directory: {candidate}"
+
+        if not (candidate / "src").exists():
+            return False, f"No 'src' directory found in: {candidate}"
+
+        # Check for at least one CLI
+        has_ts_cli_bundle = (candidate / "dist" / "cli.bundle.js").exists()
+        has_ts_cli = (candidate / "dist" / "cli.js").exists()
+        has_py_cli = (candidate / "src" / "cli_python.py").exists()
+
+        if not (has_ts_cli_bundle or has_ts_cli or has_py_cli):
+            return False, f"No CLI found (expected dist/cli.bundle.js, dist/cli.js, or src/cli_python.py)"
+
+        valid_clis = []
+        if has_ts_cli_bundle:
+            valid_clis.append("dist/cli.bundle.js")
+        if has_ts_cli:
+            valid_clis.append("dist/cli.js")
+        if has_py_cli:
+            valid_clis.append("src/cli_python.py")
+
+        return True, f"Valid graph-builder with CLIs: {', '.join(valid_clis)}"
+
+    def _find_graph_builder(self) -> Optional[Path]:
+        """Find graph-builder installation.
+
+        Returns:
+            Path to graph-builder directory or executable, or None if not found
+        """
+        # Use override path if set (for testing)
+        if self._override_graph_builder_path is not None:
+            is_valid, reason = self._validate_graph_builder_path(self._override_graph_builder_path)
+            if is_valid:
+                logger.info(f"Using test-specified graph-builder path: {self._override_graph_builder_path}")
+                return self._override_graph_builder_path
+            else:
+                logger.warning(f"Test-specified graph-builder path is invalid: {reason}")
+                return None
+
+        candidates = self._get_graph_builder_candidates()
+
         logger.debug(f"Searching for graph-builder in: {[str(c) for c in candidates]}")
 
         for candidate in candidates:
-            logger.debug(f"Checking: {candidate}")
-            if candidate.exists() and candidate.is_dir():
-                logger.debug(f"  Directory exists: {candidate}")
-                # Check if it has the expected structure
-                if (candidate / "src").exists():
-                    logger.debug(f"  Found src directory: {candidate / 'src'}")
-                    # Also check for dist/cli.bundle.js, dist/cli.js or src/cli_python.py
-                    has_ts_cli_bundle = (candidate / "dist" / "cli.bundle.js").exists()
-                    has_ts_cli = (candidate / "dist" / "cli.js").exists()
-                    has_py_cli = (candidate / "src" / "cli_python.py").exists()
-                    logger.debug(f"  TypeScript bundled CLI exists: {has_ts_cli_bundle}")
-                    logger.debug(f"  TypeScript CLI exists: {has_ts_cli}")
-                    logger.debug(f"  Python CLI exists: {has_py_cli}")
-                    if has_ts_cli_bundle or has_ts_cli or has_py_cli:
-                        logger.info(f"Found graph-builder at: {candidate}")
-                        return candidate
-                    else:
-                        logger.debug(f"  No CLI found in {candidate}")
-                else:
-                    logger.debug(f"  No src directory in {candidate}")
-            else:
-                logger.debug(f"  Does not exist or not a directory: {candidate}")
+            is_valid, reason = self._validate_graph_builder_path(candidate)
+            logger.debug(f"Checking {candidate}: {reason}")
 
+            if is_valid:
+                logger.info(f"Found graph-builder at: {candidate}")
+                return candidate
+
+        logger.warning("graph-builder not found in any common location")
+        logger.debug(f"Searched locations: {[str(c) for c in candidates]}")
         return None
 
     def _fallback_python_indexing(self) -> dict:
