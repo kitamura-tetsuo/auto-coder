@@ -299,78 +299,81 @@ def _apply_issue_actions_directly(
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     issue_number = issue_data.get("number", "unknown")
-    with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
-        actions = []
+    actions = []
 
+    try:
+        # Set progress item at the start
+        set_progress_item("Issue", issue_number)
+
+        # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
+        target_branch: str
+        pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
+
+        # Store current branch to ensure we can track where we started
+        initial_branch = None
         try:
-            # Set progress item at the start
-            set_progress_item("Issue", issue_number)
+            result = cmd.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+            if result.success:
+                initial_branch = result.stdout.strip()
+        except Exception:
+            pass
 
-            # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
-            target_branch: str
-            pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
+        if "head_branch" in issue_data:
+            # For PRs, switch to head_branch
+            target_branch = issue_data.get("head_branch") or ""
+            logger.info(f"Switching to PR branch: {target_branch}")
+        else:
+            # For regular issues, determine work branch
+            work_branch = f"issue-{issue_number}"
+            logger.info(f"Determining work branch for issue: {work_branch}")
 
-            # Store current branch to ensure we can track where we started
-            initial_branch = None
-            try:
-                result = cmd.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
-                if result.success:
-                    initial_branch = result.stdout.strip()
-            except Exception:
-                pass
+            # Check for parent issue
+            parent_issue_number = github_client.get_parent_issue(repo_name, issue_number)
 
-            if "head_branch" in issue_data:
-                # For PRs, switch to head_branch
-                target_branch = issue_data.get("head_branch") or ""
-                logger.info(f"Switching to PR branch: {target_branch}")
-            else:
-                # For regular issues, determine work branch
-                work_branch = f"issue-{issue_number}"
-                logger.info(f"Determining work branch for issue: {work_branch}")
+            base_branch = config.MAIN_BRANCH
+            if parent_issue_number:
+                # If parent issue exists, use parent issue branch as base
+                parent_branch = f"issue-{parent_issue_number}"
+                logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
 
-                # Check for parent issue
-                parent_issue_number = github_client.get_parent_issue(repo_name, issue_number)
+                # Check if parent issue branch exists
+                check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
 
-                base_branch = config.MAIN_BRANCH
-                if parent_issue_number:
-                    # If parent issue exists, use parent issue branch as base
-                    parent_branch = f"issue-{parent_issue_number}"
-                    logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
-
-                    # Check if parent issue branch exists
-                    check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
-
-                    if check_parent_branch.returncode == 0:
-                        # Use parent issue branch if it exists
-                        base_branch = parent_branch
-                        pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
-                        logger.info(f"Parent branch {parent_branch} exists, using it as base")
-                    else:
-                        # Create parent issue branch if it doesn't exist
-                        logger.info(f"Parent branch {parent_branch} does not exist, creating it")
-
-                        # Create parent issue branch (automatically pushed to remote)
-                        with branch_context(parent_branch, create_new=True):
-                            actions.append(f"Created and published parent branch: {parent_branch}")
-                            logger.info(f"Successfully created and published parent branch: {parent_branch}")
-
-                        base_branch = parent_branch
-                        pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
-
-                # Check if work branch already exists
-                check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])
-
-                if check_work_branch.returncode == 0:
-                    # Work branch exists
-                    logger.info(f"Work branch {work_branch} already exists, will switch to it")
-                    target_branch = work_branch
+                if check_parent_branch.returncode == 0:
+                    # Use parent issue branch if it exists
+                    base_branch = parent_branch
+                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
+                    logger.info(f"Parent branch {parent_branch} exists, using it as base")
                 else:
-                    # Work branch doesn't exist, will create it
-                    logger.info(f"Work branch {work_branch} does not exist, will create from {base_branch}")
-                    target_branch = work_branch
+                    # Create parent issue branch if it doesn't exist
+                    logger.info(f"Parent branch {parent_branch} does not exist, creating it")
 
-            # Now perform all work on the target branch using branch_context
-            assert target_branch is not None, "target_branch must be set before using branch_context"
+                    # Create parent issue branch (automatically pushed to remote)
+                    with branch_context(parent_branch, create_new=True):
+                        actions.append(f"Created and published parent branch: {parent_branch}")
+                        logger.info(f"Successfully created and published parent branch: {parent_branch}")
+
+                    base_branch = parent_branch
+                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
+
+            # Check if work branch already exists
+            check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])
+
+            if check_work_branch.returncode == 0:
+                # Work branch exists
+                logger.info(f"Work branch {work_branch} already exists, will switch to it")
+                target_branch = work_branch
+            else:
+                # Work branch doesn't exist, will create it
+                logger.info(f"Work branch {work_branch} does not exist, will create from {base_branch}")
+                target_branch = work_branch
+
+        # Now perform all work on the target branch using branch_context
+        assert target_branch is not None, "target_branch must be set before using branch_context"
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
+            if not should_process:
+                return actions
+
             with branch_context(target_branch, create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
                 # Get commit log since branch creation
                 with ProgressStage("Getting commit log"):
@@ -439,8 +442,8 @@ def _apply_issue_actions_directly(
                 else:
                     actions.append("LLM CLI did not provide a clear response for issue analysis")
 
-        except Exception as e:
-            logger.error(f"Error applying issue actions directly: {e}")
+    except Exception as e:
+        logger.error(f"Error applying issue actions directly: {e}")
 
     return actions
 
