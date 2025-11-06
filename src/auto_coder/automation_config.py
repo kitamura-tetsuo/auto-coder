@@ -59,6 +59,12 @@ class AutomationConfig:
     # Default: False (labels enabled)
     DISABLE_LABELS: bool = False
 
+    # Check for and skip issues with unresolved dependencies
+    # When an issue body contains "Depends on: #123" or similar patterns,
+    # skip processing if dependency issue #123 is still open
+    # Default: True (dependency checking enabled)
+    CHECK_DEPENDENCIES: bool = True
+
     # Search through commit history for GitHub Actions logs when latest commit doesn't trigger Actions
     # Default: True (search history enabled)
     SEARCH_GITHUB_ACTIONS_HISTORY: bool = True

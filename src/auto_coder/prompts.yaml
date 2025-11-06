@@ -172,6 +172,8 @@ issue:
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
 
+    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
+
     Please analyze this issue and determine the appropriate action:
 
     1. If this needs clarification, add a comment requesting more information

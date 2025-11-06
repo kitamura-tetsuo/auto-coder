@@ -743,3 +743,79 @@ class GitHubClient:
         except GithubException as e:
             logger.error(f"Failed to add work-in-progress label to issue #{issue_number}: {e}")
             raise
+
+    def get_issue_dependencies(self, issue_body: str) -> List[int]:
+        """Extract issue numbers that this issue depends on from the issue body.
+
+        Args:
+            issue_body: The body text of the issue
+
+        Returns:
+            List of issue numbers that this issue depends on
+
+        Examples:
+            "Depends on: #123" -> [123]
+            "depends on #456" -> [456]
+            "Depends on #789, #790" -> [789, 790]
+        """
+        if not issue_body:
+            return []
+
+        import re
+
+        # Pattern to match various "Depends on" formats
+        # Matches patterns like:
+        # - "Depends on: #123"
+        # - "depends on #123, #456, #789"
+        # - "blocked by #100"
+        # Case-insensitive, with or without colon, supports comma-separated lists
+        pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*(?:#?\d+(?:\s*,\s*#?\d+)*)"
+
+        matches = re.findall(pattern, issue_body)
+
+        # Extract all issue numbers from matches (handles comma-separated lists)
+        dependencies = []
+        seen = set()
+        for match in matches:
+            # Split by comma and extract numbers
+            numbers = re.findall(r"#?(\d+)", match)
+            for num_str in numbers:
+                issue_num = int(num_str)
+                if issue_num not in seen:
+                    dependencies.append(issue_num)
+                    seen.add(issue_num)
+
+        if dependencies:
+            logger.debug(f"Found dependencies: {dependencies}")
+
+        return dependencies
+
+    def check_issue_dependencies_resolved(self, repo_name: str, dependencies: List[int]) -> List[int]:
+        """Check which of the given issue dependencies are resolved (closed).
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            dependencies: List of issue numbers to check
+
+        Returns:
+            List of issue numbers that are still open (unresolved dependencies)
+        """
+        if not dependencies:
+            return []
+
+        unresolved = []
+        for issue_num in dependencies:
+            try:
+                issue_details = self.get_issue_details_by_number(repo_name, issue_num)
+                state = issue_details.get("state", "open")
+                if state == "open":
+                    unresolved.append(issue_num)
+                    logger.debug(f"Dependency issue #{issue_num} is still open")
+                else:
+                    logger.debug(f"Dependency issue #{issue_num} is closed (resolved)")
+            except GithubException as e:
+                # If issue doesn't exist or can't be accessed, consider it unresolved
+                logger.warning(f"Failed to check dependency issue #{issue_num}: {e}")
+                unresolved.append(issue_num)
+
+        return unresolved
