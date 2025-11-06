@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.issue_processor import _process_issues_jules_mode, _process_issues_normal, process_single
+from src.auto_coder.issue_processor import _process_issues_jules_mode, process_single
 from src.auto_coder.pr_processor import process_pull_request
 
 
@@ -199,130 +199,7 @@ class TestGitHubClientExclusiveLabels:
         mock_issue.edit.assert_not_called()
 
 
-class TestIssueProcessorExclusiveProcessing:
-    """Test issue processor exclusive processing with @auto-coder label."""
-
-    @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_normal_skips_when_label_exists(self, mock_take_actions):
-        """Test that issues with @auto-coder label
-        are skipped.
-        """
-        mock_github_client = Mock()
-        mock_github_client.disable_labels = False  # Labels enabled
-        mock_issue = Mock()
-        mock_issue.number = 123
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = {
-            "number": 123,
-            "title": "Test Issue",
-            "labels": ["@auto-coder"],  # Label already exists
-        }
-
-        config = AutomationConfig()
-        result = _process_issues_normal(mock_github_client, config, False, "owner/repo")
-
-        assert len(result) == 1
-        actions_taken = result[0]["actions_taken"][0]
-        assert "Skipped - already being processed" in actions_taken
-        mock_take_actions.assert_not_called()
-        # Verify try_add_work_in_progress_label was NOT called (skipped before that check)
-        mock_github_client.try_add_work_in_progress_label.assert_not_called()
-
-    @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_normal_processes_when_label_added(self, mock_take_actions):
-        """Test that issues are processed when
-        @auto-coder label is successfully added.
-        """
-        mock_github_client = Mock()
-        mock_github_client.disable_labels = False  # Labels enabled
-        mock_issue = Mock()
-        mock_issue.number = 123
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = {
-            "number": 123,
-            "title": "Test Issue",
-            "labels": [],
-        }
-        # Mock get_open_sub_issues to return empty list (no sub-issues)
-        mock_github_client.get_open_sub_issues.return_value = []
-        # Mock dependency checking methods
-        mock_github_client.get_issue_dependencies.return_value = []
-        mock_github_client.check_issue_dependencies_resolved.return_value = []
-        # Mock has_linked_pr to return False (no linked PR)
-        mock_github_client.has_linked_pr.return_value = False
-        # Simulate label successfully added
-        mock_github_client.try_add_work_in_progress_label.return_value = True
-        mock_take_actions.return_value = ["Action taken"]
-
-        config = AutomationConfig()
-        result = _process_issues_normal(mock_github_client, config, False, "owner/repo")
-
-        assert len(result) == 1
-        assert result[0]["actions_taken"] == ["Action taken"]
-        mock_take_actions.assert_called_once()
-        # Verify label was removed after processing
-        mock_github_client.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
-
-    @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_normal_removes_label_on_error(self, mock_take_actions):
-        """Test that @auto-coder label is
-        removed even when processing fails.
-        """
-        mock_github_client = Mock()
-        mock_github_client.disable_labels = False  # Labels enabled
-        mock_issue = Mock()
-        mock_issue.number = 123
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = {
-            "number": 123,
-            "title": "Test Issue",
-            "labels": [],
-        }
-        # Mock get_open_sub_issues to return empty list (no sub-issues)
-        mock_github_client.get_open_sub_issues.return_value = []
-        # Mock dependency checking methods
-        mock_github_client.get_issue_dependencies.return_value = []
-        mock_github_client.check_issue_dependencies_resolved.return_value = []
-        mock_github_client.try_add_work_in_progress_label.return_value = True
-        mock_github_client.has_linked_pr.return_value = False
-        # Simulate error during processing
-        mock_take_actions.side_effect = Exception("Processing failed")
-
-        config = AutomationConfig()
-        _ = _process_issues_normal(mock_github_client, config, False, "owner/repo")
-
-        # Verify label removal was attempted
-        mock_github_client.remove_labels_from_issue.assert_called_with("owner/repo", 123, ["@auto-coder"])
-
-    def test_process_issues_jules_mode_skips_when_label_exists(self):
-        """Test that Jules mode skips issues
-        with @auto-coder label.
-        """
-        mock_github_client = Mock()
-        mock_github_client.disable_labels = False  # Labels enabled
-        mock_issue = Mock()
-        mock_issue.number = 123
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = {
-            "number": 123,
-            "title": "Test Issue",
-            "labels": ["@auto-coder"],  # Label already exists
-        }
-
-        config = AutomationConfig()
-        result = _process_issues_jules_mode(mock_github_client, config, False, "owner/repo")
-
-        assert len(result) == 1
-        actions_taken = result[0]["actions_taken"][0]
-        assert "Skipped - already being processed" in actions_taken
-        # Verify try_add_work_in_progress_label was NOT called (skipped before that check)
-        mock_github_client.try_add_work_in_progress_label.assert_not_called()
-        # Verify jules label was not added
-        mock_github_client.add_labels_to_issue.assert_not_called()
+# Tests for deprecated _process_issues_normal have been removed as part of issue #270 cleanup
 
 
 class TestPRProcessorExclusiveProcessing:
@@ -388,33 +265,7 @@ class TestPRProcessorExclusiveProcessing:
         assert "Skipped - already being processed (@auto-coder label present)" in result["actions_taken"]
 
 
-class TestIssueProcessorWithDisabledLabels:
-    @patch("src.auto_coder.issue_processor._take_issue_actions")
-    def test_process_issues_skips_on_label_even_if_labels_disabled(self, mock_take_actions):
-        """Ensure issues are skipped when @auto-coder label is present
-        even if label operations are disabled."""
-        mock_github_client = Mock()
-        mock_github_client.disable_labels = True  # Labels disabled
-        mock_issue = Mock()
-        mock_issue.number = 321
-
-        mock_github_client.get_open_issues.return_value = [mock_issue]
-        mock_github_client.get_issue_details.return_value = {
-            "number": 321,
-            "title": "Test Issue",
-            "labels": ["@auto-coder"],  # Label already exists
-        }
-
-        config = AutomationConfig()
-        result = _process_issues_normal(mock_github_client, config, False, "owner/repo")
-
-        assert len(result) == 1
-        actions_taken = result[0]["actions_taken"][0]
-        assert "Skipped - already being processed" in actions_taken
-        mock_take_actions.assert_not_called()
-        # verify we never attempted to add/remove labels
-        mock_github_client.try_add_work_in_progress_label.assert_not_called()
-        mock_github_client.remove_labels_from_issue.assert_not_called()
+# Tests for deprecated _process_issues_normal have been removed
 
 
 class TestProcessSingleWithAutoCoderLabel:

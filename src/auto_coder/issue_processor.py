@@ -11,6 +11,7 @@ from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
 from .git_utils import branch_context, commit_and_push_changes, ensure_pushed, get_commit_log
+from .github_client import GitHubClient
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -21,156 +22,7 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def process_issues(
-    github_client,
-    config: AutomationConfig,
-    dry_run: bool,
-    repo_name: str,
-    jules_mode: bool = False,
-) -> List[Dict[str, Any]]:
-    """Process open issues in the repository."""
-    # Note: This function is not actively used by the automation engine,
-    # which uses a candidate-based approach instead.
-    # Keep for backward compatibility but not actively maintained.
-    logger.warning("process_issues function is deprecated and not actively used")
-    return []
-
-
-def _process_issues_normal(
-    github_client,
-    config: AutomationConfig,
-    dry_run: bool,
-    repo_name: str,
-) -> List[Dict[str, Any]]:
-    """Process open issues in the repository.
-
-    This function is deprecated and no longer used by the automation engine.
-    Kept for backward compatibility with tests.
-    """
-    logger.warning("_process_issues_normal function is deprecated and not actively used. The automation engine now uses a candidate-based approach instead.")
-
-    # Minimal implementation for backward compatibility with tests
-    # Note: This is not the full original implementation
-    try:
-        issues = github_client.get_open_issues(repo_name, limit=config.max_issues_per_run)
-        processed_issues = []
-
-        for issue in issues:
-            try:
-                issue_data = github_client.get_issue_details(issue)
-                issue_number = issue_data["number"]
-
-                # Set progress item
-                set_progress_item("Issue", issue_number)
-
-                # Check if issue already has @auto-coder label (being processed by another instance)
-                current_labels = issue_data.get("labels", [])
-                if "@auto-coder" in current_labels:
-                    logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-                    processed_issues.append(
-                        {
-                            "issue_data": issue_data,
-                            "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
-                        }
-                    )
-                    newline_progress()
-                    continue
-
-                # Skip if issue has open sub-issues
-                with ProgressStage("Checking sub-issues"):
-                    open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
-                    if open_sub_issues:
-                        logger.info(f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
-                        processed_issues.append(
-                            {
-                                "issue_data": issue_data,
-                                "actions_taken": [f"Skipped - has open sub-issues: {open_sub_issues}"],
-                            }
-                        )
-                        newline_progress()
-                        continue
-
-                # Skip if issue has unresolved dependencies
-                if config.CHECK_DEPENDENCIES:
-                    with ProgressStage("Checking dependencies"):
-                        dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""))
-                        if dependencies:
-                            unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
-                            if unresolved:
-                                logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
-                                processed_issues.append(
-                                    {
-                                        "issue_data": issue_data,
-                                        "actions_taken": [f"Skipped - has unresolved dependencies: {unresolved}"],
-                                    }
-                                )
-                                newline_progress()
-                                continue
-                            else:
-                                logger.info(f"All dependencies for issue #{issue_number} are resolved")
-
-                # Skip if issue already has a linked PR
-                with ProgressStage("Checking linked PR"):
-                    if github_client.has_linked_pr(repo_name, issue_number):
-                        logger.info(f"Skipping issue #{issue_number} - already has a linked PR")
-                        processed_issues.append(
-                            {
-                                "issue_data": issue_data,
-                                "actions_taken": ["Skipped - already has a linked PR"],
-                            }
-                        )
-                        newline_progress()
-                        continue
-
-                # Use LabelManager context manager to handle @auto-coder label automatically
-                with LabelManager(github_client, repo_name, issue_number, item_type="issue", dry_run=dry_run, config=config) as should_process:
-                    if not should_process:
-                        processed_issues.append(
-                            {
-                                "issue_data": issue_data,
-                                "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
-                            }
-                        )
-                        newline_progress()
-                        continue
-
-                    processed_issue = {
-                        "issue_data": issue_data,
-                        "actions_taken": [],
-                    }
-
-                    # Direct action for single execution (CLI)
-                    try:
-                        actions = _take_issue_actions(
-                            repo_name,
-                            issue_data,
-                            config,
-                            dry_run,
-                            github_client,
-                        )
-                        processed_issue["actions_taken"] = actions
-                    except Exception as e:
-                        logger.error(f"Error processing issue #{issue_number}: {e}")
-                        processed_issue["actions_taken"] = [f"Error: {str(e)}"]
-
-                    # Clear progress header after processing
-                    newline_progress()
-                    processed_issues.append(processed_issue)
-
-            except Exception as e:
-                logger.error(f"Failed to process issue #{issue.number}: {e}")
-                processed_issues.append({"issue_number": issue.number, "error": str(e)})
-                # Clear progress header on error
-                newline_progress()
-
-        return processed_issues
-
-    except Exception as e:
-        logger.error(f"Failed to process issues for {repo_name}: {e}")
-        return []
-
-
-def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
+def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
         issue_number = issue_data["number"]
@@ -215,7 +67,7 @@ def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: 
                     "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
                 }
 
-            processed_issue = {"issue_data": issue_data, "actions_taken": []}
+            processed_issue: Dict[str, Any] = {"issue_data": issue_data, "actions_taken": []}
 
             # Check if 'jules' label already exists
             current_labels = issue_data.get("labels", [])
@@ -239,7 +91,7 @@ def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: 
         return {"issue_data": issue_data, "error": str(e)}
 
 
-def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run: bool, repo_name: str) -> List[Dict[str, Any]]:
+def _process_issues_jules_mode(github_client: GitHubClient, config: AutomationConfig, dry_run: bool, repo_name: str) -> List[Dict[str, Any]]:
     """Process open issues in jules mode - only add 'jules' label.
 
     This is a backward-compatible wrapper for the refactored _process_issue_jules_mode.
@@ -271,7 +123,7 @@ def _take_issue_actions(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    github_client,
+    github_client: GitHubClient,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
     actions = []
@@ -304,7 +156,7 @@ def _create_pr_for_issue(
     work_branch: str,
     base_branch: str,
     llm_response: str,
-    github_client,
+    github_client: GitHubClient,
     dry_run: bool = False,
 ) -> str:
     """
@@ -457,7 +309,7 @@ def _apply_issue_actions_directly(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    github_client,
+    github_client: GitHubClient,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     actions = []
@@ -479,7 +331,7 @@ def _apply_issue_actions_directly(
                 actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
 
         # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
-        target_branch = None
+        target_branch: Optional[str] = None
         pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
 
         # Store current branch to ensure we can track where we started
@@ -542,7 +394,7 @@ def _apply_issue_actions_directly(
                 target_branch = work_branch
 
         # Now perform all work on the target branch using branch_context
-        with branch_context(target_branch, create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
+        with branch_context(str(target_branch), create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
             # Get commit log since branch creation
             with ProgressStage("Getting commit log"):
                 commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
@@ -617,11 +469,11 @@ def _apply_issue_actions_directly(
 
 
 def create_feature_issues(
-    github_client,
+    github_client: GitHubClient,
     config: AutomationConfig,
     dry_run: bool,
     repo_name: str,
-    gemini_client=None,
+    gemini_client: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Analyze repository and create feature enhancement issues."""
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
@@ -640,7 +492,7 @@ def create_feature_issues(
         )
 
         # Generate feature suggestions
-        suggestions = []  # gemini_client.suggest_features(repo_context)
+        suggestions = gemini_client.suggest_features(repo_context)
 
         created_issues = []
         for suggestion in suggestions:
@@ -673,7 +525,7 @@ def create_feature_issues(
         return []
 
 
-def _get_repository_context(github_client, repo_name: str) -> Dict[str, Any]:
+def _get_repository_context(github_client: GitHubClient, repo_name: str) -> Dict[str, Any]:
     """Get repository context for feature analysis."""
     try:
         repo = github_client.get_repository(repo_name)
@@ -714,7 +566,7 @@ def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
 
 
 def process_single(
-    github_client,
+    github_client: GitHubClient,
     config: AutomationConfig,
     dry_run: bool,
     repo_name: str,
@@ -729,7 +581,7 @@ def process_single(
     """
     with ProgressStage("Processing single PR/IS"):
         logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
-        result = {
+        result: Dict[str, Any] = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
             "dry_run": dry_run,
@@ -805,7 +657,7 @@ def process_single(
                     with LabelManager(github_client, repo_name, number, item_type="issue", dry_run=dry_run, config=config) as should_process:
                         # Note: We always process for process_single, even if should_process is False
 
-                        processed_issue = {
+                        processed_issue: Dict[str, Any] = {
                             "issue_data": issue_data,
                             "analysis": None,
                             "solution": None,
