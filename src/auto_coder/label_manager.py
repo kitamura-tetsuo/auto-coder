@@ -8,6 +8,7 @@ consistent error handling and logging.
 import inspect
 import threading
 import time
+import warnings
 from contextlib import contextmanager
 from typing import Any, Generator, Optional, Union
 
@@ -69,6 +70,9 @@ def check_and_add_label(
 ) -> bool:
     """Check if @auto-coder label exists and add it if not.
 
+    .. deprecated::
+        Use LabelManager context manager instead. This function will be removed in a future version.
+
     This function provides unified label check/add logic across the codebase.
 
     Args:
@@ -82,37 +86,21 @@ def check_and_add_label(
     Returns:
         True if label was added or already exists (should skip), False if another instance will process
     """
-    if dry_run:
-        logger.info(f"[DRY RUN] Would check and add @auto-coder label to {item_type} #{item_number}")
-        return True
+    warnings.warn(
+        "check_and_add_label() is deprecated. Use LabelManager context manager instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
-    # Check if labels are disabled
-    if hasattr(github_client, "disable_labels") and github_client.disable_labels:
-        logger.debug(f"Labels disabled - skipping label check for {item_type} #{item_number}")
-        return True
-
-    if config and hasattr(config, "DISABLE_LABELS") and config.DISABLE_LABELS:
-        logger.debug(f"Labels disabled via config - skipping label check for {item_type} #{item_number}")
-        return True
-
+    # Use LabelManager internally
     try:
-        # Use GitHub client's try_add_work_in_progress_label method
-        if hasattr(github_client, "try_add_work_in_progress_label"):
-            result = github_client.try_add_work_in_progress_label(repo_name, item_number, label="@auto-coder")
-            if result:
-                logger.info(f"Added @auto-coder label to {item_type} #{item_number}")
-            else:
-                logger.info(f"Skipping {item_type} #{item_number} - @auto-coder label was just added by another instance")
-            return bool(result)
-
-        logger.error(f"GitHub client does not support try_add_work_in_progress_label")
-        # On error, allow processing to continue
+        with LabelManager(github_client, repo_name, item_number, item_type=item_type, dry_run=dry_run, config=config, label_name="@auto-coder") as lm:
+            # Label added successfully, return True
+            pass
         return True
-
-    except Exception as e:
-        logger.error(f"Failed to add @auto-coder label to {item_type} #{item_number}: {e}")
-        # On error, allow processing to continue
-        return True
+    except LabelOperationError:
+        # Another instance is processing
+        return False
 
 
 def remove_label(
@@ -125,6 +113,9 @@ def remove_label(
 ) -> None:
     """Remove @auto-coder label from issue/PR.
 
+    .. deprecated::
+        Use LabelManager context manager instead. This function will be removed in a future version.
+
     This function provides unified label removal logic across the codebase.
 
     Args:
@@ -135,27 +126,37 @@ def remove_label(
         dry_run: If True, skip actual label operations
         config: AutomationConfig instance (optional)
     """
-    if dry_run:
-        logger.info(f"[DRY RUN] Would remove @auto-coder label from {item_type} #{item_number}")
-        return
+    warnings.warn(
+        "remove_label() is deprecated. Use LabelManager context manager instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+    label_name = "@auto-coder"
 
     # Check if labels are disabled
     if hasattr(github_client, "disable_labels") and github_client.disable_labels:
-        logger.debug(f"Labels disabled - skipping remove label for {item_type} #{item_number}")
+        logger.debug(f"Labels disabled - skipping label removal for {item_type} #{item_number}")
         return
 
     if config and hasattr(config, "DISABLE_LABELS") and config.DISABLE_LABELS:
-        logger.debug(f"Labels disabled via config - skipping remove label for {item_type} #{item_number}")
+        logger.debug(f"Labels disabled via config - skipping label removal for {item_type} #{item_number}")
         return
 
-    try:
-        if hasattr(github_client, "remove_labels_from_issue"):
-            github_client.remove_labels_from_issue(repo_name, item_number, ["@auto-coder"])
-            logger.info(f"Removed @auto-coder label from {item_type} #{item_number}")
-        else:
-            logger.warning(f"GitHub client does not support label removal")
-    except Exception as e:
-        logger.warning(f"Failed to remove @auto-coder label from {item_type} #{item_number}: {e}")
+    # Remove the label
+    if dry_run:
+        logger.info(f"[DRY RUN] Would remove '{label_name}' label from {item_type} #{item_number}")
+        return
+
+    if hasattr(github_client, "remove_labels_from_issue"):
+        try:
+            github_client.remove_labels_from_issue(repo_name, item_number, [label_name])
+            logger.info(f"Removed '{label_name}' label from {item_type} #{item_number}")
+        except Exception as e:
+            logger.error(f"Failed to remove '{label_name}' label from {item_type} #{item_number}: {e}")
+            raise
+    else:
+        logger.warning(f"GitHub client does not support label removal")
 
 
 def check_label_exists(
@@ -166,6 +167,9 @@ def check_label_exists(
     item_type: str = "issue",
 ) -> bool:
     """Check if a specific label exists on an issue/PR.
+
+    .. deprecated::
+        Use LabelManager context manager instead. This function will be removed in a future version.
 
     Args:
         github_client: GitHub client instance

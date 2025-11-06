@@ -95,7 +95,7 @@ class TestCLICreateFeatureIssues:
 
         assert result.exit_code == 0
         # GitHubClient is now a singleton using get_instance()
-        mock_github_client_class.get_instance.assert_called_once_with("test_token")
+        mock_github_client_class.get_instance.assert_called_once_with("test_token", disable_labels=False)
         mock_codex_client_class.assert_called_once_with(model_name="codex")
         assert mock_automation_engine_class.call_count == 1
         args, kwargs = mock_automation_engine_class.call_args
@@ -166,7 +166,7 @@ class TestCLICreateFeatureIssues:
         # Assert
         assert result.exit_code == 0
         # GitHubClient is now a singleton using get_instance()
-        mock_github_client_class.get_instance.assert_called_once_with("env_github_token")
+        mock_github_client_class.get_instance.assert_called_once_with("env_github_token", disable_labels=False)
         mock_codex_client_class.assert_called_once()
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")

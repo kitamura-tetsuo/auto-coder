@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.11.6.10+g8429915"
+version = "2025.11.6.8+gb29a3e6"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -51,6 +51,7 @@ dev = [
     "flake8>=6.0.0",
     "mypy>=1.0.0",
     "pre-commit>=4.3.0",
+    "pytest>=8.4.2",
 ]
 
 [project.optional-dependencies]
