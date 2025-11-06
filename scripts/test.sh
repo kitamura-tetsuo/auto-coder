@@ -122,7 +122,7 @@ if [ $# -eq 1 ]; then
     SPECIFIC_TEST_FILE=$1
     if [ -f "$SPECIFIC_TEST_FILE" ]; then
         echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
-        $RUN pytest -v --tb=short "$SPECIFIC_TEST_FILE"
+        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE"
         exit $?
     else
         echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
@@ -137,7 +137,7 @@ TEST_OUTPUT_FILE=$(mktemp)
 # Don't exit on errors - we want to capture the exit code
 set +e
 
-$RUN pytest -q --tb=short | tee "$TEST_OUTPUT_FILE"
+$RUN pytest -q --tb=short --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
 EXIT_CODE=${PIPESTATUS[0]}
 
 # Re-enable exit on errors
@@ -161,7 +161,7 @@ if [ $EXIT_CODE -ne 0 ]; then
     # If we found a failed test, run only that test
     if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
         echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        $RUN pytest -v --tb=short "$FIRST_FAILED_TEST"
+        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
         RESULT=$?
         rm "$TEST_OUTPUT_FILE"
         exit $RESULT
