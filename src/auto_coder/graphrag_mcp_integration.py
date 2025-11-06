@@ -310,32 +310,3 @@ class GraphRAGMCPIntegration:
         # In a full implementation, this would map session to repository
         repo_hash = hashlib.sha256(session_id.encode()).hexdigest()[:8].upper()
         return f"Repo_{repo_hash}"
-
-
-class BackwardCompatibilityLayer:
-    """Provides backward compatibility for existing API usage."""
-
-    def __init__(self, graphrag_integration: GraphRAGMCPIntegration):
-        self.graphrag_integration = graphrag_integration
-        self.default_session_id = None
-        self.compatibility_mode = True
-
-    def get_compatibility_session(self) -> str:
-        """Get or create default session for compatibility mode.
-
-        Returns:
-            Session identifier using current working directory as repository
-        """
-        if not self.default_session_id:
-            # Use current working directory as default repository
-            cwd = Path.cwd().resolve()
-            self.default_session_id = self.graphrag_integration.create_session(str(cwd))
-        return self.default_session_id
-
-    def is_compatibility_mode(self) -> bool:
-        """Check if operating in backward compatibility mode.
-
-        Returns:
-            True if in compatibility mode, False otherwise
-        """
-        return self.compatibility_mode
