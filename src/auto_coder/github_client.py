@@ -763,22 +763,24 @@ class GitHubClient:
 
         import re
 
-        # Pattern to match various "Depends on" formats
-        # Matches patterns like:
+        # Better approach: first find all text that comes after 'depends on' or 'blocked by',
+        # then extract all issue numbers from that text
+        # This handles various formats like:
         # - "Depends on: #123"
         # - "depends on #123, #456, #789"
+        # - "depends on #100 and #200 and #300"
         # - "blocked by #100"
-        # Case-insensitive, with or without colon, supports comma-separated lists
-        pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*(?:#?\d+(?:\s*,\s*#?\d+)*)"
+        # Case-insensitive, with or without colon, supports comma-separated lists and "and"
+        depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*(.*?)(?:\n|\r|$)"
 
-        matches = re.findall(pattern, issue_body)
-
-        # Extract all issue numbers from matches (handles comma-separated lists)
         dependencies = []
         seen = set()
-        for match in matches:
-            # Split by comma and extract numbers
-            numbers = re.findall(r"#?(\d+)", match)
+
+        for match in re.finditer(depends_pattern, issue_body):
+            depends_text = match.group(1).strip()
+
+            # Extract all issue numbers from the depends text
+            numbers = re.findall(r"#?(\d+)", depends_text)
             for num_str in numbers:
                 issue_num = int(num_str)
                 if issue_num not in seen:

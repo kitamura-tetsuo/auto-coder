@@ -77,6 +77,10 @@ class TestIssueProcessorSkipSubIssues:
         # Mock get_open_sub_issues to return empty list
         mock_github_client.get_open_sub_issues.return_value = []
 
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
+
         # Mock has_linked_pr to return False
         mock_github_client.has_linked_pr.return_value = False
 
@@ -120,6 +124,10 @@ class TestIssueProcessorSkipSubIssues:
 
         # Mock get_open_sub_issues to return empty list (all closed)
         mock_github_client.get_open_sub_issues.return_value = []
+
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
 
         # Mock has_linked_pr to return False
         mock_github_client.has_linked_pr.return_value = False
@@ -200,6 +208,10 @@ class TestIssueProcessorSkipSubIssues:
 
         # Mock get_open_sub_issues to return empty list
         mock_github_client.get_open_sub_issues.return_value = []
+
+        # Mock dependency checking methods
+        mock_github_client.get_issue_dependencies.return_value = []
+        mock_github_client.check_issue_dependencies_resolved.return_value = []
 
         # Execute
         result = _process_issues_jules_mode(mock_github_client, config, dry_run=False, repo_name="owner/repo")

@@ -93,9 +93,7 @@ def _process_issues_normal(
                         if dependencies:
                             unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
                             if unresolved:
-                                logger.info(
-                                    f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}"
-                                )
+                                logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
                                 processed_issues.append(
                                     {
                                         "issue_data": issue_data,
@@ -206,9 +204,7 @@ def _process_issues_jules_mode(github_client, config: AutomationConfig, dry_run:
                     if dependencies:
                         unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
                         if unresolved:
-                            logger.info(
-                                f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}"
-                            )
+                            logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
                             processed_issues.append(
                                 {
                                     "issue_data": issue_data,

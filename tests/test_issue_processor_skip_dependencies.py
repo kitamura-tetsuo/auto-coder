@@ -54,7 +54,7 @@ class TestIssueProcessorSkipDependencies:
         # Mock get_issue_dependencies to return dependencies
         mock_github_client.get_issue_dependencies.side_effect = [
             [100],  # Issue 123 depends on issue 100
-            [],     # Issue 456 has no dependencies
+            [],  # Issue 456 has no dependencies
         ]
 
         # Mock check_issue_dependencies_resolved to return unresolved dependencies
@@ -236,16 +236,24 @@ class TestIssueProcessorSkipDependencies:
         # Mock get_issue_dependencies to return dependencies
         mock_github_client.get_issue_dependencies.return_value = [99999]
 
-        # Mock check_issue_dependencies_resolved to raise exception (issue doesn't exist)
-        mock_github_client.check_issue_dependencies_resolved.side_effect = GithubException(404, "Not Found")
+        # Mock check_issue_dependencies_resolved to return unresolved (issue doesn't exist, so consider it unresolved)
+        mock_github_client.check_issue_dependencies_resolved.return_value = [99999]
+
+        # Mock try_add_work_in_progress_label to succeed
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         config = AutomationConfig()
         config.max_issues_per_run = 10
         config.CHECK_DEPENDENCIES = True
 
-        # Execute
-        with pytest.raises(GithubException):
-            _process_issues_normal(mock_github_client, config, dry_run=False, repo_name="test/repo")
+        # Execute - the issue should be skipped due to unresolved dependencies
+        result = _process_issues_normal(mock_github_client, config, dry_run=False, repo_name="test/repo")
+
+        # Verify the issue was skipped
+        assert len(result) == 1
+        assert result[0]["issue_data"]["number"] == 123
+        assert "unresolved dependencies" in result[0]["actions_taken"][0]
+        assert "99999" in result[0]["actions_taken"][0]
 
     @patch("src.auto_coder.issue_processor._take_issue_actions")
     def test_process_issues_handles_multiple_dependencies(self, mock_take_actions):
