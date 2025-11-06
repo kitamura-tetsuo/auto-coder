@@ -451,7 +451,7 @@ class TestProcessSingleWithAutoCoderLabel:
         assert result["issues_processed"][0]["actions_taken"] == ["Action taken"]
         mock_take_actions.assert_called_once()
         # Verify label was attempted to be added (even though it might already exist)
-        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("owner/repo", 123)
+        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("owner/repo", 123, label="@auto-coder")
         # Verify label was removed after processing
         mock_github_client.remove_labels_from_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
 

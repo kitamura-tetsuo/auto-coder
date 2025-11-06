@@ -14,6 +14,7 @@ logger = get_logger(__name__)
 
 class LabelOperationError(Exception):
     """Exception raised when label operations fail."""
+
     pass
 
 
@@ -46,27 +47,23 @@ def check_and_add_label(
         return True
 
     # Check if labels are disabled
-    if hasattr(github_client, 'disable_labels') and github_client.disable_labels:
+    if hasattr(github_client, "disable_labels") and github_client.disable_labels:
         logger.debug(f"Labels disabled - skipping label check for {item_type} #{item_number}")
         return True
 
-    if config and hasattr(config, 'DISABLE_LABELS') and config.DISABLE_LABELS:
+    if config and hasattr(config, "DISABLE_LABELS") and config.DISABLE_LABELS:
         logger.debug(f"Labels disabled via config - skipping label check for {item_type} #{item_number}")
         return True
 
     try:
         # Use GitHub client's try_add_work_in_progress_label method
-        if hasattr(github_client, 'try_add_work_in_progress_label'):
-            result = github_client.try_add_work_in_progress_label(
-                repo_name,
-                item_number,
-                label="@auto-coder"
-            )
+        if hasattr(github_client, "try_add_work_in_progress_label"):
+            result = github_client.try_add_work_in_progress_label(repo_name, item_number, label="@auto-coder")
             if result:
                 logger.info(f"Added @auto-coder label to {item_type} #{item_number}")
             else:
                 logger.info(f"Skipping {item_type} #{item_number} - @auto-coder label was just added by another instance")
-            return result
+            return bool(result)
 
         logger.error(f"GitHub client does not support try_add_work_in_progress_label")
         # On error, allow processing to continue
@@ -103,16 +100,16 @@ def remove_label(
         return
 
     # Check if labels are disabled
-    if hasattr(github_client, 'disable_labels') and github_client.disable_labels:
+    if hasattr(github_client, "disable_labels") and github_client.disable_labels:
         logger.debug(f"Labels disabled - skipping remove label for {item_type} #{item_number}")
         return
 
-    if config and hasattr(config, 'DISABLE_LABELS') and config.DISABLE_LABELS:
+    if config and hasattr(config, "DISABLE_LABELS") and config.DISABLE_LABELS:
         logger.debug(f"Labels disabled via config - skipping remove label for {item_type} #{item_number}")
         return
 
     try:
-        if hasattr(github_client, 'remove_labels_from_issue'):
+        if hasattr(github_client, "remove_labels_from_issue"):
             github_client.remove_labels_from_issue(repo_name, item_number, ["@auto-coder"])
             logger.info(f"Removed @auto-coder label from {item_type} #{item_number}")
         else:
@@ -141,19 +138,19 @@ def check_label_exists(
         True if label exists, False otherwise
     """
     try:
-        if hasattr(github_client, 'has_label'):
-            return github_client.has_label(repo_name, item_number, label_name)
+        if hasattr(github_client, "has_label"):
+            return bool(github_client.has_label(repo_name, item_number, label_name))
 
         # Fallback: get issue/PR details and check labels
         if item_type.lower() == "pr":
-            if hasattr(github_client, 'get_pr_details_by_number'):
+            if hasattr(github_client, "get_pr_details_by_number"):
                 pr_data = github_client.get_pr_details_by_number(repo_name, item_number)
                 labels = pr_data.get("labels", [])
             else:
                 logger.warning(f"GitHub client does not support PR details retrieval")
                 return False
         else:
-            if hasattr(github_client, 'get_issue_details_by_number'):
+            if hasattr(github_client, "get_issue_details_by_number"):
                 issue_data = github_client.get_issue_details_by_number(repo_name, item_number)
                 labels = issue_data.get("labels", [])
             else:
