@@ -80,7 +80,7 @@ logger = get_logger(__name__)
 @click.option(
     "--disable-labels/--no-disable-labels",
     default=False,
-    help="Disable GitHub label operations (@auto-coder label)",
+    help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
 @click.option(
     "--skip-main-update/--no-skip-main-update",
@@ -394,6 +394,11 @@ def process_issues(
     help="AI backend(s) to use in priority order (default: codex)",
 )
 @click.option(
+    "--disable-labels/--no-disable-labels",
+    default=False,
+    help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
+)
+@click.option(
     "--gemini-api-key",
     envvar="GEMINI_API_KEY",
     help="Gemini API key (optional, used when backend=gemini)",
@@ -445,6 +450,7 @@ def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
     backends: tuple[str, ...],
+    disable_labels: Optional[bool],
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
@@ -492,11 +498,13 @@ def create_feature_issues(
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
+    logger.info(f"Disable labels: {disable_labels}")
 
     click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
+    click.echo(f"Disable labels: {disable_labels}")
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
@@ -505,7 +513,7 @@ def create_feature_issues(
         initialize_graphrag(force_reindex=force_reindex)
 
     # Initialize clients
-    github_client = GitHubClient.get_instance(github_token_final)
+    github_client = GitHubClient.get_instance(github_token_final, disable_labels=disable_labels)
     manager = build_backend_manager(
         selected_backends,
         primary_backend,
@@ -549,6 +557,11 @@ def create_feature_issues(
     default=None,
     type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
     help="AI backend(s) for message generation in priority order (default: same as --backend)",
+)
+@click.option(
+    "--disable-labels/--no-disable-labels",
+    default=False,
+    help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
 @click.option(
     "--gemini-api-key",
@@ -608,6 +621,7 @@ def create_feature_issues(
 def fix_to_pass_tests_command(
     backends: tuple[str, ...],
     message_backends: Optional[tuple[str, ...]],
+    disable_labels: Optional[bool],
     gemini_api_key: Optional[str],
     openai_api_key: Optional[str],
     openai_base_url: Optional[str],
@@ -655,6 +669,7 @@ def fix_to_pass_tests_command(
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Dry run mode: {dry_run}")
+    click.echo(f"Disable labels: {disable_labels}")
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
 
@@ -666,7 +681,7 @@ def fix_to_pass_tests_command(
     try:
         from .github_client import GitHubClient as _GH
 
-        github_client = _GH("")
+        github_client = _GH("", disable_labels=disable_labels)
     except Exception:
         # Fallback to a minimal stand-in (never used)
         class _Dummy:

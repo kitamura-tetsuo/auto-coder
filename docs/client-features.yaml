@@ -51,6 +51,7 @@ cli:
         - { name: --repo, type: string, default: auto-detect }
         - { name: --github-token, env: GITHUB_TOKEN }
         - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
+        - { name: --disable-labels/--no-disable-labels, default: false }
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
         - { name: --openai-api-key, env: OPENAI_API_KEY }
         - { name: --openai-base-url, env: OPENAI_BASE_URL }
@@ -73,6 +74,7 @@ cli:
       options:
         - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
         - { name: --message-backend, multiple: true, default: same as --backend }
+        - { name: --disable-labels/--no-disable-labels, default: false }
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
         - { name: --openai-api-key, env: OPENAI_API_KEY }
         - { name: --openai-base-url, env: OPENAI_BASE_URL }
