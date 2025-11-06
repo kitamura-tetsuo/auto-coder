@@ -62,10 +62,11 @@ test = [
     "pytest-mock>=3.10.0",
 ]
 
-[tool.setuptools]
-# Package discovery configuration
-packages = ["auto_coder", "auto_coder.util"]
-package-dir = {"" = "src"}
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
 
 # Entry points for CLI commands
 [project.scripts]
@@ -159,3 +160,35 @@ skip_glob = [
     "*/build/*",
     "*/dist/*",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+namespace_packages = true
+explicit_package_bases = true
+src_paths = ["src"]
+mypy_path = ["src"]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "gitpython.*",
+    "pygithub.*",
+    "loguru.*",
+    "yaml.*",
+]
+ignore_missing_imports = true
+
+# Skip test files and external modules
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = [
+    "mcp_servers.*",
+    "graph_builder.*",
+]
+ignore_errors = true
