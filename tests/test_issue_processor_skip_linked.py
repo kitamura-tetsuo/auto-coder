@@ -16,6 +16,7 @@ class TestIssueProcessorSkipLinked:
         """Test that _process_issues_normal skips issues with linked PRs."""
         # Setup
         mock_github_client = Mock()
+        mock_github_client.disable_labels = False  # Explicitly set to False to avoid Mock truthiness
         mock_issue1 = Mock()
         mock_issue1.number = 123
         mock_issue2 = Mock()
@@ -76,7 +77,7 @@ class TestIssueProcessorSkipLinked:
         mock_github_client.has_linked_pr.assert_any_call("test/repo", 456)
 
         # Verify @auto-coder label was only added for issue 456 (not for issue 123 which was skipped)
-        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("test/repo", 456)
+        mock_github_client.try_add_work_in_progress_label.assert_called_once_with("test/repo", 456, label="@auto-coder")
 
         # Verify _take_issue_actions was only called for issue 456
         assert mock_take_actions.call_count == 1
