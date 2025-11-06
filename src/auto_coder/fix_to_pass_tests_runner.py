@@ -301,7 +301,6 @@ def apply_test_stability_fix(
     full_suite_result: Dict[str, Any],
     isolated_result: Dict[str, Any],
     llm_backend_manager: "BackendManager",
-    dry_run: bool = False,
 ) -> WorkspaceFixResult:
     """Ask the LLM to fix test stability/dependency issues.
 
@@ -321,7 +320,7 @@ def apply_test_stability_fix(
             isolated_test_output=isolated_output[: config.MAX_PROMPT_SIZE // 2],
         )
 
-        if dry_run:
+        if config.DRY_RUN:
             return WorkspaceFixResult(
                 summary="[DRY RUN] Would apply test stability fixes",
                 raw_response=None,
@@ -364,7 +363,6 @@ def apply_workspace_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
     llm_backend_manager: "BackendManager",
-    dry_run: bool = False,
     current_test_file: Optional[str] = None,
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures."""
@@ -389,7 +387,7 @@ def apply_workspace_test_fix(
         )
         logger.debug(f"0")
 
-        if dry_run:
+        if config.DRY_RUN:
             return WorkspaceFixResult(
                 summary="[DRY RUN] Would apply fixes for local test failures",
                 raw_response=None,
