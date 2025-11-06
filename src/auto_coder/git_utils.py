@@ -1489,12 +1489,15 @@ def branch_context(
     create_new: bool = False,
     base_branch: Optional[str] = None,
     cwd: Optional[str] = None,
+    check_unpushed: bool = True,
+    remote: str = "origin",
 ) -> Generator[None, None, None]:
     """
     Context manager for Git branch management.
 
-    This context manager automatically switches to the specified branch on entry
-    and returns to the main branch on exit (even if an exception occurs).
+    This context manager automatically switches to the specified branch on entry,
+    checks for unpushed commits, and returns to the main branch on exit (even if
+    an exception occurs).
 
     Args:
         branch_name: Name of the branch to switch to
@@ -1502,12 +1505,16 @@ def branch_context(
         base_branch: If create_new is True and base_branch is specified, creates
                      the new branch from base_branch (using -B flag)
         cwd: Optional working directory for the git command
+        check_unpushed: If True, automatically check and push unpushed commits
+                       on entry (default: True)
+        remote: Remote name to use for unpushed commit checks (default: 'origin')
 
     Example Usage:
         # Work on a feature branch
         with branch_context("feature/issue-123"):
             # Perform work on feature/issue-123 branch
             # Branch is automatically pulled on entry
+            # Unpushed commits are automatically pushed
             perform_work()
         # Automatically back on main branch after exiting context
 
@@ -1515,6 +1522,7 @@ def branch_context(
         with branch_context("feature/new-feature", create_new=True, base_branch="main"):
             # New branch created from main
             # Automatic pull after switch
+            # Unpushed commits are automatically pushed
             perform_work()
         # Automatically returns to main
 
@@ -1551,6 +1559,28 @@ def branch_context(
 
         if not switch_result.success:
             raise RuntimeError(f"Failed to switch to branch '{branch_name}': {switch_result.stderr}")
+
+        # Check for and push unpushed commits if requested
+        if check_unpushed:
+            try:
+                # Import ProgressStage here to avoid circular imports
+                from .progress_footer import ProgressStage
+
+                with ProgressStage("Checking unpushed commits"):
+                    logger.info("Checking for unpushed commits before processing...")
+                    push_result = ensure_pushed(cwd=cwd, remote=remote)
+                    if push_result.success and "No unpushed commits" not in push_result.stdout:
+                        logger.info("Successfully pushed unpushed commits")
+                    elif not push_result.success:
+                        logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
+            except ImportError:
+                # ProgressStage not available, just check and push without progress indicator
+                logger.info("Checking for unpushed commits before processing...")
+                push_result = ensure_pushed(cwd=cwd, remote=remote)
+                if push_result.success and "No unpushed commits" not in push_result.stdout:
+                    logger.info("Successfully pushed unpushed commits")
+                elif not push_result.success:
+                    logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
 
         # Yield control to the with block
         yield

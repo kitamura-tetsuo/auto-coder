@@ -393,19 +393,6 @@ def _handle_pr_merge(
     pr_number = pr_data["number"]
 
     try:
-        # Ensure any unpushed commits are pushed before starting
-        logger.info(f"Checking for unpushed commits before processing PR #{pr_number}...")
-        push_result = git_push(
-            commit_message=f"Auto-Coder: PR #{pr_number} processing",
-        )
-        if push_result.success and "No unpushed commits" not in push_result.stdout:
-            actions.append(f"Pushed unpushed commits: {push_result.stdout}")
-            logger.info("Successfully pushed unpushed commits")
-        elif not push_result.success:
-            logger.error(f"Failed to push unpushed commits: {push_result.stderr}")
-            logger.error("Exiting application due to git push failure")
-            sys.exit(1)
-
         # Step 1: Check GitHub Actions status
         github_checks = _check_github_actions_status(repo_name, pr_data, config)
         detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
@@ -555,10 +542,31 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
             log_action(f"Failed to fetch PR #{pr_number} branch", False, fetch_result.stderr)
             return False
 
-        # Force checkout the branch (create or reset) using branch_context
-        with branch_context(branch_name, create_new=True):
-            log_action(f"Successfully manually checked out PR #{pr_number}")
-            return True
+        # Try to check out the branch
+        # First, try to check out if it exists
+        checkout_result = cmd.run_command(["git", "checkout", branch_name])
+        if not checkout_result.success:
+            # Branch doesn't exist locally, create it
+            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name])
+
+            if not checkout_result.success:
+                log_action(f"Failed to create branch '{branch_name}' for PR #{pr_number}", False, checkout_result.stderr)
+                return False
+
+        # Now the branch is checked out, reset it to match the fetched commit
+        reset_result = cmd.run_command(["git", "reset", "--hard", f"origin/pull/{pr_number}/head"])
+        if not reset_result.success:
+            log_action(f"Failed to reset branch '{branch_name}' to PR head", False, reset_result.stderr)
+            return False
+
+        # Push the branch to set up tracking
+        push_result = cmd.run_command(["git", "push", "-u", "origin", branch_name])
+        if not push_result.success:
+            log_action(f"Failed to push branch '{branch_name}'", False, push_result.stderr)
+            # Don't fail the entire operation for push issues
+
+        log_action(f"Successfully manually checked out PR #{pr_number}")
+        return True
 
     except Exception as e:
         logger.error(f"Error manually checking out PR #{pr_number}: {e}")

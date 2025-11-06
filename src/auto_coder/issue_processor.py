@@ -10,7 +10,8 @@ from auto_coder.backend_manager import get_llm_backend_manager, run_message_prom
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig
-from .git_utils import branch_context, commit_and_push_changes, ensure_pushed, get_commit_log
+from .git_utils import branch_context, commit_and_push_changes, get_commit_log
+from .github_client import GitHubClient
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -21,7 +22,7 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
+def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, dry_run: bool, repo_name: str, issue_data: Dict[str, Any]) -> Dict[str, Any]:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
         issue_number = issue_data["number"]
@@ -66,7 +67,7 @@ def _process_issue_jules_mode(github_client, config: AutomationConfig, dry_run: 
                     "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
                 }
 
-            processed_issue = {"issue_data": issue_data, "actions_taken": []}
+            processed_issue: Dict[str, Any] = {"issue_data": issue_data, "actions_taken": []}
 
             # Check if 'jules' label already exists
             current_labels = issue_data.get("labels", [])
@@ -95,7 +96,7 @@ def _take_issue_actions(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    github_client,
+    github_client: GitHubClient,
 ) -> List[str]:
     """Take actions on an issue using direct LLM CLI analysis and implementation."""
     actions = []
@@ -128,7 +129,7 @@ def _create_pr_for_issue(
     work_branch: str,
     base_branch: str,
     llm_response: str,
-    github_client,
+    github_client: GitHubClient,
     dry_run: bool = False,
 ) -> str:
     """
@@ -281,7 +282,7 @@ def _apply_issue_actions_directly(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     dry_run: bool,
-    github_client,
+    github_client: GitHubClient,
 ) -> List[str]:
     """Ask LLM CLI to analyze an issue and take appropriate actions directly."""
     issue_number = issue_data.get("number", "unknown")
@@ -292,19 +293,8 @@ def _apply_issue_actions_directly(
             # Set progress item at the start
             set_progress_item("Issue", issue_number)
 
-            # Ensure any unpushed commits are pushed before starting
-            with ProgressStage("Checking unpushed commits"):
-                logger.info("Checking for unpushed commits before processing issue...")
-                push_result = ensure_pushed()
-                if push_result.success and "No unpushed commits" not in push_result.stdout:
-                    actions.append(f"Pushed unpushed commits: {push_result.stdout}")
-                    logger.info("Successfully pushed unpushed commits")
-                elif not push_result.success:
-                    logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
-                    actions.append(f"Warning: Failed to push unpushed commits: {push_result.stderr}")
-
             # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
-            target_branch = None
+            target_branch: str
             pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
 
             # Store current branch to ensure we can track where we started
@@ -318,7 +308,7 @@ def _apply_issue_actions_directly(
 
             if "head_branch" in issue_data:
                 # For PRs, switch to head_branch
-                target_branch = issue_data.get("head_branch")
+                target_branch = issue_data.get("head_branch") or ""
                 logger.info(f"Switching to PR branch: {target_branch}")
             else:
                 # For regular issues, determine work branch
@@ -442,11 +432,11 @@ def _apply_issue_actions_directly(
 
 
 def create_feature_issues(
-    github_client,
+    github_client: GitHubClient,
     config: AutomationConfig,
     dry_run: bool,
     repo_name: str,
-    gemini_client=None,
+    gemini_client: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Analyze repository and create feature enhancement issues."""
     logger.info(f"Analyzing repository for feature opportunities: {repo_name}")
@@ -465,7 +455,7 @@ def create_feature_issues(
         )
 
         # Generate feature suggestions
-        suggestions = []  # gemini_client.suggest_features(repo_context)
+        suggestions: List[Dict[str, Any]] = []  # gemini_client.suggest_features(repo_context)
 
         created_issues = []
         for suggestion in suggestions:
@@ -498,7 +488,7 @@ def create_feature_issues(
         return []
 
 
-def _get_repository_context(github_client, repo_name: str) -> Dict[str, Any]:
+def _get_repository_context(github_client: GitHubClient, repo_name: str) -> Dict[str, Any]:
     """Get repository context for feature analysis."""
     try:
         repo = github_client.get_repository(repo_name)
@@ -539,7 +529,7 @@ def _format_feature_issue_body(suggestion: Dict[str, Any]) -> str:
 
 
 def process_single(
-    github_client,
+    github_client: GitHubClient,
     config: AutomationConfig,
     dry_run: bool,
     repo_name: str,
@@ -554,7 +544,7 @@ def process_single(
     """
     with ProgressStage("Processing single PR/IS"):
         logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
-        result = {
+        result: Dict[str, Any] = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
             "dry_run": dry_run,
@@ -630,7 +620,7 @@ def process_single(
                     with LabelManager(github_client, repo_name, number, item_type="issue", dry_run=dry_run, config=config) as should_process:
                         # Note: We always process for process_single, even if should_process is False
 
-                        processed_issue = {
+                        processed_issue: Dict[str, Any] = {
                             "issue_data": issue_data,
                             "analysis": None,
                             "solution": None,
