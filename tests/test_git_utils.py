@@ -1676,7 +1676,10 @@ class TestMigratePrBranches:
                 ),
             ]
 
-            results = migrate_pr_branches(dry_run=True)
+            from src.auto_coder.automation_config import AutomationConfig
+
+            config = AutomationConfig(DRY_RUN=True)
+            results = migrate_pr_branches(config)
 
             assert results["success"] is True
             assert len(results["migrated"]) == 2
@@ -1700,7 +1703,10 @@ class TestMigratePrBranches:
                 returncode=0,
             )
 
-            results = migrate_pr_branches(dry_run=False, delete_after_merge=True)
+            from src.auto_coder.automation_config import AutomationConfig
+
+            config = AutomationConfig(DRY_RUN=False)
+            results = migrate_pr_branches(config, delete_after_merge=True)
 
             assert results["success"] is True
             assert len(results["migrated"]) == 0
@@ -1723,7 +1729,10 @@ class TestMigratePrBranches:
                 returncode=0,
             )
 
-            results = migrate_pr_branches(dry_run=True)
+            from src.auto_coder.automation_config import AutomationConfig
+
+            config = AutomationConfig(DRY_RUN=True)
+            results = migrate_pr_branches(config)
 
             assert results["success"] is True
             assert len(results["migrated"]) == 3
@@ -1746,7 +1755,10 @@ class TestMigratePrBranches:
                 returncode=0,
             )
 
-            results = migrate_pr_branches(dry_run=False)
+            from src.auto_coder.automation_config import AutomationConfig
+
+            config = AutomationConfig(DRY_RUN=False)
+            results = migrate_pr_branches(config)
 
             assert results["success"] is True  # Overall success (some branches handled)
             assert len(results["migrated"]) == 0
@@ -1767,7 +1779,10 @@ class TestMigratePrBranches:
                 returncode=0,
             )
 
-            results = migrate_pr_branches(cwd="/custom/path", dry_run=True)
+            from src.auto_coder.automation_config import AutomationConfig
+
+            config = AutomationConfig(DRY_RUN=True)
+            results = migrate_pr_branches(config, cwd="/custom/path")
 
             assert results["success"] is True
             # Verify cwd was passed to git commands
