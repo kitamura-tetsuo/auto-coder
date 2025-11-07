@@ -350,8 +350,6 @@ class AutomationEngine:
         """
         from datetime import datetime
 
-        from .automation_config import ProcessResult
-
         with ProgressStage("Processing single PR/IS"):
             logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
             result = ProcessResult(
