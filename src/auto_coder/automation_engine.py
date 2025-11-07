@@ -15,7 +15,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
-from .issue_processor import create_feature_issues, process_single
+from .issue_processor import create_feature_issues
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
@@ -226,6 +226,9 @@ class AutomationEngine:
                     # PR processing
                     pr_result = process_pull_request(self.github, config, repo_name, candidate.data)
                     result.actions = pr_result.actions_taken
+                    # Check if there was an error during processing
+                    if pr_result.error:
+                        result.error = pr_result.error
                     result.success = True
 
         except Exception as e:
@@ -384,19 +387,25 @@ class AutomationEngine:
                     jules_mode=jules_mode,
                 )
 
-                # Convert to the format expected by process_single
-                if candidate.type == "issue":
-                    processed_item = {
-                        "issue_data": candidate.data,
-                        "actions_taken": processing_result.actions,
-                    }
-                    result.issues_processed.append(processed_item)
-                elif candidate.type == "pr":
-                    processed_item = {
-                        "pr_data": candidate.data,
-                        "actions_taken": processing_result.actions,
-                    }
-                    result.prs_processed.append(processed_item)
+                # Only add to processed list if there was no error
+                if processing_result.error:
+                    # Add error to errors list instead of processed list
+                    error_msg = f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {processing_result.error}"
+                    result.errors.append(error_msg)
+                else:
+                    # Convert to the format expected by process_single
+                    if candidate.type == "issue":
+                        processed_item = {
+                            "issue_data": candidate.data,
+                            "actions_taken": processing_result.actions,
+                        }
+                        result.issues_processed.append(processed_item)
+                    elif candidate.type == "pr":
+                        processed_item = {
+                            "pr_data": candidate.data,
+                            "actions_taken": processing_result.actions,
+                        }
+                        result.prs_processed.append(processed_item)
 
                 # After processing, check if the single PR/issue is now closed
                 try:

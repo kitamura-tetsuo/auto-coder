@@ -150,6 +150,12 @@ class LabelManager:
             # Try to add the label with retry logic
             for attempt in range(self.max_retries):
                 try:
+                    # In DRY_RUN mode, skip label existence check and API calls
+                    if self.config.DRY_RUN:
+                        logger.info(f"[DRY RUN] Would add '{self.label_name}' label to {self.item_type} #{self.item_number}")
+                        self._label_added = True
+                        return True
+
                     # Check if label already exists
                     if _check_label_exists(
                         self.github_client,
@@ -162,11 +168,6 @@ class LabelManager:
                         return False
 
                     # Try to add the label
-                    if self.config.DRY_RUN:
-                        logger.info(f"[DRY RUN] Would add '{self.label_name}' label to {self.item_type} #{self.item_number}")
-                        self._label_added = True
-                        return True
-
                     result = self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
                     if result:
                         logger.info(f"Added '{self.label_name}' label to {self.item_type} #{self.item_number}")

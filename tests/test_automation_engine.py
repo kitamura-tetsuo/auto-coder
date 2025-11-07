@@ -161,6 +161,7 @@ class TestAutomationEngine:
         """Test that the engine correctly handles PR processing."""
         # Setup
         config = AutomationConfig()
+        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return proper PR data
@@ -174,9 +175,14 @@ class TestAutomationEngine:
             "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         # Mock successful processing - simulate that the PR was processed without errors
-        with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
+        with (
+            patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
+            patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
+        ):
+            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
             mock_take_actions.return_value = ["Merged PR successfully", "Applied fixes"]
 
             # Execute
@@ -193,6 +199,7 @@ class TestAutomationEngine:
         """Test that the engine correctly handles PR processing failure."""
         # Setup
         config = AutomationConfig()
+        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return proper PR data
@@ -206,9 +213,14 @@ class TestAutomationEngine:
             "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         # Mock failed processing
-        with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
+        with (
+            patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
+            patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
+        ):
+            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
             mock_take_actions.side_effect = Exception("Processing failed")
 
             # Execute
@@ -225,6 +237,7 @@ class TestAutomationEngine:
         """Test that PR processing handles conflicts correctly."""
         # Setup - this test verifies that process_single handles PR with conflicts
         config = AutomationConfig()
+        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return PR data
@@ -238,25 +251,26 @@ class TestAutomationEngine:
             "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
+        mock_github_client.try_add_work_in_progress_label.return_value = True
 
         # Mock that GitHub Actions are failing due to conflicts
-        with patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check:
-            mock_check.return_value = GitHubActionsStatusResult(success=False, ids=[123])
+        with (
+            patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
+            patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
+        ):
+            mock_check_actions.return_value = GitHubActionsStatusResult(success=False, ids=[123])
+            mock_take_actions.return_value = ["Resolved merge conflicts successfully"]
 
-            # Mock conflict resolution in _take_pr_actions
-            with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
-                mock_take_actions.return_value = ["Resolved merge conflicts successfully"]
+            # Execute
+            result = engine.process_single("test/repo", "pr", 123, jules_mode=False)
 
-                # Execute
-                result = engine.process_single("test/repo", "pr", 123, jules_mode=False)
-
-                # Assert
-                assert result["repository"] == "test/repo"
-                assert len(result["prs_processed"]) == 1
-                assert "Resolved merge conflicts successfully" in result["prs_processed"][0]["actions_taken"]
-                assert len(result["errors"]) == 0
-                # Note: _check_github_actions_status may or may not be called depending on the code path
-                mock_take_actions.assert_called_once()
+            # Assert
+            assert result["repository"] == "test/repo"
+            assert len(result["prs_processed"]) == 1
+            assert "Resolved merge conflicts successfully" in result["prs_processed"][0]["actions_taken"]
+            assert len(result["errors"]) == 0
+            # Note: _check_github_actions_status may or may not be called depending on the code path
+            mock_take_actions.assert_called_once()
 
     def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
         """Test issue actions in dry run mode."""
