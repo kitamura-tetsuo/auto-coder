@@ -579,6 +579,46 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
         return False
 
 
+def _merge_base_branch_with_context(
+    base_branch: str,
+    pr_number: int,
+    target_branch_name: str,
+) -> bool:
+    """
+    Merge base branch into current branch using branch_context for safety.
+
+    This helper function uses branch_context to ensure proper cleanup and
+    provides automatic unpushed commit checking. It performs the merge and push
+    operations that are common between _update_with_base_branch and _resolve_pr_merge_conflicts.
+
+    Args:
+        base_branch: The branch to merge into current branch
+        pr_number: PR number for logging
+        target_branch_name: Name of the target branch (for logging)
+
+    Returns:
+        True if merge was successful and changes were pushed, False otherwise
+    """
+    try:
+        # Use branch_context to ensure we return to original branch
+        # and to check for unpushed commits
+        with branch_context(base_branch, check_unpushed=True):
+            # Perform the merge
+            logger.info(f"Merging {base_branch} into {target_branch_name}")
+            merge_result = cmd.run_command(["git", "merge", f"origin/{base_branch}"])
+
+            if merge_result.success:
+                # No conflicts, push the changes
+                push_result = git_push()
+                return push_result.success
+            else:
+                # Merge failed, return False (caller will handle conflicts)
+                return False
+    except Exception as e:
+        logger.error(f"Error in _merge_base_branch_with_context: {e}")
+        return False
+
+
 def _update_with_base_branch(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -615,20 +655,45 @@ def _update_with_base_branch(
 
         actions.append(f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating...")
 
-        # Try to merge base branch
-        result = cmd.run_command(["git", "merge", f"origin/{target_branch}"])
-        if result.success:
-            actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
+        # Use the helper function to merge and push with branch_context safety
+        # First, get current branch to pass to helper for logging
+        current_branch_result = cmd.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        current_branch = current_branch_result.stdout.strip() if current_branch_result.success else "current"
 
-            # Push the updated branch using centralized helper with retry
-            push_result = git_push()
-            if push_result.success:
-                actions.append(f"Pushed updated branch for PR #{pr_number}")
-                # Signal to skip further LLM analysis for this PR in this run
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+        merge_success = _merge_base_branch_with_context(target_branch, pr_number, current_branch)
+
+        if merge_success:
+            actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
+            actions.append(f"Pushed updated branch for PR #{pr_number}")
+            # Signal to skip further LLM analysis for this PR in this run
+            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+        else:
+            # Check if it's a merge conflict
+            status_result = cmd.run_command(["git", "status", "--porcelain"])
+            has_conflicts = status_result.success and "##" in status_result.stdout
+
+            if has_conflicts:
+                # Merge conflict occurred, use common subroutine for conflict resolution
+                actions.append(f"Merge conflict detected for PR #{pr_number}, using common subroutine for resolution...")
+
+                # Use the common subroutine for conflict resolution
+                from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
+
+                conflict_resolved = _perform_base_branch_merge_and_conflict_resolution(
+                    pr_number,
+                    target_branch,
+                    config,
+                    repo_name,
+                    pr_data,
+                )
+
+                if conflict_resolved:
+                    actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
+                    actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+                else:
+                    actions.append(f"Failed to resolve merge conflicts for PR #{pr_number}")
             else:
-                # Push failed - try one more time after a brief pause
-                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
+                # Non-conflict error, try to push anyway in case of retry success
                 import time
 
                 time.sleep(2)
@@ -637,29 +702,9 @@ def _update_with_base_branch(
                     actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
                     actions.append("ACTION_FLAG:SKIP_ANALYSIS")
                 else:
-                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
+                    logger.error(f"Failed to push updated branch: {retry_push_result.stderr}")
                     logger.error("Exiting application due to git push failure")
                     sys.exit(1)
-        else:
-            # Merge conflict occurred, use common subroutine for conflict resolution
-            actions.append(f"Merge conflict detected for PR #{pr_number}, using common subroutine for resolution...")
-
-            # Use the common subroutine for conflict resolution
-            from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
-
-            conflict_resolved = _perform_base_branch_merge_and_conflict_resolution(
-                pr_number,
-                target_branch,
-                config,
-                repo_name,
-                pr_data,
-            )
-
-            if conflict_resolved:
-                actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
-                actions.append("ACTION_FLAG:SKIP_ANALYSIS")
-            else:
-                actions.append(f"Failed to resolve merge conflicts for PR #{pr_number}")
 
     except Exception as e:
         actions.append(f"Error updating with base branch for PR #{pr_number}: {e}")
@@ -973,31 +1018,21 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             logger.error(f"Failed to fetch {base_branch} branch: {fetch_result.stderr}")
             return False
 
-        # Step 3: Attempt to merge base branch
+        # Step 3: Attempt to merge base branch using helper with branch_context
         logger.info(f"Merging origin/{base_branch} into PR #{pr_number}")
-        merge_result = cmd.run_command(["git", "merge", f"origin/{base_branch}"])
 
-        if merge_result.success:
-            # No conflicts, push the updated branch using centralized helper with retry
-            logger.info(f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes")
-            push_result = git_push()
+        # Get current branch name for logging
+        current_branch_result = cmd.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+        current_branch = current_branch_result.stdout.strip() if current_branch_result.success else "PR branch"
 
-            if push_result.success:
-                logger.info(f"Successfully pushed updated branch for PR #{pr_number}")
-                return True
-            else:
-                # Push failed - try one more time after a brief pause
-                logger.warning(f"First push attempt failed: {push_result.stderr}, retrying...")
-                import time
+        # Use the helper function that uses branch_context for merge and push
+        merge_success = _merge_base_branch_with_context(base_branch, pr_number, current_branch)
 
-                time.sleep(2)
-                retry_push_result = git_push()
-                if retry_push_result.success:
-                    logger.info(f"Successfully pushed updated branch for PR #{pr_number} (after retry)")
-                    return True
-                else:
-                    logger.error(f"Failed to push updated branch after retry: {retry_push_result.stderr}")
-                    return False
+        if merge_success:
+            # No conflicts, merge and push successful
+            logger.info(f"Successfully merged {base_branch} into PR #{pr_number}")
+            logger.info(f"Successfully pushed updated branch for PR #{pr_number}")
+            return True
         else:
             # Merge conflicts detected, use LLM to resolve them
             logger.info(f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve")
