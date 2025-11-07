@@ -240,7 +240,7 @@ class TestAutomationEngine:
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
 
         # Mock that GitHub Actions are failing due to conflicts
-        with patch("src.auto_coder.pr_processor._check_github_actions_status") as mock_check:
+        with patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check:
             mock_check.return_value = GitHubActionsStatusResult(success=False, ids=[123])
 
             # Mock conflict resolution in _take_pr_actions
@@ -585,11 +585,12 @@ class TestAutomationEngine:
         assert "FAILED: assertion error" in result
         assert "ImportError: module not found" in result
 
-    @patch("subprocess.run")
-    def test_check_github_actions_status_all_passed(self, mock_run, mock_github_client, mock_gemini_client):
+    @patch("tests.conftest.subprocess.run")
+    def test_check_github_actions_status_all_passed(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when all checks pass."""
-        # Setup
-        mock_run.return_value = Mock(returncode=0, stdout="✓ test-check\n✓ another-check")
+        # Setup - mock subprocess.run directly (the stub also patches this)
+        # We need to mock before the stub's autouse fixture
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout="✓ test-check\n✓ another-check", stderr="")
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {"number": 123}
@@ -602,11 +603,11 @@ class TestAutomationEngine:
         assert result["total_checks"] == 2
         assert len(result["failed_checks"]) == 0
 
-    @patch("subprocess.run")
-    def test_check_github_actions_status_some_failed(self, mock_run, mock_github_client, mock_gemini_client):
+    @patch("tests.conftest.subprocess.run")
+    def test_check_github_actions_status_some_failed(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when some checks fail."""
         # Setup
-        mock_run.return_value = Mock(returncode=0, stdout="✓ passing-check\n✗ failing-check\n- pending-check")
+        mock_subprocess_run.return_value = Mock(returncode=0, stdout="✓ passing-check\n✗ failing-check\n- pending-check", stderr="")
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {"number": 123}
@@ -623,13 +624,14 @@ class TestAutomationEngine:
         assert result["failed_checks"][1]["name"] == "pending-check"
         assert result["failed_checks"][1]["conclusion"] == "pending"
 
-    @patch("subprocess.run")
-    def test_check_github_actions_status_tab_format_with_failures(self, mock_run, mock_github_client, mock_gemini_client):
+    @patch("tests.conftest.subprocess.run")
+    def test_check_github_actions_status_tab_format_with_failures(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and failures."""
         # Setup - simulating the actual output format from gh CLI
-        mock_run.return_value = Mock(
+        mock_subprocess_run.return_value = Mock(
             returncode=1,  # Non-zero because some checks failed
             stdout="test\tfail\t2m50s\thttps://github.com/example/repo/actions/runs/123\nformat\tpass\t27s\thttps://github.com/example/repo/actions/runs/124\nlink-pr-to-issue\tskipping\t0\thttps://github.com/example/repo/actions/runs/125",
+            stderr="",
         )
 
         engine = AutomationEngine(mock_github_client)
@@ -646,13 +648,14 @@ class TestAutomationEngine:
         assert result["failed_checks"][0]["conclusion"] == "failure"
         assert result["failed_checks"][0]["details_url"] == "https://github.com/example/repo/actions/runs/123"
 
-    @patch("subprocess.run")
-    def test_check_github_actions_status_tab_format_all_pass(self, mock_run, mock_github_client, mock_gemini_client):
+    @patch("tests.conftest.subprocess.run")
+    def test_check_github_actions_status_tab_format_all_pass(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and all passing."""
         # Setup
-        mock_run.return_value = Mock(
+        mock_subprocess_run.return_value = Mock(
             returncode=0,
             stdout="test\tpass\t2m50s\thttps://github.com/example/repo/actions/runs/123\nformat\tpass\t27s\thttps://github.com/example/repo/actions/runs/124\nlink-pr-to-issue\tskipping\t0\thttps://github.com/example/repo/actions/runs/125",
+            stderr="",
         )
 
         engine = AutomationEngine(mock_github_client)
@@ -666,10 +669,10 @@ class TestAutomationEngine:
         assert result["total_checks"] == 3
         assert len(result["failed_checks"]) == 0  # No failed checks
 
-    @patch("subprocess.run")
-    def test_check_github_actions_status_no_checks_reported(self, mock_run, mock_github_client, mock_gemini_client):
+    @patch("tests.conftest.subprocess.run")
+    def test_check_github_actions_status_no_checks_reported(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Handle gh CLI message when no checks are reported."""
-        mock_run.return_value = Mock(
+        mock_subprocess_run.return_value = Mock(
             returncode=1,
             stdout="",
             stderr="no checks reported on the 'feat/global-search' branch",

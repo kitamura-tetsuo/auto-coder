@@ -41,6 +41,38 @@ class AutomationEngine:
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
 
+    def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Check GitHub Actions status for PR (backward compatibility wrapper).
+
+        This method is kept for backward compatibility with existing tests.
+        It calls the utility function from github_action.py and converts the result to a dict.
+        """
+        # Import and call the utility function
+        from auto_coder.util.github_action import _check_github_actions_status as _ga_check
+        from auto_coder.util.github_action import get_detailed_checks_from_history
+
+        # Get the status result
+        status_result = _ga_check(repo_name, pr_data, self.config)
+
+        # If no run IDs, we can't get detailed checks
+        if not status_result.ids:
+            return {
+                "success": status_result.success,
+                "total_checks": 0,
+                "failed_checks": [],
+                "checks": [],
+            }
+
+        # Get detailed checks to match the old return format
+        detailed = get_detailed_checks_from_history(status_result, repo_name)
+
+        return {
+            "success": detailed.success,
+            "total_checks": detailed.total_checks,
+            "failed_checks": detailed.failed_checks,
+            "checks": detailed.all_checks,
+        }
+
     def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Candidate]:
         """Collect PR/Issue candidates with priority.
 
@@ -640,130 +672,6 @@ class AutomationEngine:
             important_lines.append(errors)
 
         return "\n".join(important_lines)
-
-    def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Check GitHub Actions status for PR."""
-        import subprocess
-
-        try:
-            pr_number = pr_data.get("number")
-            # Run gh CLI to get GitHub Actions status for the PR
-            result = subprocess.run(
-                ["gh", "run", "list", "--limit", "50"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-            # Check for no checks reported case
-            if result.returncode != 0:
-                if hasattr(result.stderr, "strip") and "no checks reported" in str(result.stderr):
-                    return {
-                        "success": True,
-                        "total_checks": 0,
-                        "failed_checks": [],
-                        "checks": [],
-                    }
-                # Don't return early here - still try to process stdout even with non-zero return code
-
-            # Parse the output to count checks
-            lines = result.stdout.strip().split("\n")
-            total_checks = 0
-            failed_checks = []
-            checks = []
-
-            for line in lines:
-                if not line.strip():
-                    continue
-
-                # Try to parse tab-separated format first (newer gh CLI)
-                if "\t" in line:
-                    parts = line.split("\t")
-                    if len(parts) >= 3:
-                        name = parts[0].strip()
-                        conclusion = parts[1].strip().lower()
-                        details_url = parts[3] if len(parts) > 3 else ""
-
-                        total_checks += 1
-
-                        # Normalize conclusion to match expected format
-                        normalized_conclusion = conclusion
-                        if conclusion == "fail":
-                            normalized_conclusion = "failure"
-                        elif conclusion == "pass":
-                            normalized_conclusion = "success"
-                        elif conclusion in ["in_progress", "pending"]:
-                            normalized_conclusion = "pending"
-
-                        check_info = {
-                            "name": name,
-                            "conclusion": normalized_conclusion,
-                            "details_url": details_url,
-                        }
-                        checks.append(check_info)
-
-                        # Count as failed if conclusion indicates actual failure OR if pending/in_progress
-                        # But exclude "skipping" from failures
-                        if normalized_conclusion in [
-                            "failure",
-                            "failed",
-                            "error",
-                            "timed_out",
-                            "pending",
-                            "in_progress",
-                        ]:
-                            failed_checks.append(check_info)
-                else:
-                    # Parse checkmark format (✓ and ✗)
-                    if line.startswith("✓") or line.startswith("✗") or line.startswith("-"):
-                        total_checks += 1
-
-                        if line.startswith("✓"):
-                            status = "success"
-                        elif line.startswith("✗"):
-                            status = "failure"
-                        else:  # line.startswith('-')
-                            status = "pending"
-
-                        name = line[1:].strip()
-
-                        check_info = {
-                            "name": name,
-                            "conclusion": status,
-                            "details_url": "",
-                        }
-                        checks.append(check_info)
-
-                        if status in ["failure", "pending"]:
-                            failed_checks.append(check_info)
-
-            # Determine overall success
-            overall_success = len(failed_checks) == 0
-
-            return {
-                "success": overall_success,
-                "total_checks": total_checks,
-                "failed_checks": failed_checks,
-                "checks": checks,
-            }
-
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "total_checks": 0,
-                "failed_checks": [],
-                "checks": [],
-                "error": "GitHub Actions status check timed out",
-            }
-        except Exception as e:
-            logger.error(f"Failed to check GitHub Actions status: {e}")
-            return {
-                "success": False,
-                "total_checks": 0,
-                "failed_checks": [],
-                "checks": [],
-                "error": str(e),
-            }
 
     def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
         """Apply GitHub Actions fix."""

@@ -9,14 +9,18 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
+from ..git_utils import branch_context
+from ..github_client import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
 
@@ -447,7 +451,7 @@ def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int
                 if pr_numbers and pr_number not in pr_numbers:
                     logger.debug(f"Run {run_id} does not reference PR #{pr_number}; skipping")
                     return []
-        return jobs_json.get("jobs", [])
+        return jobs_json.get("jobs", [])  # type: ignore[no-any-return]
     except json.JSONDecodeError as e:
         logger.debug(f"Failed to parse jobs JSON for run {run_id}: {e}")
         return []
@@ -1049,7 +1053,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                 # Split and output blocks for each failed step (text log path)
                 blocks = []
                 if norm_fail_names:
-                    step_to_lines = {}
+                    step_to_lines: Dict[str, List[str]] = {}
                     for ln in text_for_extract.split("\n"):
                         parts = ln.split("\t", 2)
                         if len(parts) >= 3:
@@ -1072,7 +1076,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                         e2 = min(len(src_lines), i + 8)
                                         extra.extend(src_lines[s2:e2])
                                 if extra:
-                                    norm_extra = [ln2.replace('"', '"') for ln2 in extra]
+                                    norm_extra = [ln.replace('"', '"') for ln in extra]
                                     if "--- Expectation Details ---" not in blk_imp:
                                         blk_imp = (blk_imp + ("\n\n--- Expectation Details ---\n" if blk_imp else "")) + "\n".join(norm_extra)
                                     else:
@@ -1090,9 +1094,9 @@ def get_github_actions_logs_from_url(url: str) -> str:
                     src_lines = text_for_extract.split("\n")
                     for i, ln in enumerate(src_lines):
                         if ("Expected substring:" in ln) or ("Received string:" in ln) or ("expect(received)" in ln):
-                            s = max(0, i - 2)
-                            e = min(len(src_lines), i + 8)
-                            extra.extend(src_lines[s:e])
+                            s = max(0, i - 2)  # type: ignore[assignment]
+                            e = min(len(src_lines), i + 8)  # type: ignore[misc]
+                            extra.extend(src_lines[s:e])  # type: ignore[misc]
                     if extra:
                         norm_extra = [ln.replace('\\"', '"') for ln in extra]
                         if "--- Expectation Details ---" not in important:
@@ -1366,9 +1370,9 @@ def _search_github_actions_logs_from_history(
 def _get_github_actions_logs(
     repo_name: str,
     config: AutomationConfig,
-    *args,
+    *args: Any,
     search_history: Optional[bool] = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> str:
     """Get GitHub Actions failed job logs via gh api and return extracted error locations.
 
@@ -1419,8 +1423,11 @@ def _get_github_actions_logs(
 
     # Default behavior (or fallback from historical search)
     # Resolve argument patterns
-    failed_checks: List[Dict[str, Any]] = []
-    pr_data: Optional[Dict[str, Any]] = None
+    # (failed_checks and pr_data may have been set in the historical search block above)
+    if not failed_checks:
+        failed_checks = []
+    if not pr_data:
+        pr_data = None
     if len(args) >= 1 and isinstance(args[0], list):
         failed_checks = args[0]
     if len(args) >= 2 and isinstance(args[1], dict):
@@ -1754,3 +1761,116 @@ def _clean_log_line(line: str) -> str:
     line = timestamp_pattern.sub("", line)
 
     return line
+
+
+def check_github_actions_and_exit_if_in_progress(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+    switch_branch_on_in_progress: bool = True,
+    item_number: Optional[int] = None,
+    item_type: str = "PR",
+) -> bool:
+    """
+    Check GitHub Actions status and exit if checks are still in progress.
+    Returns True if processing should continue, False if early exit occurred.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        pr_data: PR data dictionary
+        config: AutomationConfig instance
+        github_client: GitHubClient instance
+        switch_branch_on_in_progress: If True, switch to main branch and exit when checks are in progress
+                                      If False, just return early (for pr_processor.py pattern)
+        item_number: Optional item number for logging (uses pr_data['number'] if not provided)
+        item_type: Type of item being processed (default: "PR")
+
+    Returns:
+        True if processing should continue, False if early exit occurred
+    """
+    try:
+        # Get item number
+        number = item_number if item_number is not None else pr_data.get("number")
+        if not number:
+            logger.warning(f"No item number found, cannot check GitHub Actions status")
+            return True
+
+        # Check GitHub Actions status
+        github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
+
+        # If GitHub Actions are still in progress
+        if detailed_checks.has_in_progress:
+            if switch_branch_on_in_progress:
+                # Issue processor pattern: switch to main and exit
+                logger.info(f"GitHub Actions checks are still in progress for {item_type} #{number}, switching to main branch")
+
+                # Switch to main branch with pull
+                with branch_context(config.MAIN_BRANCH):
+                    logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
+                # Exit the program
+                logger.info(f"Exiting due to GitHub Actions in progress for {item_type} #{number}")
+                sys.exit(0)
+            else:
+                # PR processor pattern: just return early
+                logger.info(f"GitHub Actions checks are still in progress for {item_type} #{number}, skipping to next {item_type}")
+                return False
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error checking GitHub Actions status: {e}")
+        return True  # Continue processing on error
+
+
+def check_and_handle_closed_state(
+    repo_name: str,
+    item_type: str,
+    item_number: int,
+    config: AutomationConfig,
+    github_client: GitHubClient,
+    current_item: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Check if processed item is closed and handle main branch restoration.
+    Returns True if should exit, False if processing should continue.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        item_type: Type of item ("issue" or "pr")
+        item_number: Item number
+        config: AutomationConfig instance
+        github_client: GitHubClient instance
+        current_item: Optional already-fetched item data to avoid refetching
+
+    Returns:
+        True if processing should exit, False if processing should continue
+    """
+    try:
+        # Get current item state if not provided
+        if current_item is None:
+            if item_type == "pr":
+                current_item = github_client.get_pr_details_by_number(repo_name, item_number)
+            elif item_type == "issue":
+                current_item = github_client.get_issue_details_by_number(repo_name, item_number)
+            else:
+                logger.warning(f"Unknown item type: {item_type}")
+                return False
+
+        # Check if item is closed
+        if current_item.get("state") == "closed":
+            logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
+
+            # Switch to main branch with pull
+            with branch_context(config.MAIN_BRANCH):
+                logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
+            # Exit the program
+            logger.info(f"Exiting after closing {item_type} #{item_number}")
+            sys.exit(0)
+
+        return False  # Don't exit, continue processing
+
+    except Exception as e:
+        logger.warning(f"Failed to check/handle closed item state: {e}")
+        return False  # Continue on error

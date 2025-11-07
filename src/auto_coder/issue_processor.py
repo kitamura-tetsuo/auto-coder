@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import get_detailed_checks_from_history
+from auto_coder.util.github_action import (
+    _check_github_actions_status,
+    check_and_handle_closed_state,
+    check_github_actions_and_exit_if_in_progress,
+    get_detailed_checks_from_history,
+)
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
@@ -566,7 +571,7 @@ def process_single(
                     resolved_type = "issue"
             if resolved_type == "pr":
                 try:
-                    from .pr_processor import _check_github_actions_status, _extract_linked_issues_from_pr_body, _take_pr_actions
+                    from .pr_processor import _extract_linked_issues_from_pr_body, _take_pr_actions
 
                     pr_data = github_client.get_pr_details_by_number(repo_name, number)
 
@@ -581,19 +586,15 @@ def process_single(
                     set_progress_item("PR", number, related_issues, branch_name)
 
                     # Check GitHub Actions status before processing
-                    github_checks = _check_github_actions_status(repo_name, pr_data, config)
-                    detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
-
-                    # If GitHub Actions are still in progress, switch to main and exit
-                    if detailed_checks.has_in_progress:
-                        logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
-
-                        # Switch to main branch with pull
-                        with branch_context(config.MAIN_BRANCH):
-                            logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                        # Exit the program
-                        logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
-                        sys.exit(0)
+                    check_github_actions_and_exit_if_in_progress(
+                        repo_name,
+                        pr_data,
+                        config,
+                        github_client,
+                        switch_branch_on_in_progress=True,
+                        item_number=number,
+                        item_type="PR",
+                    )
 
                     actions = _take_pr_actions(repo_name, pr_data, config)
                     processed_pr = {
@@ -690,15 +691,15 @@ def process_single(
                         else:
                             current_item = github_client.get_pr_details_by_number(repo_name, item_number)
 
-                        if current_item.get("state") == "closed":
-                            logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
-
-                            # Switch to main branch with pull
-                            with branch_context(config.MAIN_BRANCH):
-                                logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                            # Exit the program
-                            logger.info(f"Exiting after closing {item_type} #{item_number}")
-                            sys.exit(0)
+                        # Check if item is closed and handle state
+                        check_and_handle_closed_state(
+                            repo_name,
+                            item_type,
+                            item_number,
+                            config,
+                            github_client,
+                            current_item=current_item,
+                        )
         except Exception as e:
             logger.warning(f"Failed to check/handle closed item state: {e}")
 

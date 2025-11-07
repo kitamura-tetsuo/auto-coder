@@ -16,7 +16,13 @@ from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, get_detailed_checks_from_history
+from auto_coder.util.github_action import (
+    DetailedChecksResult,
+    _check_github_actions_status,
+    _get_github_actions_logs,
+    check_github_actions_and_exit_if_in_progress,
+    get_detailed_checks_from_history,
+)
 
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
