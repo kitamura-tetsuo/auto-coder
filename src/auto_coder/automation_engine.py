@@ -41,38 +41,6 @@ class AutomationEngine:
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
 
-    def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Check GitHub Actions status for PR (backward compatibility wrapper).
-
-        This method is kept for backward compatibility with existing tests.
-        It calls the utility function from github_action.py and converts the result to a dict.
-        """
-        # Import and call the utility function
-        from auto_coder.util.github_action import _check_github_actions_status as _ga_check
-        from auto_coder.util.github_action import get_detailed_checks_from_history
-
-        # Get the status result
-        status_result = _ga_check(repo_name, pr_data, self.config)
-
-        # If no run IDs, we can't get detailed checks
-        if not status_result.ids:
-            return {
-                "success": status_result.success,
-                "total_checks": 0,
-                "failed_checks": [],
-                "checks": [],
-            }
-
-        # Get detailed checks to match the old return format
-        detailed = get_detailed_checks_from_history(status_result, repo_name)
-
-        return {
-            "success": detailed.success,
-            "total_checks": detailed.total_checks,
-            "failed_checks": detailed.failed_checks,
-            "checks": detailed.all_checks,
-        }
-
     def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Candidate]:
         """Collect PR/Issue candidates with priority.
 
