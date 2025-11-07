@@ -95,7 +95,7 @@ class Candidate:
     data: Dict[str, Any]  # issue_data or pr_data
     priority: int
     branch_name: Optional[str] = None
-    related_issues: List[str] = field(default_factory=list)
+    related_issues: List[int] = field(default_factory=list)
     issue_number: Optional[int] = None
 
 
