@@ -1767,7 +1767,7 @@ def check_github_actions_and_exit_if_in_progress(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-    github_client: GitHubClient,
+    github_client: Optional[GitHubClient] = None,
     switch_branch_on_in_progress: bool = True,
     item_number: Optional[int] = None,
     item_type: str = "PR",

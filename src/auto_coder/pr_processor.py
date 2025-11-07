@@ -402,16 +402,20 @@ def _handle_pr_merge(
     pr_number = pr_data["number"]
 
     try:
-        # Step 1: Check GitHub Actions status
-        github_checks = _check_github_actions_status(repo_name, pr_data, config)
-        detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
+        # Step 1: Check GitHub Actions status using utility function
+        # Use switch_branch_on_in_progress=False to just skip instead of exit
+        should_continue = check_github_actions_and_exit_if_in_progress(repo_name=repo_name, pr_data=pr_data, config=config, github_client=None, switch_branch_on_in_progress=False, item_number=pr_number, item_type="PR")  # Not needed for this check
 
-        # Step 2: Skip if GitHub Actions are still in progress
-        if detailed_checks.has_in_progress:
+        # Step 2: If checks are in progress, skip this PR
+        if not should_continue:
             actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
             return actions
 
-        # Step 3: If GitHub Actions passed, merge directly
+        # Step 3: Get detailed status for merge decision
+        github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
+
+        # Step 4: If GitHub Actions passed, merge directly
         if github_checks.success and detailed_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 

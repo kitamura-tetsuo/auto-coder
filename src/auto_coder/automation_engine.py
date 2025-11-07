@@ -86,8 +86,8 @@ class AutomationEngine:
         - Priority descending (3 -> 0)
         - Creation time ascending (oldest first)
         """
-        from .pr_processor import _check_github_actions_status as _pr_check_github_actions_status
         from .pr_processor import _extract_linked_issues_from_pr_body
+        from .util.github_action import _check_github_actions_status
 
         candidates: List[Candidate] = []
         candidates_count = 0
@@ -112,7 +112,7 @@ class AutomationEngine:
                 continue
 
             # Calculate priority
-            checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
+            checks = _check_github_actions_status(repo_name, pr_data, self.config)
             mergeable = pr_data.get("mergeable", True)
             pr_priority = 3 if (checks.success and mergeable) else 2
 
