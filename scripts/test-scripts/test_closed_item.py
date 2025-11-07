@@ -13,7 +13,7 @@ from auto_coder.issue_processor import process_single
 from auto_coder.automation_config import AutomationConfig
 
 
-def test_process_closed_issue():
+def test_process_closed_issue() -> None:
     """Test that when a single issue is closed after processing, it switches to main and exits."""
 
     # Create mock objects
@@ -56,19 +56,16 @@ def test_process_closed_issue():
         with patch('auto_coder.issue_processor.switch_to_branch', return_value=switch_result):
             with patch('auto_coder.issue_processor.cmd', cmd):
                 with patch('auto_coder.issue_processor.ProgressStage'):
-                    # Call process_single with dry_run=False (to trigger the exit logic)
+                    # Call process_single (to trigger the exit logic)
                     # But we need to mock sys.exit to avoid actually exiting
                     with patch('auto_coder.issue_processor.sys.exit') as mock_exit:
                         result = process_single(
                             github_client=github_client,
                             config=config,
-                            dry_run=False,
                             repo_name="test/repo",
                             target_type="issue",
                             number=123,
                             jules_mode=False,
-                            llm_client=None,
-                            message_backend_manager=None
                         )
 
                         # Verify that sys.exit was called with code 0
@@ -81,7 +78,7 @@ def test_process_closed_issue():
                     print("   4. Exited the program")
 
 
-def test_process_open_issue():
+def test_process_open_issue() -> None:
     """Test that when a single issue remains open after processing, no exit occurs."""
 
     # Create mock objects
@@ -117,13 +114,10 @@ def test_process_open_issue():
                         result = process_single(
                             github_client=github_client,
                             config=config,
-                            dry_run=False,
                             repo_name="test/repo",
                             target_type="issue",
                             number=456,
                             jules_mode=False,
-                            llm_client=None,
-                            message_backend_manager=None
                         )
 
                         # Verify that sys.exit was NOT called

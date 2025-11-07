@@ -206,15 +206,6 @@ def migrate_branches(
     # Setup logger to show detailed output
     setup_logger(stream=sys.stderr)
 
-    # Determine if we're in dry run mode (default is dry run, unless --execute is used)
-    is_dry_run = not execute
-
-    if is_dry_run:
-        click.echo("=" * 80)
-        click.echo("DRY RUN MODE - No changes will be made")
-        click.echo("=" * 80)
-        click.echo()
-
     # Check if we're in a git repository
     if not is_git_repository():
         raise click.ClickException("Not in a Git repository. Please run from within a Git repository.")
@@ -238,10 +229,7 @@ def migrate_branches(
     if results["migrated"]:
         click.echo(f"\n✅ Successfully migrated: {len(results['migrated'])}")
         for item in results["migrated"]:
-            if is_dry_run:
-                click.echo(f"  - {item['from']} -> {item['to']} (DRY RUN)")
-            else:
-                click.echo(f"  - {item['from']} -> {item['to']}")
+            click.echo(f"  - {item['from']} -> {item['to']}")
 
     if results["skipped"]:
         click.echo(f"\n⚠️  Skipped: {len(results['skipped'])}")
@@ -263,18 +251,14 @@ def migrate_branches(
     click.echo("=" * 80)
 
     # Provide guidance based on results
-    if not is_dry_run:
-        if results["conflicts"] or results["failed"]:
-            click.echo("\n⚠️  Some issues occurred during migration.")
-            if results["conflicts"]:
-                click.echo("   Use --force flag to auto-resolve merge conflicts, or resolve manually.")
-            if results["failed"]:
-                click.echo("   Please check the error messages above and resolve manually.")
-        else:
-            click.echo("✅ Migration completed successfully!")
+    if results["conflicts"] or results["failed"]:
+        click.echo("\n⚠️  Some issues occurred during migration.")
+        if results["conflicts"]:
+            click.echo("   Use --force flag to auto-resolve merge conflicts, or resolve manually.")
+        if results["failed"]:
+            click.echo("   Please check the error messages above and resolve manually.")
     else:
-        click.echo("💡 To execute the migration, run with --execute flag")
-        click.echo("   Example: auto-coder migrate-branches --execute")
+        click.echo("✅ Migration completed successfully!")
 
     # Exit with non-zero code if there were failures
     if results["failed"] or results["conflicts"]:

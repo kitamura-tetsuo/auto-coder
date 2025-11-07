@@ -717,7 +717,8 @@ def fix_to_pass_tests_command(
         logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
         click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
 
-    engine = AutomationEngine(github_client)
+    engine_config = AutomationConfig()
+    engine = AutomationEngine(github_client, config=engine_config)
 
     try:
         result = engine.fix_to_pass_tests(max_attempts=max_attempts, message_backend_manager=message_manager)

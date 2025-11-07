@@ -13,7 +13,7 @@ from auto_coder.issue_processor import process_single
 from auto_coder.automation_config import AutomationConfig
 
 
-def test_pr_with_github_actions_in_progress():
+def test_pr_with_github_actions_in_progress() -> None:
     """Test that when a single PR has GitHub Actions in progress, it switches to main and exits."""
 
     # Create mock objects
@@ -63,19 +63,16 @@ def test_pr_with_github_actions_in_progress():
                 with patch('auto_coder.issue_processor.ProgressStage'):
                     # Mock the GitHub Actions check (imported from pr_processor)
                     with patch('auto_coder.pr_processor._check_github_actions_status', return_value=mock_github_checks):
-                        # Call process_single with dry_run=False (to trigger the exit logic)
+                        # Call process_single (to trigger the exit logic)
                         # But we need to mock sys.exit to avoid actually exiting
                         with patch('auto_coder.issue_processor.sys.exit') as mock_exit:
                             result = process_single(
                                 github_client=github_client,
                                 config=config,
-                                dry_run=False,
                                 repo_name="test/repo",
                                 target_type="pr",
                                 number=789,
                                 jules_mode=False,
-                                llm_client=None,
-                                message_backend_manager=None
                             )
 
                             # Verify that sys.exit was called with code 0
@@ -88,7 +85,7 @@ def test_pr_with_github_actions_in_progress():
                         print("   4. Exited the program")
 
 
-def test_pr_with_github_actions_passed():
+def test_pr_with_github_actions_passed() -> None:
     """Test that when a single PR has GitHub Actions passed, processing continues."""
 
     # Create mock objects
@@ -141,13 +138,10 @@ def test_pr_with_github_actions_passed():
                                 result = process_single(
                                     github_client=github_client,
                                     config=config,
-                                    dry_run=False,
                                     repo_name="test/repo",
                                     target_type="pr",
                                     number=790,
                                     jules_mode=False,
-                                    llm_client=None,
-                                    message_backend_manager=None
                                 )
 
                                 # Verify that sys.exit was NOT called

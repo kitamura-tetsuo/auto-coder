@@ -151,18 +151,13 @@ def _process_pr_for_merge(
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
-        if config.DRY_RUN:
-            # Single execution policy - skip analysis phase
-            processed_pr.actions_taken.append(f"[DRY RUN] Would merge PR #{pr_data['number']} (Actions passing)")
-            return processed_pr
+        # Since Actions are passing, attempt direct merge
+        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
+        if merge_result:
+            processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
         else:
-            # Since Actions are passing, attempt direct merge
-            merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
-            if merge_result:
-                processed_pr.actions_taken.append("Merged PR successfully")
-            else:
-                processed_pr.actions_taken.append(f"Failed to merge PR #{pr_data['number']}")
-            return processed_pr
+            processed_pr.actions_taken.append(f"Failed to merge PR #{pr_data['number']}")
+        return processed_pr
 
 
 def _process_pr_for_fixes(
@@ -207,10 +202,6 @@ def _take_pr_actions(
     pr_number = pr_data["number"]
 
     try:
-        if config.DRY_RUN:
-            logger.debug("Dry run requested for PR #%s; skipping merge workflow", pr_number)
-            return [f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}"]
-
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
         merge_actions = _handle_pr_merge(repo_name, pr_data, config, {})
@@ -247,11 +238,6 @@ def _apply_pr_actions_directly(
     pr_number = pr_data["number"]
 
     try:
-        # Handle dry run mode - skip actual LLM processing
-        if config.DRY_RUN:
-            actions.append(f"[DRY RUN] Would apply PR actions directly for PR #{pr_number}")
-            return actions
-
         # Get PR diff for analysis
         with ProgressStage("Getting PR diff"):
             pr_diff = _get_pr_diff(repo_name, pr_number, config)
@@ -412,15 +398,11 @@ def _handle_pr_merge(
         if github_checks.success and detailed_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
-            if not config.DRY_RUN:
-                merge_result = _merge_pr(repo_name, pr_number, analysis, config)
-                if merge_result:
-                    actions.append(f"Successfully merged PR #{pr_number}")
-                else:
-                    actions.append(f"Failed to merge PR #{pr_number}")
+            merge_result = _merge_pr(repo_name, pr_number, analysis, config)
+            if merge_result:
+                actions.append(f"Successfully merged PR #{pr_number}")
             else:
-                actions.append(f"[DRY RUN] Would merge PR #{pr_number}")
-            return actions
+                actions.append(f"Failed to merge PR #{pr_number}")
 
         # Step 4: GitHub Actions failed - checkout PR branch
         failed_checks = detailed_checks.failed_checks
@@ -1128,48 +1110,15 @@ def _apply_github_actions_fix(
             fix_prompt[:160].replace("\n", " "),
         )
 
-        if not config.DRY_RUN:
+        # Use LLM backend manager to run the prompt
+        logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
+        response = run_llm_prompt(fix_prompt)
 
-            # Use LLM backend manager to run the prompt
-            logger.info(f"Requesting LLM GitHub Actions fix for PR #{pr_number}")
-            response = run_llm_prompt(fix_prompt)
-
-            if response:
-                response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
-                actions.append(f"Applied GitHub Actions fix: {response_preview}...")
-            else:
-                actions.append("No response from LLM for GitHub Actions fix")
-
-            # Stage, then commit/push via helpers
-            add_res = cmd.run_command(["git", "add", "."])
-            if not add_res.success:
-                actions.append(f"Failed to stage changes: {add_res.stderr}")
-                return actions
-
-            # flagged = _scan_conflict_markers()
-            # if flagged:
-            #     actions.append(
-            #         f"Conflict markers detected in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}. Aborting commit."
-            #     )
-            #     return actions
-
-            # commit_res = _commit_with_message(
-            #     f"Auto-Coder: Fix GitHub Actions failures for PR #{pr_number}"
-            # )
-            # if commit_res.success:
-            #     actions.append("Committed changes")
-            #     push_res = _push_current_branch()
-            #     if push_res.success:
-            #         actions.append("Pushed changes")
-            #     else:
-            #         actions.append(f"Failed to push changes: {push_res.stderr}")
-            # else:
-            #     if 'nothing to commit' in (commit_res.stdout or ''):
-            #         actions.append("No changes to commit")
-            #     else:
-            #         actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
+        if response:
+            response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
+            actions.append(f"Applied GitHub Actions fix: {response_preview}...")
         else:
-            actions.append(f"[DRY RUN] Would apply GitHub Actions fix for PR #{pr_number}")
+            actions.append("No response from LLM for GitHub Actions fix")
 
     except Exception as e:
         actions.append(f"Error applying GitHub Actions fix for PR #{pr_number}: {e}")
@@ -1219,10 +1168,6 @@ def _apply_local_test_fix(
                 pr_number,
                 fix_prompt[:160].replace("\n", " "),
             )
-
-            if config.DRY_RUN:
-                actions.append(f"[DRY RUN] Would apply local test fix for PR #{pr_number}")
-                return actions
 
             # Use LLM backend manager to run the prompt
             # Check if llm_client has run_test_fix_prompt method (BackendManager)
