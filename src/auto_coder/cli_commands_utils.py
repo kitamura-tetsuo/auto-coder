@@ -160,12 +160,6 @@ def auth_status() -> None:
 
 @click.command()
 @click.option(
-    "--dry-run",
-    is_flag=True,
-    default=True,
-    help="Show what would be done without making changes (default: True)",
-)
-@click.option(
     "--execute",
     is_flag=True,
     help="Actually perform the migration (default: False, use --execute to run)",
@@ -183,7 +177,6 @@ def auth_status() -> None:
     help="Auto-resolve merge conflicts (use with caution)",
 )
 def migrate_branches(
-    dry_run: bool,
     execute: bool,
     no_delete: bool,
     force: bool,
@@ -213,10 +206,10 @@ def migrate_branches(
     # Setup logger to show detailed output
     setup_logger(stream=sys.stderr)
 
-    # Determine actual dry_run based on flags
-    actual_dry_run = not execute
+    # Determine if we're in dry run mode (default is dry run, unless --execute is used)
+    is_dry_run = not execute
 
-    if actual_dry_run:
+    if is_dry_run:
         click.echo("=" * 80)
         click.echo("DRY RUN MODE - No changes will be made")
         click.echo("=" * 80)
@@ -226,8 +219,8 @@ def migrate_branches(
     if not is_git_repository():
         raise click.ClickException("Not in a Git repository. Please run from within a Git repository.")
 
-    # Create config with DRY_RUN set based on actual_dry_run
-    config = AutomationConfig(DRY_RUN=actual_dry_run)
+    # Create config
+    config = AutomationConfig()
 
     # Perform the migration
     results = migrate_pr_branches(
@@ -245,7 +238,7 @@ def migrate_branches(
     if results["migrated"]:
         click.echo(f"\n✅ Successfully migrated: {len(results['migrated'])}")
         for item in results["migrated"]:
-            if item.get("dry_run"):
+            if is_dry_run:
                 click.echo(f"  - {item['from']} -> {item['to']} (DRY RUN)")
             else:
                 click.echo(f"  - {item['from']} -> {item['to']}")
@@ -270,7 +263,7 @@ def migrate_branches(
     click.echo("=" * 80)
 
     # Provide guidance based on results
-    if not actual_dry_run:
+    if not is_dry_run:
         if results["conflicts"] or results["failed"]:
             click.echo("\n⚠️  Some issues occurred during migration.")
             if results["conflicts"]:
