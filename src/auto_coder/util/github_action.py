@@ -315,9 +315,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                         if status in ["pending", "in_progress"]:
                             has_in_progress = True
                             all_passed = False
-                        # Don't count skipped checks as failures
-                        elif status not in ["skipping", "skipped"]:
-                            all_passed = False
+                        # Note: skipping/skipped checks don't affect all_passed
                         check_info = {
                             "name": name,
                             "state": ("pending" if status in ["pending", "in_progress"] else "skipped"),
@@ -326,6 +324,18 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                         checks.append(check_info)
                         if status in ["pending", "in_progress"]:
                             failed_checks.append({"name": name, "conclusion": status, "details_url": url})
+                    else:
+                        # Handle any other status values
+                        if status not in ["pass", "success", "fail", "failure", "error", "skipping", "skipped", "pending", "in_progress"]:
+                            # Unknown status - treat as potential failure
+                            all_passed = False
+                        check_info = {
+                            "name": name,
+                            "state": "completed",
+                            "conclusion": status,
+                        }
+                        checks.append(check_info)
+                        failed_checks.append({"name": name, "conclusion": status, "details_url": url})
             else:
                 # Check format: "✓ check-name" or "✗ check-name" or "- check-name"
                 if line.startswith("✓"):
@@ -364,7 +374,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 # URL format: https://github.com/owner/repo/actions/runs/run_id/job/job_id
                 import re
 
-                match = re.search(r"/actions/runs/(\d+)/", details_url)
+                match = re.search(r"/actions/runs/(\d+)", details_url)
                 if match:
                     run_ids.append(int(match.group(1)))
 
@@ -374,7 +384,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             if details_url and "/actions/runs/" in details_url:
                 import re
 
-                match = re.search(r"/actions/runs/(\d+)/", details_url)
+                match = re.search(r"/actions/runs/(\d+)", details_url)
                 if match:
                     run_ids.append(int(match.group(1)))
 
@@ -1397,17 +1407,18 @@ def _get_github_actions_logs(
     if search_history is None:
         search_history = config.SEARCH_GITHUB_ACTIONS_HISTORY
 
+    # Extract failed_checks and optional pr_data from args
+    failed_checks: List[Dict[str, Any]] = []
+    pr_data: Optional[Dict[str, Any]] = None
+    if len(args) >= 1 and isinstance(args[0], list):
+        failed_checks = args[0]
+    if len(args) >= 2 and isinstance(args[1], dict):
+        pr_data = args[1]
+
     # Handle the case where historical search is explicitly enabled
     if search_history:
         logger.info("Historical search enabled: Searching through commit history for GitHub Actions logs")
 
-        # Extract failed_checks and optional pr_data from args
-        failed_checks: List[Dict[str, Any]] = []
-        pr_data: Optional[Dict[str, Any]] = None
-        if len(args) >= 1 and isinstance(args[0], list):
-            failed_checks = args[0]
-        if len(args) >= 2 and isinstance(args[1], dict):
-            pr_data = args[1]
         if not failed_checks:
             # No failed_checks provided
             return "No detailed logs available"
