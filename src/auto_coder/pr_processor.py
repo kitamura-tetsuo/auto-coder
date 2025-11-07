@@ -16,13 +16,7 @@ from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import (
-    DetailedChecksResult,
-    _check_github_actions_status,
-    _get_github_actions_logs,
-    check_github_actions_and_exit_if_in_progress,
-    get_detailed_checks_from_history,
-)
+from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
@@ -206,30 +200,38 @@ def _take_pr_actions(
     actions = []
     pr_number = pr_data["number"]
 
-    try:
-        if config.DRY_RUN:
-            logger.debug("Dry run requested for PR #%s; skipping merge workflow", pr_number)
-            return [f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}"]
+    github_client = GitHubClient.get_instance()
 
-        # First, handle the merge process (GitHub Actions, testing, etc.)
-        # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(repo_name, pr_data, config, {})
-        actions.extend(merge_actions)
+    # Use LabelManager context manager to handle @auto-coder label automatically
+    with LabelManager(github_client, repo_name, pr_number, item_type="pr", config=config) as should_process:
+        if not should_process:
+            actions.append("Skipped - another instance started processing (@auto-coder label added)")
+            return actions
 
-        # If merge process completed successfully (PR was merged), skip analysis
-        if any("Successfully merged" in action for action in merge_actions):
-            actions.append(f"PR #{pr_number} was merged, skipping further analysis")
-        elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions):
-            actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
-        else:
-            # Only do Gemini analysis if merge process didn't complete
-            analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config)
-            actions.extend(analysis_results)
+        try:
+            if config.DRY_RUN:
+                logger.debug("Dry run requested for PR #%s; skipping merge workflow", pr_number)
+                return [f"[DRY RUN] Would handle PR merge and analysis for PR #{pr_number}"]
 
-    except Exception as e:
-        actions.append(f"Error taking PR actions for PR #{pr_number}: {e}")
+            # First, handle the merge process (GitHub Actions, testing, etc.)
+            # This doesn't depend on Gemini analysis
+            merge_actions = _handle_pr_merge(repo_name, pr_data, config, {})
+            actions.extend(merge_actions)
 
-    return actions
+            # If merge process completed successfully (PR was merged), skip analysis
+            if any("Successfully merged" in action for action in merge_actions):
+                actions.append(f"PR #{pr_number} was merged, skipping further analysis")
+            elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions):
+                actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
+            else:
+                # Only do Gemini analysis if merge process didn't complete
+                analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config)
+                actions.extend(analysis_results)
+
+        except Exception as e:
+            actions.append(f"Error taking PR actions for PR #{pr_number}: {e}")
+
+        return actions
 
 
 def _apply_pr_actions_directly(
