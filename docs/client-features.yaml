@@ -164,6 +164,7 @@ features:
     - Skips issues when 5+ open issues without sub-issues are present
     - Single-item processing via --only (URL or number)
     - Auto-resume when on a non-main branch with an associated PR/Issue
+    - label_management: Removed duplicate LabelManager usage from issue processing; LabelManager is now used only for PR processing to prevent concurrent processing
   dependency_management:
     - description: Automatic dependency checking for issue processing
     - patterns: Supports "Depends on: #123", "depends on #456", "blocked by #789" patterns (case-insensitive)
