@@ -507,3 +507,80 @@ def test_start_connects_to_network(docker_manager, mock_executor):
 
             # Should have called _connect_to_graphrag_network
             mock_connect.assert_called_once()
+
+
+def test_run_docker_compose_uses_working_directory(docker_manager, mock_executor):
+    """Test that _run_docker_compose passes the correct working directory."""
+    # Mock successful docker-compose up
+    mock_result = mock.MagicMock()
+    mock_result.success = True
+    mock_executor.run_command.return_value = mock_result
+
+    # Set the compose file path
+    docker_manager.compose_file = "/home/user/.auto-coder/graphrag/docker-compose.graphrag.yml"
+
+    # Run docker compose up
+    result = docker_manager._run_docker_compose(["up", "-d"])
+
+    # Verify that run_command was called with the correct working directory
+    call_args = mock_executor.run_command.call_args
+    assert call_args[1]["cwd"] == "/home/user/.auto-coder/graphrag"
+    assert result.success is True
+
+
+def test_run_docker_compose_with_sudo_uses_working_directory(docker_manager, mock_executor):
+    """Test that _run_docker_compose passes working directory on sudo retry."""
+    # Mock permission error on first call, success on second
+    permission_error_result = mock.MagicMock()
+    permission_error_result.success = False
+    permission_error_result.stderr = "permission denied while trying to connect to the Docker daemon socket"
+    permission_error_result.stdout = ""
+
+    success_result = mock.MagicMock()
+    success_result.success = True
+    success_result.stderr = ""
+    success_result.stdout = "Started containers"
+
+    mock_executor.run_command.side_effect = [permission_error_result, success_result]
+
+    # Set the compose file path
+    docker_manager.compose_file = "/home/user/.auto-coder/graphrag/docker-compose.graphrag.yml"
+
+    # Run docker compose up
+    result = docker_manager._run_docker_compose(["up", "-d"])
+
+    # Verify that run_command was called twice with the correct working directory
+    assert mock_executor.run_command.call_count == 2
+
+    # First call without sudo
+    first_call_args = mock_executor.run_command.call_args_list[0]
+    assert first_call_args[1]["cwd"] == "/home/user/.auto-coder/graphrag"
+
+    # Second call with sudo
+    second_call_args = mock_executor.run_command.call_args_list[1]
+    assert second_call_args[1]["cwd"] == "/home/user/.auto-coder/graphrag"
+    assert result.success is True
+
+
+def test_get_compose_file_from_package_uses_home_directory(monkeypatch):
+    """Test that _get_compose_file_from_package uses home directory."""
+    from pathlib import Path
+
+    # Mock the home directory
+    fake_home = Path("/fake/home")
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+
+    # Mock the entire method to avoid actual file system operations
+    expected_path = str(fake_home / ".auto-coder" / "graphrag" / "docker-compose.graphrag.yml")
+
+    with mock.patch.object(GraphRAGDockerManager, "_get_compose_file_from_package", return_value=expected_path):
+        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+            with mock.patch.object(
+                GraphRAGDockerManager,
+                "_detect_docker_compose_command",
+                return_value=["docker", "compose"],
+            ):
+                manager = GraphRAGDockerManager()
+
+                # Verify the compose file is in the home directory
+                assert manager.compose_file == expected_path

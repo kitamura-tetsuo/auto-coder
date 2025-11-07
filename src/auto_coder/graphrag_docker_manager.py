@@ -56,10 +56,15 @@ class GraphRAGDockerManager:
             compose_content = compose_resource.read_text()
 
             # Create a temporary file that persists
-            temp_dir = Path(tempfile.gettempdir()) / "auto-coder"
-            temp_dir.mkdir(exist_ok=True)
+            # Use a directory under the user's home directory for better stability
+            # than /tmp which can be cleaned up
+            temp_dir = Path.home() / ".auto-coder" / "graphrag"
+            temp_dir.mkdir(parents=True, exist_ok=True)
             compose_file = temp_dir / "docker-compose.graphrag.yml"
             compose_file.write_text(compose_content)
+
+            # Ensure the directory is writable and accessible
+            os.chmod(temp_dir, 0o755)
 
             logger.debug(f"Extracted docker-compose.graphrag.yml to {compose_file}")
             return str(compose_file)
@@ -131,14 +136,21 @@ class GraphRAGDockerManager:
         # The -f flag must come after 'compose'
         cmd = self._docker_compose_cmd + ["-f", self.compose_file] + args
         logger.debug(f"Running docker compose command: {' '.join(cmd)}")
-        result = self.executor.run_command(cmd, timeout=timeout)
+
+        # Set working directory to the directory containing the compose file
+        # This prevents "getwd: no such file or directory" errors during validation
+        compose_dir: str | None = os.path.dirname(self.compose_file)
+        if not compose_dir:
+            compose_dir = None
+
+        result = self.executor.run_command(cmd, timeout=timeout, cwd=compose_dir)
 
         # If permission error and retry is enabled, try with sudo
         if not result.success and retry_with_sudo and self._is_permission_error(result.stderr):
             logger.warning("Permission denied when accessing Docker. Retrying with sudo...")
             sudo_cmd = ["sudo"] + cmd
             logger.debug(f"Running docker compose command with sudo: {' '.join(sudo_cmd)}")
-            result = self.executor.run_command(sudo_cmd, timeout=timeout)
+            result = self.executor.run_command(sudo_cmd, timeout=timeout, cwd=compose_dir)
 
         return result
 
