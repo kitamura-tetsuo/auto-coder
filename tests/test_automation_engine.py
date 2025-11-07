@@ -1290,14 +1290,14 @@ class TestGetCandidates:
 
         # Assert - Urgent issue should be first (priority 1)
         assert len(candidates) == 3
-        assert candidates[0]["type"] == "issue"
-        assert candidates[0]["priority"] == 1
-        assert candidates[0]["data"]["number"] == 2
-        assert "urgent" in candidates[0]["data"]["labels"]
+        assert candidates[0].type == "issue"
+        assert candidates[0].priority == 1
+        assert candidates[0].data["number"] == 2
+        assert "urgent" in candidates[0].data["labels"]
 
         # Regular issues should have priority 0
-        assert candidates[1]["priority"] == 0
-        assert candidates[2]["priority"] == 0
+        assert candidates[1].priority == 0
+        assert candidates[2].priority == 0
 
         mock_extract_issues.assert_not_called()  # No PRs
 
@@ -1397,20 +1397,20 @@ class TestGetCandidates:
         assert len(candidates) == 5
 
         # Priority order: urgent PR (6) > ready PR (3) > needs fix PR (2) > urgent issue (1) > regular issue (0)
-        assert candidates[0]["priority"] == 6
-        assert candidates[0]["data"]["number"] == 3  # Urgent PR with failing checks
+        assert candidates[0].priority == 6
+        assert candidates[0].data["number"] == 3  # Urgent PR with failing checks
 
-        assert candidates[1]["priority"] == 3
-        assert candidates[1]["data"]["number"] == 2  # PR ready for merge
+        assert candidates[1].priority == 3
+        assert candidates[1].data["number"] == 2  # PR ready for merge
 
-        assert candidates[2]["priority"] == 2
-        assert candidates[2]["data"]["number"] == 1  # PR needing fix
+        assert candidates[2].priority == 2
+        assert candidates[2].data["number"] == 1  # PR needing fix
 
-        assert candidates[3]["priority"] == 1
-        assert candidates[3]["data"]["number"] == 11  # Urgent issue
+        assert candidates[3].priority == 1
+        assert candidates[3].data["number"] == 11  # Urgent issue
 
-        assert candidates[4]["priority"] == 0
-        assert candidates[4]["data"]["number"] == 10  # Regular issue
+        assert candidates[4].priority == 0
+        assert candidates[4].data["number"] == 10  # Regular issue
 
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -1466,10 +1466,10 @@ class TestGetCandidates:
 
         # Assert - Only non-labeled items should be returned (PR #1 has @auto-coder label, Issue #11 has @auto-coder label)
         assert len(candidates) == 1
-        assert candidates[0]["data"]["number"] == 10  # Issue without @auto-coder label
+        assert candidates[0].data["number"] == 10  # Issue without @auto-coder label
 
         # PR #1 and Issue #11 should be skipped
-        candidate_numbers = [c["data"]["number"] for c in candidates]
+        candidate_numbers = [c.data["number"] for c in candidates]
         assert 1 not in candidate_numbers  # PR with @auto-coder label
         assert 11 not in candidate_numbers  # Issue with @auto-coder label
 
@@ -1513,8 +1513,8 @@ class TestGetCandidates:
 
         # Assert - Only issue #10 should be returned
         assert len(candidates) == 1
-        assert candidates[0]["data"]["number"] == 10
-        assert candidates[0]["type"] == "issue"
+        assert candidates[0].data["number"] == 10
+        assert candidates[0].type == "issue"
 
     @patch("src.auto_coder.pr_processor._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -1556,10 +1556,10 @@ class TestGetCandidates:
 
         # Assert
         assert len(candidates) == 1
-        assert candidates[0]["type"] == "pr"
-        assert candidates[0]["data"]["number"] == 1
-        assert candidates[0]["related_issues"] == [10, 20]
-        assert candidates[0]["branch_name"] == "pr-1"
+        assert candidates[0].type == "pr"
+        assert candidates[0].data["number"] == 1
+        assert candidates[0].related_issues == [10, 20]
+        assert candidates[0].branch_name == "pr-1"
 
         mock_extract_issues.assert_called_once_with("This PR fixes #10 and #20")
 
