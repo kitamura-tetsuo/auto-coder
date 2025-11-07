@@ -125,6 +125,7 @@ class ProcessedPRResult:
     actions_taken: List[str] = field(default_factory=list)
     priority: Optional[str] = None  # "merge", "fix", "single", "error"
     analysis: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
 
 
 @dataclass
