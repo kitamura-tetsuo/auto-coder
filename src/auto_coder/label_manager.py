@@ -228,7 +228,8 @@ class LabelManager:
         Returns:
             True if labels are disabled, False otherwise
         """
-        if self.github_client.disable_labels:
+        # Check if github_client has disable_labels attribute and if it's set
+        if hasattr(self.github_client, "disable_labels") and self.github_client.disable_labels:
             return True
 
         if self.config and self.config.DISABLE_LABELS:
