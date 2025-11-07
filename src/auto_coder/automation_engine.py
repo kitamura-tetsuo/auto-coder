@@ -12,14 +12,15 @@ from auto_coder.prompt_loader import render_prompt
 from auto_coder.util.github_action import get_github_actions_logs_from_url
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
-from .automation_config import AutomationConfig
+from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
-from .issue_processor import ProcessResult, create_feature_issues, process_single
+from .issue_processor import create_feature_issues
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import process_pull_request
+from .progress_footer import ProgressStage
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -41,7 +42,7 @@ class AutomationEngine:
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
 
-    def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Candidate]:
         """Collect PR/Issue candidates with priority.
 
         Priority definitions:
@@ -54,10 +55,10 @@ class AutomationEngine:
         - Priority descending (3 -> 0)
         - Creation time ascending (oldest first)
         """
-        from .pr_processor import _check_github_actions_status as _pr_check_github_actions_status
         from .pr_processor import _extract_linked_issues_from_pr_body
+        from .util.github_action import _check_github_actions_status
 
-        candidates: List[Dict[str, Any]] = []
+        candidates: List[Candidate] = []
         candidates_count = 0
 
         # Collect PR candidates
@@ -80,7 +81,7 @@ class AutomationEngine:
                 continue
 
             # Calculate priority
-            checks = _pr_check_github_actions_status(repo_name, pr_data, self.config)
+            checks = _check_github_actions_status(repo_name, pr_data, self.config)
             mergeable = pr_data.get("mergeable", True)
             pr_priority = 3 if (checks.success and mergeable) else 2
 
@@ -88,13 +89,13 @@ class AutomationEngine:
                 pr_priority += 4
 
             candidates.append(
-                {
-                    "type": "pr",
-                    "data": pr_data,
-                    "priority": pr_priority,
-                    "branch_name": pr_data.get("head", {}).get("ref"),
-                    "related_issues": _extract_linked_issues_from_pr_body(pr_data.get("body", "")),
-                }
+                Candidate(
+                    type="pr",
+                    data=pr_data,
+                    priority=pr_priority,
+                    branch_name=pr_data.get("head", {}).get("ref"),
+                    related_issues=_extract_linked_issues_from_pr_body(pr_data.get("body", "")),
+                )
             )
 
         if candidates_count < 5:
@@ -118,12 +119,12 @@ class AutomationEngine:
                 issue_priority = 1 if "urgent" in labels else 0
 
                 candidates.append(
-                    {
-                        "type": "issue",
-                        "data": issue_data,
-                        "priority": issue_priority,
-                        "issue_number": number,
-                    }
+                    Candidate(
+                        type="issue",
+                        data=issue_data,
+                        priority=issue_priority,
+                        issue_number=number,
+                    )
                 )
 
         # Sort by priority descending, type (issue first), creation time ascending
@@ -132,9 +133,9 @@ class AutomationEngine:
 
         candidates.sort(
             key=lambda x: (
-                -int(x.get("priority", 0)),
-                _type_order(x.get("type", "pr")),
-                x.get("data", {}).get("created_at", ""),
+                -x.priority,
+                _type_order(x.type),
+                x.data.get("created_at", ""),
             )
         )
 
@@ -144,25 +145,99 @@ class AutomationEngine:
 
         return candidates
 
-    def _has_open_sub_issues(self, repo_name: str, candidate: Dict[str, Any]) -> bool:
+    def _has_open_sub_issues(self, repo_name: str, candidate: Candidate) -> bool:
         """Fail-safe helper to check if target issue has unresolved sub-issues.
         - candidate is expected to be an element from _get_candidates (type: issue)
         - Returns False on exception to avoid skip suppression
         """
         try:
-            if candidate.get("type") != "issue":
+            if candidate.type != "issue":
                 return False
-            issue_data = candidate.get("data") or {}
-            issue_number = candidate.get("issue_number") or issue_data.get("number")
+            issue_data = candidate.data or {}
+            issue_number = candidate.issue_number or issue_data.get("number")
             if not issue_number:
                 return False
             sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
             return bool(sub_issues)
         except Exception as e:
-            logger.warning(f"Failed to check open sub-issues for issue #{candidate.get('issue_number') or issue_data.get('number', 'N/A')}: {e}")
+            logger.warning(f"Failed to check open sub-issues for issue #{candidate.issue_number or issue_data.get('number', 'N/A')}: {e}")
             return False
 
-    def _process_single_candidate(self, repo_name: str, candidate: Dict[str, Any], jules_mode: bool = False) -> Dict[str, Any]:
+    def _process_single_candidate_unified(
+        self,
+        repo_name: str,
+        candidate: Candidate,
+        config: AutomationConfig,
+        jules_mode: bool = False,
+    ) -> CandidateProcessingResult:
+        """Unified function for processing single issue or PR candidate.
+
+        Handles all common logic: LabelManager, branch_context, error handling.
+        This consolidates the logic from both batch processing (_process_single_candidate)
+        and single processing (process_single).
+
+        Args:
+            repo_name: Repository name
+            candidate: Target candidate to process
+            config: AutomationConfig instance
+            jules_mode: Whether Jules mode is enabled
+
+        Returns:
+            Processing result
+        """
+        from .label_manager import LabelManager
+
+        result = CandidateProcessingResult(
+            type=candidate.type,
+            number=candidate.data.get("number"),
+            title=candidate.data.get("title"),
+            success=False,
+            actions=[],
+            error=None,
+        )
+
+        try:
+            # Get item number and type
+            item_number = candidate.data.get("number")
+            item_type = candidate.type
+
+            # Ensure item_number is not None
+            if item_number is None:
+                raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
+
+            # Use LabelManager context manager to handle @auto-coder label automatically
+            with LabelManager(self.github, repo_name, item_number, item_type=item_type, config=config) as should_process:
+                if not should_process:
+                    result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
+                    return result
+
+                if jules_mode and item_type == "issue":
+                    # Jules mode: only add 'jules' label
+                    from .issue_processor import _process_issue_jules_mode
+
+                    jules_result = _process_issue_jules_mode(self.github, config, repo_name, candidate.data)
+                    result.actions = jules_result.actions_taken
+                    result.success = True
+                elif item_type == "issue":
+                    # Regular issue processing
+                    result.actions = self._take_issue_actions(repo_name, candidate.data)
+                    result.success = True
+                elif item_type == "pr":
+                    # PR processing
+                    pr_result = process_pull_request(self.github, config, repo_name, candidate.data)
+                    result.actions = pr_result.actions_taken
+                    # Check if there was an error during processing
+                    if pr_result.error:
+                        result.error = pr_result.error
+                    result.success = True
+
+        except Exception as e:
+            result.error = str(e)
+            logger.error(f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {e}")
+
+        return result
+
+    def _process_single_candidate(self, repo_name: str, candidate: Candidate, jules_mode: bool = False) -> CandidateProcessingResult:
         """Process a single candidate (issue/PR).
 
         Args:
@@ -173,29 +248,12 @@ class AutomationEngine:
         Returns:
             Processing result
         """
-        result = {
-            "type": candidate.get("type"),
-            "number": candidate.get("data", {}).get("number"),
-            "title": candidate.get("data", {}).get("title"),
-            "success": False,
-            "actions": [],
-            "error": None,
-        }
-
-        try:
-            if candidate.get("type") == "issue":
-                # Issue processing
-                result["actions"] = self._take_issue_actions(repo_name, candidate["data"])
-                result["success"] = True
-            elif candidate.get("type") == "pr":
-                # PR processing
-                result["actions"] = process_pull_request(self.github, self.config, repo_name, candidate["data"])
-                result["success"] = True
-        except Exception as e:
-            result["error"] = str(e)
-            logger.error(f"Error processing candidate: {e}")
-
-        return result
+        return self._process_single_candidate_unified(
+            repo_name,
+            candidate,
+            self.config,
+            jules_mode=jules_mode,
+        )
 
     def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
         """Run the main automation process."""
@@ -231,21 +289,30 @@ class AutomationEngine:
                 batch_processed = 0
                 for candidate in candidates:
                     try:
-                        logger.info(f"Processing {candidate['type']} #{candidate.get('data', {}).get('number', 'N/A')}")
+                        logger.info(f"Processing {candidate.type} #{candidate.data.get('number', 'N/A')}")
 
                         # Process the candidate
                         result = self._process_single_candidate(repo_name, candidate, jules_mode)
 
                         # Track results
-                        if candidate["type"] == "issue":
-                            results["issues_processed"].append(result)  # type: ignore
-                        elif candidate["type"] == "pr":
-                            results["prs_processed"].append(result)  # type: ignore
+                        # Convert dataclass to dict for backward compatibility with existing code
+                        result_dict = {
+                            "type": result.type,
+                            "number": result.number,
+                            "title": result.title,
+                            "success": result.success,
+                            "actions": result.actions,
+                            "error": result.error,
+                        }
+                        if candidate.type == "issue":
+                            results["issues_processed"].append(result_dict)  # type: ignore
+                        elif candidate.type == "pr":
+                            results["prs_processed"].append(result_dict)  # type: ignore
 
                         batch_processed += 1
                         total_processed += 1
 
-                        logger.info(f"Successfully processed {candidate['type']} #{candidate.get('data', {}).get('number', 'N/A')}")
+                        logger.info(f"Successfully processed {candidate.type} #{candidate.data.get('number', 'N/A')}")
                         break
 
                     except Exception as e:
@@ -270,16 +337,126 @@ class AutomationEngine:
             return results
 
     def process_single(self, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]:
-        """Process a single issue or PR by number."""
-        result = process_single(
-            self.github,
-            self.config,
-            repo_name,
-            target_type,
-            number,
-            jules_mode,
-        )
-        return result  # type: ignore[return-value]  # ProcessResult is a TypedDict, compatible with Dict[str, Any]
+        """Process a single issue or PR by number.
+
+        Args:
+            repo_name: Repository name
+            target_type: Type of target ('issue' or 'pr')
+            number: Issue or PR number
+            jules_mode: Whether Jules mode is enabled
+
+        Returns:
+            Dictionary with processing results
+        """
+        from datetime import datetime
+
+        with ProgressStage("Processing single PR/IS"):
+            logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
+            result = ProcessResult(
+                repository=repo_name,
+                timestamp=datetime.now().isoformat(),
+                jules_mode=jules_mode,
+            )
+
+            try:
+                # Create a Candidate from the single item
+                candidate = self._create_candidate_from_single(repo_name, target_type, number)
+                if not candidate:
+                    msg = f"Failed to create candidate for {target_type} #{number}"
+                    logger.error(msg)
+                    result.errors.append(msg)
+                    return {
+                        "repository": result.repository,
+                        "timestamp": result.timestamp,
+                        "jules_mode": result.jules_mode,
+                        "issues_processed": result.issues_processed,
+                        "prs_processed": result.prs_processed,
+                        "errors": result.errors,
+                    }
+
+                # Use unified processing function
+                processing_result = self._process_single_candidate_unified(
+                    repo_name,
+                    candidate,
+                    self.config,
+                    jules_mode=jules_mode,
+                )
+
+                # Only add to processed list if there was no error
+                if processing_result.error:
+                    # Add error to errors list instead of processed list
+                    error_msg = f"Error processing {candidate.type} #{candidate.data.get('number', 'N/A')}: {processing_result.error}"
+                    result.errors.append(error_msg)
+                else:
+                    # Convert to the format expected by process_single
+                    if candidate.type == "issue":
+                        processed_item = {
+                            "issue_data": candidate.data,
+                            "actions_taken": processing_result.actions,
+                        }
+                        result.issues_processed.append(processed_item)
+                    elif candidate.type == "pr":
+                        processed_item = {
+                            "pr_data": candidate.data,
+                            "actions_taken": processing_result.actions,
+                        }
+                        result.prs_processed.append(processed_item)
+
+                # After processing, check if the single PR/issue is now closed
+                try:
+                    if result.issues_processed or result.prs_processed:
+                        # Get the processed item
+                        first_processed_item: Dict[str, Any]
+                        item_number = None
+                        item_type = None
+
+                        if result.issues_processed:
+                            first_processed_item = result.issues_processed[0]
+                            issue_data: Dict[str, Any] = first_processed_item.get("issue_data", {})
+                            item_number = issue_data.get("number")
+                            item_type = "issue"
+                        elif result.prs_processed:
+                            first_processed_item = result.prs_processed[0]
+                            pr_data: Dict[str, Any] = first_processed_item.get("pr_data", {})
+                            item_number = pr_data.get("number")
+                            item_type = "pr"
+
+                        if item_number and item_type:
+                            # Check the current state of the item
+                            from .util.github_action import check_and_handle_closed_state
+
+                            with ProgressStage("Checking final status"):
+                                if item_type == "issue":
+                                    current_item = self.github.get_issue_details_by_number(repo_name, item_number)
+                                else:
+                                    current_item = self.github.get_pr_details_by_number(repo_name, item_number)
+
+                                # Check if item is closed and handle state
+                                check_and_handle_closed_state(
+                                    repo_name,
+                                    item_type,
+                                    item_number,
+                                    self.config,
+                                    self.github,
+                                    current_item=current_item,
+                                )
+                except Exception as e:
+                    logger.warning(f"Failed to check/handle closed item state: {e}")
+
+            except Exception as e:
+                msg = f"Error in process_single: {e}"
+                logger.error(msg)
+                result.errors.append(msg)
+
+        # Convert dataclass to dict for backward compatibility with existing code
+        return {
+            "repository": result.repository,
+            "timestamp": result.timestamp,
+            "jules_mode": result.jules_mode,
+            "issues_processed": result.issues_processed,
+            "prs_processed": result.prs_processed,
+            "errors": result.errors,
+        }
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
@@ -631,130 +808,6 @@ class AutomationEngine:
 
         return "\n".join(important_lines)
 
-    def _check_github_actions_status(self, repo_name: str, pr_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Check GitHub Actions status for PR."""
-        import subprocess
-
-        try:
-            pr_number = pr_data.get("number")
-            # Run gh CLI to get GitHub Actions status for the PR
-            result = subprocess.run(
-                ["gh", "run", "list", "--limit", "50"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-            # Check for no checks reported case
-            if result.returncode != 0:
-                if hasattr(result.stderr, "strip") and "no checks reported" in str(result.stderr):
-                    return {
-                        "success": True,
-                        "total_checks": 0,
-                        "failed_checks": [],
-                        "checks": [],
-                    }
-                # Don't return early here - still try to process stdout even with non-zero return code
-
-            # Parse the output to count checks
-            lines = result.stdout.strip().split("\n")
-            total_checks = 0
-            failed_checks = []
-            checks = []
-
-            for line in lines:
-                if not line.strip():
-                    continue
-
-                # Try to parse tab-separated format first (newer gh CLI)
-                if "\t" in line:
-                    parts = line.split("\t")
-                    if len(parts) >= 3:
-                        name = parts[0].strip()
-                        conclusion = parts[1].strip().lower()
-                        details_url = parts[3] if len(parts) > 3 else ""
-
-                        total_checks += 1
-
-                        # Normalize conclusion to match expected format
-                        normalized_conclusion = conclusion
-                        if conclusion == "fail":
-                            normalized_conclusion = "failure"
-                        elif conclusion == "pass":
-                            normalized_conclusion = "success"
-                        elif conclusion in ["in_progress", "pending"]:
-                            normalized_conclusion = "pending"
-
-                        check_info = {
-                            "name": name,
-                            "conclusion": normalized_conclusion,
-                            "details_url": details_url,
-                        }
-                        checks.append(check_info)
-
-                        # Count as failed if conclusion indicates actual failure OR if pending/in_progress
-                        # But exclude "skipping" from failures
-                        if normalized_conclusion in [
-                            "failure",
-                            "failed",
-                            "error",
-                            "timed_out",
-                            "pending",
-                            "in_progress",
-                        ]:
-                            failed_checks.append(check_info)
-                else:
-                    # Parse checkmark format (✓ and ✗)
-                    if line.startswith("✓") or line.startswith("✗") or line.startswith("-"):
-                        total_checks += 1
-
-                        if line.startswith("✓"):
-                            status = "success"
-                        elif line.startswith("✗"):
-                            status = "failure"
-                        else:  # line.startswith('-')
-                            status = "pending"
-
-                        name = line[1:].strip()
-
-                        check_info = {
-                            "name": name,
-                            "conclusion": status,
-                            "details_url": "",
-                        }
-                        checks.append(check_info)
-
-                        if status in ["failure", "pending"]:
-                            failed_checks.append(check_info)
-
-            # Determine overall success
-            overall_success = len(failed_checks) == 0
-
-            return {
-                "success": overall_success,
-                "total_checks": total_checks,
-                "failed_checks": failed_checks,
-                "checks": checks,
-            }
-
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "total_checks": 0,
-                "failed_checks": [],
-                "checks": [],
-                "error": "GitHub Actions status check timed out",
-            }
-        except Exception as e:
-            logger.error(f"Failed to check GitHub Actions status: {e}")
-            return {
-                "success": False,
-                "total_checks": 0,
-                "failed_checks": [],
-                "checks": [],
-                "error": str(e),
-            }
-
     def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
         """Apply GitHub Actions fix."""
         actions = []
@@ -923,6 +976,61 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Error parsing commit history: {e}")
             return []
+
+    def _create_candidate_from_single(self, repo_name: str, target_type: str, number: int) -> Optional[Candidate]:
+        """Create a Candidate from a single issue or PR.
+
+        Args:
+            repo_name: Repository name
+            target_type: Type of target ('issue' or 'pr')
+            number: Issue or PR number
+
+        Returns:
+            Candidate or None if failed
+        """
+        from .pr_processor import _extract_linked_issues_from_pr_body
+
+        try:
+            # Handle 'auto' type
+            if target_type == "auto":
+                # Prefer PR to avoid mislabeling PR issues
+                try:
+                    pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                    target_type = "pr"
+                except Exception:
+                    target_type = "issue"
+
+            if target_type == "pr":
+                # Get PR data
+                pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                branch_name = pr_data.get("head", {}).get("ref")
+                pr_body = pr_data.get("body", "")
+                related_issues = []
+                if pr_body:
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
+
+                return Candidate(
+                    type="pr",
+                    data=pr_data,
+                    priority=0,  # Single processing doesn't need priority
+                    branch_name=branch_name,
+                    related_issues=related_issues,
+                )
+            elif target_type == "issue":
+                # Get issue data
+                issue_data = self.github.get_issue_details_by_number(repo_name, number)
+
+                return Candidate(
+                    type="issue",
+                    data=issue_data,
+                    priority=0,  # Single processing doesn't need priority
+                    issue_number=number,
+                )
+        except Exception as e:
+            logger.error(f"Failed to create candidate for {target_type} #{number}: {e}")
+            return None
+
+        return None
 
     # Constants
     FLAG_SKIP_ANALYSIS = "[SKIP_LLM_ANALYSIS]"

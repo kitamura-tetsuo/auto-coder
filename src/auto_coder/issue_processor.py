@@ -8,9 +8,14 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import get_detailed_checks_from_history
+from auto_coder.util.github_action import (
+    _check_github_actions_status,
+    check_and_handle_closed_state,
+    check_github_actions_and_exit_if_in_progress,
+    get_detailed_checks_from_history,
+)
 
-from .automation_config import AutomationConfig
+from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
@@ -22,21 +27,6 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-class ProcessResult(TypedDict):
-    repository: str
-    timestamp: str
-    jules_mode: bool
-    issues_processed: List[Dict[str, Any]]
-    prs_processed: List[Dict[str, Any]]
-    errors: List[str]
-
-
-class ProcessedIssueResult(TypedDict, total=False):
-    issue_data: Dict[str, Any]
-    actions_taken: List[str]
-    error: str
-
-
 def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, repo_name: str, issue_data: Dict[str, Any]) -> ProcessedIssueResult:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
@@ -46,19 +36,19 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
         current_labels = issue_data.get("labels", [])
         if "@auto-coder" in current_labels:
             logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-            return {
-                "issue_data": issue_data,
-                "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
-            }
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=["Skipped - already being processed (@auto-coder label present)"],
+            )
 
         # Skip if issue has open sub-issues
         open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
         if open_sub_issues:
             logger.info(f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
-            return {
-                "issue_data": issue_data,
-                "actions_taken": [f"Skipped - has open sub-issues: {open_sub_issues}"],
-            }
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=[f"Skipped - has open sub-issues: {open_sub_issues}"],
+            )
 
         # Skip if issue has unresolved dependencies
         if config.CHECK_DEPENDENCIES:
@@ -67,39 +57,45 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
                 unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
                 if unresolved:
                     logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
-                    return {
-                        "issue_data": issue_data,
-                        "actions_taken": [f"Skipped - has unresolved dependencies: {unresolved}"],
-                    }
+                    return ProcessedIssueResult(
+                        issue_data=issue_data,
+                        actions_taken=[f"Skipped - has unresolved dependencies: {unresolved}"],
+                    )
                 else:
                     logger.info(f"All dependencies for issue #{issue_number} are resolved")
 
         # Use LabelManager context manager to handle @auto-coder label automatically
         with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
             if not should_process:
-                return {
-                    "issue_data": issue_data,
-                    "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
-                }
+                return ProcessedIssueResult(
+                    issue_data=issue_data,
+                    actions_taken=["Skipped - another instance started processing (@auto-coder label added)"],
+                )
 
-            processed_issue: Dict[str, Any] = {"issue_data": issue_data, "actions_taken": []}
+            actions_taken: List[str] = []
 
             # Check if 'jules' label already exists
             current_labels = issue_data.get("labels", [])
             if "jules" not in current_labels:
                 # Add 'jules' label to the issue
                 github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
-                processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{issue_number}")
+                actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
                 logger.info(f"Added 'jules' label to issue #{issue_number}")
             else:
-                processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
+                actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
                 logger.info(f"Issue #{issue_number} already has 'jules' label")
 
-            return processed_issue  # type: ignore[return-value]
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=actions_taken,
+            )
 
     except Exception as e:
         logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
-        return {"issue_data": issue_data, "error": str(e)}
+        return ProcessedIssueResult(
+            issue_data=issue_data,
+            error=str(e),
+        )
 
 
 def _take_issue_actions(
@@ -535,164 +531,17 @@ def process_single(
     target_type: str,
     number: int,
     jules_mode: bool = False,
-) -> ProcessResult:
+) -> Dict[str, Any]:
     """Process a single issue or PR by number.
+
+    This function now delegates to AutomationEngine.process_single for unified processing.
+    Kept for backward compatibility and for direct use without AutomationEngine instance.
 
     target_type: 'issue' | 'pr' | 'auto'
     When 'auto', try PR first then fall back to issue.
     """
-    with ProgressStage("Processing single PR/IS"):
-        logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
-        result: ProcessResult = {
-            "repository": repo_name,
-            "timestamp": datetime.now().isoformat(),
-            "jules_mode": jules_mode,
-            "issues_processed": [],
-            "prs_processed": [],
-            "errors": [],
-        }
-        try:
-            resolved_type = target_type
-            if target_type == "auto":
-                # Prefer PR to avoid mislabeling PR issues
-                try:
-                    pr_data = github_client.get_pr_details_by_number(repo_name, number)
-                    resolved_type = "pr"
-                except Exception:
-                    resolved_type = "issue"
-            if resolved_type == "pr":
-                try:
-                    from .pr_processor import _check_github_actions_status, _extract_linked_issues_from_pr_body, _take_pr_actions
+    from .automation_engine import AutomationEngine
 
-                    pr_data = github_client.get_pr_details_by_number(repo_name, number)
-
-                    # Extract branch name and related issues from PR data
-                    branch_name = pr_data.get("head", {}).get("ref")
-                    pr_body = pr_data.get("body", "")
-                    related_issues = []
-                    if pr_body:
-                        # Extract linked issues from PR body
-                        related_issues = _extract_linked_issues_from_pr_body(pr_body)
-
-                    set_progress_item("PR", number, related_issues, branch_name)
-
-                    # Check GitHub Actions status before processing
-                    github_checks = _check_github_actions_status(repo_name, pr_data, config)
-                    detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
-
-                    # If GitHub Actions are still in progress, switch to main and exit
-                    if detailed_checks.has_in_progress:
-                        logger.info(f"GitHub Actions checks are still in progress for PR #{number}, switching to main branch")
-
-                        # Switch to main branch with pull
-                        with branch_context(config.MAIN_BRANCH):
-                            logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                        # Exit the program
-                        logger.info(f"Exiting due to GitHub Actions in progress for PR #{number}")
-                        sys.exit(0)
-
-                    actions = _take_pr_actions(repo_name, pr_data, config)
-                    processed_pr = {
-                        "pr_data": pr_data,
-                        "actions_taken": actions,
-                        "priority": "single",
-                    }
-                    result["prs_processed"].append(processed_pr)
-                    newline_progress()
-                except Exception as e:
-                    msg = f"Failed to process PR #{number}: {e}"
-                    logger.error(msg)
-                    result["errors"].append(msg)
-                    newline_progress()
-            else:
-                try:
-                    set_progress_item("Issue", number)
-                    with ProgressStage("Getting issue details"):
-                        issue_data = github_client.get_issue_details_by_number(repo_name, number)
-
-                    # Use LabelManager context manager to handle @auto-coder label automatically
-                    # For process_single, we always want to process the issue, so we use the context manager
-                    # to add/remove the label, but we proceed regardless of whether another instance is processing
-                    from .label_manager import LabelManager
-
-                    with LabelManager(github_client, repo_name, number, item_type="issue", config=config) as should_process:
-                        # Note: We always process for process_single, even if should_process is False
-
-                        processed_issue: Dict[str, Any] = {
-                            "issue_data": issue_data,
-                            "analysis": None,
-                            "solution": None,
-                            "actions_taken": [],
-                        }
-
-                        if jules_mode:
-                            # Mimic jules mode behavior
-                            with ProgressStage("Adding jules label"):
-                                current_labels = issue_data.get("labels", [])
-                                if "jules" not in current_labels:
-                                    github_client.add_labels_to_issue(repo_name, number, ["jules"])
-                                    processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{number}")
-                                else:
-                                    processed_issue["actions_taken"].append(f"Issue #{number} already has 'jules' label")
-                        else:
-                            with ProgressStage("Processing"):
-                                actions = _take_issue_actions(repo_name, issue_data, config, github_client)
-                                processed_issue["actions_taken"] = actions
-
-                        # Clear progress header after processing
-                        newline_progress()
-
-                        result["issues_processed"].append(processed_issue)
-
-                except Exception as e:
-                    msg = f"Failed to process issue #{number}: {e}"
-                    logger.error(msg)
-                    result["errors"].append(msg)
-                    newline_progress()
-        except Exception as e:
-            msg = f"Error in process_single: {e}"
-            logger.error(msg)
-            result["errors"].append(msg)
-
-        # After processing, check if the single PR/issue is now closed
-        # If so, switch to main branch, pull, and exit
-        try:
-            # Check if we processed exactly one item
-            if result["issues_processed"] or result["prs_processed"]:
-                # Get the processed item
-                processed_item: Dict[str, Any]
-                item_number = None
-                item_type = None
-
-                if result["issues_processed"]:
-                    processed_item = result["issues_processed"][0]
-                    issue_data = processed_item.get("issue_data", {})
-                    item_number = issue_data.get("number")
-                    item_type = "issue"
-                elif result["prs_processed"]:
-                    processed_item = result["prs_processed"][0]
-                    pr_data = processed_item.get("pr_data", {})
-                    item_number = pr_data.get("number")
-                    item_type = "pr"
-
-                if item_number and item_type:
-                    # Check the current state of the item
-                    with ProgressStage("Checking final status"):
-                        if item_type == "issue":
-                            current_item = github_client.get_issue_details_by_number(repo_name, item_number)
-                        else:
-                            current_item = github_client.get_pr_details_by_number(repo_name, item_number)
-
-                        if current_item.get("state") == "closed":
-                            logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
-
-                            # Switch to main branch with pull
-                            with branch_context(config.MAIN_BRANCH):
-                                logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                            # Exit the program
-                            logger.info(f"Exiting after closing {item_type} #{item_number}")
-                            sys.exit(0)
-        except Exception as e:
-            logger.warning(f"Failed to check/handle closed item state: {e}")
-
-        return result
+    # Create a temporary AutomationEngine instance and delegate to it
+    engine = AutomationEngine(github_client, config)
+    return engine.process_single(repo_name, target_type, number, jules_mode)

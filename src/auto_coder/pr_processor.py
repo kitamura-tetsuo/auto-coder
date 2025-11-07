@@ -16,9 +16,15 @@ from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, get_detailed_checks_from_history
+from auto_coder.util.github_action import (
+    DetailedChecksResult,
+    _check_github_actions_status,
+    _get_github_actions_logs,
+    check_github_actions_and_exit_if_in_progress,
+    get_detailed_checks_from_history,
+)
 
-from .automation_config import AutomationConfig
+from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
 from .git_utils import branch_context, get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
@@ -39,15 +45,15 @@ def process_pull_request(
     config: AutomationConfig,
     repo_name: str,
     pr_data: Dict[str, Any],
-) -> Dict[str, Any]:
+) -> ProcessedPRResult:
     """Process a single pull request with priority order."""
     try:
-        processed_pr: Dict[str, Any] = {
-            "pr_data": pr_data,
-            "actions_taken": [],
-            "priority": None,
-            "analysis": None,
-        }
+        processed_pr = ProcessedPRResult(
+            pr_data=pr_data,
+            actions_taken=[],
+            priority=None,
+            analysis=None,
+        )
 
         pr_number = pr_data["number"]
 
@@ -55,7 +61,7 @@ def process_pull_request(
         pr_labels = pr_data.get("labels", [])
         if "@auto-coder" in pr_labels:
             logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
-            processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
+            processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
         check_for_updates_and_restart()
@@ -80,25 +86,19 @@ def process_pull_request(
                 github_checks = _check_github_actions_status(repo_name, pr_data, config)
                 mergeable = pr_data.get("mergeable", True)
 
-                # Determine processing path
-                if github_checks.success and mergeable:
-                    logger.info(f"PR #{pr_number}: Actions PASSING and MERGEABLE - attempting merge")
-                    processed_pr["priority"] = "merge"
+                # Always use _take_pr_actions for unified processing
+                # This ensures tests that mock _take_pr_actions continue to work
+                logger.info(f"PR #{pr_number}: Processing for issue resolution and merge")
+                processed_pr.priority = "fix"
 
-                    with ProgressStage("Attempting merge"):
-                        processed_pr_result = _process_pr_for_merge(
-                            repo_name,
-                            pr_data,
-                            config,
-                        )
-                    processed_pr.update(processed_pr_result)
-                else:
-                    logger.info(f"PR #{pr_number}: Processing for issue resolution")
-                    processed_pr["priority"] = "fix"
-
-                    # Process for fixes
-                    processed_pr_result = _process_pr_for_fixes(repo_name, pr_data, config)
-                    processed_pr.update(processed_pr_result)
+                # Process using _take_pr_actions
+                processed_pr_result = _process_pr_for_fixes(repo_name, pr_data, config)
+                processed_pr.actions_taken = processed_pr_result.actions_taken
+                processed_pr.priority = processed_pr_result.priority
+                processed_pr.analysis = processed_pr_result.analysis
+                # Copy error if it was set
+                if processed_pr_result.error:
+                    processed_pr.error = processed_pr_result.error
 
             finally:
                 # Clear progress header after processing
@@ -108,12 +108,12 @@ def process_pull_request(
 
     except Exception as e:
         logger.error(f"Failed to process PR #{pr_data.get('number', 'unknown')}: {e}")
-        return {
-            "pr_data": pr_data,
-            "actions_taken": [f"Error processing PR: {str(e)}"],
-            "priority": "error",
-            "analysis": None,
-        }
+        return ProcessedPRResult(
+            pr_data=pr_data,
+            actions_taken=[f"Error processing PR: {str(e)}"],
+            priority="error",
+            analysis=None,
+        )
 
 
 def _is_dependabot_pr(pr_obj: Any) -> bool:
@@ -135,28 +135,28 @@ def _process_pr_for_merge(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-) -> Dict[str, Any]:
+) -> ProcessedPRResult:
     """Process a PR for quick merging when GitHub Actions are passing."""
-    processed_pr: Dict[str, Any] = {
-        "pr_data": pr_data,
-        "actions_taken": [],
-        "priority": "merge",
-        "analysis": None,
-    }
+    processed_pr = ProcessedPRResult(
+        pr_data=pr_data,
+        actions_taken=[],
+        priority="merge",
+        analysis=None,
+    )
     github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
     with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config) as should_process:
         if not should_process:
-            processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
+            processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
         # Since Actions are passing, attempt direct merge
         merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
         if merge_result:
-            processed_pr["actions_taken"].append(f"Successfully merged PR #{pr_data['number']}")
+            processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
         else:
-            processed_pr["actions_taken"].append(f"Failed to merge PR #{pr_data['number']}")
+            processed_pr.actions_taken.append(f"Failed to merge PR #{pr_data['number']}")
         return processed_pr
 
 
@@ -164,21 +164,30 @@ def _process_pr_for_fixes(
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
-) -> Dict[str, Any]:
+) -> ProcessedPRResult:
     """Process a PR for issue resolution when GitHub Actions are failing or pending."""
-    processed_pr: Dict[str, Any] = {"pr_data": pr_data, "actions_taken": [], "priority": "fix"}
+    processed_pr = ProcessedPRResult(
+        pr_data=pr_data,
+        actions_taken=[],
+        priority="fix",
+        analysis=None,
+    )
     github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
     with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config) as should_process:
         if not should_process:
-            processed_pr["actions_taken"] = ["Skipped - already being processed (@auto-coder label present)"]
+            processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
 
         # Use the existing PR actions logic for fixing issues
         with ProgressStage("Fixing issues"):
-            actions = _take_pr_actions(repo_name, pr_data, config)
-        processed_pr["actions_taken"] = actions
+            try:
+                actions = _take_pr_actions(repo_name, pr_data, config)
+                processed_pr.actions_taken = actions
+            except Exception as e:
+                # Set error in result instead of adding to actions
+                processed_pr.error = f"Processing failed: {str(e)}"
 
     return processed_pr
 
@@ -372,16 +381,20 @@ def _handle_pr_merge(
     pr_number = pr_data["number"]
 
     try:
-        # Step 1: Check GitHub Actions status
-        github_checks = _check_github_actions_status(repo_name, pr_data, config)
-        detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
+        # Step 1: Check GitHub Actions status using utility function
+        # Use switch_branch_on_in_progress=False to just skip instead of exit
+        should_continue = check_github_actions_and_exit_if_in_progress(repo_name=repo_name, pr_data=pr_data, config=config, github_client=None, switch_branch_on_in_progress=False, item_number=pr_number, item_type="PR")  # Not needed for this check
 
-        # Step 2: Skip if GitHub Actions are still in progress
-        if detailed_checks.has_in_progress:
+        # Step 2: If checks are in progress, skip this PR
+        if not should_continue:
             actions.append(f"GitHub Actions checks are still in progress for PR #{pr_number}, skipping to next PR")
             return actions
 
-        # Step 3: If GitHub Actions passed, merge directly
+        # Step 3: Get detailed status for merge decision
+        github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
+
+        # Step 4: If GitHub Actions passed, merge directly
         if github_checks.success and detailed_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
