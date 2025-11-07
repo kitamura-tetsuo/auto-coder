@@ -10,7 +10,6 @@ from src.auto_coder.utils import CommandExecutor
 
 def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
     config = AutomationConfig()
-    config.DRY_RUN = True
     engine = AutomationEngine(mock_github_client, config=config)
     prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
 
@@ -39,9 +38,7 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
         factories={"codex": lambda: mock_gemini_client},
     )
 
-    # For dry_run=True, the function should not call LLM but should still function
     config = AutomationConfig()
-    config.DRY_RUN = True
     engine = AutomationEngine(mock_github_client, config=config)
 
     # Stub diff generation
@@ -49,7 +46,7 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
         # Ensure add_comment_to_issue is tracked
         mock_github_client.add_comment_to_issue.reset_mock()
 
-        # In dry_run mode, the function should return a dry run message
+        # Call the function
         actions = _apply_pr_actions_directly(
             test_repo_name,
             sample_pr_data,
@@ -58,10 +55,6 @@ def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mo
 
         # No comment should be posted
         mock_github_client.add_comment_to_issue.assert_not_called()
-
-        # In dry_run mode, should return dry run message
-        assert len(actions) == 1
-        assert actions[0].startswith("[DRY RUN] Would apply PR actions directly")
 
 
 """Tests for automation engine functionality."""
@@ -73,11 +66,9 @@ class TestAutomationEngine:
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
         config = AutomationConfig()
-        config.DRY_RUN = True
         engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
-        assert engine.config.DRY_RUN is True
         assert engine.config.REPORTS_DIR == "reports"
 
     def test_run_success(
@@ -105,7 +96,6 @@ class TestAutomationEngine:
             mock_github_client.disable_labels = False
 
             config = AutomationConfig()
-            config.DRY_RUN = True
             engine = AutomationEngine(mock_github_client, config=config)
             engine._save_report = Mock()
 
@@ -114,7 +104,6 @@ class TestAutomationEngine:
 
             # Assert basic result structure
             assert result["repository"] == test_repo_name
-            assert result["dry_run"] is True
             assert result["llm_backend"] == "gemini"
             assert result["llm_model"] is not None
             assert "issues_processed" in result
@@ -150,7 +139,6 @@ class TestAutomationEngine:
             mock_github_client.disable_labels = False
 
             config = AutomationConfig()
-            config.DRY_RUN = True
             engine = AutomationEngine(mock_github_client, config=config)
             engine._save_report = Mock()
 
@@ -159,7 +147,6 @@ class TestAutomationEngine:
 
             # Assert basic result structure with jules mode
             assert result["repository"] == test_repo_name
-            assert result["dry_run"] is True
             assert result["jules_mode"] is True
             assert result["llm_backend"] == "gemini"
             assert result["llm_model"] is not None
@@ -196,7 +183,6 @@ class TestAutomationEngine:
 
             # Test error handling - keep it simple, just verify basic error structure
             config = AutomationConfig()
-            config.DRY_RUN = True
             engine = AutomationEngine(mock_github_client, config=config)
 
             # Execute without any complex mocking to see if basic error handling works
@@ -204,7 +190,6 @@ class TestAutomationEngine:
 
             # Assert that we get a valid result structure even if there are no errors in this case
             assert result["repository"] == test_repo_name
-            assert result["dry_run"] is True
             assert "errors" in result
 
 

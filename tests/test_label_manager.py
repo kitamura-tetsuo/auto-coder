@@ -45,25 +45,6 @@ class TestLabelManager:
 
         mock_github_client.remove_labels_from_issue.assert_not_called()
 
-    def test_label_manager_dry_run(self):
-        """Test that dry_run mode logs but doesn't perform actual operations."""
-        # Setup mocks
-        mock_github_client = Mock()
-        mock_github_client.disable_labels = False
-        mock_github_client.has_label.return_value = False
-
-        config = AutomationConfig()
-        config.DRY_RUN = True
-
-        # Use LabelManager context manager with dry_run=True
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
-            assert should_process is True
-            # No actual API calls should be made
-            mock_github_client.try_add_work_in_progress_label.assert_not_called()
-
-        # No removal should happen
-        mock_github_client.remove_labels_from_issue.assert_not_called()
-
     def test_label_manager_with_labels_disabled_via_client(self):
         """Test that context manager skips when labels are disabled via client."""
         # Setup mocks

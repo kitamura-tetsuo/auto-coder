@@ -162,11 +162,6 @@ class LabelManager:
                         return False
 
                     # Try to add the label
-                    if self.config.DRY_RUN:
-                        logger.info(f"[DRY RUN] Would add '{self.label_name}' label to {self.item_type} #{self.item_number}")
-                        self._label_added = True
-                        return True
-
                     result = self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
                     if result:
                         logger.info(f"Added '{self.label_name}' label to {self.item_type} #{self.item_number}")
@@ -205,10 +200,6 @@ class LabelManager:
             # Remove the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    if self.config.DRY_RUN:
-                        logger.info(f"[DRY RUN] Would remove '{self.label_name}' label from {self.item_type} #{self.item_number}")
-                        return
-
                     self.github_client.remove_labels_from_issue(self.repo_name, self.item_number, [self.label_name])
                     logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
                     return

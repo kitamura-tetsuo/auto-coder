@@ -105,7 +105,6 @@ def mock_automation_engine(mock_github_client, mock_gemini_client):
     engine = Mock(spec=AutomationEngine)
     engine.github = mock_github_client
     engine.gemini = mock_gemini_client
-    engine.dry_run = True
     return engine
 
 
@@ -207,6 +206,16 @@ def temp_reports_dir(tmp_path):
     return str(reports_dir)
 
 
+@pytest.fixture
+def _use_custom_subprocess_mock():
+    """Marker fixture to indicate test uses custom subprocess mocking.
+
+    Tests that use this fixture will bypass the stub_git_and_gh_commands fixture
+    to allow for custom subprocess.run mocking.
+    """
+    pass
+
+
 # Stub to prevent actual git/gh commands from being executed during testing
 @pytest.fixture(autouse=True)
 def stub_git_and_gh_commands(monkeypatch, request):
@@ -215,6 +224,12 @@ def stub_git_and_gh_commands(monkeypatch, request):
 
     # Skip command stubbing for tests that need real commands
     if "_use_real_commands" in request.fixturenames:
+        print("DEBUG: Skipping stub - _use_real_commands fixture found", file=__import__("sys").stderr)
+        return
+
+    # Skip command stubbing for tests that use custom subprocess mocking
+    if "_use_custom_subprocess_mock" in request.fixturenames:
+        print("DEBUG: Skipping stub - _use_custom_subprocess_mock fixture found", file=__import__("sys").stderr)
         return
 
     orig_run = subprocess.run

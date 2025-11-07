@@ -320,14 +320,6 @@ def apply_test_stability_fix(
             isolated_test_output=isolated_output[: config.MAX_PROMPT_SIZE // 2],
         )
 
-        if config.DRY_RUN:
-            return WorkspaceFixResult(
-                summary="[DRY RUN] Would apply test stability fixes",
-                raw_response=None,
-                backend=backend,
-                model=model,
-            )
-
         logger.info(f"Requesting LLM test stability fix for {test_file} using backend {backend} model {model}")
 
         # Use the LLM backend manager to run the prompt
@@ -385,23 +377,10 @@ def apply_workspace_test_fix(
             error_summary=error_summary[: config.MAX_PROMPT_SIZE],
             test_command=test_result.get("command", "pytest -q --maxfail=1"),
         )
-        logger.debug(f"0")
-
-        if config.DRY_RUN:
-            return WorkspaceFixResult(
-                summary="[DRY RUN] Would apply fixes for local test failures",
-                raw_response=None,
-                backend=backend,
-                model=model,
-            )
-        logger.debug(f"0")
 
         # Use the LLM backend manager to run the prompt
-        logger.debug(f"0")
         logger.info(f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)")
         response = llm_backend_manager.run_test_fix_prompt(fix_prompt, current_test_file=current_test_file)
-
-        logger.debug(f"0")
 
         backend, model = _extract_backend_model(llm_backend_manager)
         raw_response = response.strip() if response and response.strip() else None
@@ -491,8 +470,7 @@ def fix_to_pass_tests(
             logger.info(msg)
             summary["messages"].append(msg)
             summary["success"] = True
-            if not config.DRY_RUN:
-                cleanup_llm_task_file()
+            cleanup_llm_task_file()
             return summary
 
         # Check for test stability issue (failed in full suite but passed in isolation)
@@ -521,10 +499,6 @@ def fix_to_pass_tests(
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
-
-        if config.DRY_RUN:
-            # In dry-run we do not commit; just continue attempts
-            continue
 
         # Baseline (pre-fix) outputs for comparison
         baseline_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
@@ -565,8 +539,7 @@ def fix_to_pass_tests(
             pass_msg = f"Local tests passed on attempt {attempt}"
             logger.info(pass_msg)
             summary["messages"].append(pass_msg)
-            if not config.DRY_RUN:
-                cleanup_pending = True
+            cleanup_pending = True
         else:
             # Compute change ratios between pre-fix and post-fix results
             try:
@@ -619,7 +592,7 @@ def fix_to_pass_tests(
             commit_msg = format_commit_message(config, action_msg, attempt)
 
         # Commit the changes with the generated message using centralized helper
-        if not config.DRY_RUN and commit_msg:
+        if commit_msg:
             commit_res = git_commit_with_retry(commit_msg)
             if not commit_res.success:
                 # Save history and exit immediately
@@ -644,16 +617,15 @@ def fix_to_pass_tests(
             summary["success"] = True
 
             # Push changes to remote
-            if not config.DRY_RUN:
-                logger.info("Tests passed, pushing changes to remote...")
-                push_result = git_push()
-                if push_result.success:
-                    logger.info("Successfully pushed changes to remote")
-                    summary["messages"].append("Pushed changes to remote")
-                else:
-                    logger.error(f"Failed to push changes: {push_result.stderr}")
-                    logger.error("Exiting application due to git push failure")
-                    sys.exit(1)
+            logger.info("Tests passed, pushing changes to remote...")
+            push_result = git_push()
+            if push_result.success:
+                logger.info("Successfully pushed changes to remote")
+                summary["messages"].append("Pushed changes to remote")
+            else:
+                logger.error(f"Failed to push changes: {push_result.stderr}")
+                logger.error("Exiting application due to git push failure")
+                sys.exit(1)
 
             return summary
 
@@ -741,13 +713,10 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
     """Create a concise commit message using the LLM-produced summary.
 
     - Prefix with "Auto-Coder:" to unify automation commits
-    - Sanitize dry-run prefixes and trim to a reasonable length
+    - Trim to a reasonable length
     - Fallback to a generic message if empty
     """
     base = (llm_summary or "").strip()
-    # Remove any dry-run indicator if accidentally present
-    if base.startswith("[DRY RUN]"):
-        base = base[len("[DRY RUN]") :].strip()
     if not base:
         base = "Fix local tests"
     # Limit length to ~100 chars

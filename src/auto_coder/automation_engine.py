@@ -5,7 +5,7 @@ Main automation engine for Auto-Coder.
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.prompt_loader import render_prompt
@@ -15,7 +15,7 @@ from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
-from .issue_processor import create_feature_issues, process_single
+from .issue_processor import ProcessResult, create_feature_issues, process_single
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
@@ -207,7 +207,6 @@ class AutomationEngine:
         results = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
-            "dry_run": self.config.DRY_RUN,
             "jules_mode": jules_mode,
             "llm_backend": llm_backend_info["backend"],
             "llm_model": llm_backend_info["model"],
@@ -272,7 +271,7 @@ class AutomationEngine:
 
     def process_single(self, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]:
         """Process a single issue or PR by number."""
-        return process_single(
+        result = process_single(
             self.github,
             self.config,
             repo_name,
@@ -280,6 +279,7 @@ class AutomationEngine:
             number,
             jules_mode,
         )
+        return result  # type: ignore[return-value]  # ProcessResult is a TypedDict, compatible with Dict[str, Any]
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
