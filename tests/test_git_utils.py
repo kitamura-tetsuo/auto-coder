@@ -1647,49 +1647,6 @@ class TestGetBranchesByPattern:
 class TestMigratePrBranches:
     """Tests for migrate_pr_branches function."""
 
-    def test_migrate_pr_branches_dry_run(self):
-        """Test dry run mode shows what would be done."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
-            mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.side_effect = [
-                # git branch -r (get_all_branches)
-                CommandResult(
-                    success=True,
-                    stdout="origin/main\norigin/pr-123\norigin/pr-456\norigin/issue-123\n",
-                    stderr="",
-                    returncode=0,
-                ),
-                # git branch --list for issue-123 (pr-123)
-                CommandResult(
-                    success=True,
-                    stdout="issue-123\n",
-                    stderr="",
-                    returncode=0,
-                ),
-                # git branch --list for issue-456 (pr-456)
-                CommandResult(
-                    success=True,
-                    stdout="issue-456\n",
-                    stderr="",
-                    returncode=0,
-                ),
-            ]
-
-            from src.auto_coder.automation_config import AutomationConfig
-
-            config = AutomationConfig(DRY_RUN=True)
-            results = migrate_pr_branches(config)
-
-            assert results["success"] is True
-            assert len(results["migrated"]) == 2
-            # Check that dry run results don't include execution details
-            for item in results["migrated"]:
-                assert item.get("dry_run") is True
-            assert len(results["skipped"]) == 0
-            assert len(results["failed"]) == 0
-            assert len(results["conflicts"]) == 0
-
     def test_migrate_pr_branches_no_pr_branches(self):
         """Test migration when no pr-<number> branches exist."""
         with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
@@ -1705,7 +1662,7 @@ class TestMigratePrBranches:
 
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=False)
+            config = AutomationConfig()
             results = migrate_pr_branches(config, delete_after_merge=True)
 
             assert results["success"] is True
@@ -1731,7 +1688,7 @@ class TestMigratePrBranches:
 
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=True)
+            config = AutomationConfig()
             results = migrate_pr_branches(config)
 
             assert results["success"] is True
@@ -1757,7 +1714,7 @@ class TestMigratePrBranches:
 
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=False)
+            config = AutomationConfig()
             results = migrate_pr_branches(config)
 
             assert results["success"] is True  # Overall success (some branches handled)
@@ -1781,7 +1738,7 @@ class TestMigratePrBranches:
 
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=True)
+            config = AutomationConfig()
             results = migrate_pr_branches(config, cwd="/custom/path")
 
             assert results["success"] is True

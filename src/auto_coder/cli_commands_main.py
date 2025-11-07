@@ -71,7 +71,6 @@ logger = get_logger(__name__)
 @click.option("--model-qwen", help="Model to use when backend=qwen")
 @click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
 @click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
-@click.option("--dry-run", is_flag=True, help="Run in dry-run mode without making changes")
 @click.option(
     "--jules-mode/--no-jules-mode",
     default=True,
@@ -135,7 +134,6 @@ def process_issues(
     model_qwen: Optional[str],
     model_auggie: Optional[str],
     model_claude: Optional[str],
-    dry_run: bool,
     jules_mode: bool,
     disable_labels: Optional[bool],
     skip_main_update: bool,
@@ -184,7 +182,6 @@ def process_issues(
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         logger.info(f"Using model: {primary_model}")
     logger.info(f"Jules mode: {jules_mode}")
-    logger.info(f"Dry run mode: {dry_run}")
     logger.info(f"Disable labels: {disable_labels}")
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
@@ -200,7 +197,6 @@ def process_issues(
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
     click.echo(f"Jules mode: {jules_mode}")
-    click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Disable labels: {disable_labels}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
@@ -272,7 +268,6 @@ def process_issues(
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
     engine_config.DISABLE_LABELS = bool(disable_labels)
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
-    engine_config.DRY_RUN = bool(dry_run)
 
     automation_engine = AutomationEngine(
         github_client,
@@ -603,7 +598,6 @@ def create_feature_issues(
     default=True,
     help="Enable GraphRAG integration (default: enabled)",
 )
-@click.option("--dry-run", is_flag=True, help="Run without making changes (LLM edits simulated)")
 @click.option(
     "--force-reindex",
     is_flag=True,
@@ -632,7 +626,6 @@ def fix_to_pass_tests_command(
     model_auggie: Optional[str],
     model_claude: Optional[str],
     max_attempts: Optional[int],
-    dry_run: bool,
     enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
@@ -668,7 +661,6 @@ def fix_to_pass_tests_command(
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
-    click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Disable labels: {disable_labels}")
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
@@ -726,7 +718,6 @@ def fix_to_pass_tests_command(
         click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
 
     engine_config = AutomationConfig()
-    engine_config.DRY_RUN = bool(dry_run)
     engine = AutomationEngine(github_client, config=engine_config)
 
     try:
