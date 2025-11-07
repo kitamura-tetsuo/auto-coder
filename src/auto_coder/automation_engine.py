@@ -479,15 +479,6 @@ class AutomationEngine:
         from .pr_processor import _extract_linked_issues_from_pr_body
 
         try:
-            # Handle 'auto' type
-            if target_type == "auto":
-                # Prefer PR to avoid mislabeling PR issues
-                try:
-                    pr_data = self.github.get_pr_details_by_number(repo_name, number)
-                    target_type = "pr"
-                except Exception:
-                    target_type = "issue"
-
             if target_type == "pr":
                 # Get PR data
                 pr_data = self.github.get_pr_details_by_number(repo_name, number)

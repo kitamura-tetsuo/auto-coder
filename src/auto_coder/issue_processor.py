@@ -549,13 +549,16 @@ def process_single(
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
-    This function now delegates to AutomationEngine.process_single for unified processing.
-    Kept for backward compatibility and for direct use without AutomationEngine instance.
+    DEPRECATED: This function delegates to AutomationEngine.process_single for unified processing.
+    Use AutomationEngine.process_single directly instead.
 
-    target_type: 'issue' | 'pr' | 'auto'
-    When 'auto', try PR first then fall back to issue.
+    target_type: 'issue' | 'pr' (auto-detection removed in issue #307)
     """
+    import warnings
+
     from .automation_engine import AutomationEngine
+
+    warnings.warn("issue_processor.process_single is deprecated. Use AutomationEngine.process_single directly.", DeprecationWarning, stacklevel=2)
 
     # Create a temporary AutomationEngine instance and delegate to it
     engine = AutomationEngine(github_client, config)
