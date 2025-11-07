@@ -12,7 +12,7 @@ from auto_coder.prompt_loader import render_prompt
 from auto_coder.util.github_action import get_github_actions_logs_from_url
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
-from .automation_config import AutomationConfig
+from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
 from .issue_processor import create_feature_issues, process_single
@@ -41,7 +41,7 @@ class AutomationEngine:
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
 
-    def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Dict[str, Any]]:
+    def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Candidate]:
         """Collect PR/Issue candidates with priority.
 
         Priority definitions:
@@ -57,7 +57,7 @@ class AutomationEngine:
         from .pr_processor import _check_github_actions_status as _pr_check_github_actions_status
         from .pr_processor import _extract_linked_issues_from_pr_body
 
-        candidates: List[Dict[str, Any]] = []
+        candidates: List[Candidate] = []
         candidates_count = 0
 
         # Collect PR candidates
@@ -88,13 +88,13 @@ class AutomationEngine:
                 pr_priority += 4
 
             candidates.append(
-                {
-                    "type": "pr",
-                    "data": pr_data,
-                    "priority": pr_priority,
-                    "branch_name": pr_data.get("head", {}).get("ref"),
-                    "related_issues": _extract_linked_issues_from_pr_body(pr_data.get("body", "")),
-                }
+                Candidate(
+                    type="pr",
+                    data=pr_data,
+                    priority=pr_priority,
+                    branch_name=pr_data.get("head", {}).get("ref"),
+                    related_issues=[str(i) for i in _extract_linked_issues_from_pr_body(pr_data.get("body", ""))],
+                )
             )
 
         if candidates_count < 5:
@@ -118,12 +118,12 @@ class AutomationEngine:
                 issue_priority = 1 if "urgent" in labels else 0
 
                 candidates.append(
-                    {
-                        "type": "issue",
-                        "data": issue_data,
-                        "priority": issue_priority,
-                        "issue_number": number,
-                    }
+                    Candidate(
+                        type="issue",
+                        data=issue_data,
+                        priority=issue_priority,
+                        issue_number=number,
+                    )
                 )
 
         # Sort by priority descending, type (issue first), creation time ascending
@@ -132,9 +132,9 @@ class AutomationEngine:
 
         candidates.sort(
             key=lambda x: (
-                -int(x.get("priority", 0)),
-                _type_order(x.get("type", "pr")),
-                x.get("data", {}).get("created_at", ""),
+                -x.priority,
+                _type_order(x.type),
+                x.data.get("created_at", ""),
             )
         )
 
@@ -144,25 +144,25 @@ class AutomationEngine:
 
         return candidates
 
-    def _has_open_sub_issues(self, repo_name: str, candidate: Dict[str, Any]) -> bool:
+    def _has_open_sub_issues(self, repo_name: str, candidate: Candidate) -> bool:
         """Fail-safe helper to check if target issue has unresolved sub-issues.
         - candidate is expected to be an element from _get_candidates (type: issue)
         - Returns False on exception to avoid skip suppression
         """
         try:
-            if candidate.get("type") != "issue":
+            if candidate.type != "issue":
                 return False
-            issue_data = candidate.get("data") or {}
-            issue_number = candidate.get("issue_number") or issue_data.get("number")
+            issue_data = candidate.data or {}
+            issue_number = candidate.issue_number or issue_data.get("number")
             if not issue_number:
                 return False
             sub_issues = self.github.get_open_sub_issues(repo_name, issue_number)
             return bool(sub_issues)
         except Exception as e:
-            logger.warning(f"Failed to check open sub-issues for issue #{candidate.get('issue_number') or issue_data.get('number', 'N/A')}: {e}")
+            logger.warning(f"Failed to check open sub-issues for issue #{candidate.issue_number or issue_data.get('number', 'N/A')}: {e}")
             return False
 
-    def _process_single_candidate(self, repo_name: str, candidate: Dict[str, Any], jules_mode: bool = False) -> Dict[str, Any]:
+    def _process_single_candidate(self, repo_name: str, candidate: Candidate, jules_mode: bool = False) -> CandidateProcessingResult:
         """Process a single candidate (issue/PR).
 
         Args:
@@ -173,26 +173,27 @@ class AutomationEngine:
         Returns:
             Processing result
         """
-        result = {
-            "type": candidate.get("type"),
-            "number": candidate.get("data", {}).get("number"),
-            "title": candidate.get("data", {}).get("title"),
-            "success": False,
-            "actions": [],
-            "error": None,
-        }
+        result = CandidateProcessingResult(
+            type=candidate.type,
+            number=candidate.data.get("number"),
+            title=candidate.data.get("title"),
+            success=False,
+            actions=[],
+            error=None,
+        )
 
         try:
-            if candidate.get("type") == "issue":
+            if candidate.type == "issue":
                 # Issue processing
-                result["actions"] = self._take_issue_actions(repo_name, candidate["data"])
-                result["success"] = True
-            elif candidate.get("type") == "pr":
+                result.actions = self._take_issue_actions(repo_name, candidate.data)
+                result.success = True
+            elif candidate.type == "pr":
                 # PR processing
-                result["actions"] = process_pull_request(self.github, self.config, repo_name, candidate["data"])
-                result["success"] = True
+                pr_result = process_pull_request(self.github, self.config, repo_name, candidate.data)
+                result.actions = pr_result.actions_taken
+                result.success = True
         except Exception as e:
-            result["error"] = str(e)
+            result.error = str(e)
             logger.error(f"Error processing candidate: {e}")
 
         return result
@@ -232,21 +233,30 @@ class AutomationEngine:
                 batch_processed = 0
                 for candidate in candidates:
                     try:
-                        logger.info(f"Processing {candidate['type']} #{candidate.get('data', {}).get('number', 'N/A')}")
+                        logger.info(f"Processing {candidate.type} #{candidate.data.get('number', 'N/A')}")
 
                         # Process the candidate
                         result = self._process_single_candidate(repo_name, candidate, jules_mode)
 
                         # Track results
-                        if candidate["type"] == "issue":
-                            results["issues_processed"].append(result)  # type: ignore
-                        elif candidate["type"] == "pr":
-                            results["prs_processed"].append(result)  # type: ignore
+                        # Convert dataclass to dict for backward compatibility with existing code
+                        result_dict = {
+                            "type": result.type,
+                            "number": result.number,
+                            "title": result.title,
+                            "success": result.success,
+                            "actions": result.actions,
+                            "error": result.error,
+                        }
+                        if candidate.type == "issue":
+                            results["issues_processed"].append(result_dict)  # type: ignore
+                        elif candidate.type == "pr":
+                            results["prs_processed"].append(result_dict)  # type: ignore
 
                         batch_processed += 1
                         total_processed += 1
 
-                        logger.info(f"Successfully processed {candidate['type']} #{candidate.get('data', {}).get('number', 'N/A')}")
+                        logger.info(f"Successfully processed {candidate.type} #{candidate.data.get('number', 'N/A')}")
                         break
 
                     except Exception as e:

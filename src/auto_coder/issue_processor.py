@@ -10,7 +10,7 @@ from auto_coder.backend_manager import get_llm_backend_manager, run_message_prom
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import get_detailed_checks_from_history
 
-from .automation_config import AutomationConfig
+from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
@@ -22,22 +22,6 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-class ProcessResult(TypedDict):
-    repository: str
-    timestamp: str
-    dry_run: bool
-    jules_mode: bool
-    issues_processed: List[Dict[str, Any]]
-    prs_processed: List[Dict[str, Any]]
-    errors: List[str]
-
-
-class ProcessedIssueResult(TypedDict, total=False):
-    issue_data: Dict[str, Any]
-    actions_taken: List[str]
-    error: str
-
-
 def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, repo_name: str, issue_data: Dict[str, Any]) -> ProcessedIssueResult:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
@@ -47,19 +31,19 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
         current_labels = issue_data.get("labels", [])
         if "@auto-coder" in current_labels:
             logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-            return {
-                "issue_data": issue_data,
-                "actions_taken": ["Skipped - already being processed (@auto-coder label present)"],
-            }
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=["Skipped - already being processed (@auto-coder label present)"],
+            )
 
         # Skip if issue has open sub-issues
         open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
         if open_sub_issues:
             logger.info(f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
-            return {
-                "issue_data": issue_data,
-                "actions_taken": [f"Skipped - has open sub-issues: {open_sub_issues}"],
-            }
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=[f"Skipped - has open sub-issues: {open_sub_issues}"],
+            )
 
         # Skip if issue has unresolved dependencies
         if config.CHECK_DEPENDENCIES:
@@ -68,22 +52,22 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
                 unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
                 if unresolved:
                     logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
-                    return {
-                        "issue_data": issue_data,
-                        "actions_taken": [f"Skipped - has unresolved dependencies: {unresolved}"],
-                    }
+                    return ProcessedIssueResult(
+                        issue_data=issue_data,
+                        actions_taken=[f"Skipped - has unresolved dependencies: {unresolved}"],
+                    )
                 else:
                     logger.info(f"All dependencies for issue #{issue_number} are resolved")
 
         # Use LabelManager context manager to handle @auto-coder label automatically
         with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
             if not should_process:
-                return {
-                    "issue_data": issue_data,
-                    "actions_taken": ["Skipped - another instance started processing (@auto-coder label added)"],
-                }
+                return ProcessedIssueResult(
+                    issue_data=issue_data,
+                    actions_taken=["Skipped - another instance started processing (@auto-coder label added)"],
+                )
 
-            processed_issue: Dict[str, Any] = {"issue_data": issue_data, "actions_taken": []}
+            actions_taken: List[str] = []
 
             # Check if 'jules' label already exists
             current_labels = issue_data.get("labels", [])
@@ -91,20 +75,26 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
                 if not config.DRY_RUN:
                     # Add 'jules' label to the issue
                     github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
-                    processed_issue["actions_taken"].append(f"Added 'jules' label to issue #{issue_number}")
+                    actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
                     logger.info(f"Added 'jules' label to issue #{issue_number}")
                 else:
-                    processed_issue["actions_taken"].append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+                    actions_taken.append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
                     logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
             else:
-                processed_issue["actions_taken"].append(f"Issue #{issue_number} already has 'jules' label")
+                actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
                 logger.info(f"Issue #{issue_number} already has 'jules' label")
 
-            return processed_issue  # type: ignore[return-value]
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=actions_taken,
+            )
 
     except Exception as e:
         logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
-        return {"issue_data": issue_data, "error": str(e)}
+        return ProcessedIssueResult(
+            issue_data=issue_data,
+            error=str(e),
+        )
 
 
 def _take_issue_actions(
@@ -551,7 +541,7 @@ def process_single(
     target_type: str,
     number: int,
     jules_mode: bool = False,
-) -> ProcessResult:
+) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
     target_type: 'issue' | 'pr' | 'auto'
@@ -559,15 +549,12 @@ def process_single(
     """
     with ProgressStage("Processing single PR/IS"):
         logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
-        result: ProcessResult = {
-            "repository": repo_name,
-            "timestamp": datetime.now().isoformat(),
-            "dry_run": config.DRY_RUN,
-            "jules_mode": jules_mode,
-            "issues_processed": [],
-            "prs_processed": [],
-            "errors": [],
-        }
+        result = ProcessResult(
+            repository=repo_name,
+            timestamp=datetime.now().isoformat(),
+            dry_run=config.DRY_RUN,
+            jules_mode=jules_mode,
+        )
         try:
             resolved_type = target_type
             if target_type == "auto":
@@ -614,12 +601,12 @@ def process_single(
                         "actions_taken": actions,
                         "priority": "single",
                     }
-                    result["prs_processed"].append(processed_pr)
+                    result.prs_processed.append(processed_pr)
                     newline_progress()
                 except Exception as e:
                     msg = f"Failed to process PR #{number}: {e}"
                     logger.error(msg)
-                    result["errors"].append(msg)
+                    result.errors.append(msg)
                     newline_progress()
             else:
                 try:
@@ -662,35 +649,35 @@ def process_single(
                         # Clear progress header after processing
                         newline_progress()
 
-                        result["issues_processed"].append(processed_issue)
+                        result.issues_processed.append(processed_issue)
 
                 except Exception as e:
                     msg = f"Failed to process issue #{number}: {e}"
                     logger.error(msg)
-                    result["errors"].append(msg)
+                    result.errors.append(msg)
                     newline_progress()
         except Exception as e:
             msg = f"Error in process_single: {e}"
             logger.error(msg)
-            result["errors"].append(msg)
+            result.errors.append(msg)
 
         # After processing, check if the single PR/issue is now closed
         # If so, switch to main branch, pull, and exit
         try:
             # Check if we processed exactly one item
-            if not config.DRY_RUN and (result["issues_processed"] or result["prs_processed"]):
+            if not config.DRY_RUN and (result.issues_processed or result.prs_processed):
                 # Get the processed item
                 processed_item: Dict[str, Any]
                 item_number = None
                 item_type = None
 
-                if result["issues_processed"]:
-                    processed_item = result["issues_processed"][0]
+                if result.issues_processed:
+                    processed_item = result.issues_processed[0]
                     issue_data = processed_item.get("issue_data", {})
                     item_number = issue_data.get("number")
                     item_type = "issue"
-                elif result["prs_processed"]:
-                    processed_item = result["prs_processed"][0]
+                elif result.prs_processed:
+                    processed_item = result.prs_processed[0]
                     pr_data = processed_item.get("pr_data", {})
                     item_number = pr_data.get("number")
                     item_type = "pr"
@@ -715,4 +702,13 @@ def process_single(
         except Exception as e:
             logger.warning(f"Failed to check/handle closed item state: {e}")
 
-        return result
+        # Convert dataclass to dict for backward compatibility with existing code
+        return {
+            "repository": result.repository,
+            "timestamp": result.timestamp,
+            "dry_run": result.dry_run,
+            "jules_mode": result.jules_mode,
+            "issues_processed": result.issues_processed,
+            "prs_processed": result.prs_processed,
+            "errors": result.errors,
+        }

@@ -1,7 +1,8 @@
 """Configuration classes for Auto-Coder automation engine."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -82,6 +83,75 @@ class AutomationConfig:
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True
 
-    # Dry run mode
-    # When True, performs a trial run without making actual changes
-    DRY_RUN: bool = False
+
+@dataclass
+class Candidate:
+    """Represents a candidate (issue or PR) for processing.
+
+    Provides type-safe structure for candidate data with required and optional fields.
+    """
+
+    type: str  # "issue" or "pr"
+    data: Dict[str, Any]  # issue_data or pr_data
+    priority: int
+    branch_name: Optional[str] = None
+    related_issues: List[str] = field(default_factory=list)
+    issue_number: Optional[int] = None
+
+
+@dataclass
+class CandidateProcessingResult:
+    """Result of processing a single candidate (issue or PR).
+
+    Provides type-safe structure for processing results.
+    """
+
+    type: str  # "issue" or "pr"
+    number: Optional[int] = None
+    title: Optional[str] = None
+    success: bool = False
+    actions: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+
+
+@dataclass
+class ProcessedPRResult:
+    """Result of processing a pull request.
+
+    Provides type-safe structure for PR processing results.
+    """
+
+    pr_data: Dict[str, Any]
+    actions_taken: List[str] = field(default_factory=list)
+    priority: Optional[str] = None  # "merge", "fix", "single", "error"
+    analysis: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ProcessedIssueResult:
+    """Result of processing an issue.
+
+    Provides type-safe structure for issue processing results.
+    """
+
+    issue_data: Dict[str, Any]
+    actions_taken: List[str] = field(default_factory=list)
+    error: Optional[str] = None
+    analysis: Optional[Dict[str, Any]] = None
+    solution: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ProcessResult:
+    """Result of processing a single issue or PR.
+
+    Provides type-safe structure for process_single return values.
+    """
+
+    repository: str
+    timestamp: str
+    dry_run: bool
+    jules_mode: bool
+    issues_processed: List[Dict[str, Any]] = field(default_factory=list)
+    prs_processed: List[Dict[str, Any]] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
