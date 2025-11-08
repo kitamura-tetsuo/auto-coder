@@ -7,7 +7,7 @@ import sys
 from unittest.mock import Mock, patch
 
 # Add src to path
-sys.path.insert(0, '/home/node/src/auto-coder/src')
+sys.path.insert(0, '/workspaces/auto-coder/src')
 
 from auto_coder.issue_processor import process_single
 from auto_coder.automation_config import AutomationConfig

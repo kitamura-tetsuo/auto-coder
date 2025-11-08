@@ -331,8 +331,8 @@ def process_issues(
 
     # If only_target is provided, parse and process a single item
     if only_target:
-        target_type = "auto"
         number = None
+        target_type = None
         # If URL, extract number and type
         m = re.search(r"/issues/(\d+)$", only_target)
         if m:
@@ -344,14 +344,23 @@ def process_issues(
                 target_type = "pr"
                 number = int(m.group(1))
         if number is None:
-            # Try plain number
+            # Try plain number - auto-detect type (try PR first, then issue)
             try:
                 number = int(only_target.strip())
-                target_type = "auto"
             except ValueError:
                 raise click.ClickException("--only must be a PR/Issue URL or a number")
-        # Run single-item processing
-        _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
+        # Run single-item processing with auto-detection if needed
+        if target_type is None:
+            # Auto-detect: try PR first, then issue
+            try:
+                _ = automation_engine.process_single(repo_name, "pr", number, jules_mode=jules_mode)
+                target_type = "pr"
+            except Exception:
+                # Fall back to issue
+                _ = automation_engine.process_single(repo_name, "issue", number, jules_mode=jules_mode)
+                target_type = "issue"
+        else:
+            _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
         # Print brief summary to stdout
         click.echo(f"Processed single {target_type} #{number}")
         # Close MCP session if present
