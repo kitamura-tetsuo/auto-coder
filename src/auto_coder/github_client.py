@@ -59,20 +59,18 @@ class GitHubClient:
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
+        self._initialized = True
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
 
-        This method ensures only one instance is created across all threads.
+        The actual singleton logic is implemented in get_instance().
+        This method just creates the instance; get_instance() controls singleton behavior.
         """
-        if cls._instance is None:
-            instance = super().__new__(cls)
-            instance._initialized = False
-            return instance
-        return cls._instance
+        return super().__new__(cls)
 
     @classmethod
-    def get_instance(cls, token: str = None, disable_labels: bool = False):
+    def get_instance(cls, token: Optional[str] = None, disable_labels: bool = False) -> "GitHubClient":
         """Get the singleton instance of GitHubClient.
 
         On the first call, this creates and returns the singleton instance.
@@ -89,8 +87,9 @@ class GitHubClient:
             with cls._lock:
                 if cls._instance is None:
                     instance = cls.__new__(cls)
-                    if not hasattr(instance, "_initialized") or not instance._initialized:
-                        instance.__init__(token, disable_labels)
+                    if token is None:
+                        raise ValueError("GitHub token is required on first call to get_instance()")
+                    type(instance).__init__(instance, token, disable_labels)
                     cls._instance = instance
         return cls._instance
 
@@ -724,11 +723,58 @@ class GitHubClient:
             logger.error(f"Failed to add work-in-progress label to issue #{issue_number}: {e}")
             raise
 
-    def get_issue_dependencies(self, issue_body: str) -> List[int]:
+    def _search_issues_by_title(self, repo_name: str, search_title: str) -> Optional[int]:
+        """Search for an open issue by title using fuzzy matching.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            search_title: The title to search for (case-insensitive)
+
+        Returns:
+            The issue number if found, None otherwise
+        """
+        try:
+            issues = self.get_open_issues(repo_name)
+            search_title_lower = search_title.lower()
+
+            # First try exact match (case-insensitive)
+            for issue in issues:
+                if issue.title.lower() == search_title_lower:
+                    logger.debug(f"Found exact match for title '{search_title}': issue #{issue.number}")
+                    return issue.number
+
+            # Then try partial match - check if search title is contained in issue title
+            # or if issue title is contained in search title
+            for issue in issues:
+                issue_title_lower = issue.title.lower()
+                # Check if search title is a significant part of the issue title
+                # (at least 5 characters or 50% of the shorter title)
+                min_length = min(len(search_title_lower), len(issue_title_lower))
+                threshold = max(5, min_length * 0.5)
+
+                if len(search_title_lower) >= threshold and search_title_lower in issue_title_lower:
+                    logger.debug(f"Found partial match for title '{search_title}': issue #{issue.number} (title: '{issue.title}')")
+                    return issue.number
+                elif len(issue_title_lower) >= threshold and issue_title_lower in search_title_lower:
+                    logger.debug(f"Found partial match for title '{search_title}': issue #{issue.number} (title: '{issue.title}')")
+                    return issue.number
+
+            logger.debug(f"No match found for title '{search_title}'")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to search for issue by title '{search_title}': {e}")
+            return None
+
+    def get_issue_dependencies(self, issue_body: str, repo_name: Optional[str] = None) -> List[int]:
         """Extract issue numbers that this issue depends on from the issue body.
+
+        Supports both number-based dependencies (e.g., "#123") and title-based dependencies
+        (e.g., "Depends on: Sub Issue 1 (dataclass creation may be needed)").
 
         Args:
             issue_body: The body text of the issue
+            repo_name: Repository name in format 'owner/repo' (required for title-based dependencies)
 
         Returns:
             List of issue numbers that this issue depends on
@@ -737,14 +783,17 @@ class GitHubClient:
             "Depends on: #123" -> [123]
             "depends on #456" -> [456]
             "Depends on #789, #790" -> [789, 790]
+            "Depends on: Sub Issue 1 (dataclass creation)" -> [123] (if issue #123 has that title)
         """
         if not issue_body:
             return []
 
         import re
 
-        # Better approach: first find all text that comes after 'depends on' or 'blocked by',
-        # then extract all issue numbers from that text
+        dependencies = []
+        seen = set()
+
+        # First pass: extract number-based dependencies
         # This handles various formats like:
         # - "Depends on: #123"
         # - "depends on #123, #456, #789"
@@ -752,9 +801,6 @@ class GitHubClient:
         # - "blocked by #100"
         # Case-insensitive, with or without colon, supports comma-separated lists and "and"
         depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*(.*?)(?:\n|\r|$)"
-
-        dependencies = []
-        seen = set()
 
         for match in re.finditer(depends_pattern, issue_body):
             depends_text = match.group(1).strip()
@@ -766,6 +812,33 @@ class GitHubClient:
                 if issue_num not in seen:
                     dependencies.append(issue_num)
                     seen.add(issue_num)
+
+        # Second pass: handle title-based dependencies
+        # Pattern: "Depends on: Title (description)" or "blocked by: Title (description)"
+        # We look for text that doesn't start with # but contains descriptive text
+        if repo_name:
+            title_depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*([^\n#]+?)(?:\s*\([^)]*\))?(?:\n|\r|$)"
+
+            for match in re.finditer(title_depends_pattern, issue_body):
+                depends_text = match.group(1).strip()
+
+                # Skip if it contains issue numbers (already handled above)
+                if re.search(r"#?\d+", depends_text):
+                    continue
+
+                # Skip if empty or too short (likely not a real title)
+                if len(depends_text.strip()) < 3:
+                    continue
+
+                # Clean up the title - remove leading/trailing punctuation
+                title = re.sub(r"^[,\-\s]+|[,\-\s]+$", "", depends_text)
+
+                if title and len(title) >= 3:
+                    title_issue_num: Optional[int] = self._search_issues_by_title(repo_name, title)
+                    if title_issue_num is not None and title_issue_num not in seen:
+                        dependencies.append(title_issue_num)
+                        seen.add(title_issue_num)
+                        logger.debug(f"Found title-based dependency: '{title}' -> issue #{title_issue_num}")
 
         if dependencies:
             logger.debug(f"Found dependencies: {dependencies}")

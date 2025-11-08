@@ -92,7 +92,7 @@ def process_pull_request(
                 processed_pr.priority = "fix"
 
                 # Process using _take_pr_actions
-                processed_pr_result = _process_pr_for_fixes(repo_name, pr_data, config)
+                processed_pr_result = _process_pr_for_fixes(github_client, repo_name, pr_data, config)
                 processed_pr.actions_taken = processed_pr_result.actions_taken
                 processed_pr.priority = processed_pr_result.priority
                 processed_pr.analysis = processed_pr_result.analysis
@@ -152,7 +152,7 @@ def _process_pr_for_merge(
             return processed_pr
 
         # Since Actions are passing, attempt direct merge
-        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config)
+        merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client)
         if merge_result:
             processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
         else:
@@ -161,6 +161,7 @@ def _process_pr_for_merge(
 
 
 def _process_pr_for_fixes(
+    github_client: Any,
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
@@ -172,7 +173,6 @@ def _process_pr_for_fixes(
         priority="fix",
         analysis=None,
     )
-    github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
     with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config) as should_process:
@@ -183,7 +183,7 @@ def _process_pr_for_fixes(
         # Use the existing PR actions logic for fixing issues
         with ProgressStage("Fixing issues"):
             try:
-                actions = _take_pr_actions(repo_name, pr_data, config)
+                actions = _take_pr_actions(github_client, repo_name, pr_data, config)
                 processed_pr.actions_taken = actions
             except Exception as e:
                 # Set error in result instead of adding to actions
@@ -193,6 +193,7 @@ def _process_pr_for_fixes(
 
 
 def _take_pr_actions(
+    github_client: Any,
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
@@ -204,7 +205,7 @@ def _take_pr_actions(
     try:
         # First, handle the merge process (GitHub Actions, testing, etc.)
         # This doesn't depend on Gemini analysis
-        merge_actions = _handle_pr_merge(repo_name, pr_data, config, {})
+        merge_actions = _handle_pr_merge(github_client, repo_name, pr_data, config, {})
         actions.extend(merge_actions)
 
         # If merge process completed successfully (PR was merged), skip analysis
@@ -214,7 +215,7 @@ def _take_pr_actions(
             actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
         else:
             # Only do Gemini analysis if merge process didn't complete
-            analysis_results = _apply_pr_actions_directly(repo_name, pr_data, config)
+            analysis_results = _apply_pr_actions_directly(github_client, repo_name, pr_data, config)
             actions.extend(analysis_results)
 
     except Exception as e:
@@ -224,6 +225,7 @@ def _take_pr_actions(
 
 
 def _apply_pr_actions_directly(
+    github_client: Any,
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
@@ -371,6 +373,7 @@ def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff:
 
 
 def _handle_pr_merge(
+    github_client: Any,
     repo_name: str,
     pr_data: Dict[str, Any],
     config: AutomationConfig,
@@ -398,7 +401,7 @@ def _handle_pr_merge(
         if github_checks.success and detailed_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
 
-            merge_result = _merge_pr(repo_name, pr_number, analysis, config)
+            merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
             else:
@@ -743,6 +746,7 @@ def _merge_pr(
     pr_number: int,
     analysis: Dict[str, Any],
     config: AutomationConfig,
+    github_client: Optional[Any] = None,
 ) -> bool:
     """Merge a PR using GitHub CLI with conflict resolution and simple fallbacks.
 
