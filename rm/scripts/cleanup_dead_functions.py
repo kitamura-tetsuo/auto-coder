@@ -105,7 +105,7 @@ class PerFileRemover(cst.CSTTransformer):
 
     def leave_FunctionDef(
         self, original_node: cst.FunctionDef, updated_node: cst.FunctionDef
-    ):
+    ) -> cst.CSTNode:
         if self._should_remove(original_node):
             pos = self.get_metadata(PositionProvider, original_node).start.line
             self.removed.append((original_node.name.value, pos))
@@ -144,7 +144,7 @@ def process_file(
             logger.error("Failed to write {}: {}", path, e)
     else:
         logger.info(
-            "[dry-run] Would update {} (remove {} functions).", path, len(removed)
+            "Preview: Would update {} (remove {} functions).", path, len(removed)
         )
 
     for name, ln in removed:
@@ -156,7 +156,7 @@ def compile_keep_patterns(exprs: List[str]) -> List[re.Pattern]:
     return [re.compile(x) for x in exprs]
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Bulk-remove unused functions reported by vulture, via LibCST."
     )
@@ -164,7 +164,7 @@ def main():
         "paths", nargs="+", help="Code paths to scan (e.g. src/ package/)"
     )
     parser.add_argument(
-        "--apply", action="store_true", help="Actually modify files. Default: dry-run."
+        "--apply", action="store_true", help="Actually modify files. Default: preview mode."
     )
     parser.add_argument(
         "--min-confidence",
@@ -241,7 +241,7 @@ def main():
         )
     else:
         logger.info(
-            "[dry-run] Would remove {} functions across {} files. Use --apply to write changes.",
+            "Preview: Would remove {} functions across {} files. Use --apply to write changes.",
             total_removed,
             len(hits),
         )

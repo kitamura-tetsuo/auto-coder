@@ -8,76 +8,15 @@ from src.auto_coder.util.github_action import GitHubActionsStatusResult
 from src.auto_coder.utils import CommandExecutor
 
 
-def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    config = AutomationConfig()
-    config.DRY_RUN = True
-    engine = AutomationEngine(mock_github_client, config=config)
-    prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
-
-    assert "Do NOT post any comments" in prompt
-    # Should NOT ask LLM to commit/push or merge
-    assert 'git commit -m "Auto-Coder: Apply fix for PR #' not in prompt
-    assert "gh pr merge" not in prompt
-    assert "Do NOT run git commit/push" in prompt
-    assert "ACTION_SUMMARY:" in prompt
-    assert "CANNOT_FIX" in prompt
-    # Ensure repo/number placeholders are still present contextually
-    assert str(sample_pr_data["number"]) in prompt
-    assert test_repo_name in prompt
-
-
-def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    # Initialize backend manager for proper LLM client handling
-    from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
-    from src.auto_coder.pr_processor import _apply_pr_actions_directly
-
-    # Reset singleton and initialize properly
-    LLMBackendManager.reset_singleton()
-    manager = get_llm_backend_manager(
-        default_backend="codex",
-        default_client=mock_gemini_client,
-        factories={"codex": lambda: mock_gemini_client},
-    )
-
-    # For dry_run=True, the function should not call LLM but should still function
-    config = AutomationConfig()
-    config.DRY_RUN = True
-    engine = AutomationEngine(mock_github_client, config=config)
-
-    # Stub diff generation
-    with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
-        # Ensure add_comment_to_issue is tracked
-        mock_github_client.add_comment_to_issue.reset_mock()
-
-        # In dry_run mode, the function should return a dry run message
-        actions = _apply_pr_actions_directly(
-            test_repo_name,
-            sample_pr_data,
-            engine.config,
-        )
-
-        # No comment should be posted
-        mock_github_client.add_comment_to_issue.assert_not_called()
-
-        # In dry_run mode, should return dry run message
-        assert len(actions) == 1
-        assert actions[0].startswith("[DRY RUN] Would apply PR actions directly")
-
-
-"""Tests for automation engine functionality."""
-
-
 class TestAutomationEngine:
     """Test cases for AutomationEngine class."""
 
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
         config = AutomationConfig()
-        config.DRY_RUN = True
         engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
-        assert engine.config.DRY_RUN is True
         assert engine.config.REPORTS_DIR == "reports"
 
     def test_run_success(
@@ -105,7 +44,6 @@ class TestAutomationEngine:
             mock_github_client.disable_labels = False
 
             config = AutomationConfig()
-            config.DRY_RUN = True
             engine = AutomationEngine(mock_github_client, config=config)
             engine._save_report = Mock()
 
@@ -114,7 +52,6 @@ class TestAutomationEngine:
 
             # Assert basic result structure
             assert result["repository"] == test_repo_name
-            assert result["dry_run"] is True
             assert result["llm_backend"] == "gemini"
             assert result["llm_model"] is not None
             assert "issues_processed" in result
@@ -150,7 +87,6 @@ class TestAutomationEngine:
             mock_github_client.disable_labels = False
 
             config = AutomationConfig()
-            config.DRY_RUN = True
             engine = AutomationEngine(mock_github_client, config=config)
             engine._save_report = Mock()
 
@@ -159,7 +95,6 @@ class TestAutomationEngine:
 
             # Assert basic result structure with jules mode
             assert result["repository"] == test_repo_name
-            assert result["dry_run"] is True
             assert result["jules_mode"] is True
             assert result["llm_backend"] == "gemini"
             assert result["llm_model"] is not None
@@ -196,7 +131,6 @@ class TestAutomationEngine:
 
             # Test error handling - keep it simple, just verify basic error structure
             config = AutomationConfig()
-            config.DRY_RUN = True
             engine = AutomationEngine(mock_github_client, config=config)
 
             # Execute without any complex mocking to see if basic error handling works
@@ -204,7 +138,6 @@ class TestAutomationEngine:
 
             # Assert that we get a valid result structure even if there are no errors in this case
             assert result["repository"] == test_repo_name
-            assert result["dry_run"] is True
             assert "errors" in result
 
 

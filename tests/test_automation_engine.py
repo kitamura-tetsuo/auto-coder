@@ -9,63 +9,6 @@ from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 from src.auto_coder.utils import CommandExecutor
 
-
-def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    config = AutomationConfig()
-    config.DRY_RUN = True
-    engine = AutomationEngine(mock_github_client, config=config)
-    prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
-
-    assert "Do NOT post any comments" in prompt
-    # Should NOT ask LLM to commit/push or merge
-    assert 'git commit -m "Auto-Coder: Apply fix for PR #' not in prompt
-    assert "gh pr merge" not in prompt
-    assert "Do NOT run git commit/push" in prompt
-    assert "ACTION_SUMMARY:" in prompt
-    assert "CANNOT_FIX" in prompt
-    # Ensure repo/number placeholders are still present contextually
-    assert str(sample_pr_data["number"]) in prompt
-    assert test_repo_name in prompt
-
-
-def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    # Initialize backend manager for proper LLM client handling
-    from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
-    from src.auto_coder.pr_processor import _apply_pr_actions_directly
-
-    # Reset singleton and initialize properly
-    LLMBackendManager.reset_singleton()
-    manager = get_llm_backend_manager(
-        default_backend="codex",
-        default_client=mock_gemini_client,
-        factories={"codex": lambda: mock_gemini_client},
-    )
-
-    # For dry_run=True, the function should not call LLM but should still function
-    config = AutomationConfig()
-    config.DRY_RUN = True
-    engine = AutomationEngine(mock_github_client, config=config)
-
-    # Stub diff generation
-    with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
-        # Ensure add_comment_to_issue is tracked
-        mock_github_client.add_comment_to_issue.reset_mock()
-
-        # In dry_run mode, the function should return a dry run message
-        actions = _apply_pr_actions_directly(
-            test_repo_name,
-            sample_pr_data,
-            engine.config,
-        )
-
-        # No comment should be posted
-        mock_github_client.add_comment_to_issue.assert_not_called()
-
-        # In dry_run mode, should return dry run message
-        assert len(actions) == 1
-        assert actions[0].startswith("[DRY RUN] Would apply PR actions directly")
-
-
 """Tests for automation engine functionality."""
 
 
@@ -75,11 +18,9 @@ class TestAutomationEngine:
     def test_init(self, mock_github_client, mock_gemini_client, temp_reports_dir):
         """Test AutomationEngine initialization."""
         config = AutomationConfig()
-        config.DRY_RUN = True
         engine = AutomationEngine(mock_github_client, config=config)
 
         assert engine.github == mock_github_client
-        assert engine.config.DRY_RUN is True
         assert engine.config.REPORTS_DIR == "reports"
 
     # Note: Tests for deprecated process_issues and related functions have been removed
@@ -106,7 +47,6 @@ class TestAutomationEngine:
         ]
 
         config = AutomationConfig()
-        config.DRY_RUN = False
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
@@ -116,33 +56,6 @@ class TestAutomationEngine:
         assert len(result) == 1
         assert result[0]["number"] == 123
         assert result[0]["title"] == sample_feature_suggestion["title"]
-
-        mock_create_feature_issues.assert_called_once()
-
-    @patch("src.auto_coder.automation_engine.create_feature_issues")
-    def test_create_feature_issues_dry_run(
-        self,
-        mock_create_feature_issues,
-        mock_github_client,
-        mock_gemini_client,
-        test_repo_name,
-        sample_feature_suggestion,
-    ):
-        """Test feature issues creation in dry run mode."""
-        # Setup
-        mock_create_feature_issues.return_value = [{"title": sample_feature_suggestion["title"], "dry_run": True}]
-
-        config = AutomationConfig()
-        config.DRY_RUN = True
-        engine = AutomationEngine(mock_github_client, config=config)
-
-        # Execute
-        result = engine.create_feature_issues(test_repo_name)
-
-        # Assert
-        assert len(result) == 1
-        assert result[0]["title"] == sample_feature_suggestion["title"]
-        assert result[0]["dry_run"] is True
 
         mock_create_feature_issues.assert_called_once()
 
@@ -271,21 +184,6 @@ class TestAutomationEngine:
             assert len(result["errors"]) == 0
             # Note: _check_github_actions_status may or may not be called depending on the code path
             mock_take_actions.assert_called_once()
-
-    def test_take_issue_actions_dry_run(self, mock_github_client, mock_gemini_client, sample_issue_data):
-        """Test issue actions in dry run mode."""
-        # Setup
-        config = AutomationConfig()
-        config.DRY_RUN = True
-        engine = AutomationEngine(mock_github_client, config=config)
-
-        # Execute
-        result = engine._take_issue_actions("test/repo", sample_issue_data)
-
-        # Assert
-        assert len(result) == 1
-        assert "[DRY RUN]" in result[0]
-        assert "123" in result[0]
 
     def test_apply_issue_actions_directly(self, mock_github_client, mock_gemini_client):
         """Test direct issue actions application using Gemini CLI."""
@@ -874,7 +772,6 @@ class TestAutomationEngineExtended:
         """Test integrated PR issue fixing with successful local tests."""
         # Setup
         config = AutomationConfig()
-        config.DRY_RUN = True
         engine = AutomationEngine(mock_github_client, config=config)
         pr_data = {"number": 123, "title": "Test PR"}
         github_logs = "Test failed: assertion error"
@@ -913,7 +810,6 @@ class TestAutomationEngineExtended:
         """Test integrated PR issue fixing with retry logic."""
         # Setup
         config = AutomationConfig()
-        config.DRY_RUN = True
         engine = AutomationEngine(mock_github_client, config=config)
         pr_data = {"number": 123, "title": "Test PR"}
         github_logs = "Test failed: assertion error"
@@ -1682,36 +1578,4 @@ class TestUrgentLabelPropagation:
         assert mock_cmd.call_count == 1
 
         # Verify urgent label was NOT added
-        mock_github_client.add_labels_to_issue.assert_not_called()
-
-    @patch("src.auto_coder.issue_processor.cmd.run_command")
-    def test_create_pr_for_issue_dry_run_no_label_propagation(self, mock_cmd, mock_github_client, mock_gemini_client):
-        """Test that urgent label is not propagated in dry run mode."""
-        # Setup
-        from src.auto_coder.issue_processor import _create_pr_for_issue
-
-        issue_data = {
-            "number": 123,
-            "title": "Urgent issue",
-            "body": "This is an urgent issue",
-            "labels": ["urgent"],
-        }
-
-        # Execute
-        config = AutomationConfig()
-        config.DRY_RUN = True
-        result = _create_pr_for_issue(
-            repo_name="test/repo",
-            issue_data=issue_data,
-            work_branch="issue-123",
-            base_branch="main",
-            llm_response="Fixed the urgent issue",
-            github_client=mock_github_client,
-            config=config,
-        )
-
-        # Assert
-        assert "[DRY RUN] Would create PR:" in result
-        # No actual GitHub operations should be performed
-        assert mock_cmd.call_count == 0
         mock_github_client.add_labels_to_issue.assert_not_called()

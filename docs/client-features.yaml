@@ -26,7 +26,6 @@ cli:
         - { name: --model-qwen, type: string }
         - { name: --model-auggie, type: string }
         - { name: --model-claude, type: string }
-        - { name: --dry-run, flag: true, default: false }
         - { name: --jules-mode/--no-jules-mode, default: true }
         - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
         - { name: --check-labels/--no-check-labels, default: true, help: "Enable checking for existing @auto-coder label before processing (default: enabled)" }
@@ -89,7 +88,6 @@ cli:
         - { name: --model-claude }
         - { name: --max-attempts, type: int, default: null (engine default applies) }
         - { name: --enable-graphrag/--disable-graphrag, default: true }
-        - { name: --dry-run, flag: true, default: false }
         - { name: --force-reindex, flag: true, default: false }
         - { name: --log-level, default: INFO }
         - { name: --log-file }
@@ -112,7 +110,6 @@ cli:
     - name: migrate-branches
       purpose: Migrate existing pr-<number> branches to their corresponding issue-<number> branches
       options:
-        - { name: --dry-run, flag: true, default: true, help: "Show what would be done without making changes" }
         - { name: --execute, flag: true, default: false, help: "Actually perform the migration" }
         - { name: --no-delete, flag: true, default: false, help: "Do not delete pr-<number> branches after successful migration" }
         - { name: --force, flag: true, default: false, help: "Auto-resolve merge conflicts (use with caution)" }

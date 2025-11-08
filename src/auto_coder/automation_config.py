@@ -70,10 +70,6 @@ class AutomationConfig:
     # Default: True (dependency checking enabled)
     CHECK_DEPENDENCIES: bool = True
 
-    # Run automation in dry-run mode without making changes
-    # Default: False (make actual changes)
-    DRY_RUN: bool = False
-
     # Search through commit history for GitHub Actions logs when latest commit doesn't trigger Actions
     # Default: True (search history enabled)
     SEARCH_GITHUB_ACTIONS_HISTORY: bool = True
@@ -155,7 +151,6 @@ class ProcessResult:
 
     repository: str
     timestamp: str
-    dry_run: bool
     jules_mode: bool
     issues_processed: List[Dict[str, Any]] = field(default_factory=list)
     prs_processed: List[Dict[str, Any]] = field(default_factory=list)

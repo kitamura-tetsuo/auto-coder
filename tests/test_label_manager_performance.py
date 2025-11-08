@@ -200,31 +200,6 @@ class TestLabelManagerPerformance:
         print(f"✓ LabelManager average time per operation (1000 iterations): {avg_label_manager:.6f}s")
         print(f"✓ Total time for 1000 operations: {label_manager_time:.4f}s")
 
-    def test_label_manager_dry_run_performance(self):
-        """Test that dry run mode is fast (doesn't make API calls)."""
-        # Setup mocks
-        mock_github_client = Mock()
-        mock_github_client.disable_labels = False
-        mock_github_client.has_label.return_value = False
-
-        config = AutomationConfig()
-
-        # Measure time in dry run mode
-        iterations = 1000
-        start = time.perf_counter()
-
-        for i in range(iterations):
-            with LabelManager(mock_github_client, "owner/repo", i, item_type="issue", config=config) as should_process:
-                assert should_process is True
-
-        dry_run_time = time.perf_counter() - start
-        avg_dry_run = dry_run_time / iterations
-
-        # Dry run should be fast (under 0.005 seconds per operation)
-        assert avg_dry_run < 0.005, f"Average dry run time {avg_dry_run:.6f}s is too slow"
-        print(f"✓ LabelManager dry run average time per operation (1000 iterations): {avg_dry_run:.6f}s")
-        print(f"✓ Total time for 1000 dry run operations: {dry_run_time:.4f}s")
-
     def test_label_manager_cleanup_performance(self):
         """Test that cleanup in __exit__ is fast."""
         # Setup mocks
