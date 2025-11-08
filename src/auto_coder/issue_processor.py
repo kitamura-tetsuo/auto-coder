@@ -52,7 +52,7 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
 
         # Skip if issue has unresolved dependencies
         if config.CHECK_DEPENDENCIES:
-            dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""), repo_name)
+            dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""), repo_name, issue_number)
             if dependencies:
                 unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
                 if unresolved:
