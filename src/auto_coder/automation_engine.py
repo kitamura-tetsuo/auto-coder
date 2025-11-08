@@ -257,7 +257,6 @@ class AutomationEngine:
         results = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
-            "dry_run": self.config.DRY_RUN,
             "jules_mode": jules_mode,
             "llm_backend": llm_backend_info["backend"],
             "llm_model": llm_backend_info["model"],
@@ -350,7 +349,6 @@ class AutomationEngine:
             result = ProcessResult(
                 repository=repo_name,
                 timestamp=datetime.now().isoformat(),
-                dry_run=self.config.DRY_RUN,
                 jules_mode=jules_mode,
             )
 
@@ -364,7 +362,6 @@ class AutomationEngine:
                     return {
                         "repository": result.repository,
                         "timestamp": result.timestamp,
-                        "dry_run": result.dry_run,
                         "jules_mode": result.jules_mode,
                         "issues_processed": result.issues_processed,
                         "prs_processed": result.prs_processed,
@@ -401,7 +398,7 @@ class AutomationEngine:
 
                 # After processing, check if the single PR/issue is now closed
                 try:
-                    if not self.config.DRY_RUN and (result.issues_processed or result.prs_processed):
+                    if result.issues_processed or result.prs_processed:
                         # Get the processed item
                         first_processed_item: Dict[str, Any]
                         item_number = None
@@ -449,7 +446,6 @@ class AutomationEngine:
         return {
             "repository": result.repository,
             "timestamp": result.timestamp,
-            "dry_run": result.dry_run,
             "jules_mode": result.jules_mode,
             "issues_processed": result.issues_processed,
             "prs_processed": result.prs_processed,

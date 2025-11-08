@@ -64,14 +64,10 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
         # Check if 'jules' label already exists
         current_labels = issue_data.get("labels", [])
         if "jules" not in current_labels:
-            if not config.DRY_RUN:
-                # Add 'jules' label to the issue
-                github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
-                actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
-                logger.info(f"Added 'jules' label to issue #{issue_number}")
-            else:
-                actions_taken.append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
-                logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
+            # Add 'jules' label to the issue
+            github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
+            actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
+            logger.info(f"Added 'jules' label to issue #{issue_number}")
         else:
             actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
             logger.info(f"Issue #{issue_number} already has 'jules' label")
@@ -100,17 +96,14 @@ def _take_issue_actions(
     issue_number = issue_data["number"]
 
     try:
-        if config.DRY_RUN:
-            actions.append(f"[DRY RUN] Would analyze and take actions on issue #{issue_number}")
-        else:
-            # Ask LLM CLI to analyze the issue and take appropriate actions
-            action_results = _apply_issue_actions_directly(
-                repo_name,
-                issue_data,
-                config,
-                github_client,
-            )
-            actions.extend(action_results)
+        # Ask LLM CLI to analyze the issue and take appropriate actions
+        action_results = _apply_issue_actions_directly(
+            repo_name,
+            issue_data,
+            config,
+            github_client,
+        )
+        actions.extend(action_results)
 
     except Exception as e:
         logger.error(f"Error taking actions on issue #{issue_number}: {e}")
@@ -139,7 +132,6 @@ def _create_pr_for_issue(
         llm_response: LLM response containing changes summary
         github_client: GitHub client for API operations
         message_backend_manager: Backend manager for PR message generation
-        dry_run: Whether this is a dry run
 
     Returns:
         Action message describing the PR creation result
@@ -187,9 +179,6 @@ def _create_pr_for_issue(
         closes_keyword = f"Closes #{issue_number}"
         if closes_keyword not in pr_body:
             pr_body = f"{closes_keyword}\n\n{pr_body}"
-
-        if config.DRY_RUN:
-            return f"[DRY RUN] Would create PR: {pr_title}"
 
         # Create PR using gh CLI
         create_pr_result = cmd.run_command(
@@ -457,27 +446,23 @@ def create_feature_issues(
 
         created_issues = []
         for suggestion in suggestions:
-            if not config.DRY_RUN:
-                try:
-                    issue = github_client.create_issue(
-                        repo_name=repo_name,
-                        title=suggestion["title"],
-                        body=_format_feature_issue_body(suggestion),
-                        labels=suggestion.get("labels", ["enhancement"]),
-                    )
-                    created_issues.append(
-                        {
-                            "number": issue.number,
-                            "title": suggestion["title"],
-                            "url": issue.html_url,
-                        }
-                    )
-                    logger.info(f"Created feature issue #{issue.number}: {suggestion['title']}")
-                except Exception as e:
-                    logger.error(f"Failed to create feature issue: {e}")
-            else:
-                logger.info(f"[DRY RUN] Would create feature issue: {suggestion['title']}")
-                created_issues.append({"title": suggestion["title"], "dry_run": True})
+            try:
+                issue = github_client.create_issue(
+                    repo_name=repo_name,
+                    title=suggestion["title"],
+                    body=_format_feature_issue_body(suggestion),
+                    labels=suggestion.get("labels", ["enhancement"]),
+                )
+                created_issues.append(
+                    {
+                        "number": issue.number,
+                        "title": suggestion["title"],
+                        "url": issue.html_url,
+                    }
+                )
+                logger.info(f"Created feature issue #{issue.number}: {suggestion['title']}")
+            except Exception as e:
+                logger.error(f"Failed to create feature issue: {e}")
 
         return created_issues
 
