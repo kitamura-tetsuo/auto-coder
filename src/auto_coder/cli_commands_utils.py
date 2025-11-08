@@ -160,6 +160,11 @@ def auth_status() -> None:
 
 @click.command()
 @click.option(
+    "--execute",
+    is_flag=True,
+    help="Actually perform the migration (default: False, use --execute to run)",
+)
+@click.option(
     "--no-delete",
     is_flag=True,
     default=False,
@@ -172,6 +177,7 @@ def auth_status() -> None:
     help="Auto-resolve merge conflicts (use with caution)",
 )
 def migrate_branches(
+    execute: bool,
     no_delete: bool,
     force: bool,
 ) -> None:
@@ -185,14 +191,17 @@ def migrate_branches(
     5. Delete the pr-xx branch after successful merge (unless --no-delete is used)
 
     Examples:
-        # Migrate branches
+        # Preview what would be migrated
         auto-coder migrate-branches
 
-        # Migrate without deleting pr-* branches
-        auto-coder migrate-branches --no-delete
+        # Execute the migration
+        auto-coder migrate-branches --execute
+
+        # Execute without deleting pr-* branches
+        auto-coder migrate-branches --execute --no-delete
 
         # Auto-resolve merge conflicts
-        auto-coder migrate-branches --force
+        auto-coder migrate-branches --execute --force
     """
     # Setup logger to show detailed output
     setup_logger(stream=sys.stderr)
@@ -201,7 +210,7 @@ def migrate_branches(
     if not is_git_repository():
         raise click.ClickException("Not in a Git repository. Please run from within a Git repository.")
 
-    # Create config for migration
+    # Create config
     config = AutomationConfig()
 
     # Perform the migration

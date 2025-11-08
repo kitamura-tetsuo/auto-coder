@@ -5,7 +5,7 @@ Main automation engine for Auto-Coder.
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.prompt_loader import render_prompt
@@ -350,8 +350,6 @@ class AutomationEngine:
         """
         from datetime import datetime
 
-        from .automation_config import ProcessResult
-
         with ProgressStage("Processing single PR/IS"):
             logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
             result = ProcessResult(
@@ -459,53 +457,6 @@ class AutomationEngine:
             "prs_processed": result.prs_processed,
             "errors": result.errors,
         }
-
-    def _create_candidate_from_single(self, repo_name: str, target_type: str, number: int) -> Optional[Candidate]:
-        """Create a Candidate from a single issue or PR.
-
-        Args:
-            repo_name: Repository name
-            target_type: Type of target ('issue' or 'pr')
-            number: Issue or PR number
-
-        Returns:
-            Candidate or None if failed
-        """
-        from .automation_config import Candidate
-        from .pr_processor import _extract_linked_issues_from_pr_body
-
-        try:
-            if target_type == "pr":
-                # Get PR data
-                pr_data = self.github.get_pr_details_by_number(repo_name, number)
-                branch_name = pr_data.get("head", {}).get("ref")
-                pr_body = pr_data.get("body", "")
-                related_issues = []
-                if pr_body:
-                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
-
-                return Candidate(
-                    type="pr",
-                    data=pr_data,
-                    priority=0,  # Single processing doesn't need priority
-                    branch_name=branch_name,
-                    related_issues=related_issues,
-                )
-            elif target_type == "issue":
-                # Get issue data
-                issue_data = self.github.get_issue_details_by_number(repo_name, number)
-
-                return Candidate(
-                    type="issue",
-                    data=issue_data,
-                    priority=0,  # Single processing doesn't need priority
-                    issue_number=number,
-                )
-        except Exception as e:
-            logger.error(f"Failed to create candidate for {target_type} #{number}: {e}")
-            return None
-
-        return None
 
     def create_feature_issues(self, repo_name: str) -> List[Dict[str, Any]]:
         """Analyze repository and create feature enhancement issues."""
@@ -1025,6 +976,61 @@ class AutomationEngine:
         except Exception as e:
             logger.error(f"Error parsing commit history: {e}")
             return []
+
+    def _create_candidate_from_single(self, repo_name: str, target_type: str, number: int) -> Optional[Candidate]:
+        """Create a Candidate from a single issue or PR.
+
+        Args:
+            repo_name: Repository name
+            target_type: Type of target ('issue' or 'pr')
+            number: Issue or PR number
+
+        Returns:
+            Candidate or None if failed
+        """
+        from .pr_processor import _extract_linked_issues_from_pr_body
+
+        try:
+            # Handle 'auto' type
+            if target_type == "auto":
+                # Prefer PR to avoid mislabeling PR issues
+                try:
+                    pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                    target_type = "pr"
+                except Exception:
+                    target_type = "issue"
+
+            if target_type == "pr":
+                # Get PR data
+                pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                branch_name = pr_data.get("head", {}).get("ref")
+                pr_body = pr_data.get("body", "")
+                related_issues = []
+                if pr_body:
+                    related_issues = _extract_linked_issues_from_pr_body(pr_body)
+
+                return Candidate(
+                    type="pr",
+                    data=pr_data,
+                    priority=0,  # Single processing doesn't need priority
+                    branch_name=branch_name,
+                    related_issues=related_issues,
+                )
+            elif target_type == "issue":
+                # Get issue data
+                issue_data = self.github.get_issue_details_by_number(repo_name, number)
+
+                return Candidate(
+                    type="issue",
+                    data=issue_data,
+                    priority=0,  # Single processing doesn't need priority
+                    issue_number=number,
+                )
+        except Exception as e:
+            logger.error(f"Failed to create candidate for {target_type} #{number}: {e}")
+            return None
+
+        return None
 
     # Constants
     FLAG_SKIP_ANALYSIS = "[SKIP_LLM_ANALYSIS]"

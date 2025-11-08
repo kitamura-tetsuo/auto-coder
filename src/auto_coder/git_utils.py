@@ -740,21 +740,24 @@ def git_push(
             push_result = retry_push_result
 
     # If push still failed and we have LLM clients, try LLM fallback
-    logger.info("Attempting to resolve push failure using LLM...")
-    llm_success = try_llm_commit_push(
-        commit_message,
-        push_result.stderr,
-    )
-    if llm_success:
-        logger.info("LLM successfully resolved push failure")
-        return CommandResult(
-            success=True,
-            stdout="Successfully resolved push failure using LLM",
-            stderr="",
-            returncode=0,
+    if commit_message:
+        logger.info("Attempting to resolve push failure using LLM...")
+        llm_success = try_llm_commit_push(
+            commit_message,
+            push_result.stderr,
         )
+        if llm_success:
+            logger.info("LLM successfully resolved push failure")
+            return CommandResult(
+                success=True,
+                stdout="Successfully resolved push failure using LLM",
+                stderr="",
+                returncode=0,
+            )
+        else:
+            logger.error("LLM failed to resolve push failure")
     else:
-        logger.error("LLM failed to resolve push failure")
+        logger.warning("No LLM client available for push failure resolution")
 
     # Return the final push result
     return push_result
@@ -1080,7 +1083,7 @@ def git_pull(
 
 
 def try_llm_commit_push(
-    commit_message: str | None,
+    commit_message: str,
     error_message: str,
 ) -> bool:
     """
@@ -1337,6 +1340,8 @@ def migrate_pr_branches(
         issue_branch_name = f"issue-{pr_number}"
 
         logger.info(f"Processing: {branch_name} -> {issue_branch_name}")
+
+        # Actual migration
         try:
             # Check if we're already on the branch we want to migrate
             current_branch = get_current_branch(cwd=cwd)

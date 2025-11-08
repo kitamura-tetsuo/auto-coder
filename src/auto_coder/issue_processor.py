@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.github_action import (
+    _check_github_actions_status,
+    check_and_handle_closed_state,
+    check_github_actions_and_exit_if_in_progress,
+    get_detailed_checks_from_history,
+)
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
@@ -59,23 +64,31 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
                 else:
                     logger.info(f"All dependencies for issue #{issue_number} are resolved")
 
-        actions_taken: List[str] = []
+        # Use LabelManager context manager to handle @auto-coder label automatically
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
+            if not should_process:
+                return ProcessedIssueResult(
+                    issue_data=issue_data,
+                    actions_taken=["Skipped - another instance started processing (@auto-coder label added)"],
+                )
 
-        # Check if 'jules' label already exists
-        current_labels = issue_data.get("labels", [])
-        if "jules" not in current_labels:
-            # Add 'jules' label to the issue
-            github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
-            actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
-            logger.info(f"Added 'jules' label to issue #{issue_number}")
-        else:
-            actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
-            logger.info(f"Issue #{issue_number} already has 'jules' label")
+            actions_taken: List[str] = []
 
-        return ProcessedIssueResult(
-            issue_data=issue_data,
-            actions_taken=actions_taken,
-        )
+            # Check if 'jules' label already exists
+            current_labels = issue_data.get("labels", [])
+            if "jules" not in current_labels:
+                # Add 'jules' label to the issue
+                github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
+                actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
+                logger.info(f"Added 'jules' label to issue #{issue_number}")
+            else:
+                actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
+                logger.info(f"Issue #{issue_number} already has 'jules' label")
+
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=actions_taken,
+            )
 
     except Exception as e:
         logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
@@ -521,16 +534,13 @@ def process_single(
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
-    DEPRECATED: This function delegates to AutomationEngine.process_single for unified processing.
-    Use AutomationEngine.process_single directly instead.
+    This function now delegates to AutomationEngine.process_single for unified processing.
+    Kept for backward compatibility and for direct use without AutomationEngine instance.
 
-    target_type: 'issue' | 'pr' (auto-detection removed in issue #307)
+    target_type: 'issue' | 'pr' | 'auto'
+    When 'auto', try PR first then fall back to issue.
     """
-    import warnings
-
     from .automation_engine import AutomationEngine
-
-    warnings.warn("issue_processor.process_single is deprecated. Use AutomationEngine.process_single directly.", DeprecationWarning, stacklevel=2)
 
     # Create a temporary AutomationEngine instance and delegate to it
     engine = AutomationEngine(github_client, config)
