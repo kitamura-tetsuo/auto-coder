@@ -131,7 +131,9 @@ class LabelManager:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._lock = threading.Lock()
+        self._active_threads: set[int] = set()
         self._label_added = False
+        self._reentered = False
 
     def __enter__(self) -> bool:
         """Enter the context manager - add label and return whether to proceed.
@@ -140,6 +142,17 @@ class LabelManager:
             True if label was successfully added (proceed with processing),
             False if label already exists (another instance is processing)
         """
+        # Reentrancy detection - check if this thread is already active
+        ident = threading.get_ident()
+        if ident in self._active_threads:
+            self._reentered = True
+            logger.debug(f">>> Skipping enter (already active in this thread) for {self.item_type} #{self.item_number}")
+            return True
+        else:
+            self._reentered = False
+            self._active_threads.add(ident)
+            logger.debug(f">>> Entering context (first time in this thread) for {self.item_type} #{self.item_number}")
+
         # Use lock to ensure thread-safe operations
         with self._lock:
             # Check if labels are disabled
@@ -197,6 +210,16 @@ class LabelManager:
             exc_val: Exception value (if any)
             exc_tb: Exception traceback (if any)
         """
+        # Reentrancy detection - skip exit if this is a reentrant call
+        ident = threading.get_ident()
+        if self._reentered:
+            logger.debug(f">>> Skipping exit (reentrant) for {self.item_type} #{self.item_number}")
+            return
+
+        logger.debug(f">>> Exiting context for {self.item_type} #{self.item_number}")
+        # Always clean up thread tracking
+        self._active_threads.discard(ident)
+
         # Use lock to ensure thread-safe operations
         with self._lock:
             # Only remove label if we added it and labels are not disabled
