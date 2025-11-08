@@ -105,7 +105,6 @@ def mock_automation_engine(mock_github_client, mock_gemini_client):
     engine = Mock(spec=AutomationEngine)
     engine.github = mock_github_client
     engine.gemini = mock_gemini_client
-    engine.dry_run = True
     return engine
 
 
