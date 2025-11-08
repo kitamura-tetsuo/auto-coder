@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
+from .gh_logger import get_gh_logger
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -283,7 +284,8 @@ class GitHubClient:
             }
             """
 
-            result = subprocess.run(
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
                 [
                     "gh",
                     "api",
@@ -297,6 +299,7 @@ class GitHubClient:
                     "-F",
                     f"issueNumber={issue_number}",
                 ],
+                repo=repo_name,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -403,7 +406,8 @@ class GitHubClient:
             )
 
             # Execute GraphQL query using gh CLI with sub_issues feature header
-            result = subprocess.run(
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
                 [
                     "gh",
                     "api",
@@ -413,6 +417,7 @@ class GitHubClient:
                     "-f",
                     f"query={query}",
                 ],
+                repo=repo_name,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -477,7 +482,8 @@ class GitHubClient:
             )
 
             # Execute GraphQL query using gh CLI
-            result = subprocess.run(
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
                 [
                     "gh",
                     "api",
@@ -485,6 +491,7 @@ class GitHubClient:
                     "-f",
                     f"query={query}",
                 ],
+                repo=repo_name,
                 capture_output=True,
                 text=True,
                 check=True,
@@ -550,7 +557,8 @@ class GitHubClient:
             )
 
             # Execute GraphQL query using gh CLI with sub_issues feature header
-            result = subprocess.run(
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
                 [
                     "gh",
                     "api",
@@ -560,6 +568,7 @@ class GitHubClient:
                     "-f",
                     f"query={query}",
                 ],
+                repo=repo_name,
                 capture_output=True,
                 text=True,
                 check=True,

@@ -6,10 +6,11 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 import yaml
 
+from .gh_logger import get_gh_logger
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -33,12 +34,18 @@ def get_github_token() -> Optional[str]:
 
     # 2. Try to get token from gh CLI
     try:
-        result = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=10)
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         if result.returncode == 0:
             token = result.stdout.strip()
             if token:
                 logger.info("Using GitHub token from gh CLI authentication")
-                return token
+                return cast(str, token)
     except (
         subprocess.TimeoutExpired,
         subprocess.CalledProcessError,
@@ -57,7 +64,7 @@ def get_github_token() -> Optional[str]:
                 github_config = config["github.com"]
                 if "oauth_token" in github_config:
                     logger.info("Using GitHub token from gh config file")
-                    return github_config["oauth_token"]
+                    return cast(str, github_config["oauth_token"])
     except Exception as e:
         logger.debug(f"Could not read gh config file: {e}")
 
@@ -143,7 +150,7 @@ def get_gemini_api_key() -> Optional[str]:
                         api_key = config[key_name]
                         if api_key:
                             logger.info(f"Using Gemini API key from {config_path}")
-                            return api_key
+                            return cast(str, api_key)
         except Exception as e:
             logger.debug(f"Could not read config file {config_path}: {e}")
 
@@ -179,7 +186,13 @@ def check_gh_auth() -> bool:
         True if authenticated, False otherwise.
     """
     try:
-        result = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True, timeout=10)
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
         return result.returncode == 0 and "logged in" in result.stdout.lower()
     except Exception:
         return False
