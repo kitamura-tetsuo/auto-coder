@@ -12,7 +12,7 @@ from auto_coder.prompt_loader import render_prompt
 from auto_coder.util.github_action import get_github_actions_logs_from_url
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
-from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult
+from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .git_utils import git_commit_with_retry, git_push
 from .issue_processor import create_feature_issues
@@ -185,6 +185,8 @@ class AutomationEngine:
         Returns:
             Processing result
         """
+        from .label_manager import LabelManager
+
         result = CandidateProcessingResult(
             type=candidate.type,
             number=candidate.data.get("number"),
@@ -203,25 +205,31 @@ class AutomationEngine:
             if item_number is None:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
 
-            if jules_mode and item_type == "issue":
-                # Jules mode: only add 'jules' label
-                from .issue_processor import _process_issue_jules_mode
+            # Use LabelManager context manager to handle @auto-coder label automatically
+            with LabelManager(self.github, repo_name, item_number, item_type=item_type, config=config) as should_process:
+                if not should_process:
+                    result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
+                    return result
 
-                jules_result = _process_issue_jules_mode(self.github, config, repo_name, candidate.data)
-                result.actions = jules_result.actions_taken
-                result.success = True
-            elif item_type == "issue":
-                # Regular issue processing
-                result.actions = self._take_issue_actions(repo_name, candidate.data)
-                result.success = True
-            elif item_type == "pr":
-                # PR processing
-                pr_result = process_pull_request(self.github, config, repo_name, candidate.data)
-                result.actions = pr_result.actions_taken
-                # Check if there was an error during processing
-                if pr_result.error:
-                    result.error = pr_result.error
-                result.success = True
+                if jules_mode and item_type == "issue":
+                    # Jules mode: only add 'jules' label
+                    from .issue_processor import _process_issue_jules_mode
+
+                    jules_result = _process_issue_jules_mode(self.github, config, repo_name, candidate.data)
+                    result.actions = jules_result.actions_taken
+                    result.success = True
+                elif item_type == "issue":
+                    # Regular issue processing
+                    result.actions = self._take_issue_actions(repo_name, candidate.data)
+                    result.success = True
+                elif item_type == "pr":
+                    # PR processing
+                    pr_result = process_pull_request(self.github, config, repo_name, candidate.data)
+                    result.actions = pr_result.actions_taken
+                    # Check if there was an error during processing
+                    if pr_result.error:
+                        result.error = pr_result.error
+                    result.success = True
 
         except Exception as e:
             result.error = str(e)
