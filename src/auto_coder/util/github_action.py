@@ -894,16 +894,19 @@ def get_github_actions_logs_from_url(url: str) -> str:
         # so it needs to be obtained as binary via subprocess
         api_cmd = ["gh", "api", f"repos/{owner_repo}/actions/jobs/{job_id}/logs"]
         try:
-            result = subprocess.run(
+            gh_logger = get_gh_logger()
+            # Use logged_subprocess for binary data
+            with gh_logger.logged_subprocess(
                 api_cmd,
+                repo=owner_repo,
                 capture_output=True,
                 timeout=120,
-            )
-            if result.returncode == 0 and result.stdout:
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    zip_path = os.path.join(tmpdir, "job_logs.zip")
-                    with open(zip_path, "wb") as f:
-                        f.write(result.stdout)
+            ) as result:
+                if result.returncode == 0 and result.stdout:
+                    with tempfile.TemporaryDirectory() as tmpdir:
+                        zip_path = os.path.join(tmpdir, "job_logs.zip")
+                        with open(zip_path, "wb") as f:
+                            f.write(result.stdout)
                     try:
                         with zipfile.ZipFile(zip_path, "r") as zf:
                             step_snippets = []
@@ -973,7 +976,8 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                 # If can't get from ZIP, supplement summary from text logs
                                 if not summary_lines:
                                     try:
-                                        job_txt2 = cmd.run_command(
+                                        gh_logger = get_gh_logger()
+                                        job_txt2 = gh_logger.execute_with_logging(
                                             [
                                                 "gh",
                                                 "run",
@@ -985,6 +989,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                                                 str(job_id),
                                                 "--log",
                                             ],
+                                            repo=owner_repo,
                                             timeout=120,
                                         )
                                         if job_txt2.returncode == 0 and job_txt2.stdout.strip():
@@ -1062,7 +1067,8 @@ def get_github_actions_logs_from_url(url: str) -> str:
 
         # 3) Fallback: job text logs
         try:
-            job_txt = cmd.run_command(
+            gh_logger = get_gh_logger()
+            job_txt = gh_logger.execute_with_logging(
                 [
                     "gh",
                     "run",
@@ -1074,6 +1080,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
                     str(job_id),
                     "--log",
                 ],
+                repo=owner_repo,
                 timeout=120,
             )
             if job_txt.returncode == 0 and job_txt.stdout.strip():
@@ -1205,16 +1212,19 @@ def get_github_actions_logs_from_url(url: str) -> str:
         try:
             # GitHub API /logs endpoint returns binary (ZIP), so
             # it needs to be obtained as binary via subprocess
-            result2 = subprocess.run(
+            gh_logger = get_gh_logger()
+            # Use logged_subprocess for binary data
+            with gh_logger.logged_subprocess(
                 ["gh", "api", f"repos/{owner_repo}/actions/runs/{run_id}/logs"],
+                repo=owner_repo,
                 capture_output=True,
                 timeout=120,
-            )
-            if result2.returncode == 0 and result2.stdout:
-                with tempfile.TemporaryDirectory() as t2:
-                    zp = os.path.join(t2, "run_logs.zip")
-                    with open(zp, "wb") as wf:
-                        wf.write(result2.stdout)
+            ) as result2:
+                if result2.returncode == 0 and result2.stdout:
+                    with tempfile.TemporaryDirectory() as t2:
+                        zp = os.path.join(t2, "run_logs.zip")
+                        with open(zp, "wb") as wf:
+                            wf.write(result2.stdout)
                     with zipfile.ZipFile(zp, "r") as zf2:
                         texts = []
                         for nm in zf2.namelist():

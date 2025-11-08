@@ -868,7 +868,8 @@ def _poll_pr_mergeable(
     try:
         deadline = datetime.now().timestamp() + timeout_seconds
         while datetime.now().timestamp() < deadline:
-            result = cmd.run_command(
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
                 [
                     "gh",
                     "pr",
@@ -878,7 +879,8 @@ def _poll_pr_mergeable(
                     repo_name,
                     "--json",
                     "mergeable,mergeStateStatus",
-                ]
+                ],
+                repo=repo_name,
             )
             if result.stdout:
                 try:

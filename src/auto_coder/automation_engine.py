@@ -909,10 +909,10 @@ class AutomationEngine:
                 # Check if this commit has associated GitHub Actions runs
                 # Use gh CLI to list workflow runs for this commit
                 try:
-                    run_result = subprocess.run(
+                    gh_logger = get_gh_logger()
+                    run_result = gh_logger.execute_with_logging(
                         ["gh", "run", "list", "--commit", commit_hash, "--limit", "1"],
-                        capture_output=True,
-                        text=True,
+                        repo=repo_name,
                         timeout=10,
                     )
 
