@@ -38,6 +38,7 @@ class TestLabelManager:
         mock_github_client.get_issue_details_by_number.return_value = {"labels": ["@auto-coder"]}
 
         config = AutomationConfig()
+        config.SKIP_BY_LABELS = False  # Enable label checking for this test
 
         with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
             assert should_process is False
@@ -386,6 +387,7 @@ class TestLabelManager:
         mock_github_client.try_add_work_in_progress_label.return_value = True
 
         config = AutomationConfig()
+        config.SKIP_BY_LABELS = False  # Enable label checking for this test
 
         # Use LabelManager - should use fallback
         with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:

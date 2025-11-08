@@ -58,6 +58,8 @@ def _check_label_exists(
 
 
 class LabelManager:
+    _active_items: set[tuple[int, Union[int, str]]] = set()
+
     """Context manager for unified @auto-coder label operations.
 
     This context manager automatically handles adding, verifying, and removing
@@ -132,6 +134,7 @@ class LabelManager:
         self.retry_delay = retry_delay
         self._lock = threading.Lock()
         self._label_added = False
+        self._reentered = False
 
     def __enter__(self) -> bool:
         """Enter the context manager - add label and return whether to proceed.
@@ -140,6 +143,18 @@ class LabelManager:
             True if label was successfully added (proceed with processing),
             False if label already exists (another instance is processing)
         """
+        # Reentrancy detection - check if this (thread, item) combination is already active
+        ident = threading.get_ident()
+        item_key = (ident, self.item_number)
+        if item_key in LabelManager._active_items:
+            self._reentered = True
+            logger.debug(f">>> Skipping enter (already active for this item in this thread) for {self.item_type} #{self.item_number}")
+            return True
+        else:
+            self._reentered = False
+            LabelManager._active_items.add(item_key)
+            logger.debug(f">>> Entering context (first time for this item in this thread) for {self.item_type} #{self.item_number}")
+
         # Use lock to ensure thread-safe operations
         with self._lock:
             # Check if labels are disabled
@@ -153,6 +168,13 @@ class LabelManager:
                     # In DRY_RUN mode, skip label existence check and API calls
                     if self.config.DRY_RUN:
                         logger.info(f"[DRY RUN] Would add '{self.label_name}' label to {self.item_type} #{self.item_number}")
+                        self._label_added = True
+                        return True
+
+                    # If SKIP_BY_LABELS is True, skip label checking and add directly
+                    if self.config.SKIP_BY_LABELS:
+                        logger.info(f"Adding '{self.label_name}' label to {self.item_type} #{self.item_number} (skip-by-labels enabled)")
+                        self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
                         self._label_added = True
                         return True
 
@@ -197,6 +219,17 @@ class LabelManager:
             exc_val: Exception value (if any)
             exc_tb: Exception traceback (if any)
         """
+        # Reentrancy detection - skip exit if this is a reentrant call
+        ident = threading.get_ident()
+        item_key = (ident, self.item_number)
+        if self._reentered:
+            logger.debug(f">>> Skipping exit (reentrant) for {self.item_type} #{self.item_number}")
+            return
+
+        logger.debug(f">>> Exiting context for {self.item_type} #{self.item_number}")
+        # Always clean up thread tracking
+        LabelManager._active_items.discard(item_key)
+
         # Use lock to ensure thread-safe operations
         with self._lock:
             # Only remove label if we added it and labels are not disabled
