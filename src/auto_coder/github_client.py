@@ -87,6 +87,9 @@ class GitHubClient:
             with cls._lock:
                 if cls._instance is None:
                     instance = cls.__new__(cls)
+                    if token is None:
+                        raise ValueError("GitHub token is required on first call to get_instance()")
+                    type(instance).__init__(instance, token, disable_labels)
                     cls._instance = instance
         return cls._instance
 
