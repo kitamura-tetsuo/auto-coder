@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from auto_coder.backend_manager import run_llm_prompt
 
 from .automation_config import AutomationConfig
+from .gh_logger import get_gh_logger
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -176,9 +177,14 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
         # Step 1: Checkout the PR branch (if not already checked out)
         logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
-        checkout_result = cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
+        gh_logger = get_gh_logger()
+        checkout_result = gh_logger.execute_with_logging(
+            ["gh", "pr", "checkout", str(pr_number)],
+            repo=repo_name,
+            capture_output=True,
+        )
 
-        if not checkout_result.success:
+        if not checkout_result.success:  # type: ignore[attr-defined]
             logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
             return False
 
@@ -254,8 +260,13 @@ def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automatio
     """
     try:
         # Get PR details to determine the target base branch
-        pr_details_result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--json", "baseRefName"])
-        if not pr_details_result.success:
+        gh_logger = get_gh_logger()
+        pr_details_result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
+            repo=repo_name,
+            capture_output=True,
+        )
+        if not pr_details_result.success:  # type: ignore[attr-defined]
             logger.error(f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}")
             return False
 

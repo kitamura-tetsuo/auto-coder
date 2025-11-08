@@ -254,8 +254,26 @@ class GHCommandLogger:
             repo=repo,
         )
 
+        # Execute the command using subprocess.run directly
+        # The tests will mock subprocess.run
+        timeout = kwargs.get("timeout", 60)
+        cwd = kwargs.get("cwd", None)
+        capture_output = kwargs.get("capture_output", True)
+
         # Execute the command
-        return subprocess.run(command, **kwargs)
+        result = subprocess.run(
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            capture_output=capture_output,
+            text=True,
+        )
+
+        # Add success attribute for compatibility
+        if not hasattr(result, "success"):
+            result.success = result.returncode == 0  # type: ignore[attr-defined]
+
+        return result
 
 
 # Global logger instance
