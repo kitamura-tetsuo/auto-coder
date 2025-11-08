@@ -171,28 +171,22 @@ class LabelManager:
                         self._label_added = True
                         return True
 
-                    # If SKIP_BY_LABELS is True, skip label checking and add directly
-                    if self.config.SKIP_BY_LABELS:
-                        logger.info(f"Adding '{self.label_name}' label to {self.item_type} #{self.item_number} (skip-by-labels enabled)")
-                        self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
-                        self._label_added = True
-                        return True
+                    # Check if CHECK_LABELS is True (default) - if so, check for existing label
+                    if self.config.CHECK_LABELS:
+                        if _check_label_exists(
+                            self.github_client,
+                            self.repo_name,
+                            self.item_number,
+                            self.label_name,
+                            self.item_type,
+                        ):
+                            logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
+                            return False
 
-                    # Check if label already exists
-                    if _check_label_exists(
-                        self.github_client,
-                        self.repo_name,
-                        self.item_number,
-                        self.label_name,
-                        self.item_type,
-                    ):
-                        logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
-                        return False
-
-                    # Try to add the label
+                    # CHECK_LABELS is False - add label without checking for existing
+                    logger.info(f"Adding '{self.label_name}' label to {self.item_type} #{self.item_number} (check-labels disabled)")
                     result = self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
                     if result:
-                        logger.info(f"Added '{self.label_name}' label to {self.item_type} #{self.item_number}")
                         self._label_added = True
                         return True
                     else:

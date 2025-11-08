@@ -29,7 +29,7 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
 
         # Check if issue already has @auto-coder label (being processed by another instance)
         current_labels = issue_data.get("labels", [])
-        if config.SKIP_BY_LABELS and "@auto-coder" in current_labels:
+        if config.CHECK_LABELS and "@auto-coder" in current_labels:
             logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
             return ProcessedIssueResult(
                 issue_data=issue_data,
