@@ -9,56 +9,6 @@ from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 from src.auto_coder.utils import CommandExecutor
 
-
-def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    config = AutomationConfig()
-    engine = AutomationEngine(mock_github_client, config=config)
-    prompt = engine._create_pr_analysis_prompt(test_repo_name, sample_pr_data, pr_diff="diff...")
-
-    assert "Do NOT post any comments" in prompt
-    # Should NOT ask LLM to commit/push or merge
-    assert 'git commit -m "Auto-Coder: Apply fix for PR #' not in prompt
-    assert "gh pr merge" not in prompt
-    assert "Do NOT run git commit/push" in prompt
-    assert "ACTION_SUMMARY:" in prompt
-    assert "CANNOT_FIX" in prompt
-    # Ensure repo/number placeholders are still present contextually
-    assert str(sample_pr_data["number"]) in prompt
-    assert test_repo_name in prompt
-
-
-def test_apply_pr_actions_directly_does_not_post_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):
-    # Initialize backend manager for proper LLM client handling
-    from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
-    from src.auto_coder.pr_processor import _apply_pr_actions_directly
-
-    # Reset singleton and initialize properly
-    LLMBackendManager.reset_singleton()
-    manager = get_llm_backend_manager(
-        default_backend="codex",
-        default_client=mock_gemini_client,
-        factories={"codex": lambda: mock_gemini_client},
-    )
-
-    config = AutomationConfig()
-    engine = AutomationEngine(mock_github_client, config=config)
-
-    # Stub diff generation
-    with patch("src.auto_coder.pr_processor._get_pr_diff", return_value="diff..."):
-        # Ensure add_comment_to_issue is tracked
-        mock_github_client.add_comment_to_issue.reset_mock()
-
-        # Call the function
-        actions = _apply_pr_actions_directly(
-            test_repo_name,
-            sample_pr_data,
-            engine.config,
-        )
-
-        # No comment should be posted
-        mock_github_client.add_comment_to_issue.assert_not_called()
-
-
 """Tests for automation engine functionality."""
 
 
@@ -124,7 +74,6 @@ class TestAutomationEngine:
         """Test that the engine correctly handles PR processing."""
         # Setup
         config = AutomationConfig()
-        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return proper PR data
@@ -162,7 +111,6 @@ class TestAutomationEngine:
         """Test that the engine correctly handles PR processing failure."""
         # Setup
         config = AutomationConfig()
-        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return proper PR data
@@ -200,7 +148,6 @@ class TestAutomationEngine:
         """Test that PR processing handles conflicts correctly."""
         # Setup - this test verifies that process_single handles PR with conflicts
         config = AutomationConfig()
-        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return PR data

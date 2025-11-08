@@ -740,24 +740,21 @@ def git_push(
             push_result = retry_push_result
 
     # If push still failed and we have LLM clients, try LLM fallback
-    if commit_message:
-        logger.info("Attempting to resolve push failure using LLM...")
-        llm_success = try_llm_commit_push(
-            commit_message,
-            push_result.stderr,
+    logger.info("Attempting to resolve push failure using LLM...")
+    llm_success = try_llm_commit_push(
+        commit_message,
+        push_result.stderr,
+    )
+    if llm_success:
+        logger.info("LLM successfully resolved push failure")
+        return CommandResult(
+            success=True,
+            stdout="Successfully resolved push failure using LLM",
+            stderr="",
+            returncode=0,
         )
-        if llm_success:
-            logger.info("LLM successfully resolved push failure")
-            return CommandResult(
-                success=True,
-                stdout="Successfully resolved push failure using LLM",
-                stderr="",
-                returncode=0,
-            )
-        else:
-            logger.error("LLM failed to resolve push failure")
     else:
-        logger.warning("No LLM client available for push failure resolution")
+        logger.error("LLM failed to resolve push failure")
 
     # Return the final push result
     return push_result
@@ -1083,7 +1080,7 @@ def git_pull(
 
 
 def try_llm_commit_push(
-    commit_message: str,
+    commit_message: str | None,
     error_message: str,
 ) -> bool:
     """
