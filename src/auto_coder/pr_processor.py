@@ -59,7 +59,7 @@ def process_pull_request(
 
         # Skip immediately if PR already has @auto-coder label
         pr_labels = pr_data.get("labels", [])
-        if "@auto-coder" in pr_labels:
+        if config.CHECK_LABELS and "@auto-coder" in pr_labels:
             logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr

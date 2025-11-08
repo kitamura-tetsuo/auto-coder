@@ -60,6 +60,10 @@ class AutomationConfig:
     # Default: False (labels enabled)
     DISABLE_LABELS: bool = False
 
+    # Enable check process by GitHub label (@auto-coder label)
+    # Default: True (check enabled)
+    CHECK_LABELS: bool = True
+
     # Check for and skip issues with unresolved dependencies
     # When an issue body contains "Depends on: #123" or similar patterns,
     # skip processing if dependency issue #123 is still open

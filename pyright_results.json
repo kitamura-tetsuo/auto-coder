@@ -677,7 +677,7 @@
         {
             "file": "/home/node/src/auto-coder/src/auto_coder/automation_engine.py",
             "severity": "warning",
-            "message": "Type of \"create_feature_issues\" is partially unknown\n  Type of \"create_feature_issues\" is \"(github_client: Unknown, config: AutomationConfig, dry_run: bool, repo_name: str, gemini_client: Unknown | None = None) -> List[Dict[str, Any]]\"",
+            "message": "Type of \"create_feature_issues\" is partially unknown\n  Type of \"create_feature_issues\" is \"(github_client: Unknown, config: AutomationConfig, repo_name: str, gemini_client: Unknown | None = None) -> List[Dict[str, Any]]\"",
             "range": {
                 "start": {
                     "line": 17,
@@ -693,7 +693,7 @@
         {
             "file": "/home/node/src/auto-coder/src/auto_coder/automation_engine.py",
             "severity": "warning",
-            "message": "Type of \"process_issues\" is partially unknown\n  Type of \"process_issues\" is \"(github_client: Unknown, config: AutomationConfig, dry_run: bool, repo_name: str, jules_mode: bool = False) -> List[Dict[str, Any]]\"",
+            "message": "Type of \"process_issues\" is partially unknown\n  Type of \"process_issues\" is \"(github_client: Unknown, config: AutomationConfig, repo_name: str, jules_mode: bool = False) -> List[Dict[str, Any]]\"",
             "range": {
                 "start": {
                     "line": 17,
@@ -725,7 +725,7 @@
         {
             "file": "/home/node/src/auto-coder/src/auto_coder/automation_engine.py",
             "severity": "warning",
-            "message": "Type of \"process_single\" is partially unknown\n  Type of \"process_single\" is \"(github_client: Unknown, config: AutomationConfig, dry_run: bool, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]\"",
+            "message": "Type of \"process_single\" is partially unknown\n  Type of \"process_single\" is \"(github_client: Unknown, config: AutomationConfig, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]\"",
             "range": {
                 "start": {
                     "line": 17,
@@ -1253,7 +1253,7 @@
         {
             "file": "/home/node/src/auto-coder/src/auto_coder/automation_engine.py",
             "severity": "warning",
-            "message": "Type of \"_take_issue_actions_func\" is partially unknown\n  Type of \"_take_issue_actions_func\" is \"(repo_name: str, issue_data: Dict[str, Any], config: AutomationConfig, dry_run: bool, github_client: Unknown) -> List[str]\"",
+            "message": "Type of \"_take_issue_actions_func\" is partially unknown\n  Type of \"_take_issue_actions_func\" is \"(repo_name: str, issue_data: Dict[str, Any], config: AutomationConfig, github_client: Unknown) -> List[str]\"",
             "range": {
                 "start": {
                     "line": 395,
@@ -1285,7 +1285,7 @@
         {
             "file": "/home/node/src/auto-coder/src/auto_coder/automation_engine.py",
             "severity": "warning",
-            "message": "Type of \"_apply_issue_actions_directly_func\" is partially unknown\n  Type of \"_apply_issue_actions_directly_func\" is \"(repo_name: str, issue_data: Dict[str, Any], config: AutomationConfig, dry_run: bool, github_client: Unknown) -> List[str]\"",
+            "message": "Type of \"_apply_issue_actions_directly_func\" is partially unknown\n  Type of \"_apply_issue_actions_directly_func\" is \"(repo_name: str, issue_data: Dict[str, Any], config: AutomationConfig, github_client: Unknown) -> List[str]\"",
             "range": {
                 "start": {
                     "line": 407,
@@ -6942,22 +6942,6 @@
                 "end": {
                     "line": 23,
                     "character": 19
-                }
-            },
-            "rule": "reportUnknownVariableType"
-        },
-        {
-            "file": "/home/node/src/auto-coder/src/auto_coder/config.py",
-            "severity": "warning",
-            "message": "Type of \"dry_run\" is unknown",
-            "range": {
-                "start": {
-                    "line": 24,
-                    "character": 4
-                },
-                "end": {
-                    "line": 24,
-                    "character": 11
                 }
             },
             "rule": "reportUnknownVariableType"

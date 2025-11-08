@@ -1,4 +1,4 @@
-version: "2025.11.8+g10efeba"
+version: "2025.11.8.6+g9a87f95"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -28,6 +28,7 @@ cli:
         - { name: --model-claude, type: string }
         - { name: --jules-mode/--no-jules-mode, default: true }
         - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
+        - { name: --check-labels/--no-check-labels, default: true, help: "Enable checking for existing @auto-coder label before processing (default: enabled)" }
         - { name: --skip-main-update/--no-skip-main-update, default: true }
         - { name: --ignore-dependabot-prs/--no-ignore-dependabot-prs, default: false }
         - { name: --force-clean-before-checkout/--no-force-clean-before-checkout, default: false }
@@ -38,12 +39,14 @@ cli:
         - { name: --log-file, type: path }
         - { name: --verbose, flag: true }
       behavior:
-        - Initializes GraphRAG when enabled (auto-setup + MCP config check)
-        - Resumes work on current non-main branch by detecting an open PR/issue
-        - Prioritizes candidates: urgent label (3) > auto-mergeable PRs (2) > failing PRs (1) > issues (0)
-        - Skips issues if 5+ open issues without sub-issues are found in a batch
-        - Saves JSON reports under ~/.auto-coder/{owner_repo}/
-        - Honors skip-main-update policy (default: skip merging base branch before fixes)
+            - Initializes GraphRAG when enabled (auto-setup + MCP config check)
+            - Resumes work on current non-main branch by detecting an open PR/issue
+            - Prioritizes candidates: urgent label (3) > auto-mergeable PRs (2) > failing PRs (1) > issues (0)
+            - Skips issues if 5+ open issues without sub-issues are found in a batch
+            - Saves JSON reports under ~/.auto-coder/{owner_repo}/
+            - Honors skip-main-update policy (default: skip merging base branch before fixes)
+            - Check-labels behavior: When CHECK_LABELS is true (default), issues/PRs with @auto-coder label are automatically skipped to prevent duplicate processing
+            - When --only flag is specified for single-item processing, CHECK_LABELS is automatically disabled to ensure the target item is processed
     - name: create-feature-issues
       purpose: Analyze repository and create feature enhancement issues via LLM
       options:
@@ -162,7 +165,7 @@ features:
     - Skips issues when 5+ open issues without sub-issues are present
     - Single-item processing via --only (URL or number)
     - Auto-resume when on a non-main branch with an associated PR/Issue
-    - label_management: Removed duplicate LabelManager usage from issue processing; LabelManager is now used only for PR processing to prevent concurrent processing
+    - label_management: Removed duplicate LabelManager usage from issue processing; LabelManager is now used only for PR processing to prevent concurrent processing. Added thread reentrancy detection to prevent deadlock scenarios in concurrent contexts.
     - git_operations: Enhanced git push failure resolution with LLM fallback that works even when commit message is not available
   dependency_management:
     - description: Automatic dependency checking for issue processing
@@ -205,6 +208,7 @@ config:
     IGNORE_DEPENDABOT_PRS: false
     FORCE_CLEAN_BEFORE_CHECKOUT: false
     DISABLE_LABELS: false
+    CHECK_LABELS: true
     CHECK_DEPENDENCIES: true
     SEARCH_GITHUB_ACTIONS_HISTORY: true
     ENABLE_ACTIONS_HISTORY_FALLBACK: true
