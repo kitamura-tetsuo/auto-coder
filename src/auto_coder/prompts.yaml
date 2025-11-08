@@ -335,7 +335,7 @@ tests:
     The automated commit/push operation has failed with the following error:
     $error_message
 
-    Commit message that was attempted:
+    Commit message that was attempted if exist:
     $commit_message
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
@@ -359,7 +359,7 @@ tests:
        * Stage any additional changes with `git add`
 
     4. After resolving the issue, commit and push the changes:
-       * Use `git commit -m "$commit_message"` with the original commit message
+       * Use `git commit -m "$commit_message"` with the original commit message if exist
        * Use `git push` to push the changes
 
     5. Verify the operation succeeded:
@@ -367,7 +367,8 @@ tests:
        * Confirm the push was successful
 
     **Important:**
-    * Do NOT modify the commit message unless absolutely necessary
+    * Do NOT modify the commit message if exist
+    * Create a new commit message if commit message does not exist
     * Do NOT skip or bypass pre-commit hooks
     * Do NOT force push unless explicitly required
     * Ensure all changes are properly staged before committing
