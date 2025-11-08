@@ -59,20 +59,18 @@ class GitHubClient:
         self.github = Github(token)
         self.token = token
         self.disable_labels = disable_labels
+        self._initialized = True
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
 
-        This method ensures only one instance is created across all threads.
+        The actual singleton logic is implemented in get_instance().
+        This method just creates the instance; get_instance() controls singleton behavior.
         """
-        if cls._instance is None:
-            instance = super().__new__(cls)
-            instance._initialized = False
-            return instance
-        return cls._instance
+        return super().__new__(cls)
 
     @classmethod
-    def get_instance(cls, token: str = None, disable_labels: bool = False):
+    def get_instance(cls, token: Optional[str] = None, disable_labels: bool = False) -> "GitHubClient":
         """Get the singleton instance of GitHubClient.
 
         On the first call, this creates and returns the singleton instance.
@@ -89,8 +87,9 @@ class GitHubClient:
             with cls._lock:
                 if cls._instance is None:
                     instance = cls.__new__(cls)
-                    if not hasattr(instance, "_initialized") or not instance._initialized:
-                        instance.__init__(token, disable_labels)
+                    if token is None:
+                        raise ValueError("GitHub token is required on first call to get_instance()")
+                    type(instance).__init__(instance, token, disable_labels)
                     cls._instance = instance
         return cls._instance
 
@@ -724,11 +723,63 @@ class GitHubClient:
             logger.error(f"Failed to add work-in-progress label to issue #{issue_number}: {e}")
             raise
 
-    def get_issue_dependencies(self, issue_body: str) -> List[int]:
+    def _search_issues_by_title(self, repo_name: str, search_title: str) -> Optional[int]:
+        """Search for an open issue by title using fuzzy matching.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            search_title: The title to search for (case-insensitive)
+
+        Returns:
+            The issue number if found, None otherwise
+        """
+        try:
+            issues = self.get_open_issues(repo_name)
+            search_title_lower = search_title.lower()
+
+            # First try exact match (case-insensitive)
+            for issue in issues:
+                if issue.title.lower() == search_title_lower:
+                    logger.debug(f"Found exact match for title '{search_title}': issue #{issue.number}")
+                    return issue.number
+
+            # Then try partial match - check if search title is contained in issue title
+            # or if issue title is contained in search title
+            for issue in issues:
+                issue_title_lower = issue.title.lower()
+                # Check if search title is a significant part of the issue title
+                # (at least 5 characters or 50% of the shorter title)
+                min_length = min(len(search_title_lower), len(issue_title_lower))
+                threshold = max(5, min_length * 0.5)
+
+                if len(search_title_lower) >= threshold and search_title_lower in issue_title_lower:
+                    logger.debug(f"Found partial match for title '{search_title}': issue #{issue.number} (title: '{issue.title}')")
+                    return issue.number
+                elif len(issue_title_lower) >= threshold and issue_title_lower in search_title_lower:
+                    logger.debug(f"Found partial match for title '{search_title}': issue #{issue.number} (title: '{issue.title}')")
+                    return issue.number
+
+            logger.debug(f"No match found for title '{search_title}'")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to search for issue by title '{search_title}': {e}")
+            return None
+
+    def get_issue_dependencies(self, issue_body: str, repo_name: Optional[str] = None, issue_number: Optional[int] = None) -> List[int]:
         """Extract issue numbers that this issue depends on from the issue body.
+
+        Supports both number-based dependencies (e.g., "#123") and title-based dependencies
+        (e.g., "Depends on: Sub Issue 1 (dataclass creation may be needed)").
+        Also supports multi-line dependency declarations with indented lists.
+
+        Implements fallback logic: when "Depends on:" exists but no clear targets are found,
+        if a parent issue exists, treats this issue as dependent on all open sibling sub-issues.
 
         Args:
             issue_body: The body text of the issue
+            repo_name: Repository name in format 'owner/repo' (required for title-based dependencies and fallback logic)
+            issue_number: Issue number (required for fallback logic)
 
         Returns:
             List of issue numbers that this issue depends on
@@ -737,27 +788,91 @@ class GitHubClient:
             "Depends on: #123" -> [123]
             "depends on #456" -> [456]
             "Depends on #789, #790" -> [789, 790]
+            "Depends on: Sub Issue 1 (dataclass creation)" -> [123] (if issue #123 has that title)
+            Multi-line:
+                Depends on:
+                    #456
+                    #789
+                    Sub Issue 3 (title-based)
         """
         if not issue_body:
             return []
 
         import re
 
-        # Better approach: first find all text that comes after 'depends on' or 'blocked by',
-        # then extract all issue numbers from that text
+        dependencies = []
+        seen = set()
+
+        # First pass: extract multi-line dependencies with indentation
+        # This handles:
+        # - "Depends on:" followed by indented lines (1+ spaces or tabs)
+        # - Both numbered (#456) and titled (Some Title) dependencies
+        # - Mixed formats in the same list
+        # - Empty lines within the multi-line block
+        # Use MULTILINE flag to make ^ match line starts
+        multiline_pattern = r"(?im)^(?:depends\s+on|blocked\s+by)\s*:?\s*\n((?:^[ \t]+.*(?:\n|$)|^\n)+)"
+
+        for match in re.finditer(multiline_pattern, issue_body):
+            multiline_text = match.group(1)
+
+            # Split into lines and process each indented line
+            lines = multiline_text.split("\n")
+            for line in lines:
+                # Skip empty lines
+                if not line.strip():
+                    continue
+
+                # Check if line starts with indentation (1+ spaces or tabs)
+                if re.match(r"^[ \t]+", line):
+                    # Strip indentation and leading/trailing punctuation
+                    clean_line = re.sub(r"^[ \t]+", "", line).strip()
+                    clean_line = re.sub(r"^[,\-\s]+|[,\-\s]+$", "", clean_line)
+
+                    # Check if this looks like a number-based dependency (starts with # or is just a number)
+                    # This ensures we don't treat titles with numbers in them as number-based
+                    if re.match(r"^#\d+$", clean_line) or re.match(r"^\d+$", clean_line):
+                        # Pure number or #number format - extract the issue number
+                        numbers = re.findall(r"#?(\d+)", clean_line)
+                        if numbers:
+                            issue_num = int(numbers[0])
+                            if issue_num not in seen:
+                                dependencies.append(issue_num)
+                                seen.add(issue_num)
+                    else:
+                        # Title-based dependency - search by title
+                        if repo_name and len(clean_line) >= 3:
+                            try:
+                                title_issue_num: Optional[int] = self._search_issues_by_title(repo_name, clean_line)
+                                if title_issue_num is not None and title_issue_num not in seen:
+                                    dependencies.append(title_issue_num)
+                                    seen.add(title_issue_num)
+                                    logger.debug(f"Found multi-line title-based dependency: '{clean_line}' -> issue #{title_issue_num}")
+                            except Exception as e:
+                                logger.warning(f"Failed to search for title '{clean_line}': {e}")
+
+        # Second pass: extract single-line number-based dependencies
         # This handles various formats like:
         # - "Depends on: #123"
         # - "depends on #123, #456, #789"
         # - "depends on #100 and #200 and #300"
         # - "blocked by #100"
         # Case-insensitive, with or without colon, supports comma-separated lists and "and"
-        depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*(.*?)(?:\n|\r|$)"
-
-        dependencies = []
-        seen = set()
+        # Skip lines that are part of multi-line dependencies (followed by indented content)
+        depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*([^\n#][^\n]*?)(?:\n|\r|$)"
 
         for match in re.finditer(depends_pattern, issue_body):
             depends_text = match.group(1).strip()
+
+            # Skip if it looks like a multi-line header (no actual content)
+            if not depends_text or depends_text in ["\n", "\r\n", "\r"]:
+                continue
+
+            # Check if this is followed by indented content (part of multi-line block)
+            # If so, skip it as it will be handled by the multi-line pattern
+            match_end = match.end()
+            remaining_text = issue_body[match_end:]
+            if remaining_text and re.match(r"^[ \t]", remaining_text):
+                continue
 
             # Extract all issue numbers from the depends text
             numbers = re.findall(r"#?(\d+)", depends_text)
@@ -766,6 +881,75 @@ class GitHubClient:
                 if issue_num not in seen:
                     dependencies.append(issue_num)
                     seen.add(issue_num)
+
+        # Third pass: handle single-line title-based dependencies
+        # Pattern: "Depends on: Title (description)" or "blocked by: Title (description)"
+        # We look for text that doesn't start with # but contains descriptive text
+        if repo_name:
+            title_depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*([^\n#][^\n]*?)(?:\s*\([^)]*\))?(?:\n|\r|$)"
+
+            for match in re.finditer(title_depends_pattern, issue_body):
+                depends_text = match.group(1).strip()
+
+                # Skip if it contains issue numbers (already handled above)
+                if re.search(r"#?\d+", depends_text):
+                    continue
+
+                # Skip if empty or too short (likely not a real title)
+                if len(depends_text.strip()) < 3:
+                    continue
+
+                # Clean up the title - remove leading/trailing punctuation
+                title = re.sub(r"^[,\-\s]+|[,\-\s]+$", "", depends_text)
+
+                if title and len(title) >= 3:
+                    try:
+                        title_issue_num_2: Optional[int] = self._search_issues_by_title(repo_name, title)
+                        if title_issue_num_2 is not None and title_issue_num_2 not in seen:
+                            dependencies.append(title_issue_num_2)
+                            seen.add(title_issue_num_2)
+                            logger.debug(f"Found title-based dependency: '{title}' -> issue #{title_issue_num_2}")
+                    except Exception as e:
+                        logger.warning(f"Failed to search for title '{title}': {e}")
+
+        # Fallback Logic: Check if "Depends on:" or "blocked by:" exists but no clear targets were found
+        # This handles cases where the issue mentions dependencies but doesn't specify them clearly
+        if not dependencies and issue_body and repo_name and issue_number:
+            try:
+                # Check if the issue body contains dependency-related keywords
+                has_depends_on = re.search(r"(?i)\b(depends\s+on|blocked\s+by)\b", issue_body)
+
+                if has_depends_on:
+                    logger.debug(f"Found 'Depends on' or 'blocked by' in issue #{issue_number} but no clear targets - checking for fallback")
+                    logger.debug(f"No clear dependency targets found for issue #{issue_number} - attempting fallback logic")
+
+                    # Try to get parent issue
+                    try:
+                        parent_issue_number = self.get_parent_issue(repo_name, issue_number)
+
+                        if parent_issue_number is not None:
+                            logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number} - checking for sibling dependencies")
+                            # Get all open sub-issues of the parent
+                            try:
+                                sibling_issues = self.get_open_sub_issues(repo_name, parent_issue_number)
+                                # Filter out self (exclude current issue number)
+                                sibling_issues = [num for num in sibling_issues if num != issue_number]
+
+                                if sibling_issues:
+                                    logger.info(f"Found {len(sibling_issues)} open sibling sub-issues for issue #{issue_number}: {sibling_issues}")
+                                    dependencies.extend(sibling_issues)
+                                    for sibling in sibling_issues:
+                                        seen.add(sibling)
+                                else:
+                                    logger.debug(f"No open sibling sub-issues found for issue #{issue_number}")
+                            except Exception as e:
+                                logger.warning(f"Failed to get open sub-issues for parent issue #{parent_issue_number}: {e}")
+                        else:
+                            logger.debug(f"Issue #{issue_number} has no parent issue - treating as no dependencies")
+                    except Exception as e:
+                        logger.warning(f"Failed to get parent issue for issue #{issue_number}: {e}")
+            except Exception as e:
+                logger.warning(f"Error during fallback logic for issue #{issue_number}: {e}")
 
         if dependencies:
             logger.debug(f"Found dependencies: {dependencies}")
