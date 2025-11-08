@@ -766,16 +766,20 @@ class GitHubClient:
             logger.warning(f"Failed to search for issue by title '{search_title}': {e}")
             return None
 
-    def get_issue_dependencies(self, issue_body: str, repo_name: Optional[str] = None) -> List[int]:
+    def get_issue_dependencies(self, issue_body: str, repo_name: Optional[str] = None, issue_number: Optional[int] = None) -> List[int]:
         """Extract issue numbers that this issue depends on from the issue body.
 
         Supports both number-based dependencies (e.g., "#123") and title-based dependencies
         (e.g., "Depends on: Sub Issue 1 (dataclass creation may be needed)").
         Also supports multi-line dependency declarations with indented lists.
 
+        Implements fallback logic: when "Depends on:" exists but no clear targets are found,
+        if a parent issue exists, treats this issue as dependent on all open sibling sub-issues.
+
         Args:
             issue_body: The body text of the issue
-            repo_name: Repository name in format 'owner/repo' (required for title-based dependencies)
+            repo_name: Repository name in format 'owner/repo' (required for title-based dependencies and fallback logic)
+            issue_number: Issue number (required for fallback logic)
 
         Returns:
             List of issue numbers that this issue depends on
@@ -837,11 +841,14 @@ class GitHubClient:
                     else:
                         # Title-based dependency - search by title
                         if repo_name and len(clean_line) >= 3:
-                            title_issue_num: Optional[int] = self._search_issues_by_title(repo_name, clean_line)
-                            if title_issue_num is not None and title_issue_num not in seen:
-                                dependencies.append(title_issue_num)
-                                seen.add(title_issue_num)
-                                logger.debug(f"Found multi-line title-based dependency: '{clean_line}' -> issue #{title_issue_num}")
+                            try:
+                                title_issue_num: Optional[int] = self._search_issues_by_title(repo_name, clean_line)
+                                if title_issue_num is not None and title_issue_num not in seen:
+                                    dependencies.append(title_issue_num)
+                                    seen.add(title_issue_num)
+                                    logger.debug(f"Found multi-line title-based dependency: '{clean_line}' -> issue #{title_issue_num}")
+                            except Exception as e:
+                                logger.warning(f"Failed to search for title '{clean_line}': {e}")
 
         # Second pass: extract single-line number-based dependencies
         # This handles various formats like:
@@ -896,11 +903,53 @@ class GitHubClient:
                 title = re.sub(r"^[,\-\s]+|[,\-\s]+$", "", depends_text)
 
                 if title and len(title) >= 3:
-                    title_issue_num_2: Optional[int] = self._search_issues_by_title(repo_name, title)
-                    if title_issue_num_2 is not None and title_issue_num_2 not in seen:
-                        dependencies.append(title_issue_num_2)
-                        seen.add(title_issue_num_2)
-                        logger.debug(f"Found title-based dependency: '{title}' -> issue #{title_issue_num_2}")
+                    try:
+                        title_issue_num_2: Optional[int] = self._search_issues_by_title(repo_name, title)
+                        if title_issue_num_2 is not None and title_issue_num_2 not in seen:
+                            dependencies.append(title_issue_num_2)
+                            seen.add(title_issue_num_2)
+                            logger.debug(f"Found title-based dependency: '{title}' -> issue #{title_issue_num_2}")
+                    except Exception as e:
+                        logger.warning(f"Failed to search for title '{title}': {e}")
+
+        # Fallback Logic: Check if "Depends on:" or "blocked by:" exists but no clear targets were found
+        # This handles cases where the issue mentions dependencies but doesn't specify them clearly
+        if not dependencies and issue_body and repo_name and issue_number:
+            try:
+                # Check if the issue body contains dependency-related keywords
+                has_depends_on = re.search(r"(?i)\b(depends\s+on|blocked\s+by)\b", issue_body)
+
+                if has_depends_on:
+                    logger.debug(f"Found 'Depends on' or 'blocked by' in issue #{issue_number} but no clear targets - checking for fallback")
+                    logger.debug(f"No clear dependency targets found for issue #{issue_number} - attempting fallback logic")
+
+                    # Try to get parent issue
+                    try:
+                        parent_issue_number = self.get_parent_issue(repo_name, issue_number)
+
+                        if parent_issue_number is not None:
+                            logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number} - checking for sibling dependencies")
+                            # Get all open sub-issues of the parent
+                            try:
+                                sibling_issues = self.get_open_sub_issues(repo_name, parent_issue_number)
+                                # Filter out self (exclude current issue number)
+                                sibling_issues = [num for num in sibling_issues if num != issue_number]
+
+                                if sibling_issues:
+                                    logger.info(f"Found {len(sibling_issues)} open sibling sub-issues for issue #{issue_number}: {sibling_issues}")
+                                    dependencies.extend(sibling_issues)
+                                    for sibling in sibling_issues:
+                                        seen.add(sibling)
+                                else:
+                                    logger.debug(f"No open sibling sub-issues found for issue #{issue_number}")
+                            except Exception as e:
+                                logger.warning(f"Failed to get open sub-issues for parent issue #{parent_issue_number}: {e}")
+                        else:
+                            logger.debug(f"Issue #{issue_number} has no parent issue - treating as no dependencies")
+                    except Exception as e:
+                        logger.warning(f"Failed to get parent issue for issue #{issue_number}: {e}")
+            except Exception as e:
+                logger.warning(f"Error during fallback logic for issue #{issue_number}: {e}")
 
         if dependencies:
             logger.debug(f"Found dependencies: {dependencies}")
