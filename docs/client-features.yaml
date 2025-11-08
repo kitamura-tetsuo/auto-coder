@@ -110,7 +110,6 @@ cli:
     - name: migrate-branches
       purpose: Migrate existing pr-<number> branches to their corresponding issue-<number> branches
       options:
-        - { name: --dry-run, flag: true, default: true, help: "Show what would be done without making changes" }
         - { name: --execute, flag: true, default: false, help: "Actually perform the migration" }
         - { name: --no-delete, flag: true, default: false, help: "Do not delete pr-<number> branches after successful migration" }
         - { name: --force, flag: true, default: false, help: "Auto-resolve merge conflicts (use with caution)" }

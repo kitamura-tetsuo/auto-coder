@@ -218,6 +218,7 @@ def migrate_branches(
         config,
         delete_after_merge=not no_delete,
         force=force,
+        execute=execute,
     )
 
     # Display results

@@ -1277,6 +1277,7 @@ def migrate_pr_branches(
     cwd: Optional[str] = None,
     delete_after_merge: bool = True,
     force: bool = False,
+    execute: bool = False,
 ) -> Dict[str, Any]:
     """
     Migrate existing pr-<number> branches to their corresponding issue-<number> branches.
@@ -1293,6 +1294,7 @@ def migrate_pr_branches(
         cwd: Optional working directory for git command
         delete_after_merge: If True, delete pr-<number> branch after successful merge
         force: If True, proceed even if there are merge conflicts
+        execute: If True, perform actual migration. If False, only preview what would be done.
 
     Returns:
         Dictionary with migration results:
@@ -1311,7 +1313,8 @@ def migrate_pr_branches(
         "conflicts": [],
     }
 
-    logger.info(f"Starting branch migration (delete_after_merge={delete_after_merge})")
+    mode = "EXECUTE" if execute else "DRY-RUN"
+    logger.info(f"Starting branch migration ({mode} mode, delete_after_merge={delete_after_merge})")
 
     # Get all pr-<number> branches
     pr_branches = get_branches_by_pattern("pr-*", cwd=cwd, remote=False)
@@ -1345,120 +1348,144 @@ def migrate_pr_branches(
             if current_branch == branch_name:
                 # Switch to a safe branch first
                 logger.info(f"Currently on {branch_name}, switching to main before migration")
-                switch_result = cmd.run_command(["git", "checkout", "main"], cwd=cwd)
-                if not switch_result.success:
-                    # Try main as fallback
-                    switch_result = cmd.run_command(["git", "checkout", "origin/main"], cwd=cwd)
+                if execute:
+                    switch_result = cmd.run_command(["git", "checkout", "main"], cwd=cwd)
+                    if not switch_result.success:
+                        # Try main as fallback
+                        switch_result = cmd.run_command(["git", "checkout", "origin/main"], cwd=cwd)
+                else:
+                    logger.info(f"[DRY-RUN] Would switch from {branch_name} to main")
 
             # Check if issue-<number> branch exists
             if branch_exists(issue_branch_name, cwd=cwd):
                 # Issue branch exists, perform merge
                 logger.info(f"Issue branch '{issue_branch_name}' exists, merging {branch_name}")
 
-                # Switch to issue branch
-                checkout_result = git_checkout_branch(issue_branch_name, create_new=False, cwd=cwd)
-                if not checkout_result.success:
-                    error_msg = f"Failed to checkout issue branch '{issue_branch_name}': {checkout_result.stderr}"
-                    logger.error(error_msg)
-                    results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
-                    results["success"] = False
-                    continue
-
-                # Pull latest changes from issue branch
-                logger.info(f"Pulling latest changes for {issue_branch_name}")
-                pull_result = git_pull(remote="origin", branch=issue_branch_name, cwd=cwd)
-                if not pull_result.success:
-                    logger.warning(f"Failed to pull latest changes for {issue_branch_name}: {pull_result.stderr}")
-
-                # Merge pr branch
-                logger.info(f"Merging {branch_name} into {issue_branch_name}")
-                merge_result = cmd.run_command(["git", "merge", f"origin/{branch_name}" if "/" not in branch_name else branch_name, "--no-ff", "-m", f"Merge {branch_name} into {issue_branch_name}"], cwd=cwd)
-
-                if not merge_result.success:
-                    # Check if it's a merge conflict
-                    if "conflict" in merge_result.stderr.lower():
-                        logger.error(f"Merge conflict detected while merging {branch_name} into {issue_branch_name}")
-                        results["conflicts"].append({"from": branch_name, "to": issue_branch_name, "error": merge_result.stderr})
-
-                        if not force:
-                            # Abort the merge and skip
-                            cmd.run_command(["git", "merge", "--abort"], cwd=cwd)
-                            logger.info(f"Aborted merge, skipping {branch_name}")
-                            results["skipped"].append({"from": branch_name, "to": issue_branch_name, "reason": "Merge conflict (use --force to auto-resolve)"})
-                            results["success"] = False
-                            continue
-                        else:
-                            # Try to auto-resolve conflicts
-                            logger.info(f"Attempting to auto-resolve conflicts for {branch_name}")
-                            add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
-                            if add_result.success:
-                                commit_result = git_commit_with_retry(f"Resolve conflicts from {branch_name}", cwd=cwd)
-                                if not commit_result.success:
-                                    error_msg = f"Failed to commit conflict resolution: {commit_result.stderr}"
-                                    logger.error(error_msg)
-                                    results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
-                                    results["success"] = False
-                                    continue
-                            else:
-                                error_msg = f"Failed to stage conflict resolution: {add_result.stderr}"
-                                logger.error(error_msg)
-                                results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
-                                results["success"] = False
-                                continue
-                    else:
-                        # Non-conflict error
-                        error_msg = f"Merge failed: {merge_result.stderr}"
+                if execute:
+                    # Switch to issue branch
+                    checkout_result = git_checkout_branch(issue_branch_name, create_new=False, cwd=cwd)
+                    if not checkout_result.success:
+                        error_msg = f"Failed to checkout issue branch '{issue_branch_name}': {checkout_result.stderr}"
                         logger.error(error_msg)
                         results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
                         results["success"] = False
                         continue
 
-                # Push the merged changes
-                push_result = git_push(cwd=cwd, commit_message=f"Merged {branch_name} into {issue_branch_name}")
-                if not push_result.success:
-                    logger.warning(f"Failed to push merged changes: {push_result.stderr}")
-                    # Don't fail the entire migration for push issues
+                    # Pull latest changes from issue branch
+                    logger.info(f"Pulling latest changes for {issue_branch_name}")
+                    pull_result = git_pull(remote="origin", branch=issue_branch_name, cwd=cwd)
+                    if not pull_result.success:
+                        logger.warning(f"Failed to pull latest changes for {issue_branch_name}: {pull_result.stderr}")
+                else:
+                    logger.info(f"[DRY-RUN] Would checkout and merge {branch_name} into {issue_branch_name}")
+
+                # Merge pr branch
+                logger.info(f"Merging {branch_name} into {issue_branch_name}")
+                if execute:
+                    merge_result = cmd.run_command(["git", "merge", f"origin/{branch_name}" if "/" not in branch_name else branch_name, "--no-ff", "-m", f"Merge {branch_name} into {issue_branch_name}"], cwd=cwd)
+
+                    if not merge_result.success:
+                        # Check if it's a merge conflict
+                        if "conflict" in merge_result.stderr.lower():
+                            logger.error(f"Merge conflict detected while merging {branch_name} into {issue_branch_name}")
+                            results["conflicts"].append({"from": branch_name, "to": issue_branch_name, "error": merge_result.stderr})
+
+                            if not force:
+                                # Abort the merge and skip
+                                cmd.run_command(["git", "merge", "--abort"], cwd=cwd)
+                                logger.info(f"Aborted merge, skipping {branch_name}")
+                                results["skipped"].append({"from": branch_name, "to": issue_branch_name, "reason": "Merge conflict (use --force to auto-resolve)"})
+                                results["success"] = False
+                                continue
+                            else:
+                                # Try to auto-resolve conflicts
+                                logger.info(f"Attempting to auto-resolve conflicts for {branch_name}")
+                                add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
+                                if add_result.success:
+                                    commit_result = git_commit_with_retry(f"Resolve conflicts from {branch_name}", cwd=cwd)
+                                    if not commit_result.success:
+                                        error_msg = f"Failed to commit conflict resolution: {commit_result.stderr}"
+                                        logger.error(error_msg)
+                                        results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
+                                        results["success"] = False
+                                        continue
+                                else:
+                                    error_msg = f"Failed to stage conflict resolution: {add_result.stderr}"
+                                    logger.error(error_msg)
+                                    results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
+                                    results["success"] = False
+                                    continue
+                        else:
+                            # Non-conflict error
+                            error_msg = f"Merge failed: {merge_result.stderr}"
+                            logger.error(error_msg)
+                            results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
+                            results["success"] = False
+                            continue
+
+                    # Push the merged changes
+                    push_result = git_push(cwd=cwd, commit_message=f"Merged {branch_name} into {issue_branch_name}")
+                    if not push_result.success:
+                        logger.warning(f"Failed to push merged changes: {push_result.stderr}")
+                        # Don't fail the entire migration for push issues
+                else:
+                    if force:
+                        logger.info(f"[DRY-RUN] Would merge {branch_name} into {issue_branch_name} (with --force auto-resolve)")
+                    else:
+                        logger.info(f"[DRY-RUN] Would merge {branch_name} into {issue_branch_name}")
+                    logger.info(f"[DRY-RUN] Would push merged changes to origin")
             else:
                 # Issue branch doesn't exist, rename pr branch to issue branch
                 logger.info(f"Issue branch '{issue_branch_name}' does not exist, creating from {branch_name}")
 
-                # Get the commit hash of pr branch
-                rev_result = cmd.run_command(["git", "rev-parse", branch_name], cwd=cwd)
-                if not rev_result.success:
-                    error_msg = f"Failed to get commit hash for {branch_name}: {rev_result.stderr}"
-                    logger.error(error_msg)
-                    results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
-                    results["success"] = False
-                    continue
+                if execute:
+                    # Get the commit hash of pr branch
+                    rev_result = cmd.run_command(["git", "rev-parse", branch_name], cwd=cwd)
+                    if not rev_result.success:
+                        error_msg = f"Failed to get commit hash for {branch_name}: {rev_result.stderr}"
+                        logger.error(error_msg)
+                        results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
+                        results["success"] = False
+                        continue
 
-                # Create new issue branch from pr branch
-                checkout_result = git_checkout_branch(issue_branch_name, create_new=True, base_branch=branch_name, cwd=cwd)
-                if not checkout_result.success:
-                    error_msg = f"Failed to create issue branch '{issue_branch_name}': {checkout_result.stderr}"
-                    logger.error(error_msg)
-                    results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
-                    results["success"] = False
-                    continue
+                    # Create new issue branch from pr branch
+                    checkout_result = git_checkout_branch(issue_branch_name, create_new=True, base_branch=branch_name, cwd=cwd)
+                    if not checkout_result.success:
+                        error_msg = f"Failed to create issue branch '{issue_branch_name}': {checkout_result.stderr}"
+                        logger.error(error_msg)
+                        results["failed"].append({"from": branch_name, "to": issue_branch_name, "error": error_msg})
+                        results["success"] = False
+                        continue
 
-                # Push the new branch
-                push_result = git_push(cwd=cwd, commit_message=f"Created {issue_branch_name} from {branch_name}")
-                if not push_result.success:
-                    logger.warning(f"Failed to push new branch: {push_result.stderr}")
-                    # Don't fail the entire migration for push issues
+                    # Push the new branch
+                    push_result = git_push(cwd=cwd, commit_message=f"Created {issue_branch_name} from {branch_name}")
+                    if not push_result.success:
+                        logger.warning(f"Failed to push new branch: {push_result.stderr}")
+                        # Don't fail the entire migration for push issues
+                else:
+                    logger.info(f"[DRY-RUN] Would create new branch '{issue_branch_name}' from {branch_name}")
+                    logger.info(f"[DRY-RUN] Would push new branch to origin")
 
             # Delete pr branch after successful migration
             if delete_after_merge:
                 logger.info(f"Deleting pr branch '{branch_name}'")
-                delete_result = cmd.run_command(["git", "branch", "-D", branch_name], cwd=cwd)
-                if delete_result.success:
-                    # Also delete from remote
-                    cmd.run_command(["git", "push", "origin", "--delete", branch_name], cwd=cwd)
-                    logger.info(f"Successfully deleted pr branch '{branch_name}'")
+                if execute:
+                    delete_result = cmd.run_command(["git", "branch", "-D", branch_name], cwd=cwd)
+                    if delete_result.success:
+                        # Also delete from remote
+                        cmd.run_command(["git", "push", "origin", "--delete", branch_name], cwd=cwd)
+                        logger.info(f"Successfully deleted pr branch '{branch_name}'")
+                    else:
+                        logger.warning(f"Failed to delete local pr branch '{branch_name}': {delete_result.stderr}")
                 else:
-                    logger.warning(f"Failed to delete local pr branch '{branch_name}': {delete_result.stderr}")
+                    logger.info(f"[DRY-RUN] Would delete pr branch '{branch_name}' (local and remote)")
 
-            logger.info(f"Successfully migrated {branch_name} -> {issue_branch_name}")
-            results["migrated"].append({"from": branch_name, "to": issue_branch_name})
+            if execute:
+                logger.info(f"Successfully migrated {branch_name} -> {issue_branch_name}")
+                results["migrated"].append({"from": branch_name, "to": issue_branch_name})
+            else:
+                logger.info(f"[DRY-RUN] Would mark as migrated: {branch_name} -> {issue_branch_name}")
+                results["migrated"].append({"from": branch_name, "to": issue_branch_name, "dry_run": True})
 
         except Exception as e:
             error_msg = f"Unexpected error during migration: {e}"
