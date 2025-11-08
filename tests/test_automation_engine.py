@@ -47,7 +47,6 @@ class TestAutomationEngine:
         ]
 
         config = AutomationConfig()
-        config.DRY_RUN = False
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute
@@ -75,6 +74,7 @@ class TestAutomationEngine:
         """Test that the engine correctly handles PR processing."""
         # Setup
         config = AutomationConfig()
+        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return proper PR data
@@ -112,6 +112,7 @@ class TestAutomationEngine:
         """Test that the engine correctly handles PR processing failure."""
         # Setup
         config = AutomationConfig()
+        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return proper PR data
@@ -149,6 +150,7 @@ class TestAutomationEngine:
         """Test that PR processing handles conflicts correctly."""
         # Setup - this test verifies that process_single handles PR with conflicts
         config = AutomationConfig()
+        config.DRY_RUN = True  # Set DRY_RUN to True to avoid API calls
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Mock GitHub client to return PR data

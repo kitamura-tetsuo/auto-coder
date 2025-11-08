@@ -1311,7 +1311,7 @@ def migrate_pr_branches(
         "conflicts": [],
     }
 
-    logger.info(f"Starting branch migration (dry_run={config.DRY_RUN}, delete_after_merge={delete_after_merge})")
+    logger.info(f"Starting branch migration (delete_after_merge={delete_after_merge})")
 
     # Get all pr-<number> branches
     pr_branches = get_branches_by_pattern("pr-*", cwd=cwd, remote=False)
@@ -1338,17 +1338,7 @@ def migrate_pr_branches(
 
         logger.info(f"Processing: {branch_name} -> {issue_branch_name}")
 
-        if config.DRY_RUN:
-            logger.info(f"[DRY RUN] Would migrate {branch_name} to {issue_branch_name}")
-            # Check if issue branch exists
-            if branch_exists(issue_branch_name, cwd=cwd):
-                logger.info(f"[DRY RUN] Issue branch '{issue_branch_name}' exists - would merge")
-            else:
-                logger.info(f"[DRY RUN] Issue branch '{issue_branch_name}' does not exist - would create")
-            results["migrated"].append({"from": branch_name, "to": issue_branch_name, "dry_run": True})
-            continue
-
-        # Actual migration (not dry run)
+        # Actual migration
         try:
             # Check if we're already on the branch we want to migrate
             current_branch = get_current_branch(cwd=cwd)

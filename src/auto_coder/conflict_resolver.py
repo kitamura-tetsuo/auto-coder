@@ -156,10 +156,6 @@ def _perform_base_branch_merge_and_conflict_resolution(
         True if conflicts were resolved successfully, False otherwise
     """
     try:
-        if config.DRY_RUN:
-            logger.info(f"[DRY RUN] Would resolve merge conflicts for PR #{pr_number}")
-            return True
-
         # Step 0: Clean up any existing git state
         logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
 

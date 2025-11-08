@@ -1662,7 +1662,7 @@ class TestMigratePrBranches:
 
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=False)
+            config = AutomationConfig()
             results = migrate_pr_branches(config, delete_after_merge=True)
 
             assert results["success"] is True
@@ -1673,22 +1673,129 @@ class TestMigratePrBranches:
             # No git commands should be called beyond get_branches_by_pattern
             mock_cmd.run_command.assert_called_once()
 
-    def test_migrate_pr_branches_multiple_branches(self):
+    def test_migrate_pr_branches_multiple_branches(self, _use_custom_subprocess_mock):
         """Test migration with multiple pr-<number> branches."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
-            mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
-            # Return multiple pr-* branches
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="origin/main\norigin/pr-123\norigin/pr-456\norigin/pr-789\norigin/issue-123\norigin/issue-456\n",
-                stderr="",
-                returncode=0,
-            )
+        from types import SimpleNamespace
 
+        from src.auto_coder.utils import CommandResult
+
+        call_count = [0]  # Use list to make it mutable in closure
+
+        def fake_run_command(cmd, **kwargs):
+            """Fake CommandExecutor.run_command that returns appropriate responses."""
+            call_idx = call_count[0]
+            call_count[0] += 1
+
+            # Handle different git commands
+            if cmd == ["git", "branch", "--format=%(refname:short)"]:
+                return CommandResult(
+                    success=True,
+                    stdout="pr-123\npr-456\npr-789\n",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                # Determine which branch based on call count
+                # Call 1: initial check (main)
+                # Call 5: after checkout issue-123
+                # Call 8: after merge pr-123 (still issue-123)
+                # Call 12: before processing pr-456 (should be issue-123)
+                # Call 16: after checkout issue-456
+                # Call 19: after merge pr-456 (still issue-456)
+                # Call 23: before processing pr-789 (should be issue-456)
+                # Call 27: after checkout issue-789
+                if call_idx == 1:
+                    branch = "main\n"
+                elif call_idx in (5, 8, 12):
+                    branch = "issue-123\n"
+                elif call_idx in (16, 19, 23):
+                    branch = "issue-456\n"
+                elif call_idx == 27:
+                    branch = "issue-789\n"
+                else:
+                    branch = "main\n"  # Default
+                return CommandResult(
+                    success=True,
+                    stdout=branch,
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "branch", "--list", "issue-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="issue-123",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "branch", "--list", "issue-456"]:
+                return CommandResult(
+                    success=True,
+                    stdout="issue-456",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "branch", "--list", "issue-789"]:
+                return CommandResult(
+                    success=True,
+                    stdout="issue-789",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "status", "--porcelain"]:
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "checkout", "issue-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'issue-123'",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "checkout", "issue-456"]:
+                return CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'issue-456'",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "checkout", "issue-789"]:
+                return CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'issue-789'",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "add", "-A"]:
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "commit", "-m", "WIP: Auto-commit before branch checkout"]:
+                return CommandResult(
+                    success=True,
+                    stdout="[main abc123] WIP: Auto-commit before branch checkout",
+                    stderr="",
+                    returncode=0,
+                )
+            else:
+                # Default response
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+
+        with patch("src.auto_coder.utils.CommandExecutor.run_command", side_effect=fake_run_command):
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=True)
+            config = AutomationConfig()
             results = migrate_pr_branches(config)
 
             assert results["success"] is True
@@ -1714,7 +1821,7 @@ class TestMigratePrBranches:
 
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=False)
+            config = AutomationConfig()
             results = migrate_pr_branches(config)
 
             assert results["success"] is True  # Overall success (some branches handled)
@@ -1724,27 +1831,111 @@ class TestMigratePrBranches:
             assert "Could not extract issue number" in results["skipped"][0]["reason"]
             assert len(results["failed"]) == 0
 
-    def test_migrate_pr_branches_with_cwd(self):
+    def test_migrate_pr_branches_with_cwd(self, _use_custom_subprocess_mock):
         """Test migration with custom working directory."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
-            mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=True,
-                stdout="origin/main\norigin/pr-123\n",
-                stderr="",
-                returncode=0,
-            )
+        from src.auto_coder.utils import CommandResult
 
+        call_count = [0]  # Use list to make it mutable in closure
+
+        def fake_run(cmd, **kwargs):
+            """Fake CommandExecutor.run_command that returns appropriate responses."""
+            call_idx = call_count[0]
+            call_count[0] += 1
+
+            # Verify cwd was passed
+            assert kwargs.get("cwd") == "/custom/path", f"Expected cwd=/custom/path, got {kwargs.get('cwd')}"
+
+            # Handle different git commands
+            if cmd == ["git", "branch", "--format=%(refname:short)"]:
+                return CommandResult(
+                    success=True,
+                    stdout="pr-123\n",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+                if call_idx == 1:
+                    branch = "main\n"
+                else:
+                    branch = "issue-123\n"
+                return CommandResult(
+                    success=True,
+                    stdout=branch,
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "branch", "--list", "issue-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="issue-123",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "status", "--porcelain"]:
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "checkout", "issue-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'issue-123'",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "pull", "origin", "issue-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "merge", "origin/pr-123", "--no-ff", "-m", "Merge pr-123 into issue-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "rev-list", "origin/issue-123..HEAD", "--count"]:
+                return CommandResult(
+                    success=True,
+                    stdout="1",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "branch", "-D", "pr-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+            elif cmd == ["git", "push", "origin", "--delete", "pr-123"]:
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+            else:
+                # Default response
+                return CommandResult(
+                    success=True,
+                    stdout="",
+                    stderr="",
+                    returncode=0,
+                )
+
+        with patch("src.auto_coder.utils.CommandExecutor.run_command", side_effect=fake_run):
             from src.auto_coder.automation_config import AutomationConfig
 
-            config = AutomationConfig(DRY_RUN=True)
+            config = AutomationConfig()
             results = migrate_pr_branches(config, cwd="/custom/path")
 
             assert results["success"] is True
-            # Verify cwd was passed to git commands
-            for call in mock_cmd.run_command.call_args_list:
-                assert call[1]["cwd"] == "/custom/path"
 
 
 class TestBranchContext:

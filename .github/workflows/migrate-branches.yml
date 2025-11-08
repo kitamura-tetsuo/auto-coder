@@ -14,14 +14,6 @@ description: |
 on:
   workflow_dispatch:
     inputs:
-      dry_run:
-        description: 'Preview what would be done without making changes'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
       force:
         description: 'Auto-resolve merge conflicts (use with caution)'
         required: false
@@ -75,7 +67,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Convert string inputs to boolean flags
-          DRY_RUN="${{ github.event.inputs.dry_run }}"
           FORCE="${{ github.event.inputs.force }}"
           NO_DELETE="${{ github.event.inputs.no_delete }}"
 
@@ -83,12 +74,6 @@ jobs:
           CMD="uv run auto-coder migrate-branches"
 
           # Add flags based on inputs
-          if [ "$DRY_RUN" = "true" ]; then
-            CMD="$CMD --dry-run"
-          else
-            CMD="$CMD --execute"
-          fi
-
           if [ "$FORCE" = "true" ]; then
             CMD="$CMD --force"
           fi

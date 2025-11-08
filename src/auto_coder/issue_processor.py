@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
+from auto_coder.util.github_action import (
+    _check_github_actions_status,
+    check_and_handle_closed_state,
+    check_github_actions_and_exit_if_in_progress,
+    get_detailed_checks_from_history,
+)
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
@@ -59,27 +64,31 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
                 else:
                     logger.info(f"All dependencies for issue #{issue_number} are resolved")
 
-        actions_taken: List[str] = []
+        # Use LabelManager context manager to handle @auto-coder label automatically
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
+            if not should_process:
+                return ProcessedIssueResult(
+                    issue_data=issue_data,
+                    actions_taken=["Skipped - another instance started processing (@auto-coder label added)"],
+                )
 
-        # Check if 'jules' label already exists
-        current_labels = issue_data.get("labels", [])
-        if "jules" not in current_labels:
-            if not config.DRY_RUN:
+            actions_taken: List[str] = []
+
+            # Check if 'jules' label already exists
+            current_labels = issue_data.get("labels", [])
+            if "jules" not in current_labels:
                 # Add 'jules' label to the issue
                 github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
                 actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
                 logger.info(f"Added 'jules' label to issue #{issue_number}")
             else:
-                actions_taken.append(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
-                logger.info(f"[DRY RUN] Would add 'jules' label to issue #{issue_number}")
-        else:
-            actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
-            logger.info(f"Issue #{issue_number} already has 'jules' label")
+                actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
+                logger.info(f"Issue #{issue_number} already has 'jules' label")
 
-        return ProcessedIssueResult(
-            issue_data=issue_data,
-            actions_taken=actions_taken,
-        )
+            return ProcessedIssueResult(
+                issue_data=issue_data,
+                actions_taken=actions_taken,
+            )
 
     except Exception as e:
         logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
@@ -100,17 +109,14 @@ def _take_issue_actions(
     issue_number = issue_data["number"]
 
     try:
-        if config.DRY_RUN:
-            actions.append(f"[DRY RUN] Would analyze and take actions on issue #{issue_number}")
-        else:
-            # Ask LLM CLI to analyze the issue and take appropriate actions
-            action_results = _apply_issue_actions_directly(
-                repo_name,
-                issue_data,
-                config,
-                github_client,
-            )
-            actions.extend(action_results)
+        # Ask LLM CLI to analyze the issue and take appropriate actions
+        action_results = _apply_issue_actions_directly(
+            repo_name,
+            issue_data,
+            config,
+            github_client,
+        )
+        actions.extend(action_results)
 
     except Exception as e:
         logger.error(f"Error taking actions on issue #{issue_number}: {e}")
@@ -139,7 +145,6 @@ def _create_pr_for_issue(
         llm_response: LLM response containing changes summary
         github_client: GitHub client for API operations
         message_backend_manager: Backend manager for PR message generation
-        dry_run: Whether this is a dry run
 
     Returns:
         Action message describing the PR creation result
@@ -187,9 +192,6 @@ def _create_pr_for_issue(
         closes_keyword = f"Closes #{issue_number}"
         if closes_keyword not in pr_body:
             pr_body = f"{closes_keyword}\n\n{pr_body}"
-
-        if config.DRY_RUN:
-            return f"[DRY RUN] Would create PR: {pr_title}"
 
         # Create PR using gh CLI
         create_pr_result = cmd.run_command(
@@ -457,27 +459,23 @@ def create_feature_issues(
 
         created_issues = []
         for suggestion in suggestions:
-            if not config.DRY_RUN:
-                try:
-                    issue = github_client.create_issue(
-                        repo_name=repo_name,
-                        title=suggestion["title"],
-                        body=_format_feature_issue_body(suggestion),
-                        labels=suggestion.get("labels", ["enhancement"]),
-                    )
-                    created_issues.append(
-                        {
-                            "number": issue.number,
-                            "title": suggestion["title"],
-                            "url": issue.html_url,
-                        }
-                    )
-                    logger.info(f"Created feature issue #{issue.number}: {suggestion['title']}")
-                except Exception as e:
-                    logger.error(f"Failed to create feature issue: {e}")
-            else:
-                logger.info(f"[DRY RUN] Would create feature issue: {suggestion['title']}")
-                created_issues.append({"title": suggestion["title"], "dry_run": True})
+            try:
+                issue = github_client.create_issue(
+                    repo_name=repo_name,
+                    title=suggestion["title"],
+                    body=_format_feature_issue_body(suggestion),
+                    labels=suggestion.get("labels", ["enhancement"]),
+                )
+                created_issues.append(
+                    {
+                        "number": issue.number,
+                        "title": suggestion["title"],
+                        "url": issue.html_url,
+                    }
+                )
+                logger.info(f"Created feature issue #{issue.number}: {suggestion['title']}")
+            except Exception as e:
+                logger.error(f"Failed to create feature issue: {e}")
 
         return created_issues
 
@@ -536,16 +534,13 @@ def process_single(
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
-    DEPRECATED: This function delegates to AutomationEngine.process_single for unified processing.
-    Use AutomationEngine.process_single directly instead.
+    This function now delegates to AutomationEngine.process_single for unified processing.
+    Kept for backward compatibility and for direct use without AutomationEngine instance.
 
-    target_type: 'issue' | 'pr' (auto-detection removed in issue #307)
+    target_type: 'issue' | 'pr' | 'auto'
+    When 'auto', try PR first then fall back to issue.
     """
-    import warnings
-
     from .automation_engine import AutomationEngine
-
-    warnings.warn("issue_processor.process_single is deprecated. Use AutomationEngine.process_single directly.", DeprecationWarning, stacklevel=2)
 
     # Create a temporary AutomationEngine instance and delegate to it
     engine = AutomationEngine(github_client, config)

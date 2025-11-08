@@ -4,8 +4,8 @@ Configuration management for Auto-Coder.
 
 from typing import Optional
 
-from pydantic import ConfigDict, Field
-from pydantic_settings import BaseSettings
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -22,7 +22,6 @@ class Settings(BaseSettings):
     # Application settings
     max_issues_per_run: int = Field(default=-1, json_schema_extra={"env": "MAX_ISSUES_PER_RUN"})  # -1 means unlimited
     max_prs_per_run: int = Field(default=-1, json_schema_extra={"env": "MAX_PRS_PER_RUN"})  # -1 means unlimited
-    dry_run: bool = Field(default=False, json_schema_extra={"env": "DRY_RUN"})
 
     # Dependency management settings
     check_dependencies: bool = Field(default=True, json_schema_extra={"env": "CHECK_DEPENDENCIES"})
@@ -34,7 +33,7 @@ class Settings(BaseSettings):
         json_schema_extra={"env": "LOG_FORMAT"},
     )
 
-    model_config = ConfigDict(
+    model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",  # Ignore unexpected environment variables

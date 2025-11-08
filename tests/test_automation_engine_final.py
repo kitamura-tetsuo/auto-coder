@@ -7,8 +7,6 @@ from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.util.github_action import GitHubActionsStatusResult
 from src.auto_coder.utils import CommandExecutor
 
-"""Tests for automation engine functionality."""
-
 
 class TestAutomationEngine:
     """Test cases for AutomationEngine class."""
