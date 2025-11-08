@@ -81,7 +81,7 @@ def test_history_handles_missing_pullRequests_field_gracefully():
             return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+    with patch("auto_coder.gh_logger.subprocess.run", side_effect=side_effect):
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True
@@ -156,7 +156,7 @@ def test_history_handles_empty_pullRequests_list_gracefully():
             return _cmd_result(True, stdout=json.dumps(jobs_payload), stderr="", returncode=0)
         raise AssertionError(f"Unexpected command: {cmd}")
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command", side_effect=side_effect):
+    with patch("auto_coder.gh_logger.subprocess.run", side_effect=side_effect):
         result = _check_github_actions_status_from_history("owner/repo", pr_data, config)
 
     assert result.success is True

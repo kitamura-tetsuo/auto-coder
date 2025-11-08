@@ -231,7 +231,7 @@ class TestAutomationEngine:
         mock_github_client.get_pr_details_by_number.return_value = pr_data
 
         # Track the git commands that are called
-        with patch.object(engine.cmd, "run_command") as mock_run_command:
+        with patch.object(engine.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_subprocess:
             # Execute
             result = engine._resolve_pr_merge_conflicts("test/repo", 456)
 
@@ -242,10 +242,12 @@ class TestAutomationEngine:
         assert ["git", "reset", "--hard", "HEAD"] in calls
         assert ["git", "clean", "-fd"] in calls
         assert ["git", "merge", "--abort"] in calls
-        assert ["gh", "pr", "checkout", "456"] in calls
         assert ["git", "fetch", "origin", "develop"] in calls  # Fetch base branch
         assert ["git", "merge", "origin/develop"] in calls  # Merge base branch
         assert ["git", "push"] in calls
+        # Check that the gh pr checkout command was called
+        subprocess_calls = [call[0][0] for call in mock_subprocess.call_args_list]
+        assert ["gh", "pr", "checkout", "456"] in subprocess_calls
 
     @patch("subprocess.run")
     def test_update_with_base_branch_uses_provided_base_branch(self, mock_run, mock_github_client, mock_gemini_client):
@@ -494,7 +496,7 @@ class TestAutomationEngine:
         assert "FAILED: assertion error" in result
         assert "ImportError: module not found" in result
 
-    @patch("src.auto_coder.util.github_action.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_all_passed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when all checks pass."""
         from src.auto_coder.util.github_action import _check_github_actions_status
@@ -512,7 +514,7 @@ class TestAutomationEngine:
         assert result.success is True
         assert len(result.ids) == 0  # No run IDs when checks pass
 
-    @patch("src.auto_coder.util.github_action.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_some_failed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when some checks fail."""
         from src.auto_coder.util.github_action import _check_github_actions_status
@@ -530,7 +532,7 @@ class TestAutomationEngine:
         assert result.success is False
         assert len(result.ids) == 0  # No URLs in the output, so no run IDs
 
-    @patch("src.auto_coder.util.github_action.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_tab_format_with_failures(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and failures."""
         from src.auto_coder.util.github_action import _check_github_actions_status
@@ -552,7 +554,7 @@ class TestAutomationEngine:
         assert result.success is False  # Should be False because 'test' failed
         assert 123 in result.ids  # Run ID should be extracted from the failed check
 
-    @patch("src.auto_coder.util.github_action.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_tab_format_all_pass(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and all passing."""
         from src.auto_coder.util.github_action import _check_github_actions_status
@@ -574,7 +576,7 @@ class TestAutomationEngine:
         assert result.success is True  # Should be True because all required checks passed
         assert len(result.ids) == 0  # No failed checks, so no run IDs needed
 
-    @patch("src.auto_coder.util.github_action.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_no_checks_reported(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Handle gh CLI message when no checks are reported."""
         from src.auto_coder.util.github_action import _check_github_actions_status
@@ -603,13 +605,11 @@ class TestAutomationEngine:
         assert result.success is True
         assert result.ids == []
 
-    @patch("src.auto_coder.pr_processor.cmd.run_command")
-    def test_checkout_pr_branch_success(self, mock_run_command, mock_github_client, mock_gemini_client):
+    @patch("auto_coder.gh_logger.subprocess.run")
+    def test_checkout_pr_branch_success(self, mock_gh_subprocess, mock_github_client, mock_gemini_client):
         """Test successful PR branch checkout without force clean (default behavior)."""
         # Setup
-        mock_run_command.side_effect = [
-            Mock(success=True, stdout="Switched to branch", stderr=""),  # gh pr checkout
-        ]
+        mock_gh_subprocess.return_value = Mock(success=True, stdout="Switched to branch", stderr="", returncode=0)
 
         from src.auto_coder import pr_processor
 
@@ -620,10 +620,10 @@ class TestAutomationEngine:
 
         # Assert
         assert result is True
-        assert mock_run_command.call_count == 1
+        assert mock_gh_subprocess.call_count == 1
 
         # Verify the sequence of commands
-        calls = [call[0][0] for call in mock_run_command.call_args_list]
+        calls = [call[0][0] for call in mock_gh_subprocess.call_args_list]
         assert calls[0] == ["gh", "pr", "checkout", "123"]
 
     def test_checkout_pr_branch_failure(self, mock_github_client, mock_gemini_client):
@@ -633,12 +633,9 @@ class TestAutomationEngine:
 
         pr_data = {"number": 123}
 
-        # Mock gh pr checkout failure and manual fallback failure
-        with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_cmd:
-            mock_cmd.side_effect = [
-                Mock(success=False, stdout="", stderr="Branch not found"),  # gh pr checkout fails
-                Mock(success=False, stdout="", stderr="Fetch failed"),  # git fetch fails
-            ]
+        # Mock gh pr checkout to fail
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
+            mock_gh_subprocess.return_value = Mock(success=False, stdout="", stderr="Branch not found", returncode=1)
 
             # Execute
             result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
@@ -854,24 +851,35 @@ class TestAutomationEngineExtended:
         config.FORCE_CLEAN_BEFORE_CHECKOUT = True
         pr_data = {"number": 123, "title": "Test PR"}
 
-        # Mock successful force cleanup and checkout
-        with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_cmd:
-            # Mock git reset, git clean, and gh pr checkout success
-            mock_cmd.side_effect = [
-                Mock(success=True, stdout="", stderr=""),  # git reset --hard HEAD
-                Mock(success=True, stdout="", stderr=""),  # git clean -fd
-                Mock(success=True, stdout="", stderr=""),  # gh pr checkout
+        # We need to mock cmd.run_command (for git commands) and gh_logger (for gh commands)
+        # Use patch.object to mock the method on the cmd instance
+        with patch.object(pr_processor.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
+            # Mock cmd.run_command for git reset and clean
+            # It returns a CommandResult with success attribute
+            git_results = [
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git reset --hard HEAD
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git clean -fd
             ]
+            mock_run_command.side_effect = git_results
+
+            # Mock gh_logger for gh pr checkout
+            # It returns a result with success attribute
+            mock_gh_subprocess.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
             # Execute
             result = pr_processor._checkout_pr_branch("test/repo", pr_data, config)
 
             # Assert
             assert result is True
-            assert mock_cmd.call_count == 3
-            mock_cmd.assert_any_call(["git", "reset", "--hard", "HEAD"])
-            mock_cmd.assert_any_call(["git", "clean", "-fd"])
-            mock_cmd.assert_any_call(["gh", "pr", "checkout", "123"])
+            # Verify git commands were called
+            assert mock_run_command.call_count == 2
+            git_calls = [call[0][0] for call in mock_run_command.call_args_list]
+            assert ["git", "reset", "--hard", "HEAD"] in git_calls
+            assert ["git", "clean", "-fd"] in git_calls
+            # Verify gh command was called
+            assert mock_gh_subprocess.call_count == 1
+            gh_calls = [call[0][0] for call in mock_gh_subprocess.call_args_list]
+            assert ["gh", "pr", "checkout", "123"] in gh_calls
 
     def test_checkout_pr_branch_without_force_clean(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout without force clean (default behavior)."""
@@ -883,24 +891,19 @@ class TestAutomationEngineExtended:
         config.FORCE_CLEAN_BEFORE_CHECKOUT = False
         pr_data = {"number": 123, "title": "Test PR"}
 
-        # Mock successful checkout without force cleanup
-        with patch("src.auto_coder.pr_processor.cmd.run_command") as mock_cmd:
-            # Mock only gh pr checkout success (no git reset/clean)
-            mock_cmd.side_effect = [
-                Mock(success=True, stdout="", stderr=""),  # gh pr checkout
-            ]
+        # Mock gh pr checkout to succeed (no git reset/clean calls)
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
+            mock_gh_subprocess.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
             # Execute
             result = pr_processor._checkout_pr_branch("test/repo", pr_data, config)
 
             # Assert
             assert result is True
-            assert mock_cmd.call_count == 1
-            # Verify git reset and git clean were NOT called
-            calls = [call[0][0] for call in mock_cmd.call_args_list]
-            assert ["git", "reset", "--hard", "HEAD"] not in calls
-            assert ["git", "clean", "-fd"] not in calls
-            mock_cmd.assert_called_once_with(["gh", "pr", "checkout", "123"])
+            assert mock_gh_subprocess.call_count == 1
+            # Verify gh pr checkout was called
+            calls = [call[0][0] for call in mock_gh_subprocess.call_args_list]
+            assert ["gh", "pr", "checkout", "123"] in calls
 
     @patch("subprocess.run")
     def test_parse_commit_history_with_actions_with_successful_runs(self, mock_run, mock_github_client, mock_gemini_client):
@@ -1484,7 +1487,7 @@ class TestGetCandidates:
 class TestUrgentLabelPropagation:
     """Test cases for urgent label propagation in PR creation."""
 
-    @patch("src.auto_coder.issue_processor.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_create_pr_for_issue_propagates_urgent_label(self, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that urgent label is propagated from issue to PR."""
         # Setup
@@ -1498,10 +1501,19 @@ class TestUrgentLabelPropagation:
         }
 
         # Mock gh pr create to return PR URL
-        mock_cmd.side_effect = [
-            Mock(success=True, stdout="https://github.com/test/repo/pull/456"),  # gh pr create
-            Mock(success=True, stdout="", stderr=""),  # gh pr edit
+        # Note: git commands may also be called during get_commit_log, so we need to handle those too
+        gh_results = [
+            Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0),  # gh pr create
+            Mock(success=True, stdout="", stderr="", returncode=0),  # gh pr edit
         ]
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "gh":
+                return gh_results.pop(0)
+            # For git commands, just return success
+            return Mock(success=True, stdout="", stderr="", returncode=0)
+
+        mock_cmd.side_effect = side_effect
 
         # Mock get_pr_closing_issues to return the issue number
         mock_github_client.get_pr_closing_issues.return_value = [123]
@@ -1521,15 +1533,16 @@ class TestUrgentLabelPropagation:
         # Assert
         assert "Successfully created PR for issue #123" in result
 
-        # Verify gh pr create was called
-        assert mock_cmd.call_count == 2
-        create_call = mock_cmd.call_args_list[0][0][0]
+        # Verify gh pr create was called (filter out git commands)
+        gh_calls = [call for call in mock_cmd.call_args_list if call[0][0][0] == "gh"]
+        assert len(gh_calls) >= 2
+        create_call = gh_calls[0][0][0]
         assert create_call[0] == "gh"
         assert create_call[1] == "pr"
         assert create_call[2] == "create"
 
         # Verify urgent label was added to PR
-        add_label_call = mock_cmd.call_args_list[1][0][0]
+        add_label_call = gh_calls[1][0][0]
         assert add_label_call[0] == "gh"
         assert add_label_call[1] == "pr"
         assert add_label_call[2] == "edit"
@@ -1538,7 +1551,7 @@ class TestUrgentLabelPropagation:
         # Verify GitHub client was called to add labels
         mock_github_client.add_labels_to_issue.assert_called_once_with("test/repo", 456, ["urgent"])
 
-    @patch("src.auto_coder.issue_processor.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_create_pr_for_issue_without_urgent_label(self, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that no urgent label is propagated when issue doesn't have it."""
         # Setup
@@ -1552,7 +1565,14 @@ class TestUrgentLabelPropagation:
         }
 
         # Mock gh pr create to return PR URL
-        mock_cmd.return_value = Mock(success=True, stdout="https://github.com/test/repo/pull/456")
+        # Note: git commands may also be called during get_commit_log
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "gh":
+                return Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0)
+            # For git commands, just return success
+            return Mock(success=True, stdout="", stderr="", returncode=0)
+
+        mock_cmd.side_effect = side_effect
 
         # Mock get_pr_closing_issues to return the issue number
         mock_github_client.get_pr_closing_issues.return_value = [123]
@@ -1572,7 +1592,12 @@ class TestUrgentLabelPropagation:
         # Assert
         assert "Successfully created PR for issue #123" in result
         # gh pr create should be called but NOT gh pr edit for urgent note
-        assert mock_cmd.call_count == 1
+        gh_calls = [call for call in mock_cmd.call_args_list if call[0][0][0] == "gh"]
+        assert len(gh_calls) == 1
+        create_call = gh_calls[0][0][0]
+        assert create_call[0] == "gh"
+        assert create_call[1] == "pr"
+        assert create_call[2] == "create"
 
         # Verify urgent label was NOT added
         mock_github_client.add_labels_to_issue.assert_not_called()

@@ -48,7 +48,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Mock run list command
             mock_cmd.side_effect = [
                 Mock(
@@ -94,7 +94,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.return_value = Mock(success=True, stdout=json.dumps(runs_data), stderr="", returncode=0)
 
             result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
@@ -107,7 +107,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Mock command that fails (no Actions workflow)
             mock_cmd.return_value = Mock(success=False, stdout="", stderr="No workflow runs found", returncode=1)
 
@@ -136,7 +136,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -181,7 +181,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Mock invalid JSON response
             mock_cmd.return_value = Mock(
                 success=True,
@@ -200,7 +200,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = []
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Mock the command to return empty runs list
             mock_cmd.return_value = Mock(
                 success=False,
@@ -243,7 +243,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 # Run list
                 Mock(
@@ -295,7 +295,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Simulate GitHub API error
             mock_cmd.return_value = Mock(
                 success=False,
@@ -328,7 +328,7 @@ class TestSearchGitHubActionsLogsFromHistory:
 
         failed_checks = [{"name": "test", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -510,7 +510,7 @@ class TestGetGitHubActionsLogs:
 
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Simulate exception during execution
             mock_cmd.side_effect = Exception("Simulated error")
 
@@ -550,7 +550,7 @@ class TestGetGitHubActionsLogs:
             }
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 # Run list
                 Mock(
@@ -610,7 +610,7 @@ class TestGetGitHubActionsLogs:
 
         failed_checks = [{"name": "test-job", "conclusion": "failure", "details_url": ""}]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -672,7 +672,7 @@ class TestIntegrationGitHubActionsLogSearch:
         ]
 
         # Mock GitHub API responses for full workflow
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Historical search first
             mock_cmd.side_effect = [
                 Mock(
@@ -757,7 +757,7 @@ class TestIntegrationGitHubActionsLogSearch:
             ],
         }
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -786,7 +786,7 @@ class TestIntegrationGitHubActionsLogSearch:
         config = AutomationConfig()
 
         # Simulate rate limit response
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.return_value = Mock(
                 success=False,
                 stdout="",
@@ -803,7 +803,7 @@ class TestIntegrationGitHubActionsLogSearch:
         """Test timeout handling in API calls."""
         config = AutomationConfig()
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             # Simulate timeout
             mock_cmd.side_effect = Exception("Command timed out")
 
@@ -840,7 +840,7 @@ class TestIntegrationGitHubActionsLogSearch:
             },
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -923,7 +923,7 @@ class TestIntegrationGitHubActionsLogSearch:
             for i in range(1, 101)  # 100 runs
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -968,7 +968,7 @@ class TestGitHubActionsLogSearchEdgeCases:
         # Repository name with hyphens and underscores
         repo_name = "org-name_with.special-chars"
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.return_value = Mock(
                 success=False,
                 stdout="",
@@ -1000,7 +1000,7 @@ class TestGitHubActionsLogSearchEdgeCases:
             for i in range(1, 1001)  # 1000 runs
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -1063,7 +1063,7 @@ class TestGitHubActionsLogSearchEdgeCases:
             },
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -1116,7 +1116,7 @@ class TestGitHubActionsLogSearchEdgeCases:
             }
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.return_value = Mock(
                 success=True,
                 stdout=json.dumps(runs_data),
@@ -1146,7 +1146,7 @@ class TestGitHubActionsLogSearchEdgeCases:
             }
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -1209,7 +1209,7 @@ class TestGitHubActionsLogSearchEdgeCases:
             }
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,
@@ -1284,7 +1284,7 @@ class TestGitHubActionsLogSearchEdgeCases:
             }
         ]
 
-        with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_cmd:
+        with patch("auto_coder.gh_logger.subprocess.run") as mock_cmd:
             mock_cmd.side_effect = [
                 Mock(
                     success=True,

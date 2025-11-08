@@ -27,6 +27,7 @@ from auto_coder.util.github_action import (
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
+from .gh_logger import get_gh_logger
 from .git_utils import branch_context, get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
@@ -343,8 +344,13 @@ def _apply_pr_actions_directly(
 def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> str:
     """Get PR diff for analysis."""
     try:
-        result = cmd.run_command(["gh", "pr", "diff", str(pr_number), "--repo", repo_name])
-        return result.stdout[: config.MAX_PR_DIFF_SIZE] if result.success else "Could not retrieve PR diff"
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "pr", "diff", str(pr_number), "--repo", repo_name],
+            repo=repo_name,
+            capture_output=True,
+        )
+        return result.stdout[: config.MAX_PR_DIFF_SIZE] if result.success else "Could not retrieve PR diff"  # type: ignore[attr-defined]
     except Exception:
         return "Could not retrieve PR diff"
 
@@ -496,9 +502,14 @@ def _checkout_pr_branch(repo_name: str, pr_data: Dict[str, Any], config: Automat
                 )
 
         # Step 2: Attempt to checkout the PR
-        result = cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "pr", "checkout", str(pr_number)],
+            repo=repo_name,
+            capture_output=True,
+        )
 
-        if result.success:
+        if result.success:  # type: ignore[attr-defined]
             log_action(f"Successfully checked out PR #{pr_number}")
             return True
         else:
@@ -697,9 +708,14 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
     """
     try:
         # Get PR body
-        result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"])
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
+            repo=repo_name,
+            capture_output=True,
+        )
 
-        if not result.success or not result.stdout:
+        if not result.success or not result.stdout:  # type: ignore[attr-defined]
             logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking")
             return
 
@@ -716,7 +732,8 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         # Close each linked issue
         for issue_num in linked_issues:
             try:
-                close_result = cmd.run_command(
+                gh_logger = get_gh_logger()
+                close_result = gh_logger.execute_with_logging(
                     [
                         "gh",
                         "issue",
@@ -726,10 +743,12 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
                         repo_name,
                         "--comment",
                         f"Closed by PR #{pr_number}",
-                    ]
+                    ],
+                    repo=repo_name,
+                    capture_output=True,
                 )
 
-                if close_result.success:
+                if close_result.success:  # type: ignore[attr-defined]
                     logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
                     log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
                 else:
@@ -759,13 +778,14 @@ def _merge_pr(
     """
     try:
         cmd_list = ["gh", "pr", "merge", str(pr_number)]
+        gh_logger = get_gh_logger()
 
         # Try with --auto first if enabled, but fallback to direct merge if it fails
         if config.MERGE_AUTO:
             auto_cmd = cmd_list + ["--auto", config.MERGE_METHOD]
-            result = cmd.run_command(auto_cmd)
+            result = gh_logger.execute_with_logging(auto_cmd, repo=repo_name, capture_output=True)
 
-            if result.success:
+            if result.success:  # type: ignore[attr-defined]
                 log_action(f"Successfully auto-merged PR #{pr_number}")
                 _close_linked_issues(repo_name, pr_number)
                 return True
@@ -776,9 +796,9 @@ def _merge_pr(
 
         # Direct merge without --auto flag
         direct_cmd = cmd_list + [config.MERGE_METHOD]
-        result = cmd.run_command(direct_cmd)
+        result = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
 
-        if result.success:
+        if result.success:  # type: ignore[attr-defined]
             log_action(f"Successfully merged PR #{pr_number}")
             _close_linked_issues(repo_name, pr_number)
             return True
@@ -791,8 +811,9 @@ def _merge_pr(
                 # Try to resolve merge conflicts using the new function from conflict_resolver
                 if resolve_pr_merge_conflicts(repo_name, pr_number, config):
                     # Retry merge after conflict resolution
-                    retry_result = cmd.run_command(direct_cmd)
-                    if retry_result.success:
+                    gh_logger = get_gh_logger()
+                    retry_result = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
+                    if retry_result.success:  # type: ignore[attr-defined]
                         log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
                         _close_linked_issues(repo_name, pr_number)
                         return True
@@ -805,8 +826,9 @@ def _merge_pr(
                         )
                         # 1) Poll mergeable briefly (e.g., GitHub may still be computing)
                         if _poll_pr_mergeable(repo_name, pr_number, config):
-                            retry_after_poll = cmd.run_command(direct_cmd)
-                            if retry_after_poll.success:
+                            gh_logger = get_gh_logger()
+                            retry_after_poll = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
+                            if retry_after_poll.success:  # type: ignore[attr-defined]
                                 log_action(f"Successfully merged PR #{pr_number} after waiting for mergeable state")
                                 _close_linked_issues(repo_name, pr_number)
                                 return True
@@ -818,8 +840,9 @@ def _merge_pr(
                             if m not in allowed or m == config.MERGE_METHOD:
                                 continue
                             alt_cmd = cmd_list + [m]
-                            alt_result = cmd.run_command(alt_cmd)
-                            if alt_result.success:
+                            gh_logger = get_gh_logger()
+                            alt_result = gh_logger.execute_with_logging(alt_cmd, repo=repo_name, capture_output=True)
+                            if alt_result.success:  # type: ignore[attr-defined]
                                 log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
                                 _close_linked_issues(repo_name, pr_number)
                                 return True
@@ -849,7 +872,8 @@ def _poll_pr_mergeable(
     try:
         deadline = datetime.now().timestamp() + timeout_seconds
         while datetime.now().timestamp() < deadline:
-            result = cmd.run_command(
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
                 [
                     "gh",
                     "pr",
@@ -859,7 +883,8 @@ def _poll_pr_mergeable(
                     repo_name,
                     "--json",
                     "mergeable,mergeStateStatus",
-                ]
+                ],
+                repo=repo_name,
             )
             if result.stdout:
                 try:
@@ -883,7 +908,8 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
     """
     try:
         # gh repo view --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed
-        result = cmd.run_command(
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
             [
                 "gh",
                 "repo",
@@ -891,10 +917,12 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
                 repo_name,
                 "--json",
                 "mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
-            ]
+            ],
+            repo=repo_name,
+            capture_output=True,
         )
         allowed: List[str] = []
-        if result.stdout:
+        if result.stdout and result.success:  # type: ignore[attr-defined]
             try:
                 data = json.loads(result.stdout)
                 if data.get("squashMergeAllowed"):
@@ -933,15 +961,24 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
 
         # Step 1: Checkout the PR branch
         logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
-        checkout_result = cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
+        gh_logger = get_gh_logger()
+        checkout_result = gh_logger.execute_with_logging(
+            ["gh", "pr", "checkout", str(pr_number)],
+            repo=repo_name,
+            capture_output=True,
+        )
 
-        if not checkout_result.success:
+        if not checkout_result.success:  # type: ignore[attr-defined]
             logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
             return False
 
         # Step 1.5: Get PR details to determine the target base branch
-        pr_details_result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--json", "base"])
-        if not pr_details_result.success:
+        pr_details_result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--json", "base"],
+            repo=repo_name,
+            capture_output=True,
+        )
+        if not pr_details_result.success:  # type: ignore[attr-defined]
             logger.error(f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}")
             return False
 
