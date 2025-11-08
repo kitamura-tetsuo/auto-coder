@@ -140,14 +140,7 @@ class TestGHCommandLogger:
 
     def test_log_command_respects_disabled_flag(self):
         """Test that logging is disabled when GH_LOGGING_DISABLED is set."""
-        with patch.dict(os.environ, {"GH_LOGGING_DISABLED": "1"}):
-            # Reload the module to pick up the new environment variable
-            import importlib
-
-            import auto_coder.gh_logger
-
-            importlib.reload(auto_coder.gh_logger)
-
+        with patch("auto_coder.gh_logger.GH_LOGGING_DISABLED", True):
             from auto_coder.gh_logger import GHCommandLogger
 
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -165,9 +158,6 @@ class TestGHCommandLogger:
                 log_file = logger._get_log_file_path()
                 assert not log_file.exists()
 
-            # Restore the original state
-            importlib.reload(auto_coder.gh_logger)
-
     def test_execute_with_logging(self, monkeypatch, _use_custom_subprocess_mock):
         """Test execute_with_logging method."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -180,14 +170,14 @@ class TestGHCommandLogger:
             def mock_run_func(*args, **kwargs):
                 return mock_result
 
-            monkeypatch.setattr("subprocess.run", mock_run_func)
-
-            # Execute a command with logging
-            result = logger.execute_with_logging(
-                ["gh", "auth", "status"],
-                capture_output=True,
-                text=True,
-            )
+            # Patch subprocess.run using patch
+            with patch("auto_coder.gh_logger.subprocess.run", side_effect=mock_run_func):
+                # Execute a command with logging
+                result = logger.execute_with_logging(
+                    ["gh", "auth", "status"],
+                    capture_output=True,
+                    text=True,
+                )
 
             # Verify command was logged
             log_file = logger._get_log_file_path()
@@ -212,15 +202,15 @@ class TestGHCommandLogger:
             def mock_run_func(*args, **kwargs):
                 return mock_result
 
-            monkeypatch.setattr("subprocess.run", mock_run_func)
-
-            # Use context manager
-            with logger.logged_subprocess(
-                ["gh", "auth", "token"],
-                capture_output=True,
-                text=True,
-            ) as result:
-                assert result.returncode == 0
+            # Patch subprocess.run using patch instead of monkeypatch.setattr
+            with patch("auto_coder.gh_logger.subprocess.run", side_effect=mock_run_func):
+                # Use context manager
+                with logger.logged_subprocess(
+                    ["gh", "auth", "token"],
+                    capture_output=True,
+                    text=True,
+                ) as result:
+                    assert result.returncode == 0
 
             # Verify command was logged
             log_file = logger._get_log_file_path()
@@ -233,7 +223,7 @@ class TestGHCommandLogger:
                 assert "auth" in rows[0]["args"]
                 assert "token" in rows[0]["args"]
 
-    def test_log_command_with_empty_repo(self):
+    def test_log_command_with_empty_repo(self, _use_custom_subprocess_mock):
         """Test logging command without repo parameter."""
         with tempfile.TemporaryDirectory() as tmpdir:
             test_dir = Path(tmpdir)
@@ -267,7 +257,7 @@ class TestGHCommandLogger:
             retrieved_logger = get_gh_logger()
             assert retrieved_logger is custom_logger
 
-    def test_log_command_with_special_characters_in_args(self):
+    def test_log_command_with_special_characters_in_args(self, _use_custom_subprocess_mock):
         """Test logging command with special characters in args."""
         with tempfile.TemporaryDirectory() as tmpdir:
             test_dir = Path(tmpdir)
