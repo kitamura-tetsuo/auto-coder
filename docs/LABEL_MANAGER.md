@@ -11,7 +11,7 @@ The `LabelManager` class was created to replace scattered label management code 
 - **Error Handling**: Graceful handling of API errors with proper logging
 - **Resource Cleanup**: Guaranteed label removal even on exceptions
 - **Thread Safety**: Each instance maintains isolated state
-- **Configuration**: Support for dry run, label disable, and custom label names
+- **Configuration**: Support for label disable and custom label names
 
 ## Usage
 
@@ -66,21 +66,6 @@ with LabelManager(
     pass
 ```
 
-### Dry Run Mode
-
-```python
-# Test without making actual API calls
-with LabelManager(
-    github_client=github_client,
-    repo_name="owner/repo",
-    item_number=123,
-    dry_run=True,
-) as lm:
-    # Simulate processing
-    pass
-# No actual label operations performed
-```
-
 ### Verifying Label Exists
 
 ```python
@@ -108,7 +93,6 @@ class LabelManager:
         repo_name: str,
         item_number: Union[int, str],
         item_type: str = "issue",
-        dry_run: bool = False,
         config: Any = None,
         label_name: str = "@auto-coder",
         max_retries: int = 3,
@@ -121,7 +105,6 @@ class LabelManager:
 - `repo_name`: Repository name in format "owner/repo"
 - `item_number`: Issue or PR number
 - `item_type`: Type of item ('issue' or 'pr')
-- `dry_run`: If True, skip actual label operations
 - `config`: AutomationConfig instance (optional)
 - `label_name`: Name of the label to manage (default: '@auto-coder')
 - `max_retries`: Maximum number of retry attempts for API failures (default: 3)
@@ -196,7 +179,6 @@ Comprehensive tests are provided in `tests/test_label_manager.py`:
 - Context manager lifecycle
 - Label addition and removal
 - Race condition handling
-- Dry run mode
 - Label disable functionality
 - Retry mechanism
 - Exception handling and cleanup

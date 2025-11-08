@@ -165,12 +165,6 @@ class LabelManager:
             # Try to add the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    # In DRY_RUN mode, skip label existence check and API calls
-                    if self.config.DRY_RUN:
-                        logger.info(f"[DRY RUN] Would add '{self.label_name}' label to {self.item_type} #{self.item_number}")
-                        self._label_added = True
-                        return True
-
                     # Check if CHECK_LABELS is True (default) - if so, check for existing label
                     if self.config.CHECK_LABELS:
                         if _check_label_exists(
@@ -233,10 +227,6 @@ class LabelManager:
             # Remove the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    if self.config.DRY_RUN:
-                        logger.info(f"[DRY RUN] Would remove '{self.label_name}' label from {self.item_type} #{self.item_number}")
-                        return
-
                     self.github_client.remove_labels_from_issue(self.repo_name, self.item_number, [self.label_name])
                     logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
                     return

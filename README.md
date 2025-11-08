@@ -126,9 +126,6 @@ auto-coder process-issues --repo owner/repo --backend auggie
 # Set codex as default, Gemini as fallback
 auto-coder process-issues --repo owner/repo --backend codex --backend gemini
 
-# Run in dry-run mode (no changes made)
-auto-coder process-issues --repo owner/repo --dry-run
-
 # Process only specific Issue/PR (by number)
 auto-coder process-issues --repo owner/repo --only 123
 
@@ -175,9 +172,6 @@ auto-coder fix-to-pass-tests --backend codex --backend gemini
 
 # Specify number of attempts (example: max 5 times)
 auto-coder fix-to-pass-tests --max-attempts 5
-
-# Dry run (no editing, flow only)
-auto-coder fix-to-pass-tests --dry-run
 ```
 
 ### Command Options
@@ -186,7 +180,6 @@ auto-coder fix-to-pass-tests --dry-run
 - `--repo`: GitHub repository (owner/repo format)
 - `--backend`: AI backend to use (codex|codex-mcp|gemini|qwen|auggie). Multiple backends can be specified for fallback in order, with the first being default. Default is codex.
 - `--model`: Model specification (valid for Gemini/Qwen/Auggie. Ignored when backend=codex/codex-mcp, with warning displayed. Auggie uses GPT-5 when unspecified)
-- `--dry-run`: Dry-run mode (no changes made)
 - `--skip-main-update/--no-skip-main-update`: Switch behavior of whether to merge PR base branch into PR branch before attempting fixes when PR checks fail (default: skip base branch merge).
   - Default: `--skip-main-update` (skip)
   - Specify `--no-skip-main-update` to explicitly perform base branch merge
@@ -211,7 +204,6 @@ Options:
 - `--model`: Model specification (valid for Gemini/Qwen/Auggie. Ignored when backend=codex/codex-mcp, with warning displayed. Auggie uses GPT-5 when unspecified)
 - `--gemini-api-key`: Manual specification when not using CLI authentication for Gemini backend
 - `--max-attempts`: Maximum number of test fix attempts (uses engine default when omitted)
-- `--dry-run`: Dry-run mode (doesn't request LLM, flow verification only)
 
 Behavior Specification:
 - Test execution uses `scripts/test.sh` if it exists, otherwise runs `pytest -q --maxfail=1`.
@@ -235,7 +227,6 @@ Behavior Specification:
 | `GEMINI_MODEL` | Gemini model to use | `gemini-pro` | ❌ |
 | `MAX_ISSUES_PER_RUN` | Maximum issues to process per run | `-1` | ❌ |
 | `MAX_PRS_PER_RUN` | Maximum PRs to process per run | `-1` | ❌ |
-| `DRY_RUN` | Dry-run mode | `false` | ❌ |
 | `LOG_LEVEL` | Log level | `INFO` | ❌ |
 
 `MAX_ISSUES_PER_RUN` and `MAX_PRS_PER_RUN` are set to unlimited (`-1`) by default. Specify positive integers if you want to limit the number of items processed.
@@ -373,7 +364,6 @@ pre-commit install
 
 The project includes the following debug configurations:
 
-- **Auto-Coder: Process Issues (Dry Run)**: Dry-run mode execution in outliner directory
 - **Auto-Coder: Create Feature Issues**: Feature proposal issue creation in outliner directory
 - **Auto-Coder: Auth Status**: Authentication status check in outliner directory
 - **Auto-Coder: Process Issues (Live)**: Actual processing execution in outliner directory
@@ -493,7 +483,7 @@ Example: For `owner/repo` repository, reports are saved in `~/.auto-coder/owner_
 ```bash
 # Set log level to DEBUG
 export LOG_LEVEL=DEBUG
-auto-coder process-issues --repo owner/repo --dry-run
+auto-coder process-issues --repo owner/repo
 ```
 
 ## License
