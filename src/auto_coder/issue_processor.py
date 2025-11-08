@@ -16,6 +16,7 @@ from auto_coder.util.github_action import (
 )
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
+from .gh_logger import get_gh_logger
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
@@ -194,7 +195,8 @@ def _create_pr_for_issue(
             pr_body = f"{closes_keyword}\n\n{pr_body}"
 
         # Create PR using gh CLI
-        create_pr_result = cmd.run_command(
+        gh_logger = get_gh_logger()
+        create_pr_result = gh_logger.execute_with_logging(
             [
                 "gh",
                 "pr",
@@ -207,10 +209,11 @@ def _create_pr_for_issue(
                 pr_title,
                 "--body",
                 pr_body,
-            ]
+            ],
+            repo=repo_name,
         )
 
-        if create_pr_result.success:
+        if create_pr_result.success:  # type: ignore[attr-defined]
             logger.info(f"Successfully created PR for issue #{issue_number}")
 
             # Extract PR number from the output
@@ -240,7 +243,8 @@ def _create_pr_for_issue(
                         # Add note to PR body about urgent status
                         try:
                             pr_body_with_note = pr_body + "\n\n*This PR addresses an urgent issue.*"
-                            cmd.run_command(
+                            gh_logger = get_gh_logger()
+                            gh_logger.execute_with_logging(
                                 [
                                     "gh",
                                     "pr",
@@ -248,7 +252,8 @@ def _create_pr_for_issue(
                                     str(pr_number),
                                     "--body",
                                     pr_body_with_note,
-                                ]
+                                ],
+                                repo=repo_name,
                             )
                             logger.info(f"Added urgent note to PR #{pr_number} body")
                         except Exception as e:

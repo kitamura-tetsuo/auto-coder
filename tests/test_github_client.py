@@ -1442,3 +1442,282 @@ Some other text that's not indented
 
         result = client.get_issue_dependencies(body)
         assert sorted(result) == [100, 456, 789]
+
+
+class TestGitHubClientLogging:
+    """Test cases for GitHub client logging functionality."""
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_get_linked_prs_via_graphql_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
+        """Test that get_linked_prs_via_graphql logs the gh command."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock subprocess.run to return successful result
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}})
+        mock_subprocess.return_value = mock_result
+
+        # Create a temporary directory for logging
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+
+            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+
+            # Set custom log directory
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+            set_gh_logger(logger)
+
+            # Execute
+            result = client.get_linked_prs_via_graphql("test/repo", 123)
+
+            # Assert
+            assert result == []
+            assert mock_subprocess.called
+
+            # Verify command was logged
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            import csv
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                assert rows[0]["command"] == "gh"
+                assert "api" in rows[0]["args"]
+                assert "graphql" in rows[0]["args"]
+                assert rows[0]["repo"] == "test/repo"
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_get_open_sub_issues_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
+        """Test that get_open_sub_issues logs the gh command."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock subprocess.run
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"data": {"repository": {"issue": {"subIssues": {"nodes": []}}}}})
+        mock_subprocess.return_value = mock_result
+
+        # Create a temporary directory for logging
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+
+            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+            set_gh_logger(logger)
+
+            # Execute
+            result = client.get_open_sub_issues("test/repo", 123)
+
+            # Assert
+            assert result == []
+            assert mock_subprocess.called
+
+            # Verify command was logged
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            import csv
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                assert rows[0]["command"] == "gh"
+                assert "api" in rows[0]["args"]
+                assert "graphql" in rows[0]["args"]
+                assert "sub_issues" in rows[0]["args"]
+                assert rows[0]["repo"] == "test/repo"
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_get_pr_closing_issues_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
+        """Test that get_pr_closing_issues logs the gh command."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock subprocess.run
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"data": {"repository": {"pullRequest": {"closingIssuesReferences": {"nodes": []}}}}})
+        mock_subprocess.return_value = mock_result
+
+        # Create a temporary directory for logging
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+
+            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+            set_gh_logger(logger)
+
+            # Execute
+            result = client.get_pr_closing_issues("test/repo", 456)
+
+            # Assert
+            assert result == []
+            assert mock_subprocess.called
+
+            # Verify command was logged
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            import csv
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                assert rows[0]["command"] == "gh"
+                assert "api" in rows[0]["args"]
+                assert "graphql" in rows[0]["args"]
+                assert rows[0]["repo"] == "test/repo"
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_get_parent_issue_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
+        """Test that get_parent_issue logs the gh command."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock subprocess.run
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"data": {"repository": {"issue": {"parent": None}}}})
+        mock_subprocess.return_value = mock_result
+
+        # Create a temporary directory for logging
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+
+            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+            set_gh_logger(logger)
+
+            # Execute
+            result = client.get_parent_issue("test/repo", 789)
+
+            # Assert
+            assert result is None
+            assert mock_subprocess.called
+
+            # Verify command was logged
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            import csv
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                assert rows[0]["command"] == "gh"
+                assert "api" in rows[0]["args"]
+                assert "graphql" in rows[0]["args"]
+                assert "sub_issues" in rows[0]["args"]
+                assert rows[0]["repo"] == "test/repo"
+
+    @patch("src.auto_coder.auth_utils.subprocess.run")
+    def test_auth_utils_get_github_token_logs_command(self, mock_subprocess):
+        """Test that get_github_token logs the gh auth token command."""
+        # Mock subprocess.run
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = "ghp_testtoken123"
+        mock_subprocess.return_value = mock_result
+
+        # Create a temporary directory for logging
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+
+            from src.auto_coder import auth_utils
+            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+            set_gh_logger(logger)
+
+            # Execute
+            result = auth_utils.get_github_token()
+
+            # Assert
+            assert result == "ghp_testtoken123"
+            assert mock_subprocess.called
+
+            # Verify command was logged
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            import csv
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                assert rows[0]["command"] == "gh"
+                assert "auth" in rows[0]["args"]
+                assert "token" in rows[0]["args"]
+
+    @patch("src.auto_coder.auth_utils.subprocess.run")
+    def test_auth_utils_check_gh_auth_logs_command(self, mock_subprocess):
+        """Test that check_gh_auth logs the gh auth status command."""
+        # Mock subprocess.run
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = "github.com\n  Logged in to github.com as user"
+        mock_subprocess.return_value = mock_result
+
+        # Create a temporary directory for logging
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from pathlib import Path
+
+            from src.auto_coder import auth_utils
+            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+            set_gh_logger(logger)
+
+            # Execute
+            result = auth_utils.check_gh_auth()
+
+            # Assert
+            assert result is True
+            assert mock_subprocess.called
+
+            # Verify command was logged
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            import csv
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                assert rows[0]["command"] == "gh"
+                assert "auth" in rows[0]["args"]
+                assert "status" in rows[0]["args"]

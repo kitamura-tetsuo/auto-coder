@@ -13,7 +13,7 @@ from src.auto_coder.utils import CommandResult
 @pytest.mark.e2e
 @pytest.mark.headless
 class TestPRChecksNoChecks:
-    @patch("src.auto_coder.util.github_action.cmd.run_command")
+    @patch("auto_coder.gh_logger.subprocess.run")
     def test_pr_with_no_checks_reports_as_success(self, mock_run_command):
         """Test that when no checks are reported, the status is considered success."""
         token = os.environ.get("GITHUB_TOKEN", "placeholder-token")

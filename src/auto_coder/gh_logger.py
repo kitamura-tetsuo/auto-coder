@@ -1,0 +1,304 @@
+"""
+GitHub CLI command logging infrastructure for Auto-Coder.
+
+This module provides the GHCommandLogger class for logging GitHub CLI commands
+to CSV files with metadata including timestamp, caller location, command details,
+repository, and hostname.
+"""
+
+import csv
+import os
+import socket
+import subprocess
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Union
+
+# Environment variable to disable logging
+GH_LOGGING_DISABLED = os.environ.get("GH_LOGGING_DISABLED", "").lower() in ("1", "true", "yes", "on")
+
+# Default log directory
+DEFAULT_LOG_DIR = Path.home() / ".auto-coder" / "log"
+
+# CSV field names
+CSV_FIELDS = ["timestamp", "caller_file", "caller_line", "command", "args", "repo", "hostname"]
+
+
+class GHCommandLogger:
+    """
+    Logger for GitHub CLI commands.
+
+    Logs GitHub CLI command executions to CSV files with metadata including
+    timestamp, caller file and line number, command, arguments, repository, and hostname.
+
+    Features:
+    - Automatic log file creation with rotation
+    - CSV format for easy analysis
+    - Context manager support for automatic logging
+    - Environment variable to disable logging
+    """
+
+    def __init__(
+        self,
+        log_dir: Optional[Path] = None,
+        logger: Optional[Any] = None,
+    ):
+        """
+        Initialize GHCommandLogger.
+
+        Args:
+            log_dir: Directory to store log files. Defaults to ~/.auto-coder/log
+            logger: Optional loguru logger instance to use
+        """
+        self.log_dir = log_dir or DEFAULT_LOG_DIR
+        self.logger = logger
+        self._hostname = socket.gethostname()
+        self._ensure_log_dir()
+
+    def _ensure_log_dir(self) -> None:
+        """Ensure the log directory exists."""
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+    def _get_log_file_path(self) -> Path:
+        """
+        Get the path to the current log file.
+
+        Returns:
+            Path to the log file (gh_commands_YYYY-MM-DD.csv)
+        """
+        today = datetime.now().strftime("%Y-%m-%d")
+        return self.log_dir / f"gh_commands_{today}.csv"
+
+    def _format_csv_row(
+        self,
+        caller_file: str,
+        caller_line: int,
+        command: str,
+        args: List[str],
+        repo: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Format a single CSV row with command metadata.
+
+        Args:
+            caller_file: Path to the file calling the command
+            caller_line: Line number where the command was called
+            command: The command that was executed (e.g., "gh")
+            args: List of command arguments
+            repo: Optional repository name (owner/repo)
+
+        Returns:
+            Dictionary with CSV field names as keys
+        """
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "caller_file": caller_file,
+            "caller_line": str(caller_line),
+            "command": command,
+            "args": " ".join(args) if args else "",
+            "repo": repo or "",
+            "hostname": self._hostname,
+        }
+
+    def log_command(
+        self,
+        command_list: List[str],
+        caller_file: str,
+        caller_line: int,
+        repo: Optional[str] = None,
+    ) -> None:
+        """
+        Log a GitHub CLI command execution.
+
+        Args:
+            command_list: Full command list (e.g., ["gh", "api", "graphql", ...])
+            caller_file: Path to the file calling the command
+            caller_line: Line number where the command was called
+            repo: Optional repository name (owner/repo)
+        """
+        if GH_LOGGING_DISABLED:
+            return
+
+        if not command_list:
+            return
+
+        # Extract command and args
+        command = command_list[0]
+        args = command_list[1:]
+
+        # Format the row
+        row = self._format_csv_row(
+            caller_file=caller_file,
+            caller_line=caller_line,
+            command=command,
+            args=args,
+            repo=repo,
+        )
+
+        # Write to CSV file
+        log_file = self._get_log_file_path()
+        try:
+            with open(log_file, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+                # Write header if file is empty
+                if f.tell() == 0:
+                    writer.writeheader()
+                writer.writerow(row)
+        except Exception as e:
+            # Don't fail the command if logging fails
+            if self.logger:
+                self.logger.warning(f"Failed to log GitHub command: {e}")
+
+    @contextmanager
+    def logged_subprocess(
+        self,
+        command: List[str],
+        repo: Optional[str] = None,
+        capture_output: bool = False,
+        **kwargs: Any,
+    ) -> Iterator[subprocess.CompletedProcess]:
+        """
+        Context manager for executing a subprocess with automatic logging.
+
+        Automatically extracts caller information (file and line) and logs the command.
+
+        Args:
+            command: Command to execute as a list of strings
+            repo: Optional repository name (owner/repo)
+            capture_output: Whether to capture output (default: False)
+            **kwargs: Additional arguments to pass to subprocess.run
+
+        Yields:
+            CompletedProcess object from subprocess.run
+
+        Example:
+            with gh_logger.logged_subprocess(["gh", "auth", "status"], repo="owner/repo") as result:
+                print(result.stdout)
+        """
+        import inspect
+
+        # Get caller information
+        frame = inspect.currentframe()
+        if frame and frame.f_back:
+            caller_frame = frame.f_back
+            caller_file = caller_frame.f_code.co_filename
+            caller_line = caller_frame.f_lineno
+        else:
+            caller_file = "unknown"
+            caller_line = 0
+
+        # Log the command
+        self.log_command(
+            command_list=command,
+            caller_file=caller_file,
+            caller_line=caller_line,
+            repo=repo,
+        )
+
+        # Execute the command
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=capture_output,
+                **kwargs,
+            )
+            yield result
+        except Exception as e:
+            if self.logger:
+                self.logger.error(f"Error executing command {command}: {e}")
+            raise
+
+    def execute_with_logging(
+        self,
+        command: List[str],
+        repo: Optional[str] = None,
+        **kwargs: Any,
+    ) -> subprocess.CompletedProcess:
+        """
+        Execute a subprocess command and log it.
+
+        This is a convenience method that combines execution and logging.
+
+        Args:
+            command: Command to execute as a list of strings
+            repo: Optional repository name (owner/repo)
+            **kwargs: Additional arguments to pass to subprocess.run
+
+        Returns:
+            CompletedProcess object from subprocess.run
+
+        Example:
+            result = gh_logger.execute_with_logging(
+                ["gh", "api", "graphql", "-f", "query=..."],
+                repo="owner/repo"
+            )
+        """
+        import inspect
+
+        # Get caller information
+        frame = inspect.currentframe()
+        if frame and frame.f_back:
+            caller_frame = frame.f_back
+            caller_file = caller_frame.f_code.co_filename
+            caller_line = caller_frame.f_lineno
+        else:
+            caller_file = "unknown"
+            caller_line = 0
+
+        # Log the command
+        self.log_command(
+            command_list=command,
+            caller_file=caller_file,
+            caller_line=caller_line,
+            repo=repo,
+        )
+
+        # Execute the command using subprocess.run directly
+        # The tests will mock subprocess.run
+        timeout = kwargs.get("timeout", 60)
+        cwd = kwargs.get("cwd", None)
+        capture_output = kwargs.get("capture_output", True)
+
+        # Execute the command
+        result = subprocess.run(
+            command,
+            timeout=timeout,
+            cwd=cwd,
+            capture_output=capture_output,
+            text=True,
+        )
+
+        # Add success attribute for compatibility
+        if not hasattr(result, "success"):
+            result.success = result.returncode == 0  # type: ignore[attr-defined]
+
+        return result
+
+
+# Global logger instance
+_gh_logger: Optional[GHCommandLogger] = None
+
+
+def get_gh_logger() -> GHCommandLogger:
+    """
+    Get the global GHCommandLogger instance.
+
+    Returns:
+        Global GHCommandLogger instance
+    """
+    global _gh_logger
+    if _gh_logger is None:
+        _gh_logger = GHCommandLogger()
+    return _gh_logger
+
+
+def set_gh_logger(logger: GHCommandLogger) -> None:
+    """
+    Set the global GHCommandLogger instance.
+
+    Args:
+        logger: GHCommandLogger instance to use globally
+    """
+    global _gh_logger
+    _gh_logger = logger

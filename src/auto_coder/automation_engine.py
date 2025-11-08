@@ -14,6 +14,7 @@ from auto_coder.util.github_action import get_github_actions_logs_from_url
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
 from .fix_to_pass_tests_runner import fix_to_pass_tests
+from .gh_logger import get_gh_logger
 from .git_utils import git_commit_with_retry, git_push
 from .issue_processor import create_feature_issues
 from .logger_config import get_logger
@@ -615,7 +616,12 @@ class AutomationEngine:
             self.cmd.run_command(["git", "merge", "--abort"])
 
             # Checkout the PR branch
-            self.cmd.run_command(["gh", "pr", "checkout", str(pr_number)])
+            gh_logger = get_gh_logger()
+            gh_logger.execute_with_logging(
+                ["gh", "pr", "checkout", str(pr_number)],
+                repo=repo_name,
+                capture_output=True,
+            )
 
             # If base branch is not main, fetch and merge it
             if base_branch != "main":
@@ -903,10 +909,10 @@ class AutomationEngine:
                 # Check if this commit has associated GitHub Actions runs
                 # Use gh CLI to list workflow runs for this commit
                 try:
-                    run_result = subprocess.run(
+                    gh_logger = get_gh_logger()
+                    run_result = gh_logger.execute_with_logging(
                         ["gh", "run", "list", "--commit", commit_hash, "--limit", "1"],
-                        capture_output=True,
-                        text=True,
+                        repo=repo_name,
                         timeout=10,
                     )
 
