@@ -708,14 +708,9 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
     """
     try:
         # Get PR body
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
-            repo=repo_name,
-            capture_output=True,
-        )
+        result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"])
 
-        if not result.success or not result.stdout:  # type: ignore[attr-defined]
+        if not result.success or not result.stdout:
             logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking")
             return
 
@@ -732,8 +727,7 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         # Close each linked issue
         for issue_num in linked_issues:
             try:
-                gh_logger = get_gh_logger()
-                close_result = gh_logger.execute_with_logging(
+                close_result = cmd.run_command(
                     [
                         "gh",
                         "issue",
@@ -743,12 +737,10 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
                         repo_name,
                         "--comment",
                         f"Closed by PR #{pr_number}",
-                    ],
-                    repo=repo_name,
-                    capture_output=True,
+                    ]
                 )
 
-                if close_result.success:  # type: ignore[attr-defined]
+                if close_result.success:
                     logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
                     log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
                 else:

@@ -46,10 +46,12 @@ jkl3456 Refactor code"""
 
     mock_action_runs_commit3 = []  # No Actions for this commit
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    # Need to patch cmd.run_command for git commands AND gh_logger.subprocess.run for gh commands
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
+        mock_git_result.returncode = 0
         mock_git_result.stdout = mock_git_log
         mock_git_result.stderr = ""
 
@@ -59,10 +61,16 @@ jkl3456 Refactor code"""
         def run_command_side_effect(cmd, **kwargs):
             if "git" in cmd and "log" in cmd:
                 return mock_git_result
-            elif "gh" in cmd and "run" in cmd and "list" in cmd:
+
+        mock_run_command.side_effect = run_command_side_effect
+
+        def gh_run_side_effect(cmd, **kwargs):
+            if "gh" in cmd and "run" in cmd and "list" in cmd:
                 list_call["i"] += 1
                 mock_result = Mock()
                 mock_result.returncode = 0
+                mock_result.stdout = ""
+                mock_result.stderr = ""
                 if list_call["i"] == 1:
                     mock_result.stdout = json.dumps(mock_action_runs_commit1)
                 elif list_call["i"] == 2:
@@ -72,8 +80,9 @@ jkl3456 Refactor code"""
                 else:
                     mock_result.stdout = "[]"
                 return mock_result
+            return Mock(returncode=0, stdout="", stderr="")
 
-        mock_run_command.side_effect = run_command_side_effect
+        mock_gh_run.side_effect = gh_run_side_effect
 
         # Call the function
         result = parse_git_commit_history_for_actions(max_depth=4)
@@ -111,24 +120,30 @@ def test_parse_git_commit_history_no_actions():
 def5678 Fix typo in docs
 ghi9012 Add comment"""
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    # Need to patch both cmd.run_command for git commands AND gh_logger.subprocess.run for gh commands
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
         mock_git_result.stdout = mock_git_log
         mock_git_result.stderr = ""
 
-        # Setup mock for gh run list (no Actions for any commit)
         def run_command_side_effect(cmd, **kwargs):
             if "git" in cmd and "log" in cmd:
                 return mock_git_result
-            elif "gh" in cmd and "run" in cmd and "list" in cmd:
+
+        mock_run_command.side_effect = run_command_side_effect
+
+        def gh_run_side_effect(cmd, **kwargs):
+            if "gh" in cmd and "run" in cmd and "list" in cmd:
                 mock_result = Mock()
                 mock_result.returncode = 0
                 mock_result.stdout = "[]"
+                mock_result.stderr = ""
                 return mock_result
+            return Mock(returncode=0, stdout="", stderr="")
 
-        mock_run_command.side_effect = run_command_side_effect
+        mock_gh_run.side_effect = gh_run_side_effect
 
         # Call the function
         result = parse_git_commit_history_for_actions(max_depth=3)
@@ -145,7 +160,8 @@ def test_parse_git_commit_history_no_git_repo():
     # Mock git log failure
     mock_git_log = """fatal: not a git repository"""
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    # Need to patch gh_logger.subprocess.run since _check_commit_for_github_actions uses gh_logger.execute_with_logging
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
         # Setup mock for git log (fails)
         mock_git_result = Mock()
         mock_git_result.success = False
@@ -174,26 +190,34 @@ def test_parse_git_commit_history_depth_limit():
     # Mock git log with many commits
     many_commits = "\n".join([f"{hash(f'commit{i:04d}')} Commit message" for i in range(20)])
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    # Need to patch gh_logger.subprocess.run since _check_commit_for_github_actions uses gh_logger.execute_with_logging
+    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
         mock_git_result.stdout = many_commits
         mock_git_result.stderr = ""
 
-        # Setup mock for gh run list (no Actions)
+        # Setup mock for git log (verify depth limit)
         def run_command_side_effect(cmd, **kwargs):
             if "git" in cmd and "log" in cmd:
                 # Verify depth limit is used
                 assert "-n 5" in cmd, f"Expected depth limit 5 in command: {cmd}"
                 return mock_git_result
-            elif "gh" in cmd and "run" in cmd and "list" in cmd:
+            # Should not reach gh commands here
+
+        mock_run_command.side_effect = run_command_side_effect
+
+        # Setup mock for gh run list (no Actions)
+        def gh_run_side_effect(cmd, **kwargs):
+            if "gh" in cmd and "run" in cmd and "list" in cmd:
                 mock_result = Mock()
                 mock_result.returncode = 0
                 mock_result.stdout = "[]"
                 return mock_result
+            return Mock(returncode=0, stdout="", stderr="")
 
-        mock_run_command.side_effect = run_command_side_effect
+        mock_gh_run.side_effect = gh_run_side_effect
 
         # Call with depth limit of 5
         result = parse_git_commit_history_for_actions(max_depth=5)
@@ -230,12 +254,14 @@ def test_check_commit_for_github_actions_with_runs():
         },
     ]
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    # Need to patch gh_logger.subprocess.run since _check_commit_for_github_actions uses gh_logger.execute_with_logging
+    with patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
         # Setup mock for gh run list
         mock_result = Mock()
         mock_result.returncode = 0
         mock_result.stdout = json.dumps(mock_runs)
-        mock_run_command.return_value = mock_result
+        mock_result.stderr = ""
+        mock_gh_run.return_value = mock_result
 
         # Call the function
         result = _check_commit_for_github_actions("abc1234")
@@ -255,12 +281,14 @@ def test_check_commit_for_github_actions_with_runs():
 def test_check_commit_for_github_actions_no_runs():
     """Test _check_commit_for_github_actions when commit has no runs."""
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    # Need to patch gh_logger.subprocess.run since _check_commit_for_github_actions uses gh_logger.execute_with_logging
+    with patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
         # Setup mock for gh run list (no runs)
         mock_result = Mock()
         mock_result.returncode = 0
         mock_result.stdout = "[]"
-        mock_run_command.return_value = mock_result
+        mock_result.stderr = ""
+        mock_gh_run.return_value = mock_result
 
         # Call the function
         result = _check_commit_for_github_actions("abc1234")
@@ -274,13 +302,14 @@ def test_check_commit_for_github_actions_no_runs():
 def test_check_commit_for_github_actions_error():
     """Test _check_commit_for_github_actions handles errors gracefully."""
 
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command:
+    # Need to patch gh_logger.subprocess.run since _check_commit_for_github_actions uses gh_logger.execute_with_logging
+    with patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
         # Setup mock for gh run list (API error)
         mock_result = Mock()
         mock_result.returncode = 1
         mock_result.stdout = ""
         mock_result.stderr = "API rate limit exceeded"
-        mock_run_command.return_value = mock_result
+        mock_gh_run.return_value = mock_result
 
         # Call the function
         result = _check_commit_for_github_actions("abc1234")
@@ -307,6 +336,7 @@ ghi9012 Third commit"""
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
+        mock_git_result.returncode = 0
         mock_git_result.stdout = mock_git_log
         mock_git_result.stderr = ""
 
