@@ -26,7 +26,6 @@ cli:
         - { name: --model-qwen, type: string }
         - { name: --model-auggie, type: string }
         - { name: --model-claude, type: string }
-        - { name: --dry-run, flag: true, default: false }
         - { name: --jules-mode/--no-jules-mode, default: true }
         - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
         - { name: --skip-main-update/--no-skip-main-update, default: true }
@@ -86,7 +85,6 @@ cli:
         - { name: --model-claude }
         - { name: --max-attempts, type: int, default: null (engine default applies) }
         - { name: --enable-graphrag/--disable-graphrag, default: true }
-        - { name: --dry-run, flag: true, default: false }
         - { name: --force-reindex, flag: true, default: false }
         - { name: --log-level, default: INFO }
         - { name: --log-file }
