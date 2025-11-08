@@ -376,6 +376,54 @@ tests:
 
     After completing the operation, output a single line starting with "COMMIT_PUSH_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>".
 
+  dprint_fallback: |-
+    You are an expert dprint formatter troubleshooting assistant.
+
+    The dprint formatter has failed with the following error:
+    $error_message
+
+    Commit message that was attempted if exist:
+    $commit_message
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
+
+    **Your task is to:**
+    1. First, review the current state by running:
+       * `git status` to check the current state
+       * `git diff` to inspect unstaged changes
+       * `git diff --cached` to inspect staged changes
+
+    2. Diagnose the dprint failure and take corrective actions:
+       * Check if dprint is properly installed (`npx dprint --version`)
+       * Check if dprint config file exists and is valid (`dprint.json`, `.dprintrc.json`, `dprint.toml`, or `.dprintrc.toml`)
+       * Check for permission issues with dprint executable
+       * Check for plugin loading errors or missing plugins
+       * Check for syntax errors in configured files that prevent formatting
+
+    3. Take appropriate actions to resolve the dprint issues:
+       * Install missing dependencies or plugins
+       * Fix configuration file syntax or settings
+       * Resolve file permission issues
+       * Manually format files if necessary
+       * Stage any changes with `git add`
+
+    4. After resolving the dprint issues, retry the formatting:
+       * Run `npx dprint fmt` to format files
+       * Stage the formatted changes
+
+    5. Verify the operation succeeded:
+       * Check `git status` to ensure formatted files are properly staged
+       * Confirm no formatting errors remain
+
+    **Important:**
+    * Do NOT skip or bypass the formatter entirely
+    * Do NOT modify the commit message
+    * Do NOT force commit unless absolutely necessary
+    * Ensure all formatting issues are properly resolved
+    * If the issue cannot be resolved automatically, provide a clear error message
+
+    After completing the operation, output a single line starting with "DPRINT_RESULT:" followed by either "SUCCESS" or "FAILED: <reason>".
+
 
 gemini:
   pr_analysis: |-

@@ -289,7 +289,8 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
 
     This function centralizes git commit operations and handles well-known
     hook failures like dprint formatting errors by automatically running
-    the formatter and retrying the commit once.
+    the formatter and retrying the commit once. If dprint itself fails,
+    it attempts to use LLM as a fallback to resolve the issue.
 
     Args:
         commit_message: The commit message to use
@@ -330,6 +331,18 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
                         logger.warning(f"Failed to stage formatted files: {add_result.stderr}")
                 else:
                     logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
+                    # Try LLM fallback when dprint formatter execution fails
+                    logger.info("Attempting to resolve dprint formatter failure using LLM...")
+                    llm_success = try_llm_dprint_fallback(commit_message, fmt_result.stderr)
+                    if llm_success:
+                        logger.info("LLM successfully resolved dprint formatter failure")
+                        # Retry the commit after LLM intervention
+                        retry_result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
+                        if retry_result.success:
+                            logger.info("Successfully committed changes after LLM intervention")
+                            return retry_result
+                    else:
+                        logger.error("LLM failed to resolve dprint formatter failure")
             else:
                 logger.warning(f"Max retries ({max_retries}) reached for commit with dprint formatting")
         else:
@@ -684,7 +697,17 @@ def git_push(
         fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
         if not fmt_result.success:
             logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
-            return push_result
+            # Try LLM fallback when dprint formatter execution fails
+            logger.info("Attempting to resolve dprint formatter failure using LLM...")
+            llm_success = try_llm_dprint_fallback(commit_message, fmt_result.stderr)
+            if not llm_success:
+                logger.error("LLM failed to resolve dprint formatter failure in push operation")
+                return push_result
+            # Re-run dprint after LLM intervention
+            fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
+            if not fmt_result.success:
+                logger.error("dprint still fails after LLM intervention")
+                return push_result
 
         add_result = cmd.run_command(["git", "add", "-A"], cwd=cwd)
         if not add_result.success:
@@ -1142,6 +1165,86 @@ def try_llm_commit_push(
 
     except Exception as e:
         logger.error(f"Error while trying to use LLM for commit/push: {e}")
+        return False
+
+
+def try_llm_dprint_fallback(
+    commit_message: str | None,
+    error_message: str,
+) -> bool:
+    """
+    Try to use LLM to resolve dprint formatter failures.
+
+    This function provides a specialized fallback mechanism for when the dprint
+    formatter fails to execute. It leverages the LLM to diagnose and resolve
+    common dprint issues such as:
+    - Configuration file problems
+    - Missing dependencies or plugins
+    - Permission issues
+    - Plugin loading errors
+
+    Args:
+        commit_message: The commit message that was attempted
+        error_message: The error message from the failed dprint formatter
+
+    Returns:
+        True if LLM successfully resolved the dprint issue, False otherwise
+    """
+    cmd = CommandExecutor()
+
+    try:
+        # Create prompt for LLM to resolve dprint failure
+        prompt = render_prompt(
+            "tests.dprint_fallback",
+            commit_message=commit_message,
+            error_message=error_message,
+        )
+
+        # Execute LLM to resolve the issue
+        response = run_message_prompt(prompt)
+
+        if not response:
+            logger.error("No response from LLM for dprint fallback")
+            return False
+
+        # Check if LLM indicated success
+        if "DPRINT_RESULT: SUCCESS" in response:
+            logger.info("LLM successfully resolved dprint formatting issue")
+
+            # Verify that dprint can now run successfully
+            fmt_result = cmd.run_command(["npx", "dprint", "fmt"])
+            if not fmt_result.success:
+                logger.error("LLM claimed success but dprint still fails")
+                logger.error(f"dprint error: {fmt_result.stderr}")
+                return False
+
+            # Verify that formatted files are staged
+            status_result = cmd.run_command(["git", "status", "--porcelain"])
+            if not status_result.stdout.strip():
+                logger.warning("dprint ran successfully but no files were formatted")
+                # This is not necessarily an error - files might already be formatted
+                return True
+
+            # Stage the formatted files
+            add_result = cmd.run_command(["git", "add", "-A"])
+            if not add_result.success:
+                logger.error("Failed to stage formatted files after LLM resolution")
+                return False
+
+            logger.info("Successfully formatted files after LLM intervention")
+            return True
+        elif "DPRINT_RESULT: FAILED:" in response:
+            # Extract failure reason
+            failure_reason = response.split("DPRINT_RESULT: FAILED:", 1)[1].strip()
+            logger.error(f"LLM failed to resolve dprint issue: {failure_reason}")
+            return False
+        else:
+            logger.error("LLM did not provide a clear success/failure indication for dprint")
+            logger.error(f"LLM response: {response[:500]}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error while trying to use LLM for dprint fallback: {e}")
         return False
 
 
