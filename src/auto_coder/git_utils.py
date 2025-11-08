@@ -1482,10 +1482,9 @@ def migrate_pr_branches(
 
             if execute:
                 logger.info(f"Successfully migrated {branch_name} -> {issue_branch_name}")
-                results["migrated"].append({"from": branch_name, "to": issue_branch_name})
             else:
                 logger.info(f"[DRY-RUN] Would mark as migrated: {branch_name} -> {issue_branch_name}")
-                results["migrated"].append({"from": branch_name, "to": issue_branch_name, "dry_run": True})
+            results["migrated"].append({"from": branch_name, "to": issue_branch_name})
 
         except Exception as e:
             error_msg = f"Unexpected error during migration: {e}"
