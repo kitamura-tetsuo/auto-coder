@@ -1,7 +1,7 @@
 """Example demonstrating LabelManager usage."""
 
-from unittest.mock import Mock
 import sys
+from unittest.mock import Mock
 
 # Add src to path for import
 sys.path.insert(0, "src")
