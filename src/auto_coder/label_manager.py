@@ -58,6 +58,8 @@ def _check_label_exists(
 
 
 class LabelManager:
+    _active_threads: set[int] = set()
+
     """Context manager for unified @auto-coder label operations.
 
     This context manager automatically handles adding, verifying, and removing
@@ -131,7 +133,6 @@ class LabelManager:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self._lock = threading.Lock()
-        self._active_threads: set[int] = set()
         self._label_added = False
         self._reentered = False
 
@@ -144,13 +145,13 @@ class LabelManager:
         """
         # Reentrancy detection - check if this thread is already active
         ident = threading.get_ident()
-        if ident in self._active_threads:
+        if ident in LabelManager._active_threads:
             self._reentered = True
             logger.debug(f">>> Skipping enter (already active in this thread) for {self.item_type} #{self.item_number}")
             return True
         else:
             self._reentered = False
-            self._active_threads.add(ident)
+            LabelManager._active_threads.add(ident)
             logger.debug(f">>> Entering context (first time in this thread) for {self.item_type} #{self.item_number}")
 
         # Use lock to ensure thread-safe operations
@@ -166,6 +167,13 @@ class LabelManager:
                     # In DRY_RUN mode, skip label existence check and API calls
                     if self.config.DRY_RUN:
                         logger.info(f"[DRY RUN] Would add '{self.label_name}' label to {self.item_type} #{self.item_number}")
+                        self._label_added = True
+                        return True
+
+                    # In DRY_RUN mode, skip label existence check and API calls
+                    if not self.config.SKIP_BY_LABELS:
+                        logger.info(f"Adding '{self.label_name}' label to {self.item_type} #{self.item_number}")
+                        self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
                         self._label_added = True
                         return True
 
@@ -218,7 +226,7 @@ class LabelManager:
 
         logger.debug(f">>> Exiting context for {self.item_type} #{self.item_number}")
         # Always clean up thread tracking
-        self._active_threads.discard(ident)
+        LabelManager._active_threads.discard(ident)
 
         # Use lock to ensure thread-safe operations
         with self._lock:

@@ -83,6 +83,11 @@ logger = get_logger(__name__)
     help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
 @click.option(
+    "--skip-by-labels/--no-skip-by-labels",
+    default=True,
+    help="Enable skipping issues/PRs that already have the @auto-coder label (default: enabled)",
+)
+@click.option(
     "--skip-main-update/--no-skip-main-update",
     default=True,
     help="When PR checks fail, skip merging the PR base branch into the PR before attempting fixes (default: skip)",
@@ -138,6 +143,7 @@ def process_issues(
     dry_run: bool,
     jules_mode: bool,
     disable_labels: Optional[bool],
+    skip_by_labels: bool,
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
     force_clean_before_checkout: bool,
@@ -186,6 +192,7 @@ def process_issues(
     logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Dry run mode: {dry_run}")
     logger.info(f"Disable labels: {disable_labels}")
+    logger.info(f"Skip by labels: {skip_by_labels}")
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
@@ -202,6 +209,7 @@ def process_issues(
     click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Dry run mode: {dry_run}")
     click.echo(f"Disable labels: {disable_labels}")
+    click.echo(f"Skip by labels: {skip_by_labels}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
     click.echo(f"Force clean before checkout: {force_clean_before_checkout}")
@@ -268,6 +276,13 @@ def process_issues(
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
+
+    # When --only is specified, set SKIP_BY_LABELS to False
+    effective_skip_by_labels = skip_by_labels
+    if only_target:
+        effective_skip_by_labels = False
+
+    engine_config.SKIP_BY_LABELS = effective_skip_by_labels
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
     engine_config.DISABLE_LABELS = bool(disable_labels)
@@ -319,6 +334,7 @@ def process_issues(
             if target_type and target_data and number:
                 click.echo(f"Resuming work on {target_type} #{number} (branch: {current_branch})")
                 logger.info(f"Resuming work on {target_type} #{number}")
+                engine_config.SKIP_BY_LABELS = False
 
                 # Run single-item processing
                 _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)

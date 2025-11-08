@@ -29,6 +29,7 @@ cli:
         - { name: --dry-run, flag: true, default: false }
         - { name: --jules-mode/--no-jules-mode, default: true }
         - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
+        - { name: --skip-by-labels/--no-skip-by-labels, default: true, help: "Enable skipping issues/PRs that already have the @auto-coder label" }
         - { name: --skip-main-update/--no-skip-main-update, default: true }
         - { name: --ignore-dependabot-prs/--no-ignore-dependabot-prs, default: false }
         - { name: --force-clean-before-checkout/--no-force-clean-before-checkout, default: false }
@@ -207,6 +208,7 @@ config:
     IGNORE_DEPENDABOT_PRS: false
     FORCE_CLEAN_BEFORE_CHECKOUT: false
     DISABLE_LABELS: false
+    SKIP_BY_LABELS: true
     CHECK_DEPENDENCIES: true
     SEARCH_GITHUB_ACTIONS_HISTORY: true
     ENABLE_ACTIONS_HISTORY_FALLBACK: true
