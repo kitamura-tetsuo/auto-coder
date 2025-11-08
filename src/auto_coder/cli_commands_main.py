@@ -71,7 +71,6 @@ logger = get_logger(__name__)
 @click.option("--model-qwen", help="Model to use when backend=qwen")
 @click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
 @click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
-@click.option("--dry-run", is_flag=True, help="Run in dry-run mode without making changes")
 @click.option(
     "--jules-mode/--no-jules-mode",
     default=True,
