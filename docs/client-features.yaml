@@ -40,12 +40,14 @@ cli:
         - { name: --log-file, type: path }
         - { name: --verbose, flag: true }
       behavior:
-        - Initializes GraphRAG when enabled (auto-setup + MCP config check)
-        - Resumes work on current non-main branch by detecting an open PR/issue
-        - Prioritizes candidates: urgent label (3) > auto-mergeable PRs (2) > failing PRs (1) > issues (0)
-        - Skips issues if 5+ open issues without sub-issues are found in a batch
-        - Saves JSON reports under ~/.auto-coder/{owner_repo}/
-        - Honors skip-main-update policy (default: skip merging base branch before fixes)
+            - Initializes GraphRAG when enabled (auto-setup + MCP config check)
+            - Resumes work on current non-main branch by detecting an open PR/issue
+            - Prioritizes candidates: urgent label (3) > auto-mergeable PRs (2) > failing PRs (1) > issues (0)
+            - Skips issues if 5+ open issues without sub-issues are found in a batch
+            - Saves JSON reports under ~/.auto-coder/{owner_repo}/
+            - Honors skip-main-update policy (default: skip merging base branch before fixes)
+            - Skip-by-labels behavior: When SKIP_BY_LABELS is true (default), issues/PRs with @auto-coder label are automatically skipped to prevent duplicate processing
+            - When --only flag is specified for single-item processing, SKIP_BY_LABELS is automatically disabled to ensure the target item is processed
     - name: create-feature-issues
       purpose: Analyze repository and create feature enhancement issues via LLM
       options:
