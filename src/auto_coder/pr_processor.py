@@ -708,9 +708,14 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
     """
     try:
         # Get PR body
-        result = cmd.run_command(["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"])
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
+            repo=repo_name,
+            capture_output=True,
+        )
 
-        if not result.success or not result.stdout:
+        if not result.success or not result.stdout:  # type: ignore[attr-defined]
             logger.debug(f"Could not retrieve PR #{pr_number} body for issue linking")
             return
 
@@ -727,7 +732,8 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         # Close each linked issue
         for issue_num in linked_issues:
             try:
-                close_result = cmd.run_command(
+                gh_logger = get_gh_logger()
+                close_result = gh_logger.execute_with_logging(
                     [
                         "gh",
                         "issue",
@@ -737,10 +743,12 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
                         repo_name,
                         "--comment",
                         f"Closed by PR #{pr_number}",
-                    ]
+                    ],
+                    repo=repo_name,
+                    capture_output=True,
                 )
 
-                if close_result.success:
+                if close_result.success:  # type: ignore[attr-defined]
                     logger.info(f"Closed issue #{issue_num} linked from PR #{pr_number}")
                     log_action(f"Closed issue #{issue_num} (linked from PR #{pr_number})")
                 else:
@@ -770,13 +778,14 @@ def _merge_pr(
     """
     try:
         cmd_list = ["gh", "pr", "merge", str(pr_number)]
+        gh_logger = get_gh_logger()
 
         # Try with --auto first if enabled, but fallback to direct merge if it fails
         if config.MERGE_AUTO:
             auto_cmd = cmd_list + ["--auto", config.MERGE_METHOD]
-            result = cmd.run_command(auto_cmd)
+            result = gh_logger.execute_with_logging(auto_cmd, repo=repo_name, capture_output=True)
 
-            if result.success:
+            if result.success:  # type: ignore[attr-defined]
                 log_action(f"Successfully auto-merged PR #{pr_number}")
                 _close_linked_issues(repo_name, pr_number)
                 return True
@@ -787,9 +796,9 @@ def _merge_pr(
 
         # Direct merge without --auto flag
         direct_cmd = cmd_list + [config.MERGE_METHOD]
-        result = cmd.run_command(direct_cmd)
+        result = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
 
-        if result.success:
+        if result.success:  # type: ignore[attr-defined]
             log_action(f"Successfully merged PR #{pr_number}")
             _close_linked_issues(repo_name, pr_number)
             return True
@@ -802,8 +811,9 @@ def _merge_pr(
                 # Try to resolve merge conflicts using the new function from conflict_resolver
                 if resolve_pr_merge_conflicts(repo_name, pr_number, config):
                     # Retry merge after conflict resolution
-                    retry_result = cmd.run_command(direct_cmd)
-                    if retry_result.success:
+                    gh_logger = get_gh_logger()
+                    retry_result = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
+                    if retry_result.success:  # type: ignore[attr-defined]
                         log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
                         _close_linked_issues(repo_name, pr_number)
                         return True
@@ -816,8 +826,9 @@ def _merge_pr(
                         )
                         # 1) Poll mergeable briefly (e.g., GitHub may still be computing)
                         if _poll_pr_mergeable(repo_name, pr_number, config):
-                            retry_after_poll = cmd.run_command(direct_cmd)
-                            if retry_after_poll.success:
+                            gh_logger = get_gh_logger()
+                            retry_after_poll = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
+                            if retry_after_poll.success:  # type: ignore[attr-defined]
                                 log_action(f"Successfully merged PR #{pr_number} after waiting for mergeable state")
                                 _close_linked_issues(repo_name, pr_number)
                                 return True
@@ -829,8 +840,9 @@ def _merge_pr(
                             if m not in allowed or m == config.MERGE_METHOD:
                                 continue
                             alt_cmd = cmd_list + [m]
-                            alt_result = cmd.run_command(alt_cmd)
-                            if alt_result.success:
+                            gh_logger = get_gh_logger()
+                            alt_result = gh_logger.execute_with_logging(alt_cmd, repo=repo_name, capture_output=True)
+                            if alt_result.success:  # type: ignore[attr-defined]
                                 log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
                                 _close_linked_issues(repo_name, pr_number)
                                 return True
@@ -896,7 +908,8 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
     """
     try:
         # gh repo view --json mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed
-        result = cmd.run_command(
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
             [
                 "gh",
                 "repo",
@@ -904,10 +917,12 @@ def _get_allowed_merge_methods(repo_name: str) -> List[str]:
                 repo_name,
                 "--json",
                 "mergeCommitAllowed,rebaseMergeAllowed,squashMergeAllowed",
-            ]
+            ],
+            repo=repo_name,
+            capture_output=True,
         )
         allowed: List[str] = []
-        if result.stdout:
+        if result.stdout and result.success:  # type: ignore[attr-defined]
             try:
                 data = json.loads(result.stdout)
                 if data.get("squashMergeAllowed"):

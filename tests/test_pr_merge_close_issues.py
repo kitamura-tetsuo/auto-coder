@@ -96,11 +96,15 @@ class TestExtractLinkedIssues:
 class TestCloseLinkedIssues:
     """Test closing of linked issues."""
 
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_close_single_issue(self, mock_cmd):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_close_single_issue(self, mock_get_gh_logger):
         """Test closing a single linked issue."""
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock PR body retrieval
-        mock_cmd.run_command.side_effect = [
+        mock_gh_logger.execute_with_logging.side_effect = [
             Mock(
                 success=True,
                 stdout='{"body": "Closes #123"}',
@@ -113,8 +117,8 @@ class TestCloseLinkedIssues:
         _close_linked_issues("test/repo", 456)
 
         # Verify gh pr view was called
-        assert mock_cmd.run_command.call_count == 2
-        pr_view_call = mock_cmd.run_command.call_args_list[0][0][0]
+        assert mock_gh_logger.execute_with_logging.call_count == 2
+        pr_view_call = mock_gh_logger.execute_with_logging.call_args_list[0][0][0]
         assert pr_view_call == [
             "gh",
             "pr",
@@ -127,7 +131,7 @@ class TestCloseLinkedIssues:
         ]
 
         # Verify gh issue close was called
-        issue_close_call = mock_cmd.run_command.call_args_list[1][0][0]
+        issue_close_call = mock_gh_logger.execute_with_logging.call_args_list[1][0][0]
         assert issue_close_call == [
             "gh",
             "issue",
@@ -139,11 +143,15 @@ class TestCloseLinkedIssues:
             "Closed by PR #456",
         ]
 
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_close_multiple_issues(self, mock_cmd):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_close_multiple_issues(self, mock_get_gh_logger):
         """Test closing multiple linked issues."""
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock PR body retrieval
-        mock_cmd.run_command.side_effect = [
+        mock_gh_logger.execute_with_logging.side_effect = [
             Mock(
                 success=True,
                 stdout='{"body": "Closes #123 and fixes #456"}',
@@ -157,10 +165,10 @@ class TestCloseLinkedIssues:
         _close_linked_issues("test/repo", 789)
 
         # Verify both issues were closed
-        assert mock_cmd.run_command.call_count == 3
+        assert mock_gh_logger.execute_with_logging.call_count == 3
         issue_close_calls = [
-            mock_cmd.run_command.call_args_list[1][0][0],
-            mock_cmd.run_command.call_args_list[2][0][0],
+            mock_gh_logger.execute_with_logging.call_args_list[1][0][0],
+            mock_gh_logger.execute_with_logging.call_args_list[2][0][0],
         ]
         assert [
             "gh",
@@ -183,11 +191,15 @@ class TestCloseLinkedIssues:
             "Closed by PR #789",
         ] in issue_close_calls
 
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_no_linked_issues(self, mock_cmd):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_no_linked_issues(self, mock_get_gh_logger):
         """Test when PR has no linked issues."""
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock PR body retrieval
-        mock_cmd.run_command.return_value = Mock(
+        mock_gh_logger.execute_with_logging.return_value = Mock(
             success=True,
             stdout='{"body": "Regular PR description"}',
             stderr="",
@@ -197,13 +209,17 @@ class TestCloseLinkedIssues:
         _close_linked_issues("test/repo", 456)
 
         # Verify only PR view was called, no issue close
-        assert mock_cmd.run_command.call_count == 1
+        assert mock_gh_logger.execute_with_logging.call_count == 1
 
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_pr_view_failure(self, mock_cmd):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_pr_view_failure(self, mock_get_gh_logger):
         """Test when PR view fails."""
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock PR body retrieval failure
-        mock_cmd.run_command.return_value = Mock(
+        mock_gh_logger.execute_with_logging.return_value = Mock(
             success=False,
             stdout="",
             stderr="PR not found",
@@ -214,13 +230,17 @@ class TestCloseLinkedIssues:
         _close_linked_issues("test/repo", 456)
 
         # Verify only PR view was called
-        assert mock_cmd.run_command.call_count == 1
+        assert mock_gh_logger.execute_with_logging.call_count == 1
 
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_issue_close_failure(self, mock_cmd):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_issue_close_failure(self, mock_get_gh_logger):
         """Test when issue close fails."""
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock PR body retrieval success, issue close failure
-        mock_cmd.run_command.side_effect = [
+        mock_gh_logger.execute_with_logging.side_effect = [
             Mock(
                 success=True,
                 stdout='{"body": "Closes #123"}',
@@ -239,22 +259,26 @@ class TestCloseLinkedIssues:
         _close_linked_issues("test/repo", 456)
 
         # Verify both calls were made
-        assert mock_cmd.run_command.call_count == 2
+        assert mock_gh_logger.execute_with_logging.call_count == 2
 
 
 class TestMergePRWithIssueClosing:
     """Test that _merge_pr closes linked issues after successful merge."""
 
     @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_merge_pr_closes_issues_on_success(self, mock_cmd, mock_close_issues):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_merge_pr_closes_issues_on_success(self, mock_get_gh_logger, mock_close_issues):
         """Test that successful merge triggers issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = False
         config.MERGE_METHOD = "--squash"
 
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock successful merge
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
+        mock_gh_logger.execute_with_logging.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
         result = _merge_pr("test/repo", 123, {}, config)
 
@@ -262,15 +286,19 @@ class TestMergePRWithIssueClosing:
         mock_close_issues.assert_called_once_with("test/repo", 123)
 
     @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_merge_pr_does_not_close_issues_on_failure(self, mock_cmd, mock_close_issues):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_merge_pr_does_not_close_issues_on_failure(self, mock_get_gh_logger, mock_close_issues):
         """Test that failed merge does not trigger issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = False
         config.MERGE_METHOD = "--squash"
 
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock failed merge
-        mock_cmd.run_command.return_value = Mock(success=False, stdout="", stderr="Merge failed", returncode=1)
+        mock_gh_logger.execute_with_logging.return_value = Mock(success=False, stdout="", stderr="Merge failed", returncode=1)
 
         result = _merge_pr("test/repo", 123, {}, config)
 
@@ -278,15 +306,19 @@ class TestMergePRWithIssueClosing:
         mock_close_issues.assert_not_called()
 
     @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.cmd")
-    def test_merge_pr_auto_merge_closes_issues(self, mock_cmd, mock_close_issues):
+    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    def test_merge_pr_auto_merge_closes_issues(self, mock_get_gh_logger, mock_close_issues):
         """Test that auto-merge success triggers issue closing."""
         config = AutomationConfig()
         config.MERGE_AUTO = True
         config.MERGE_METHOD = "--squash"
 
+        # Mock the gh_logger instance
+        mock_gh_logger = Mock()
+        mock_get_gh_logger.return_value = mock_gh_logger
+
         # Mock successful auto-merge
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
+        mock_gh_logger.execute_with_logging.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
         result = _merge_pr("test/repo", 123, {}, config)
 
