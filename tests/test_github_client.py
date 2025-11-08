@@ -1282,3 +1282,163 @@ class TestGitHubClient:
 
         # Assert - should extract the number
         assert 123 in result
+
+    def test_get_issue_dependencies_multiline_numbered(self, mock_github_token):
+        """Test extracting multi-line numbered dependencies with indentation."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case: Multi-line "Depends on:" with numbered issues
+        body = """Depends on:
+    #456
+    #789
+    #100"""
+
+        result = client.get_issue_dependencies(body)
+        assert sorted(result) == [100, 456, 789]
+
+    def test_get_issue_dependencies_multiline_with_tabs(self, mock_github_token):
+        """Test extracting multi-line dependencies with tabs for indentation."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case: Multi-line "Depends on:" with tabs
+        body = """Depends on:
+\t#456
+\t#789"""
+
+        result = client.get_issue_dependencies(body)
+        assert sorted(result) == [456, 789]
+
+    def test_get_issue_dependencies_multiline_mixed_indentation(self, mock_github_token):
+        """Test extracting multi-line dependencies with mixed indentation."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case: Multi-line "Depends on:" with mixed indentation
+        body = """Depends on:
+    #456
+        #789
+    #100"""
+
+        result = client.get_issue_dependencies(body)
+        assert sorted(result) == [100, 456, 789]
+
+    def test_get_issue_dependencies_multiline_without_indentation_ignored(self, mock_github_token):
+        """Test that non-indented lines in multi-line section are ignored."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case: Multi-line "Depends on:" with non-indented line
+        body = """Depends on:
+    #456
+    #789
+Some other text that's not indented
+    #100"""
+
+        result = client.get_issue_dependencies(body)
+        # Should only get the properly indented ones (456 and 789)
+        # #100 is after non-indented text, so it won't be captured by the multi-line pattern
+        # and it won't match the single-line pattern since it doesn't start right after "Depends on:"
+        assert 456 in result
+        assert 789 in result
+        assert 100 not in result
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_get_issue_dependencies_multiline_with_titles(self, mock_github_class, mock_github_token):
+        """Test extracting multi-line dependencies with title-based references."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock get_open_issues
+        with patch.object(client, "get_open_issues") as mock_get_issues:
+            mock_issue1 = Mock(spec=Issue.Issue)
+            mock_issue1.number = 123
+            mock_issue1.title = "Sub Issue 1 (dataclass creation)"
+            mock_issue1.pull_request = None
+
+            mock_issue2 = Mock(spec=Issue.Issue)
+            mock_issue2.number = 456
+            mock_issue2.title = "Sub Issue 2 (GitHub Actions)"
+            mock_issue2.pull_request = None
+
+            mock_get_issues.return_value = [mock_issue1, mock_issue2]
+
+            # Test case: Multi-line "Depends on:" with titles
+            body = """Depends on:
+    Sub Issue 1 (dataclass creation)
+    Sub Issue 2 (GitHub Actions)"""
+
+            result = client.get_issue_dependencies(body, "test/repo")
+
+            # Assert - should find both
+            assert 123 in result
+            assert 456 in result
+            assert len(result) == 2
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_get_issue_dependencies_multiline_mixed_numbers_and_titles(self, mock_github_class, mock_github_token):
+        """Test extracting multi-line dependencies with mixed number and title references."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock get_open_issues
+        with patch.object(client, "get_open_issues") as mock_get_issues:
+            mock_issue1 = Mock(spec=Issue.Issue)
+            mock_issue1.number = 123
+            mock_issue1.title = "Some Title"
+            mock_issue1.pull_request = None
+
+            mock_get_issues.return_value = [mock_issue1]
+
+            # Test case: Multi-line "Depends on:" with mixed format
+            body = """Depends on:
+    #456
+    Some Title
+    #789"""
+
+            result = client.get_issue_dependencies(body, "test/repo")
+
+            # Assert - should find all three
+            assert 123 in result
+            assert 456 in result
+            assert 789 in result
+            assert len(result) == 3
+
+    def test_get_issue_dependencies_multiline_with_empty_lines(self, mock_github_token):
+        """Test extracting multi-line dependencies with empty lines between."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case: Multi-line "Depends on:" with empty lines
+        body = """Depends on:
+    #456
+
+    #789
+
+    #100"""
+
+        result = client.get_issue_dependencies(body)
+        assert sorted(result) == [100, 456, 789]
+
+    def test_get_issue_dependencies_multiline_blocked_by(self, mock_github_token):
+        """Test extracting multi-line dependencies with 'blocked by' pattern."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case: Multi-line "blocked by:"
+        body = """blocked by:
+    #456
+    #789"""
+
+        result = client.get_issue_dependencies(body)
+        assert sorted(result) == [456, 789]
+
+    def test_get_issue_dependencies_multiline_with_leading_punctuation(self, mock_github_token):
+        """Test that leading punctuation is stripped from multi-line dependencies."""
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Test case: Multi-line "Depends on:" with punctuation
+        body = """Depends on:
+    - #456
+    , #789
+    - #100"""
+
+        result = client.get_issue_dependencies(body)
+        assert sorted(result) == [100, 456, 789]

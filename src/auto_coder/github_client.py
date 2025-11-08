@@ -771,6 +771,7 @@ class GitHubClient:
 
         Supports both number-based dependencies (e.g., "#123") and title-based dependencies
         (e.g., "Depends on: Sub Issue 1 (dataclass creation may be needed)").
+        Also supports multi-line dependency declarations with indented lists.
 
         Args:
             issue_body: The body text of the issue
@@ -784,6 +785,11 @@ class GitHubClient:
             "depends on #456" -> [456]
             "Depends on #789, #790" -> [789, 790]
             "Depends on: Sub Issue 1 (dataclass creation)" -> [123] (if issue #123 has that title)
+            Multi-line:
+                Depends on:
+                    #456
+                    #789
+                    Sub Issue 3 (title-based)
         """
         if not issue_body:
             return []
@@ -793,17 +799,73 @@ class GitHubClient:
         dependencies = []
         seen = set()
 
-        # First pass: extract number-based dependencies
+        # First pass: extract multi-line dependencies with indentation
+        # This handles:
+        # - "Depends on:" followed by indented lines (1+ spaces or tabs)
+        # - Both numbered (#456) and titled (Some Title) dependencies
+        # - Mixed formats in the same list
+        # - Empty lines within the multi-line block
+        # Use MULTILINE flag to make ^ match line starts
+        multiline_pattern = r"(?im)^(?:depends\s+on|blocked\s+by)\s*:?\s*\n((?:^[ \t]+.*(?:\n|$)|^\n)+)"
+
+        for match in re.finditer(multiline_pattern, issue_body):
+            multiline_text = match.group(1)
+
+            # Split into lines and process each indented line
+            lines = multiline_text.split("\n")
+            for line in lines:
+                # Skip empty lines
+                if not line.strip():
+                    continue
+
+                # Check if line starts with indentation (1+ spaces or tabs)
+                if re.match(r"^[ \t]+", line):
+                    # Strip indentation and leading/trailing punctuation
+                    clean_line = re.sub(r"^[ \t]+", "", line).strip()
+                    clean_line = re.sub(r"^[,\-\s]+|[,\-\s]+$", "", clean_line)
+
+                    # Check if this looks like a number-based dependency (starts with # or is just a number)
+                    # This ensures we don't treat titles with numbers in them as number-based
+                    if re.match(r"^#\d+$", clean_line) or re.match(r"^\d+$", clean_line):
+                        # Pure number or #number format - extract the issue number
+                        numbers = re.findall(r"#?(\d+)", clean_line)
+                        if numbers:
+                            issue_num = int(numbers[0])
+                            if issue_num not in seen:
+                                dependencies.append(issue_num)
+                                seen.add(issue_num)
+                    else:
+                        # Title-based dependency - search by title
+                        if repo_name and len(clean_line) >= 3:
+                            title_issue_num: Optional[int] = self._search_issues_by_title(repo_name, clean_line)
+                            if title_issue_num is not None and title_issue_num not in seen:
+                                dependencies.append(title_issue_num)
+                                seen.add(title_issue_num)
+                                logger.debug(f"Found multi-line title-based dependency: '{clean_line}' -> issue #{title_issue_num}")
+
+        # Second pass: extract single-line number-based dependencies
         # This handles various formats like:
         # - "Depends on: #123"
         # - "depends on #123, #456, #789"
         # - "depends on #100 and #200 and #300"
         # - "blocked by #100"
         # Case-insensitive, with or without colon, supports comma-separated lists and "and"
-        depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*(.*?)(?:\n|\r|$)"
+        # Skip lines that are part of multi-line dependencies (followed by indented content)
+        depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*([^\n#][^\n]*?)(?:\n|\r|$)"
 
         for match in re.finditer(depends_pattern, issue_body):
             depends_text = match.group(1).strip()
+
+            # Skip if it looks like a multi-line header (no actual content)
+            if not depends_text or depends_text in ["\n", "\r\n", "\r"]:
+                continue
+
+            # Check if this is followed by indented content (part of multi-line block)
+            # If so, skip it as it will be handled by the multi-line pattern
+            match_end = match.end()
+            remaining_text = issue_body[match_end:]
+            if remaining_text and re.match(r"^[ \t]", remaining_text):
+                continue
 
             # Extract all issue numbers from the depends text
             numbers = re.findall(r"#?(\d+)", depends_text)
@@ -813,11 +875,11 @@ class GitHubClient:
                     dependencies.append(issue_num)
                     seen.add(issue_num)
 
-        # Second pass: handle title-based dependencies
+        # Third pass: handle single-line title-based dependencies
         # Pattern: "Depends on: Title (description)" or "blocked by: Title (description)"
         # We look for text that doesn't start with # but contains descriptive text
         if repo_name:
-            title_depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*([^\n#]+?)(?:\s*\([^)]*\))?(?:\n|\r|$)"
+            title_depends_pattern = r"(?i)(?:depends\s+on|blocked\s+by)\s*:?\s*([^\n#][^\n]*?)(?:\s*\([^)]*\))?(?:\n|\r|$)"
 
             for match in re.finditer(title_depends_pattern, issue_body):
                 depends_text = match.group(1).strip()
@@ -834,11 +896,11 @@ class GitHubClient:
                 title = re.sub(r"^[,\-\s]+|[,\-\s]+$", "", depends_text)
 
                 if title and len(title) >= 3:
-                    title_issue_num: Optional[int] = self._search_issues_by_title(repo_name, title)
-                    if title_issue_num is not None and title_issue_num not in seen:
-                        dependencies.append(title_issue_num)
-                        seen.add(title_issue_num)
-                        logger.debug(f"Found title-based dependency: '{title}' -> issue #{title_issue_num}")
+                    title_issue_num_2: Optional[int] = self._search_issues_by_title(repo_name, title)
+                    if title_issue_num_2 is not None and title_issue_num_2 not in seen:
+                        dependencies.append(title_issue_num_2)
+                        seen.add(title_issue_num_2)
+                        logger.debug(f"Found title-based dependency: '{title}' -> issue #{title_issue_num_2}")
 
         if dependencies:
             logger.debug(f"Found dependencies: {dependencies}")
