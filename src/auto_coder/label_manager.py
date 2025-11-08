@@ -58,6 +58,8 @@ def _check_label_exists(
 
 
 class LabelManager:
+    _active_items: set[tuple[int, Union[int, str]]] = set()
+
     """Context manager for unified @auto-coder label operations.
 
     This context manager automatically handles adding, verifying, and removing
@@ -132,6 +134,7 @@ class LabelManager:
         self.retry_delay = retry_delay
         self._lock = threading.Lock()
         self._label_added = False
+        self._reentered = False
 
     def __enter__(self) -> bool:
         """Enter the context manager - add label and return whether to proceed.
@@ -140,6 +143,18 @@ class LabelManager:
             True if label was successfully added (proceed with processing),
             False if label already exists (another instance is processing)
         """
+        # Reentrancy detection - check if this (thread, item) combination is already active
+        ident = threading.get_ident()
+        item_key = (ident, self.item_number)
+        if item_key in LabelManager._active_items:
+            self._reentered = True
+            logger.debug(f">>> Skipping enter (already active for this item in this thread) for {self.item_type} #{self.item_number}")
+            return True
+        else:
+            self._reentered = False
+            LabelManager._active_items.add(item_key)
+            logger.debug(f">>> Entering context (first time for this item in this thread) for {self.item_type} #{self.item_number}")
+
         # Use lock to ensure thread-safe operations
         with self._lock:
             # Check if labels are disabled
@@ -150,21 +165,22 @@ class LabelManager:
             # Try to add the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    # Check if label already exists
-                    if _check_label_exists(
-                        self.github_client,
-                        self.repo_name,
-                        self.item_number,
-                        self.label_name,
-                        self.item_type,
-                    ):
-                        logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
-                        return False
+                    # Check if CHECK_LABELS is True (default) - if so, check for existing label
+                    if self.config.CHECK_LABELS:
+                        if _check_label_exists(
+                            self.github_client,
+                            self.repo_name,
+                            self.item_number,
+                            self.label_name,
+                            self.item_type,
+                        ):
+                            logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
+                            return False
 
-                    # Try to add the label
+                    # CHECK_LABELS is False - add label without checking for existing
+                    logger.info(f"Adding '{self.label_name}' label to {self.item_type} #{self.item_number} (check-labels disabled)")
                     result = self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
                     if result:
-                        logger.info(f"Added '{self.label_name}' label to {self.item_type} #{self.item_number}")
                         self._label_added = True
                         return True
                     else:
@@ -191,6 +207,17 @@ class LabelManager:
             exc_val: Exception value (if any)
             exc_tb: Exception traceback (if any)
         """
+        # Reentrancy detection - skip exit if this is a reentrant call
+        ident = threading.get_ident()
+        item_key = (ident, self.item_number)
+        if self._reentered:
+            logger.debug(f">>> Skipping exit (reentrant) for {self.item_type} #{self.item_number}")
+            return
+
+        logger.debug(f">>> Exiting context for {self.item_type} #{self.item_number}")
+        # Always clean up thread tracking
+        LabelManager._active_items.discard(item_key)
+
         # Use lock to ensure thread-safe operations
         with self._lock:
             # Only remove label if we added it and labels are not disabled

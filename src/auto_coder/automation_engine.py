@@ -77,7 +77,7 @@ class AutomationEngine:
             candidates_count += 1
 
             # Skip if has @auto-coder label
-            if "@auto-coder" in labels:
+            if self.config.CHECK_LABELS and "@auto-coder" in labels:
                 continue
 
             # Calculate priority
@@ -106,7 +106,7 @@ class AutomationEngine:
                 labels = issue_data.get("labels", []) or []
 
                 # Skip if has @auto-coder label
-                if "@auto-coder" in labels:
+                if self.config.CHECK_LABELS and "@auto-coder" in labels:
                     continue
 
                 # Skip if has sub-issues or linked PR

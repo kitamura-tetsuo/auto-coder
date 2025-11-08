@@ -5,22 +5,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Process Issues (Dry Run)",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "auto_coder.cli",
-            "console": "integratedTerminal",
-            "cwd": "/home/ubuntu/src2/outliner",
-            "args": [
-                "process-issues",
-                "--dry-run"
-            ],
-            "python": "${command:python.interpreterPath}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}/src"
-            }
-        },
-        {
             "name": "Create Feature Issues",
             "type": "debugpy",
             "request": "launch",
