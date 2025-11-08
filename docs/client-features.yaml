@@ -1,4 +1,4 @@
-version: "2025.11.8.4+g131f343"
+version: "2025.11.8.6+g9a87f95"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -29,7 +29,7 @@ cli:
         - { name: --dry-run, flag: true, default: false }
         - { name: --jules-mode/--no-jules-mode, default: true }
         - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
-        - { name: --skip-by-labels/--no-skip-by-labels, default: true, help: "Enable skipping issues/PRs that already have the @auto-coder label" }
+        - { name: --check-labels/--no-check-labels, default: true, help: "Enable checking for existing @auto-coder label before processing (default: enabled)" }
         - { name: --skip-main-update/--no-skip-main-update, default: true }
         - { name: --ignore-dependabot-prs/--no-ignore-dependabot-prs, default: false }
         - { name: --force-clean-before-checkout/--no-force-clean-before-checkout, default: false }
@@ -46,8 +46,8 @@ cli:
             - Skips issues if 5+ open issues without sub-issues are found in a batch
             - Saves JSON reports under ~/.auto-coder/{owner_repo}/
             - Honors skip-main-update policy (default: skip merging base branch before fixes)
-            - Skip-by-labels behavior: When SKIP_BY_LABELS is true (default), issues/PRs with @auto-coder label are automatically skipped to prevent duplicate processing
-            - When --only flag is specified for single-item processing, SKIP_BY_LABELS is automatically disabled to ensure the target item is processed
+            - Check-labels behavior: When CHECK_LABELS is true (default), issues/PRs with @auto-coder label are automatically skipped to prevent duplicate processing
+            - When --only flag is specified for single-item processing, CHECK_LABELS is automatically disabled to ensure the target item is processed
     - name: create-feature-issues
       purpose: Analyze repository and create feature enhancement issues via LLM
       options:
@@ -210,7 +210,7 @@ config:
     IGNORE_DEPENDABOT_PRS: false
     FORCE_CLEAN_BEFORE_CHECKOUT: false
     DISABLE_LABELS: false
-    SKIP_BY_LABELS: true
+    CHECK_LABELS: true
     CHECK_DEPENDENCIES: true
     SEARCH_GITHUB_ACTIONS_HISTORY: true
     ENABLE_ACTIONS_HISTORY_FALLBACK: true
