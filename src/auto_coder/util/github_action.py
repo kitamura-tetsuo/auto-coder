@@ -45,6 +45,7 @@ class GitHubActionsStatusResult:
 
     success: bool = True
     ids: List[int] = field(default_factory=list)
+    in_progress: bool = False
 
 
 @dataclass
@@ -281,6 +282,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             return GitHubActionsStatusResult(
                 success=True,
                 ids=[],
+                in_progress=False,
             )
 
         # Parse the text output
@@ -405,6 +407,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         return GitHubActionsStatusResult(
             success=all_passed,
             ids=run_ids,
+            in_progress=has_in_progress,
         )
 
     except Exception as e:
@@ -527,6 +530,7 @@ def _check_github_actions_status_from_history(
             return GitHubActionsStatusResult(
                 success=False,
                 ids=[],
+                in_progress=False,
             )
 
         try:
@@ -537,6 +541,7 @@ def _check_github_actions_status_from_history(
                 return GitHubActionsStatusResult(
                     success=True,
                     ids=[],
+                    in_progress=False,
                 )
 
             # Get all commit SHAs
@@ -546,6 +551,7 @@ def _check_github_actions_status_from_history(
                 return GitHubActionsStatusResult(
                     success=True,
                     ids=[],
+                    in_progress=False,
                 )
 
             logger.info(f"Found {len(commit_shas)} commits in PR, latest: {commit_shas[-1][:8]}")
@@ -555,6 +561,7 @@ def _check_github_actions_status_from_history(
             return GitHubActionsStatusResult(
                 success=False,
                 ids=[],
+                in_progress=False,
             )
 
         # 2. Get GitHub Actions runs for the head branch
@@ -581,6 +588,7 @@ def _check_github_actions_status_from_history(
             return GitHubActionsStatusResult(
                 success=False,
                 ids=[],
+                in_progress=False,
             )
 
         try:
@@ -590,6 +598,7 @@ def _check_github_actions_status_from_history(
             return GitHubActionsStatusResult(
                 success=False,
                 ids=[],
+                in_progress=False,
             )
 
         # 3. Find runs with matching headSha for any of the PR commits
@@ -610,6 +619,7 @@ def _check_github_actions_status_from_history(
             return GitHubActionsStatusResult(
                 success=True,  # Assume success if no matching runs found
                 ids=[],
+                in_progress=False,
             )
 
         # 4. Find the latest commit that has matching runs
@@ -655,6 +665,7 @@ def _check_github_actions_status_from_history(
         return GitHubActionsStatusResult(
             success=final_success,
             ids=run_ids,
+            in_progress=has_in_progress,
         )
 
     except Exception as e:
@@ -662,6 +673,7 @@ def _check_github_actions_status_from_history(
         return GitHubActionsStatusResult(
             success=False,
             ids=[],
+            in_progress=False,
         )
 
 
