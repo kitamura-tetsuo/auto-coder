@@ -9,7 +9,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 import pathspec
 from loguru import logger
@@ -20,7 +20,7 @@ from watchdog.observers import Observer
 class GitIgnoreFileHandler(FileSystemEventHandler):
     """File system event handler that respects .gitignore patterns."""
 
-    def __init__(self, project_root: Path, gitignore_spec: pathspec.PathSpec, callback):
+    def __init__(self, project_root: Path, gitignore_spec: pathspec.PathSpec, callback: Callable[[str], None]):
         self.project_root = project_root
         self.gitignore_spec = gitignore_spec
         self.callback = callback
@@ -35,22 +35,25 @@ class GitIgnoreFileHandler(FileSystemEventHandler):
         except (ValueError, Exception):
             return True
 
-    def on_modified(self, event: FileSystemEvent):
+    def on_modified(self, event: FileSystemEvent) -> None:
         """Handle file modification events."""
         if event.is_directory:
             return
 
+        # Decode bytes to str if needed
+        src_path = event.src_path.decode() if isinstance(event.src_path, bytes) else event.src_path
+
         # Debounce events
         now = time.time()
-        if event.src_path in self.last_event_time:
-            if now - self.last_event_time[event.src_path] < self.debounce_seconds:
+        if src_path in self.last_event_time:
+            if now - self.last_event_time[src_path] < self.debounce_seconds:
                 return
 
-        self.last_event_time[event.src_path] = now
+        self.last_event_time[src_path] = now
 
-        if not self.should_ignore(event.src_path):
-            logger.debug(f"File modified: {event.src_path}")
-            self.callback(event.src_path)
+        if not self.should_ignore(src_path):
+            logger.debug(f"File modified: {src_path}")
+            self.callback(src_path)
 
 
 class TestWatcherTool:
@@ -78,7 +81,7 @@ class TestWatcherTool:
         self.playwright_running = False
 
         # File watcher
-        self.observer: Optional[Observer] = None
+        self.observer: Optional["Observer"] = None  # type: ignore[valid-type]
         self.gitignore_spec = self._load_gitignore()
 
         # Failed tests tracking for --last-failed
@@ -123,7 +126,7 @@ class TestWatcherTool:
         """
         with self.lock:
             if self.observer is not None:
-                return {
+                return {  # type: ignore[unreachable]
                     "status": "already_running",
                     "message": "File watcher is already running",
                 }
@@ -161,7 +164,7 @@ class TestWatcherTool:
                     "message": "File watcher is not running",
                 }
 
-            try:
+            try:  # type: ignore[unreachable]
                 self.observer.stop()
                 self.observer.join(timeout=5)
                 self.observer = None
@@ -177,7 +180,7 @@ class TestWatcherTool:
                 logger.error(f"Failed to stop file watcher: {e}")
                 return {"status": "error", "error": str(e)}
 
-    def _on_file_changed(self, file_path: str):
+    def _on_file_changed(self, file_path: str) -> None:
         """
         Callback when a file is changed.
 
@@ -193,7 +196,46 @@ class TestWatcherTool:
             daemon=True,
         ).start()
 
-    def _run_playwright_tests(self, last_failed: bool = False):
+        # Trigger GraphRAG update (only for code files)
+        if self._is_code_file(file_path):
+            threading.Thread(
+                target=self._trigger_graphrag_update,
+                args=(file_path,),
+                daemon=True,
+            ).start()
+
+    def _is_code_file(self, file_path: str) -> bool:
+        """
+        Check if file is a code file that should trigger GraphRAG updates.
+
+        Args:
+            file_path: Path to the file to check
+
+        Returns:
+            True if the file is a code file, False otherwise
+        """
+        return file_path.endswith((".py", ".ts", ".js"))
+
+    def _trigger_graphrag_update(self, file_path: str) -> None:
+        """
+        Trigger GraphRAG index update for code changes.
+
+        Args:
+            file_path: Path to the changed file that triggered the update
+        """
+        try:
+            from auto_coder.graphrag_index_manager import GraphRAGIndexManager
+
+            manager = GraphRAGIndexManager()
+            success = manager.update_index()
+            if success:
+                logger.debug(f"GraphRAG index updated after change: {file_path}")
+            else:
+                logger.warning(f"GraphRAG index update failed for: {file_path}")
+        except Exception as e:
+            logger.debug(f"GraphRAG update failed (graceful degradation): {e}")
+
+    def _run_playwright_tests(self, last_failed: bool = False) -> None:
         """
         Run Playwright tests (one-shot execution).
 
