@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 from .logger_config import get_logger
 from .utils import is_running_in_container
@@ -94,7 +94,7 @@ class GraphRAGIndexManager:
 
         return hasher.hexdigest()
 
-    def _load_index_state(self) -> dict:
+    def _load_index_state(self) -> dict[str, Any]:
         """Load index state from file.
 
         Returns:
@@ -105,7 +105,7 @@ class GraphRAGIndexManager:
 
         try:
             with open(self.index_state_file, "r") as f:
-                return json.load(f)
+                return cast(dict[str, Any], json.load(f))
         except Exception as e:
             logger.warning(f"Failed to load index state: {e}")
             return {}
@@ -349,7 +349,7 @@ class GraphRAGIndexManager:
         except Exception as e:
             return False, f"Compatibility check failed: {e}"
 
-    def _run_graph_builder(self) -> dict:
+    def _run_graph_builder(self) -> dict[str, Any]:
         """Run graph-builder to analyze codebase.
 
         Returns:
@@ -480,7 +480,7 @@ class GraphRAGIndexManager:
                 # Read output
                 if output_path.exists():
                     with open(output_path, "r") as f:
-                        data = json.load(f)
+                        data = cast(dict[str, Any], json.load(f))
                         logger.info(f"Successfully loaded graph data: {len(data.get('nodes', []))} nodes, {len(data.get('edges', []))} edges")
                         return data
                 else:
@@ -794,7 +794,7 @@ class GraphRAGIndexManager:
                 # Create embedding
                 embedding_result = model.encode(text)
                 # Handle both numpy arrays and lists
-                embedding = embedding_result.tolist() if hasattr(embedding_result, "tolist") else embedding_result
+                embedding = cast(list[float], embedding_result.tolist() if hasattr(embedding_result, "tolist") else embedding_result)
 
                 # Create point
                 point = PointStruct(
@@ -837,3 +837,54 @@ class GraphRAGIndexManager:
             return True
 
         return self.update_index()
+
+    def lightweight_update_check(self) -> bool:
+        """
+        Lightweight check to see if GraphRAG update is needed.
+        Used by file watchers to avoid full hash computation.
+
+        Returns:
+            True if update is needed or completed successfully, False if update should be skipped
+        """
+        # Quick check if files are code files
+        # If only non-code files changed, skip update
+        if not self._has_recent_code_changes():
+            return True  # Skip update
+
+        # Proceed with full update
+        return self.update_index()
+
+    def _has_recent_code_changes(self) -> bool:
+        """
+        Check if there have been recent code changes.
+        This is a lightweight check to avoid expensive hash computation.
+
+        Returns:
+            True if there may be code changes, False if only non-code files exist
+        """
+        try:
+            # Get list of tracked files from git
+            result = subprocess.run(
+                ["git", "ls-files"],
+                cwd=self.repo_path,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                # If git fails, assume there are code changes
+                return True
+
+            files = [f.strip() for f in result.stdout.split("\n") if f.strip()]
+
+            # Check if any tracked files are code files
+            code_extensions = (".py", ".ts", ".js")
+            for file_path in files:
+                if file_path.endswith(code_extensions):
+                    return True
+
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to check for code changes: {e}")
+            # If check fails, assume there are code changes
+            return True
