@@ -83,6 +83,12 @@ class AutomationEngine:
 
             # Calculate priority
             checks = _check_github_actions_status(repo_name, pr_data, self.config)
+
+            # Skip PRs with running CI processes
+            if checks.in_progress:
+                logger.debug(f"Skipping PR #{pr_data.get('number')} - CI checks are in progress")
+                continue
+
             mergeable = pr_data.get("mergeable", True)
             pr_priority = 3 if (checks.success and mergeable) else 2
 
