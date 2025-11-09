@@ -64,7 +64,7 @@
                 "--no-jules-mode",
                 // "--force-reindex",
                 "--qwen-use-cli-options",
-                "--disable-graphrag",
+                // "--disable-graphrag",
                 "--backend",
                 "claude",
                 "--model-claude",

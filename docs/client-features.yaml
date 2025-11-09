@@ -187,6 +187,10 @@ features:
     auto_setup: true
     mcp_config_check: true
     index_update: available via CLI
+    docker_manager:
+      fallback_recovery: true
+      external_network: true
+      auto_retry_on_failure: true
   logging:
     library: loguru
     console: colored, includes file:function:line with trimmed project-relative paths

@@ -47,4 +47,5 @@ volumes:
 networks:
   graphrag-network:
     driver: bridge
-
+    external: true
+    name: graphrag-network

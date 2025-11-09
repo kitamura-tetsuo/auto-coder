@@ -169,6 +169,9 @@ class GraphRAGDockerManager:
         # Start containers
         result = self._run_docker_compose(["up", "-d"], timeout=timeout)
         if not result.success:
+            result = self._run_docker_compose(["down"], timeout=timeout)
+            result = self._run_docker_compose(["rm", "-f"], timeout=timeout)
+            result = self._run_docker_compose(["up", "-d"], timeout=timeout)
             logger.error(f"Failed to start containers: {result.stderr}")
             return False
 
