@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -38,6 +39,12 @@ class GraphRAGIndexManager:
         self.index_state_file = Path(index_state_file)
         # Override path for testing - set to None for normal operation
         self._override_graph_builder_path: Optional[Path] = None
+
+        # Batch processing for smart updates
+        self._batch_lock = threading.Lock()
+        self._pending_files: set[str] = set()
+        self._BATCH_DELAY_SECONDS = 2.0  # Wait 2 seconds for batch accumulation
+        self._batch_timer: Optional[threading.Timer] = None
 
     def set_graph_builder_path_for_testing(self, path: Optional[Path]) -> None:
         """Set a custom path for graph-builder (for testing purposes).
@@ -837,6 +844,94 @@ class GraphRAGIndexManager:
             return True
 
         return self.update_index()
+
+    def smart_update_trigger(self, changed_files: list[str]) -> bool:
+        """
+        Smart update logic that avoids unnecessary full re-indexing.
+        Only re-index when significant code structure changes occur.
+
+        Args:
+            changed_files: List of file paths that have changed
+
+        Returns:
+            True if update is not needed or completed successfully, False if update failed
+        """
+        # Check if any changed file is a significant code file
+        significant_patterns = [
+            "*.py",
+            "*.ts",
+            "*.js",  # Code files
+            "requirements.txt",
+            "package.json",
+            "pyproject.toml",  # Config files
+        ]
+
+        has_significant_changes = any(any(changed_file.endswith(pattern[1:]) for pattern in significant_patterns) for changed_file in changed_files)
+
+        if not has_significant_changes:
+            logger.debug("No significant code changes detected, skipping GraphRAG update")
+            return True  # Success (no update needed)
+
+        # Only then proceed with full update
+        return self.update_index()
+
+    def batch_update_trigger(self, file_batch: list[str], max_batch_size: int = 5) -> None:
+        """
+        Batch multiple file changes to prevent excessive updates.
+        Waits for a quiet period before triggering update.
+
+        Args:
+            file_batch: List of file paths that have changed
+            max_batch_size: Maximum number of files to batch before processing immediately
+        """
+        with self._batch_lock:
+            self._pending_files.update(file_batch)
+
+            logger.debug(f"Added {len(file_batch)} files to batch, total pending: {len(self._pending_files)}")
+
+            # Cancel existing timer if any
+            if self._batch_timer is not None:
+                self._batch_timer.cancel()
+
+            if len(self._pending_files) >= max_batch_size:
+                # Process batch immediately
+                logger.debug(f"Batch size ({len(self._pending_files)}) >= max_batch_size ({max_batch_size}), processing immediately")
+                self._process_pending_batch()
+            else:
+                # Schedule delayed processing
+                self._batch_timer = threading.Timer(self._BATCH_DELAY_SECONDS, self._process_pending_batch)
+                self._batch_timer.start()
+                logger.debug(f"Scheduled batch processing in {self._BATCH_DELAY_SECONDS} seconds")
+
+    def _process_pending_batch(self) -> None:
+        """
+        Process the pending batch of files.
+        This is called either when the batch is full or the delay timer expires.
+        """
+        with self._batch_lock:
+            if not self._pending_files:
+                return
+
+            files_to_process = list(self._pending_files)
+            self._pending_files.clear()
+            logger.debug(f"Processing batch of {len(files_to_process)} files")
+
+        # Process outside of lock to avoid blocking
+        try:
+            success = self.smart_update_trigger(files_to_process)
+            if success:
+                logger.debug(f"Batch update successful for {len(files_to_process)} files")
+            else:
+                logger.warning(f"Batch update failed for {len(files_to_process)} files")
+        except Exception as e:
+            logger.error(f"Error during batch update: {e}")
+
+    def cleanup_batch_timer(self) -> None:
+        """Clean up the batch timer. Call this when shutting down."""
+        with self._batch_lock:
+            if self._batch_timer is not None:
+                self._batch_timer.cancel()
+                self._batch_timer = None
 
     def lightweight_update_check(self) -> bool:
         """
