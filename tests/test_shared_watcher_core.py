@@ -86,8 +86,10 @@ class TestSharedWatcherCore:
         """Test that GraphRAG update is triggered successfully."""
         tool = TestWatcherTool(project_root=str(tmp_path))
 
-        # Mock GraphRAGIndexManager
-        mock_manager = MagicMock()
+        # Mock GraphRAGIndexManager - use Mock spec to prevent hasattr from always returning True
+        from unittest.mock import Mock
+
+        mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = True
 
         with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
@@ -112,8 +114,10 @@ class TestSharedWatcherCore:
         """Test that GraphRAG update handles False return value gracefully."""
         tool = TestWatcherTool(project_root=str(tmp_path))
 
-        # Mock GraphRAGIndexManager
-        mock_manager = MagicMock()
+        # Mock GraphRAGIndexManager - use Mock spec to prevent hasattr from always returning True
+        from unittest.mock import Mock
+
+        mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = False
 
         with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
