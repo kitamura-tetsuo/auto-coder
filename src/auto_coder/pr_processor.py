@@ -59,8 +59,7 @@ def process_pull_request(
         pr_number = pr_data["number"]
 
         # Skip immediately if PR already has @auto-coder label
-        pr_labels = pr_data.get("labels", [])
-        if config.CHECK_LABELS and "@auto-coder" in pr_labels:
+        if not github_client.check_should_process_with_label_manager(repo_name, pr_number, item_type="pr"):
             logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr

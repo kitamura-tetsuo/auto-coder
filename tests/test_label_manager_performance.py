@@ -23,7 +23,7 @@ class TestLabelManagerPerformance:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels_to_issue.return_value = True
 
         config = AutomationConfig()
 
@@ -44,7 +44,7 @@ class TestLabelManagerPerformance:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels_to_issue.return_value = True
 
         config = AutomationConfig()
 
@@ -78,7 +78,7 @@ class TestLabelManagerPerformance:
         mock_github_client.has_label.return_value = False
 
         # Simulate failures that require retries
-        mock_github_client.try_add_work_in_progress_label.side_effect = [Exception("API error") for _ in range(2)] + [True]  # Success on third attempt
+        mock_github_client.try_add_labels_to_issue.side_effect = [Exception("API error") for _ in range(2)] + [True]  # Success on third attempt
 
         config = AutomationConfig()
 
@@ -99,7 +99,7 @@ class TestLabelManagerPerformance:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels_to_issue.return_value = True
 
         config = AutomationConfig()
 
@@ -141,7 +141,7 @@ class TestLabelManagerPerformance:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels_to_issue.return_value = True
 
         config = AutomationConfig()
 
@@ -180,7 +180,7 @@ class TestLabelManagerPerformance:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels_to_issue.return_value = True
 
         config = AutomationConfig()
 
@@ -206,7 +206,7 @@ class TestLabelManagerPerformance:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels_to_issue.return_value = True
 
         config = AutomationConfig()
 
@@ -234,7 +234,7 @@ class TestLabelManagerPerformance:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels_to_issue.return_value = True
 
         config = AutomationConfig()
 
