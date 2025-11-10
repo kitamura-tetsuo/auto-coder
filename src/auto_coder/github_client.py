@@ -633,78 +633,231 @@ class GitHubClient:
             logger.error(f"Failed to close issue #{issue_number}: {e}")
             raise
 
-    def add_labels_to_issue(self, repo_name: str, issue_number: int, labels: List[str]) -> None:
-        """Add labels to an existing issue."""
+    def add_labels_to_issue(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> None:
+        """Add labels to an existing issue or PR.
+
+        This method is kept for backward compatibility. Use add_labels() instead.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            issue_number: Issue or PR number
+            labels: List of labels to add
+            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
+        """
+        self.add_labels(repo_name, issue_number, labels, item_type)
+
+    def add_labels(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> None:
+        """Add labels to an existing issue or PR.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            issue_number: Issue or PR number
+            labels: List of labels to add
+            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
+        """
         if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping add labels {labels} to issue #{issue_number}")
+            logger.debug(f"Labels disabled - skipping add labels {labels} to {item_type} #{issue_number}")
             return
 
         try:
             repo = self.get_repository(repo_name)
-            issue = repo.get_issue(issue_number)
-
-            # Get current labels
-            current_labels = [label.name for label in issue.labels]
-
-            # Add new labels to current ones (avoid duplicates)
-            all_labels = list(set(current_labels + labels))
-
-            # Update issue with all labels
-            issue.edit(labels=all_labels)
-            logger.info(f"Added labels {labels} to issue #{issue_number}")
+            if item_type.lower() == "pr":
+                pr = repo.get_pull(issue_number)
+                # Get current labels
+                current_labels = [label.name for label in pr.labels]
+                # If any of the requested labels already exist on the PR, skip entirely (consistent with try_add_labels)
+                existing_labels = [lbl for lbl in labels if lbl in current_labels]
+                if existing_labels:
+                    logger.info(f"PR #{issue_number} already has label(s) {existing_labels} - skipping")
+                else:
+                    # For PRs, use add_to_labels method for each new label
+                    for label in labels:
+                        pr.add_to_labels(label)
+                    logger.info(f"Added labels {labels} to PR #{issue_number}")
+            else:
+                issue = repo.get_issue(issue_number)
+                # Get current labels
+                current_labels = [label.name for label in issue.labels]
+                # Add new labels to current ones (avoid duplicates)
+                all_labels = list(set(current_labels + labels))
+                # Update issue with all labels
+                issue.edit(labels=all_labels)
+                logger.info(f"Added labels {labels} to issue #{issue_number}")
 
         except GithubException as e:
-            logger.error(f"Failed to add labels to issue #{issue_number}: {e}")
+            logger.error(f"Failed to add labels to {item_type} #{issue_number}: {e}")
             raise
 
-    def remove_labels_from_issue(self, repo_name: str, issue_number: int, labels: List[str]) -> None:
-        """Remove labels from an existing issue."""
+    def try_add_labels(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> bool:
+        """Add labels to an existing issue or PR.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            issue_number: Issue or PR number
+            labels: List of labels to add
+            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
+
+        Returns:
+            True if labels were successfully added, False if they already exist
+        """
         if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping remove labels {labels} from issue #{issue_number}")
+            logger.debug(f"Labels disabled - skipping add labels {labels} to {item_type} #{issue_number}")
+            return True  # Return True to allow processing to continue
+
+        try:
+            # Check if any of the labels already exist
+            repo = self.get_repository(repo_name)
+            if item_type.lower() == "pr":
+                pr = repo.get_pull(issue_number)
+                current_labels = [label.name for label in pr.labels]
+
+                # Check if any of the labels to add already exist
+                existing_labels = [lbl for lbl in labels if lbl in current_labels]
+                if existing_labels:
+                    logger.info(f"PR #{issue_number} already has label(s) {existing_labels} - skipping")
+                    return False
+
+                # For PRs, use add_to_labels method
+                for label in labels:
+                    pr.add_to_labels(label)
+                logger.info(f"Added labels {labels} to PR #{issue_number}")
+            else:
+                issue = repo.get_issue(issue_number)
+                current_labels = [label.name for label in issue.labels]
+
+                # Check if any of the labels to add already exist
+                existing_labels = [lbl for lbl in labels if lbl in current_labels]
+                if existing_labels:
+                    logger.info(f"Issue #{issue_number} already has label(s) {existing_labels} - skipping")
+                    return False
+
+                # Add new labels to current ones (avoid duplicates)
+                all_labels = list(set(current_labels + labels))
+                # Update issue with all labels
+                issue.edit(labels=all_labels)
+                logger.info(f"Added labels {labels} to issue #{issue_number}")
+
+            return True
+
+        except GithubException as e:
+            logger.error(f"Failed to add labels to {item_type} #{issue_number}: {e}")
+            raise
+
+    def try_add_labels_to_issue(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> bool:
+        """Add labels to an existing issue or PR.
+
+        This method is kept for backward compatibility. Use try_add_labels() instead.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            issue_number: Issue or PR number
+            labels: List of labels to add
+            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
+
+        Returns:
+            True if labels were successfully added, False if they already exist
+        """
+        return self.try_add_labels(repo_name, issue_number, labels, item_type)
+
+    def add_labels_to_pr(self, repo_name: str, pr_number: int, labels: List[str]) -> None:
+        """Convenience wrapper to add labels to a PR.
+
+        Delegates to add_labels(..., item_type="pr").
+        """
+        self.add_labels(repo_name, pr_number, labels, item_type="pr")
+
+    def remove_labels_from_pr(self, repo_name: str, pr_number: int, labels: List[str]) -> None:
+        """Convenience wrapper to remove labels from a PR.
+
+        Delegates to remove_labels(..., item_type="pr").
+        """
+        self.remove_labels(repo_name, pr_number, labels, item_type="pr")
+
+    def has_label_on_pr(self, repo_name: str, pr_number: int, label: str) -> bool:
+        """Convenience wrapper to check if a PR has a label.
+
+        Delegates to has_label(..., item_type="pr").
+        """
+        return self.has_label(repo_name, pr_number, label, item_type="pr")
+
+    def try_add_work_in_progress_label(self, repo_name: str, pr_number: int) -> bool:
+        """Convenience wrapper to add 'work-in-progress' label to a PR if absent.
+
+        Returns True if the label was added, False if it already existed.
+        """
+        return self.try_add_labels(repo_name, pr_number, ["work-in-progress"], item_type="pr")
+
+    def remove_labels(self, repo_name: str, item_number: int, labels: List[str], item_type: str = "issue") -> None:
+        """Remove labels from an existing issue or PR.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            item_number: Issue or PR number
+            labels: List of labels to remove
+            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
+        """
+        if self.disable_labels:
+            logger.debug(f"Labels disabled - skipping remove labels {labels} from {item_type} #{item_number}")
             return
 
         try:
             repo = self.get_repository(repo_name)
-            issue = repo.get_issue(issue_number)
-
-            # Get current labels
-            current_labels = [label.name for label in issue.labels]
-
-            # Remove specified labels
-            remaining_labels = [label for label in current_labels if label not in labels]
-
-            # Update issue with remaining labels
-            issue.edit(labels=remaining_labels)
-            logger.info(f"Removed labels {labels} from issue #{issue_number}")
+            if item_type.lower() == "pr":
+                pr = repo.get_pull(item_number)
+                # For PRs, use remove_from_labels method
+                for label in labels:
+                    pr.remove_from_labels(label)
+                logger.info(f"Removed labels {labels} from PR #{item_number}")
+            else:
+                issue = repo.get_issue(item_number)
+                # Get current labels
+                current_labels = [label.name for label in issue.labels]
+                # Remove specified labels
+                remaining_labels = [label for label in current_labels if label not in labels]
+                # Update issue with remaining labels
+                issue.edit(labels=remaining_labels)
+                logger.info(f"Removed labels {labels} from issue #{item_number}")
 
         except GithubException as e:
-            logger.error(f"Failed to remove labels from issue #{issue_number}: {e}")
+            logger.error(f"Failed to remove labels from {item_type} #{item_number}: {e}")
             raise
 
-    def has_label(self, repo_name: str, issue_number: int, label: str) -> bool:
-        """Check if an issue has a specific label."""
+    def has_label(self, repo_name: str, issue_number: int, label: str, item_type: str = "issue") -> bool:
+        """Check if an issue or PR has a specific label.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            issue_number: Issue or PR number
+            label: Label name to check for
+            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
+
+        Returns:
+            True if the label exists, False otherwise
+        """
         if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping check for label '{label}' on issue #{issue_number}")
+            logger.debug(f"Labels disabled - skipping check for label '{label}' on {item_type} #{issue_number}")
             return False
 
         try:
             repo = self.get_repository(repo_name)
-            issue = repo.get_issue(issue_number)
-
-            # Get current labels
-            current_labels = [lbl.name for lbl in issue.labels]
+            if item_type.lower() == "pr":
+                pr_item = repo.get_pull(issue_number)
+                current_labels = [lbl.name for lbl in pr_item.labels]
+            else:
+                issue_item = repo.get_issue(issue_number)
+                current_labels = [lbl.name for lbl in issue_item.labels]
 
             return label in current_labels
 
         except GithubException as e:
-            logger.error(f"Failed to check labels for issue #{issue_number}: {e}")
+            logger.error(f"Failed to check labels for {item_type} #{issue_number}: {e}")
             raise
 
-    def check_label_exists_with_label_manager(
+    def check_should_process_with_label_manager(
         self,
         repo_name: str,
         issue_number: int,
-        label: str = "@auto-coder",
+        item_type: str,
     ) -> bool:
         """Check if label exists using LabelManager without adding it.
 
@@ -714,10 +867,11 @@ class GitHubClient:
         Args:
             repo_name: Repository name in format 'owner/repo'
             issue_number: Issue or PR number
-            label: Label name to check (defaults to '@auto-coder')
+            item_type: Type of item ('issue' or 'pr')
 
         Returns:
-            True if label exists (should skip processing), False if not exists (should process)
+            True if procees should continue (label added or already checked),
+            False if label already exists (another instance is processing)
         """
         from .label_manager import LabelManager
 
@@ -725,42 +879,10 @@ class GitHubClient:
             self,
             repo_name,
             issue_number,
-            item_type="issue",
-            label_name=label,
+            item_type=item_type,
             skip_label_add=True,
-        ) as should_skip:
-            # should_skip is True if label exists (skip processing)
-            # should_skip is False if label doesn't exist (continue processing)
-            return should_skip
-
-    def try_add_work_in_progress_label(self, repo_name: str, issue_number: int, label: str = "@auto-coder") -> bool:
-        """Try to add work-in-progress label to an issue.
-
-        Returns True if the label was successfully added (issue was not already being processed).
-        Returns False if the label already exists (issue is being processed by another instance).
-        """
-        if self.disable_labels:
-            logger.debug(f"Labels disabled - skipping add '{label}' label to issue #{issue_number}")
-            return True  # Return True to allow processing to continue
-
-        try:
-            # Use LabelManager for check-only mode to ensure unified label management
-            if self.check_label_exists_with_label_manager(repo_name, issue_number, label):
-                logger.info(f"Issue #{issue_number} already has '{label}' label - skipping")
-                return False
-
-            # Add the label
-            repo = self.get_repository(repo_name)
-            issue = repo.get_issue(issue_number)
-            current_labels = [lbl.name for lbl in issue.labels]
-            all_labels = list(set(current_labels + [label]))
-            issue.edit(labels=all_labels)
-            logger.info(f"Added '{label}' label to issue #{issue_number}")
-            return True
-
-        except GithubException as e:
-            logger.error(f"Failed to add work-in-progress label to issue #{issue_number}: {e}")
-            raise
+        ) as should_process:
+            return should_process
 
     def _search_issues_by_title(self, repo_name: str, search_title: str) -> Optional[int]:
         """Search for an open issue by title using fuzzy matching.
