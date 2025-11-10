@@ -78,8 +78,12 @@ class AutomationEngine:
                     continue
             candidates_count += 1
 
-            # Skip if has @auto-coder label
-            if not self.github.check_should_process_with_label_manager(repo_name, pr_data["number"], item_type="pr"):
+            # Skip if another instance is processing (@auto-coder label present) using LabelManager check
+            pr_number = pr_data.get("number")
+            if not isinstance(pr_number, int):
+                logger.warning(f"Skipping PR missing/invalid number in data: {pr_data}")
+                continue
+            if not self.github.check_should_process_with_label_manager(repo_name, pr_number, item_type="pr"):
                 continue
 
             # Calculate priority
@@ -119,7 +123,7 @@ class AutomationEngine:
                     logger.warning(f"Issue data missing or invalid number: {issue_data}")
                     continue
 
-                # Skip if has @auto-coder label
+                # Skip if another instance is processing (@auto-coder label present) using LabelManager check
                 if not self.github.check_should_process_with_label_manager(repo_name, number, item_type="issue"):
                     continue
 

@@ -373,3 +373,45 @@ class TestLabelManager:
             assert should_process is True
             # Should have called get_issue_details
             mock_github_client.get_issue_details_by_number.assert_called_once()
+
+    def test_label_manager_fail_open_when_all_checks_error_issue(self):
+        """All existence checks raise → fail-open: proceed and try to add label."""
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.side_effect = Exception("primary check error")
+        mock_github_client.get_issue_details_by_number.side_effect = Exception("details error")
+        mock_github_client.try_add_labels_to_issue.return_value = True
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+            assert should_process is True
+            mock_github_client.try_add_labels_to_issue.assert_called_once()
+
+    def test_label_manager_fail_open_when_all_checks_error_pr(self):
+        """PR path: has_label and both PR/Issue detail fallbacks raise → proceed."""
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.side_effect = Exception("primary check error")
+        mock_github_client.get_pr_details_by_number.side_effect = Exception("pr details error")
+        mock_github_client.get_issue_details_by_number.side_effect = Exception("issue details error")
+        mock_github_client.try_add_labels_to_issue.return_value = True
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 456, item_type="pr", config=config) as should_process:
+            assert should_process is True
+            mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 456, ["@auto-coder"], "pr")
+
+    def test_label_manager_check_only_mode_label_exists(self):
+        """skip_label_add=True かつ既存ラベルあり → False を返し、追加も削除もしない。"""
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.get_issue_details_by_number.return_value = {"labels": ["@auto-coder"]}
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, skip_label_add=True) as should_process:
+            assert should_process is False
+            mock_github_client.try_add_labels_to_issue.assert_not_called()
+        mock_github_client.remove_labels.assert_not_called()
