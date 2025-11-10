@@ -10,6 +10,10 @@ import time
 from contextlib import contextmanager
 from typing import Any, Generator, Optional, Union
 
+from github.GithubException import GithubException
+
+from .automation_config import AutomationConfig
+from .github_client import GitHubClient
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -19,42 +23,6 @@ class LabelOperationError(Exception):
     """Exception raised when label operations fail."""
 
     pass
-
-
-def _check_label_exists(
-    github_client: Any,
-    repo_name: str,
-    item_number: Union[int, str],
-    label_name: str = "@auto-coder",
-    item_type: str = "issue",
-) -> bool:
-    """Check if a specific label exists on an issue/PR.
-
-    This is a private helper function used internally by LabelManager.
-
-    Args:
-        github_client: GitHub client instance
-        repo_name: Repository name (owner/repo)
-        item_number: Issue or PR number
-        label_name: Name of the label to check
-        item_type: Type of item ('issue' or 'pr')
-
-    Returns:
-        True if label exists, False otherwise
-    """
-    try:
-        if item_type.lower() == "pr":
-            pr_data = github_client.get_pr_details_by_number(repo_name, item_number)
-            labels = pr_data.get("labels", [])
-        else:
-            issue_data = github_client.get_issue_details_by_number(repo_name, item_number)
-            labels = issue_data.get("labels", [])
-
-        return label_name in labels
-
-    except Exception as e:
-        logger.error(f"Failed to check label '{label_name}' on {item_type} #{item_number}: {e}")
-        return False
 
 
 class LabelManager:
@@ -96,6 +64,8 @@ class LabelManager:
     Returns:
         bool: True if label was successfully added and processing should continue,
               False if label already exists (another instance is processing)
+        In skip_label_add mode: True if label does not exist (should process),
+              False if label exists (should not process)
 
     Raises:
         LabelOperationError: If label operations fail after all retries
@@ -103,12 +73,12 @@ class LabelManager:
 
     def __init__(
         self,
-        github_client: Any,
+        github_client: GitHubClient,
         repo_name: str,
         item_number: Union[int, str],
         item_type: str = "issue",
         label_name: str = "@auto-coder",
-        config: Any = None,
+        config: Optional[AutomationConfig] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
         skip_label_add: bool = False,
@@ -125,7 +95,7 @@ class LabelManager:
             max_retries: Maximum number of retries for label operations
             retry_delay: Delay in seconds between retries
             skip_label_add: When True, only check for existing labels without adding.
-                            Returns True if label exists, False if not exists.
+        Returns True if label does not exist (should process), False if label exists (should not process).
         """
         self.github_client = github_client
         self.repo_name = repo_name
@@ -144,15 +114,15 @@ class LabelManager:
         """Enter the context manager - add label and return whether to proceed.
 
         Returns:
-            True if label was successfully added (proceed with processing),
-            False if label already exists (another instance is processing)
+            True if process should continue (label added or does not exist in check-only mode),
+            False if label already exists (another instance is processing or exists in check-only mode)
         """
         # Reentrancy detection - check if this (thread, item) combination is already active
         ident = threading.get_ident()
         item_key = (ident, self.item_number)
         if item_key in LabelManager._active_items:
             self._reentered = True
-            logger.debug(f">>> Skipping enter (already active for this item in this thread) for {self.item_type} #{self.item_number}")
+            logger.debug(f">>> Should process. Already active for this item in this thread for {self.item_type} #{self.item_number}")
             return True
         else:
             self._reentered = False
@@ -172,39 +142,24 @@ class LabelManager:
             # Check-only mode: only verify label existence without adding
             if self.skip_label_add:
                 logger.debug(f"Check-only mode: verifying if '{self.label_name}' label exists on {self.item_type} #{self.item_number}")
-                label_exists = _check_label_exists(
-                    self.github_client,
+                label_exists = self.github_client.has_label(
                     self.repo_name,
-                    self.item_number,
+                    int(self.item_number),
                     self.label_name,
                     self.item_type,
                 )
                 if label_exists:
                     logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
-                    return True  # Return True to indicate label exists (skip processing)
+                    return False  # Return False to indicate label exists (skip processing)
                 else:
                     logger.info(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label - will process")
-                    return False  # Return False to indicate label doesn't exist (continue processing)
+                    return True  # Return True to indicate label doesn't exist (continue processing)
 
             # Normal mode: add label with retry logic
             # Try to add the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    # Check if CHECK_LABELS is True (default) - if so, check for existing label
-                    if self.config.CHECK_LABELS:
-                        if _check_label_exists(
-                            self.github_client,
-                            self.repo_name,
-                            self.item_number,
-                            self.label_name,
-                            self.item_type,
-                        ):
-                            logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
-                            return False
-
-                    # CHECK_LABELS is False - add label without checking for existing
-                    logger.info(f"Adding '{self.label_name}' label to {self.item_type} #{self.item_number} (check-labels disabled)")
-                    result = self.github_client.try_add_work_in_progress_label(self.repo_name, self.item_number, label=self.label_name)
+                    result = self.github_client.try_add_labels(self.repo_name, int(self.item_number), [self.label_name], self.item_type)
                     if result:
                         self._label_added = True
                         return True
@@ -257,7 +212,7 @@ class LabelManager:
             # Remove the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    self.github_client.remove_labels_from_issue(self.repo_name, self.item_number, [self.label_name])
+                    self.github_client.remove_labels(self.repo_name, int(self.item_number), [self.label_name], self.item_type)
                     logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
                     return
 

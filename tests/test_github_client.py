@@ -529,7 +529,7 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
-        client.add_labels_to_issue("test/repo", 123, ["jules", "enhancement"])
+        client.add_labels("test/repo", 123, ["jules", "enhancement"])
 
         # Assert
         mock_repo.get_issue.assert_called_once_with(123)
@@ -563,7 +563,7 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute - try to add "jules" again and "enhancement"
-        client.add_labels_to_issue("test/repo", 123, ["jules", "enhancement"])
+        client.add_labels("test/repo", 123, ["jules", "enhancement"])
 
         # Assert
         mock_repo.get_issue.assert_called_once_with(123)
@@ -573,6 +573,69 @@ class TestGitHubClient:
         actual_labels = call_args[1]["labels"]  # Get labels from kwargs
         expected_labels = {"bug", "jules", "enhancement"}
         assert set(actual_labels) == expected_labels
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_add_labels_to_pr_success(self, mock_github_class, mock_github_token):
+        """Test successful label addition to PR."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+
+        # Mock existing labels
+        mock_label1 = Mock()
+        mock_label1.name = "feature"
+        mock_label2 = Mock()
+        mock_label2.name = "review-required"
+        mock_pr.labels = [mock_label1, mock_label2]
+
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        client.add_labels("test/repo", 456, ["jules", "enhancement"], item_type="pr")
+
+        # Assert
+        mock_repo.get_pull.assert_called_once_with(456)
+        # Should call add_to_labels for each label
+        assert mock_pr.add_to_labels.call_count == 2
+        # Check that add_to_labels was called with the correct labels
+        call_args_list = mock_pr.add_to_labels.call_args_list
+        called_labels = {call[0][0] for call in call_args_list}
+        expected_labels = {"jules", "enhancement"}
+        assert called_labels == expected_labels
+
+    @patch("src.auto_coder.github_client.Github")
+    def test_add_labels_to_pr_no_duplicates(self, mock_github_class, mock_github_token):
+        """Test that duplicate labels are not added to PR."""
+        # Setup
+        mock_github = Mock()
+        mock_repo = Mock(spec=Repository.Repository)
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+
+        # Mock existing labels including one we'll try to add
+        mock_label1 = Mock()
+        mock_label1.name = "feature"
+        mock_label2 = Mock()
+        mock_label2.name = "jules"  # Already exists
+        mock_pr.labels = [mock_label1, mock_label2]
+
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github.get_repo.return_value = mock_repo
+        mock_github_class.return_value = mock_github
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute - try to add "jules" again and "enhancement"
+        client.add_labels("test/repo", 456, ["jules", "enhancement"], item_type="pr")
+
+        # Assert
+        mock_repo.get_pull.assert_called_once_with(456)
+        # Should not call add_to_labels at all since "jules" already exists
+        assert mock_pr.add_to_labels.call_count == 0
 
     @patch("src.auto_coder.github_client.Github")
     def test_has_linked_pr_with_linked_pr(self, mock_github_class, mock_github_token):
@@ -932,7 +995,7 @@ class TestGitHubClient:
         """Test extracting dependencies from None body."""
         client = GitHubClient.get_instance(mock_github_token)
 
-        result = client.get_issue_dependencies(None)
+        result = client.get_issue_dependencies("")
         assert result == []
 
     def test_get_issue_dependencies_removes_duplicates(self, mock_github_token):

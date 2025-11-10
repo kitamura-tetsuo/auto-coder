@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
+from auto_coder.github_client import GitHubClient
 from auto_coder.prompt_loader import render_prompt
 from auto_coder.util.github_action import get_github_actions_logs_from_url
 
@@ -32,7 +33,7 @@ class AutomationEngine:
 
     def __init__(
         self,
-        github_client: Any,
+        github_client: GitHubClient,
         config: Optional[AutomationConfig] = None,
     ) -> None:
         """Initialize automation engine."""
@@ -78,7 +79,7 @@ class AutomationEngine:
             candidates_count += 1
 
             # Skip if has @auto-coder label
-            if self.config.CHECK_LABELS and "@auto-coder" in labels:
+            if not self.github.check_should_process_with_label_manager(repo_name, pr_data["number"], item_type="pr"):
                 continue
 
             # Calculate priority
@@ -112,12 +113,16 @@ class AutomationEngine:
                 issue_data = self.github.get_issue_details(issue)
                 labels = issue_data.get("labels", []) or []
 
-                # Skip if has @auto-coder label
-                if self.config.CHECK_LABELS and "@auto-coder" in labels:
-                    continue
-
                 # Skip if has sub-issues or linked PR
                 number = issue_data.get("number")
+                if not isinstance(number, int):
+                    logger.warning(f"Issue data missing or invalid number: {issue_data}")
+                    continue
+
+                # Skip if has @auto-coder label
+                if not self.github.check_should_process_with_label_manager(repo_name, number, item_type="issue"):
+                    continue
+
                 if self.github.get_open_sub_issues(repo_name, number):
                     continue
                 if self.github.has_linked_pr(repo_name, number):

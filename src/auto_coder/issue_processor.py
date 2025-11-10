@@ -34,8 +34,7 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
         issue_number = issue_data["number"]
 
         # Check if issue already has @auto-coder label (being processed by another instance)
-        current_labels = issue_data.get("labels", [])
-        if config.CHECK_LABELS and "@auto-coder" in current_labels:
+        if not github_client.check_should_process_with_label_manager(repo_name, issue_number, item_type="issue"):
             logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
             return ProcessedIssueResult(
                 issue_data=issue_data,
@@ -79,7 +78,7 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
             current_labels = issue_data.get("labels", [])
             if "jules" not in current_labels:
                 # Add 'jules' label to the issue
-                github_client.add_labels_to_issue(repo_name, issue_number, ["jules"])
+                github_client.add_labels(repo_name, issue_number, ["jules"], item_type="issue")
                 actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
                 logger.info(f"Added 'jules' label to issue #{issue_number}")
             else:
@@ -238,7 +237,7 @@ def _create_pr_for_issue(
                 issue_labels = issue_data.get("labels", [])
                 if "urgent" in issue_labels:
                     try:
-                        github_client.add_labels_to_issue(repo_name, pr_number, ["urgent"])
+                        github_client.add_labels(repo_name, pr_number, ["urgent"], item_type="pr")
                         logger.info(f"Propagated 'urgent' label from issue #{issue_number} to PR #{pr_number}")
                         # Add note to PR body about urgent status
                         try:
