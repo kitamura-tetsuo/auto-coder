@@ -1381,6 +1381,9 @@ class TestGetCandidates:
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
 
+        # Mock label check via LabelManager: skip PR #1 and Issue #11 as already labeled
+        mock_github_client.check_should_process_with_label_manager.side_effect = lambda repo, num, item_type: False if num in (1, 11) else True
+
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 

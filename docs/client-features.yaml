@@ -1,4 +1,4 @@
-version: "2025.11.9+g4bc6faa"
+version: "2025.11.11+g3029d0c"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -164,7 +164,7 @@ features:
     - Skips issues when 5+ open issues without sub-issues are present
     - Single-item processing via --only (URL or number)
     - Auto-resume when on a non-main branch with an associated PR/Issue
-    - label_management: Removed duplicate LabelManager usage from issue processing; LabelManager is now used only for PR processing to prevent concurrent processing. Added thread reentrancy detection to prevent deadlock scenarios in concurrent contexts.
+    - label_management: Removed duplicate LabelManager usage from issue processing; LabelManager is now used only for PR processing to prevent concurrent processing. Added thread reentrancy detection to prevent deadlock scenarios in concurrent contexts. Added PR label wrapper methods (add_labels_to_pr/remove_labels_from_pr/has_label_on_pr). Fixed check-only exception handling in LabelManager to fail-open (returns True on error) and added pre-check to skip when label already exists.
     - git_operations: Enhanced git push failure resolution with LLM fallback that works even when commit message is not available
   dependency_management:
     - description: Automatic dependency checking for issue processing
