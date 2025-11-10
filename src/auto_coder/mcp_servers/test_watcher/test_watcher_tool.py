@@ -56,6 +56,45 @@ class GitIgnoreFileHandler(FileSystemEventHandler):
             self.callback(src_path)
 
 
+class SharedWatcherErrorHandler:
+    """Handles errors in shared watcher without breaking test execution."""
+
+    def __init__(self) -> None:
+        self.failure_count = 0
+        self.last_failure_time = 0.0
+        self.max_failures = 3
+        self.failure_window = 300  # 5 minutes
+
+    def handle_graphrag_failure(self, error: Exception) -> bool:
+        """Handle GraphRAG failures gracefully.
+
+        Args:
+            error: The exception that occurred
+
+        Returns:
+            True to continue trying, False to disable updates temporarily
+        """
+        self.failure_count += 1
+        self.last_failure_time = time.time()
+
+        if self.failure_count <= self.max_failures:
+            logger.debug(f"GraphRAG failure {self.failure_count}/{self.max_failures}: {error}")
+            return True  # Continue trying
+        elif time.time() - self.last_failure_time > self.failure_window:
+            # Reset counter after quiet period
+            self.failure_count = 0
+            return True
+        else:
+            # Too many failures, disable GraphRAG updates temporarily
+            logger.warning("Disabling GraphRAG updates due to repeated failures")
+            return False  # Stop trying temporarily
+
+    def reset_failures(self) -> None:
+        """Reset the failure count (e.g., after successful update)."""
+        self.failure_count = 0
+        self.last_failure_time = 0.0
+
+
 class TestWatcherTool:
     """Tool for watching and managing test execution."""
 
@@ -86,6 +125,13 @@ class TestWatcherTool:
 
         # Failed tests tracking for --last-failed
         self.last_failed_tests: Set[str] = set()
+
+        # Error handler for GraphRAG failures
+        self.error_handler = SharedWatcherErrorHandler()
+
+        # Performance optimization: track recent files for debouncing
+        self._recent_file_changes: Dict[str, float] = {}
+        self._enhancement_window = 1.0  # 1 second window for enhanced debouncing
 
         logger.info(f"TestWatcherTool initialized with project root: {self.project_root}")
 
@@ -218,7 +264,7 @@ class TestWatcherTool:
 
     def _trigger_graphrag_update(self, file_path: str) -> None:
         """
-        Trigger GraphRAG index update for code changes.
+        Trigger GraphRAG index update for code changes with retry logic.
 
         Args:
             file_path: Path to the changed file that triggered the update
@@ -227,13 +273,95 @@ class TestWatcherTool:
             from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
             manager = GraphRAGIndexManager()
-            success = manager.update_index()
+
+            # Use smart update for better performance
+            if hasattr(manager, "smart_update_trigger"):
+                success = manager.smart_update_trigger([file_path])
+            else:
+                # Fallback to simple update for older versions
+                success = manager.update_index()
+
             if success:
                 logger.debug(f"GraphRAG index updated after change: {file_path}")
+                # Reset failure count on success
+                self.error_handler.reset_failures()
             else:
-                logger.warning(f"GraphRAG index update failed for: {file_path}")
+                logger.debug(f"GraphRAG index update returned False: {file_path}")
+                # Don't treat False as an error, just log it
         except Exception as e:
-            logger.debug(f"GraphRAG update failed (graceful degradation): {e}")
+            if self.error_handler.handle_graphrag_failure(e):
+                # Retry logic with exponential backoff
+                retry_delay = min(10 * (2 ** (self.error_handler.failure_count - 1)), 60)
+                logger.debug(f"Retrying GraphRAG update in {retry_delay} seconds")
+                threading.Timer(retry_delay, lambda: self._retry_graphrag_update(file_path)).start()
+            else:
+                logger.warning(f"GraphRAG updates disabled due to failures: {e}")
+
+    def _retry_graphrag_update(self, file_path: str) -> None:
+        """
+        Retry GraphRAG update with a simpler approach.
+
+        Args:
+            file_path: Path to the changed file
+        """
+        try:
+            from auto_coder.graphrag_index_manager import GraphRAGIndexManager
+
+            manager = GraphRAGIndexManager()
+            # Use lightweight check to avoid heavy operations during retries
+            if hasattr(manager, "lightweight_update_check"):
+                success = manager.lightweight_update_check()
+            else:
+                success = manager.update_index()
+
+            if success:
+                logger.debug(f"GraphRAG index updated after retry: {file_path}")
+                self.error_handler.reset_failures()
+            else:
+                logger.debug(f"GraphRAG index retry returned False: {file_path}")
+        except Exception as e:
+            if self.error_handler.handle_graphrag_failure(e):
+                logger.debug(f"GraphRAG retry failed, will try again later: {e}")
+            else:
+                logger.warning(f"GraphRAG updates disabled due to repeated failures: {e}")
+
+    def _enhanced_debounce_files(self, files: List[str]) -> List[str]:
+        """
+        Enhanced debouncing that groups related file changes.
+        Groups files by directory to avoid redundant updates.
+
+        Args:
+            files: List of file paths
+
+        Returns:
+            Debounced list of file paths with grouping optimization
+        """
+        # Group files by directory to avoid redundant updates
+        directory_groups: Dict[str, List[str]] = {}
+        current_time = time.time()
+
+        # Clean up old entries
+        self._recent_file_changes = {f: t for f, t in self._recent_file_changes.items() if current_time - t < self._enhancement_window}
+
+        for file_path in files:
+            # Skip if we've seen this file recently
+            if file_path in self._recent_file_changes:
+                continue
+
+            dir_path = os.path.dirname(file_path)
+            if dir_path not in directory_groups:
+                directory_groups[dir_path] = []
+            directory_groups[dir_path].append(file_path)
+            self._recent_file_changes[file_path] = current_time
+
+        # Process only the most representative file from each directory
+        representative_files: List[str] = []
+        for dir_path, dir_files in directory_groups.items():
+            # Take the first file from each directory to avoid redundant updates
+            representative_files.append(dir_files[0])
+
+        logger.debug(f"Enhanced debouncing: {len(files)} files -> {len(representative_files)} representative files")
+        return representative_files
 
     def _run_playwright_tests(self, last_failed: bool = False) -> None:
         """
