@@ -111,6 +111,7 @@ class LabelManager:
         config: Any = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        skip_label_add: bool = False,
     ):
         """Initialize LabelManager context manager.
 
@@ -123,6 +124,8 @@ class LabelManager:
             config: AutomationConfig instance
             max_retries: Maximum number of retries for label operations
             retry_delay: Delay in seconds between retries
+            skip_label_add: When True, only check for existing labels without adding.
+                            Returns True if label exists, False if not exists.
         """
         self.github_client = github_client
         self.repo_name = repo_name
@@ -132,6 +135,7 @@ class LabelManager:
         self.config = config
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.skip_label_add = skip_label_add
         self._lock = threading.Lock()
         self._label_added = False
         self._reentered = False
@@ -160,8 +164,29 @@ class LabelManager:
             # Check if labels are disabled
             if self._is_labels_disabled():
                 logger.debug(f"Labels disabled - proceeding without label management for {self.item_type} #{self.item_number}")
+                # In check-only mode, always return True when labels are disabled
+                if self.skip_label_add:
+                    return True
                 return True
 
+            # Check-only mode: only verify label existence without adding
+            if self.skip_label_add:
+                logger.debug(f"Check-only mode: verifying if '{self.label_name}' label exists on {self.item_type} #{self.item_number}")
+                label_exists = _check_label_exists(
+                    self.github_client,
+                    self.repo_name,
+                    self.item_number,
+                    self.label_name,
+                    self.item_type,
+                )
+                if label_exists:
+                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label - skipping")
+                    return True  # Return True to indicate label exists (skip processing)
+                else:
+                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label - will process")
+                    return False  # Return False to indicate label doesn't exist (continue processing)
+
+            # Normal mode: add label with retry logic
             # Try to add the label with retry logic
             for attempt in range(self.max_retries):
                 try:
@@ -217,6 +242,11 @@ class LabelManager:
         logger.debug(f">>> Exiting context for {self.item_type} #{self.item_number}")
         # Always clean up thread tracking
         LabelManager._active_items.discard(item_key)
+
+        # In check-only mode, never remove labels
+        if self.skip_label_add:
+            logger.debug(f"Check-only mode: skipping label removal for {self.item_type} #{self.item_number}")
+            return
 
         # Use lock to ensure thread-safe operations
         with self._lock:

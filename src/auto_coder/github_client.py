@@ -700,6 +700,39 @@ class GitHubClient:
             logger.error(f"Failed to check labels for issue #{issue_number}: {e}")
             raise
 
+    def check_label_exists_with_label_manager(
+        self,
+        repo_name: str,
+        issue_number: int,
+        label: str = "@auto-coder",
+    ) -> bool:
+        """Check if label exists using LabelManager without adding it.
+
+        This method provides a unified way to check for label existence using the
+        LabelManager, which ensures proper reentry handling and thread safety.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue or PR number
+            label: Label name to check (defaults to '@auto-coder')
+
+        Returns:
+            True if label exists (should skip processing), False if not exists (should process)
+        """
+        from .label_manager import LabelManager
+
+        with LabelManager(
+            self,
+            repo_name,
+            issue_number,
+            item_type="issue",
+            label_name=label,
+            skip_label_add=True,
+        ) as should_skip:
+            # should_skip is True if label exists (skip processing)
+            # should_skip is False if label doesn't exist (continue processing)
+            return should_skip
+
     def try_add_work_in_progress_label(self, repo_name: str, issue_number: int, label: str = "@auto-coder") -> bool:
         """Try to add work-in-progress label to an issue.
 
@@ -711,18 +744,15 @@ class GitHubClient:
             return True  # Return True to allow processing to continue
 
         try:
-            repo = self.get_repository(repo_name)
-            issue = repo.get_issue(issue_number)
-
-            # Get current labels
-            current_labels = [lbl.name for lbl in issue.labels]
-
-            # Check if label already exists
-            if label in current_labels:
+            # Use LabelManager for check-only mode to ensure unified label management
+            if self.check_label_exists_with_label_manager(repo_name, issue_number, label):
                 logger.info(f"Issue #{issue_number} already has '{label}' label - skipping")
                 return False
 
             # Add the label
+            repo = self.get_repository(repo_name)
+            issue = repo.get_issue(issue_number)
+            current_labels = [lbl.name for lbl in issue.labels]
             all_labels = list(set(current_labels + [label]))
             issue.edit(labels=all_labels)
             logger.info(f"Added '{label}' label to issue #{issue_number}")
