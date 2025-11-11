@@ -9,7 +9,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, cast
 
 from .logger_config import get_logger
 from .utils import is_running_in_container
@@ -94,7 +94,7 @@ class GraphRAGIndexManager:
 
         return hasher.hexdigest()
 
-    def _load_index_state(self) -> dict:
+    def _load_index_state(self) -> dict[str, Any]:
         """Load index state from file.
 
         Returns:
@@ -105,7 +105,7 @@ class GraphRAGIndexManager:
 
         try:
             with open(self.index_state_file, "r") as f:
-                return json.load(f)
+                return cast(dict[str, Any], json.load(f))
         except Exception as e:
             logger.warning(f"Failed to load index state: {e}")
             return {}
@@ -220,19 +220,8 @@ class GraphRAGIndexManager:
         3. Stores graph data in Neo4j
         4. Creates embeddings and stores in Qdrant
         """
-        try:
-            from neo4j import GraphDatabase
-            from qdrant_client import QdrantClient
-            from qdrant_client.models import Distance, PointStruct, VectorParams
-            from sentence_transformers import SentenceTransformer
-        except ImportError as e:
-            import sys
-
-            logger.error(f"Required packages not installed: {e}")
-            logger.error(f"Python executable: {sys.executable}")
-            logger.error(f"Python path: {sys.path}")
-            logger.info("Install with: pip install qdrant-client sentence-transformers neo4j")
-            raise
+        # Dependencies for Neo4j/Qdrant/SentenceTransformer are imported lazily in helper methods
+        # to allow operation (and testing) without those optional packages installed.
 
         # Determine if running in container using robust detection
         in_container = is_running_in_container()
@@ -349,7 +338,7 @@ class GraphRAGIndexManager:
         except Exception as e:
             return False, f"Compatibility check failed: {e}"
 
-    def _run_graph_builder(self) -> dict:
+    def _run_graph_builder(self) -> dict[str, Any]:
         """Run graph-builder to analyze codebase.
 
         Returns:
@@ -482,7 +471,7 @@ class GraphRAGIndexManager:
                     with open(output_path, "r") as f:
                         data = json.load(f)
                         logger.info(f"Successfully loaded graph data: {len(data.get('nodes', []))} nodes, {len(data.get('edges', []))} edges")
-                        return data
+                        return cast(dict[str, Any], data)
                 else:
                     logger.warning(f"graph-builder did not produce output at {output_path}")
                     logger.warning(f"Output directory contents: {list(Path(temp_dir).iterdir())}")
@@ -595,7 +584,7 @@ class GraphRAGIndexManager:
         logger.debug(f"Searched locations: {[str(c) for c in candidates]}")
         return None
 
-    def _fallback_python_indexing(self) -> dict:
+    def _fallback_python_indexing(self) -> dict[str, Any]:
         """Fallback to simple Python file indexing when graph-builder is not available.
 
         Returns:
@@ -733,99 +722,107 @@ class GraphRAGIndexManager:
             logger.debug(f"Python path: {sys.path}")
             return
 
-        # Connect to Qdrant
-        # Use container name if in container and connected to same network, otherwise localhost
-        qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
-        logger.info(f"Connecting to Qdrant at {qdrant_url}")
-        client = QdrantClient(url=qdrant_url, timeout=10)
-
-        # Collection name
-        collection_name = "code_embeddings"
-
-        # Calculate repository hash for labels
-        repo_path_str = str(self.repo_path.resolve())
-        repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
-        repo_label = f"Repo_{repo_hash}"
-
-        # Load embedding model
-        logger.info("Loading embedding model...")
-        model = SentenceTransformer("all-MiniLM-L6-v2")
-
-        # Create or recreate collection
+        # Connect to Qdrant and store embeddings (best-effort; skip on any failure)
         try:
-            client.delete_collection(collection_name)
-            logger.info(f"Deleted existing collection: {collection_name}")
-        except Exception:
-            pass
+            # Use container name if in container and connected to same network, otherwise localhost
+            qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
+            logger.info(f"Connecting to Qdrant at {qdrant_url}")
+            client = QdrantClient(url=qdrant_url, timeout=2)
 
-        client.create_collection(
-            collection_name=collection_name,
-            vectors_config=VectorParams(size=384, distance=Distance.COSINE),
-        )
-        logger.info(f"Created collection: {collection_name}")
+            # Collection name
+            collection_name = "code_embeddings"
 
-        # Index nodes
-        nodes = graph_data.get("nodes", [])
-        points = []
+            # Calculate repository hash for labels
+            repo_path_str = str(self.repo_path.resolve())
+            repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
+            repo_label = f"Repo_{repo_hash}"
 
-        for idx, node in enumerate(nodes):
+            # Load embedding model
+            logger.info("Loading embedding model...")
+            model = SentenceTransformer("all-MiniLM-L6-v2")
+
+            # Create or recreate collection
             try:
-                # Create text representation for embedding
-                text_parts = []
+                client.delete_collection(collection_name)
+                logger.info(f"Deleted existing collection: {collection_name}")
+            except Exception:
+                pass
 
-                if node.get("fqname"):
-                    text_parts.append(f"Name: {node['fqname']}")
+            client.create_collection(
+                collection_name=collection_name,
+                vectors_config=VectorParams(size=384, distance=Distance.COSINE),
+            )
+            logger.info(f"Created collection: {collection_name}")
 
-                if node.get("sig"):
-                    text_parts.append(f"Signature: {node['sig']}")
+            # Index nodes
+            nodes = graph_data.get("nodes", [])
+            points = []
 
-                if node.get("short"):
-                    text_parts.append(f"Summary: {node['short']}")
+            for idx, node in enumerate(nodes):
+                try:
+                    # Create text representation for embedding
+                    text_parts = []
 
-                # Use content if available (from fallback indexing)
-                if node.get("content"):
-                    text_parts.append(node["content"][:1000])
+                    if node.get("fqname"):
+                        text_parts.append(f"Name: {node['fqname']}")
 
-                if not text_parts:
-                    continue
+                    if node.get("sig"):
+                        text_parts.append(f"Signature: {node['sig']}")
 
-                text = "\n".join(text_parts)
+                    if node.get("short"):
+                        text_parts.append(f"Summary: {node['short']}")
 
-                # Create embedding
-                embedding_result = model.encode(text)
-                # Handle both numpy arrays and lists
-                embedding = embedding_result.tolist() if hasattr(embedding_result, "tolist") else embedding_result
+                    # Use content if available (from fallback indexing)
+                    if node.get("content"):
+                        text_parts.append(node["content"][:1000])
 
-                # Create point
-                point = PointStruct(
-                    id=idx,
-                    vector=embedding,
-                    payload={
-                        "node_id": node.get("id", f"node_{idx}"),
-                        "kind": node.get("kind", "Unknown"),
-                        "fqname": node.get("fqname", ""),
-                        "file": node.get("file", ""),
-                        "repo_path": repo_path_str,
-                        "repo_hash": repo_hash,
-                        "repo_label": repo_label,
-                    },
-                )
-                points.append(point)
+                    if not text_parts:
+                        continue
 
-                # Batch insert every 100 nodes
-                if len(points) >= 100:
-                    client.upsert(collection_name=collection_name, points=points)
-                    logger.info(f"Indexed {idx + 1}/{len(nodes)} nodes")
-                    points = []
+                    text = "\n".join(text_parts)
 
-            except Exception as e:
-                logger.warning(f"Failed to index node {idx}: {e}")
+                    # Create embedding
+                    embedding_result: Any = model.encode(text)
+                    # Normalize embedding to list[float] for type-checking
+                    if hasattr(embedding_result, "tolist"):
+                        embedding: list[float] = cast(list[float], embedding_result.tolist())
+                    elif isinstance(embedding_result, list):
+                        embedding = [float(x) for x in embedding_result]
+                    else:
+                        embedding = [float(embedding_result)] if isinstance(embedding_result, (int, float)) else []
 
-        # Insert remaining points
-        if points:
-            client.upsert(collection_name=collection_name, points=points)
+                    # Create point
+                    point = PointStruct(
+                        id=idx,
+                        vector=embedding,
+                        payload={
+                            "node_id": node.get("id", f"node_{idx}"),
+                            "kind": node.get("kind", "Unknown"),
+                            "fqname": node.get("fqname", ""),
+                            "file": node.get("file", ""),
+                            "repo_path": repo_path_str,
+                            "repo_hash": repo_hash,
+                            "repo_label": repo_label,
+                        },
+                    )
+                    points.append(point)
 
-        logger.info(f"Successfully indexed {len(nodes)} nodes into Qdrant")
+                    # Batch insert every 100 nodes
+                    if len(points) >= 100:
+                        client.upsert(collection_name=collection_name, points=points)
+                        logger.info(f"Indexed {idx + 1}/{len(nodes)} nodes")
+                        points = []
+
+                except Exception as e:
+                    logger.warning(f"Failed to index node {idx}: {e}")
+
+            # Insert remaining points
+            if points:
+                client.upsert(collection_name=collection_name, points=points)
+
+            logger.info(f"Successfully indexed {len(nodes)} nodes into Qdrant")
+        except Exception as e:
+            logger.warning(f"Skipping Qdrant indexing due to error: {e}")
 
     def ensure_index_up_to_date(self) -> bool:
         """Ensure index is up to date, updating if necessary.
