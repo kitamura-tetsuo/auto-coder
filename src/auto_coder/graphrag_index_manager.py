@@ -179,10 +179,18 @@ class GraphRAGIndexManager:
         # Check if codebase hash matches
         current_hash = self._get_codebase_hash()
         if current_hash != stored_hash:
-            logger.info("Codebase has changed, index needs to be updated")
+            try:
+                logger.info("Codebase has changed, index needs to be updated")
+            except Exception:
+                # Silently ignore logging errors during shutdown
+                pass
             return False
 
-        logger.info("Index is up to date")
+        try:
+            logger.info("Index is up to date")
+        except Exception:
+            # Silently ignore logging errors during shutdown
+            pass
         return True
 
     def update_index(self, force: bool = False) -> bool:
@@ -195,16 +203,28 @@ class GraphRAGIndexManager:
             True if index was updated successfully, False otherwise
         """
         if not force and self.is_index_up_to_date():
-            logger.info("Index is already up to date, skipping update")
+            try:
+                logger.info("Index is already up to date, skipping update")
+            except Exception:
+                # Silently ignore logging errors during shutdown
+                pass
             return True
 
-        logger.info("Updating GraphRAG index...")
+        try:
+            logger.info("Updating GraphRAG index...")
+        except Exception:
+            # Silently ignore logging errors during shutdown
+            pass
 
         # Perform actual indexing
         try:
             self._index_codebase()
         except Exception as e:
-            logger.error(f"Failed to index codebase: {e}")
+            try:
+                logger.error(f"Failed to index codebase: {e}")
+            except Exception:
+                # Silently ignore logging errors during shutdown
+                pass
             return False
 
         # Update the hash to mark as indexed
@@ -215,7 +235,11 @@ class GraphRAGIndexManager:
         }
         self._save_index_state(state)
 
-        logger.info("Index updated successfully")
+        try:
+            logger.info("Index updated successfully")
+        except Exception:
+            # Silently ignore logging errors during shutdown
+            pass
         return True
 
     def _index_codebase(self) -> None:
