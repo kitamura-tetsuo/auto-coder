@@ -283,14 +283,61 @@ def is_git_repository(path: Optional[str] = None) -> bool:
         return False
 
 
+def _command_exists(command: str) -> bool:
+    """
+    Check if a command exists in the system PATH.
+
+    Args:
+        command: The command to check
+
+    Returns:
+        True if the command exists, False otherwise
+    """
+    cmd = CommandExecutor()
+    result = cmd.run_command(["which", command])
+    return result.success
+
+
+def _is_black_error(error_output: str) -> bool:
+    """
+    Check if the error is from black formatting issues.
+
+    Args:
+        error_output: The error message from git commit
+
+    Returns:
+        True if the error is related to black formatting issues
+    """
+    if not error_output:
+        return False
+    s = error_output.lower()
+    return "black" in s and ("files were modified" in s or "reformatted" in s or "would be reformatted" in s)
+
+
+def _is_isort_error(error_output: str) -> bool:
+    """
+    Check if the error is from isort import sorting issues.
+
+    Args:
+        error_output: The error message from git commit
+
+    Returns:
+        True if the error is related to isort import sorting issues
+    """
+    if not error_output:
+        return False
+    s = error_output.lower()
+    return "isort" in s and ("would reorder" in s or "imports are in the wrong order" in s or "unbalanced tuple" in s or "wrong order" in s or "linted wrong file" in s)
+
+
 def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_retries: int = 1) -> CommandResult:
     """
     Commit changes with automatic handling of formatter hook failures.
 
     This function centralizes git commit operations and handles well-known
-    hook failures like dprint formatting errors by automatically running
-    the formatter and retrying the commit once. If dprint itself fails,
-    it attempts to use LLM as a fallback to resolve the issue.
+    hook failures like dprint, black, and isort formatting errors by automatically
+    running the appropriate formatter and retrying the commit once. If the formatter
+    itself fails, it attempts to use LLM as a fallback to resolve the issue.
 
     Args:
         commit_message: The commit message to use
@@ -310,18 +357,38 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
             logger.info("Successfully committed changes")
             return result
 
-        # Check if the failure is due to dprint formatting issues
-        is_dprint_error = "dprint fmt" in result.stderr or "Formatting issues detected" in result.stderr or "dprint fmt" in result.stdout or "Formatting issues detected" in result.stdout
+        # Combine stdout and stderr for error detection
+        error_output = f"{result.stdout}\n{result.stderr}"
 
-        if is_dprint_error:
+        # Check for formatter-specific errors
+        is_dprint_error = "dprint fmt" in error_output or "Formatting issues detected" in error_output
+        is_black_error = _is_black_error(error_output)
+        is_isort_error = _is_isort_error(error_output)
+
+        # If any formatter error is detected, try to fix it
+        if is_dprint_error or is_black_error or is_isort_error:
             if attempt < max_retries:
-                logger.info("Detected dprint formatting issues, running 'npx dprint fmt' and retrying...")
-
-                # Run dprint formatter
-                fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
+                # Determine which formatter to run based on the error
+                if is_dprint_error:
+                    logger.info("Detected dprint formatting issues, running 'npx dprint fmt' and retrying...")
+                    fmt_result = cmd.run_command(["npx", "dprint", "fmt"], cwd=cwd)
+                elif is_black_error:
+                    logger.info("Detected black formatting issues, running 'black' and retrying...")
+                    # Check if we should use uv or system Python
+                    if _command_exists("uv"):
+                        fmt_result = cmd.run_command(["uv", "run", "black", "src/", "tests/"], cwd=cwd)
+                    else:
+                        fmt_result = cmd.run_command(["black", "src/", "tests/"], cwd=cwd)
+                else:  # is_isort_error
+                    logger.info("Detected isort import sorting issues, running 'isort' and retrying...")
+                    # Check if we should use uv or system Python
+                    if _command_exists("uv"):
+                        fmt_result = cmd.run_command(["uv", "run", "isort", "src/", "tests/"], cwd=cwd)
+                    else:
+                        fmt_result = cmd.run_command(["isort", "src/", "tests/"], cwd=cwd)
 
                 if fmt_result.success:
-                    logger.info("Successfully ran dprint formatter")
+                    logger.info("Successfully ran formatter")
                     # Stage the formatted files
                     add_result = cmd.run_command(["git", "add", "-u"], cwd=cwd)
                     if add_result.success:
@@ -330,27 +397,27 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
                     else:
                         logger.warning(f"Failed to stage formatted files: {add_result.stderr}")
                 else:
-                    logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
-                    # Try LLM fallback when dprint formatter execution fails
-                    logger.info("Attempting to resolve dprint formatter failure using LLM...")
+                    logger.warning(f"Failed to run formatter: {fmt_result.stderr}")
+                    # Try LLM fallback when formatter execution fails
+                    logger.info("Attempting to resolve formatter failure using LLM...")
                     llm_success = try_llm_dprint_fallback(commit_message, fmt_result.stderr)
                     if llm_success:
-                        logger.info("LLM successfully resolved dprint formatter failure")
+                        logger.info("LLM successfully resolved formatter failure")
                         # Retry the commit after LLM intervention
                         retry_result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
                         if retry_result.success:
                             logger.info("Successfully committed changes after LLM intervention")
                             return retry_result
                     else:
-                        logger.error("LLM failed to resolve dprint formatter failure")
+                        logger.error("LLM failed to resolve formatter failure")
             else:
-                logger.warning(f"Max retries ({max_retries}) reached for commit with dprint formatting")
+                logger.warning(f"Max retries ({max_retries}) reached for commit with formatter issues")
         else:
-            # Non-dprint error, exit immediately
+            # Non-formatter error, exit immediately
             logger.warning(f"Failed to commit changes: {result.stderr}")
             return result
 
-    # If we get here, all attempts failed (dprint error case)
+    # If we get here, all attempts failed
     logger.warning(f"Failed to commit changes: {result.stderr}")
     return result
 
