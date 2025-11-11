@@ -231,3 +231,5 @@ CONTINUATION_SESSION_PROMPT.md
 tmp/
 *.md
 *.txt
+
+pyright_results.json
