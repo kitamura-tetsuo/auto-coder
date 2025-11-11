@@ -343,7 +343,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 return result
 
             # Stubbed commands
-            if program not in ("git", "gh", "gemini", "codex", "uv"):
+            if program not in ("git", "gh", "gemini", "codex", "uv", "node"):
                 return orig_run(
                     cmd,
                     capture_output=capture_output,
@@ -384,6 +384,40 @@ def stub_git_and_gh_commands(monkeypatch, request):
                     pass  # Output will be generated below based on text flag
                 else:
                     out_text = ""
+            elif program == "node":
+                # Simulate Node.js CLI behavior for graph-builder commands
+                try:
+                    import json as _json
+                    from pathlib import Path as _Path
+                except Exception:
+                    pass
+
+                # Version check
+                if (isinstance(cmd, (list, tuple)) and "--version" in cmd) or (isinstance(cmd, str) and "--version" in cmd):
+                    out_text = "v20.0.0\n"
+                else:
+                    # Help check or actual scan
+                    argv = cmd if isinstance(cmd, (list, tuple)) else cmd.split()
+                    if "scan" in argv and "--help" in argv:
+                        out_text = "--languages, --project, --out\n"
+                    elif "scan" in argv:
+                        # On scan, create out/graph-data.json with minimal content
+                        try:
+                            if "--out" in argv:
+                                out_idx = argv.index("--out") + 1
+                                if out_idx < len(argv):
+                                    out_dir = _Path(argv[out_idx])
+                                    out_dir.mkdir(parents=True, exist_ok=True)
+                                    (_Path(out_dir) / "graph-data.json").write_text(_json.dumps({"nodes": [], "edges": []}))
+                        except Exception:
+                            pass
+                        out_text = ""
+                # For node we return here
+                if text:
+                    stdout, stderr = _as_text_or_bytes(out_text, True)
+                else:
+                    stdout, stderr = _as_text_or_bytes(out_text, False)
+                return types.SimpleNamespace(stdout=stdout, stderr=stderr, returncode=0)
             else:  # gemini/codex/uv
                 # Dummy success for --version check and exec
                 out_text = ""
@@ -427,7 +461,7 @@ def stub_git_and_gh_commands(monkeypatch, request):
     ):
         try:
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
-            if program in ("git", "gh", "gemini", "codex", "uv"):
+            if program in ("git", "gh", "gemini", "codex", "uv", "node"):
 
                 class DummyPopen:
                     def __init__(self):
