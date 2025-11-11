@@ -114,104 +114,122 @@ def test_is_index_up_to_date_different_hash(index_manager, temp_repo):
 @pytest.mark.slow
 def test_update_index_when_up_to_date(index_manager, temp_repo):
     """Test update_index when index is already up to date."""
-    # Save current hash and path
-    current_hash = index_manager._get_codebase_hash()
-    index_manager._save_index_state(
-        {
-            "codebase_hash": current_hash,
-            "indexed_at": str(temp_repo.resolve()),
-        }
-    )
+    # Mock _run_graph_builder to prevent actual CLI execution
+    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
+        # Save current hash and path
+        current_hash = index_manager._get_codebase_hash()
+        index_manager._save_index_state(
+            {
+                "codebase_hash": current_hash,
+                "indexed_at": str(temp_repo.resolve()),
+            }
+        )
 
-    result = index_manager.update_index(force=False)
-    assert result is True
+        result = index_manager.update_index(force=False)
+        assert result is True
 
 
 @pytest.mark.slow
 def test_update_index_when_outdated(index_manager, temp_repo):
     """Test update_index when index is outdated."""
-    # Save old hash with current path
-    index_manager._save_index_state(
-        {
-            "codebase_hash": "old_hash",
-            "indexed_at": str(temp_repo.resolve()),
-        }
-    )
+    # Mock _run_graph_builder to prevent actual CLI execution
+    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
+        # Save old hash with current path
+        index_manager._save_index_state(
+            {
+                "codebase_hash": "old_hash",
+                "indexed_at": str(temp_repo.resolve()),
+            }
+        )
 
-    result = index_manager.update_index(force=False)
-    assert result is True
+        result = index_manager.update_index(force=False)
+        assert result is True
 
-    # Verify state was updated
-    state = index_manager._load_index_state()
-    assert state["codebase_hash"] == index_manager._get_codebase_hash()
+        # Verify state was updated
+        state = index_manager._load_index_state()
+        assert state["codebase_hash"] == index_manager._get_codebase_hash()
 
 
 @pytest.mark.slow
 def test_update_index_force(index_manager, temp_repo):
     """Test update_index with force=True."""
-    # Save current hash and path
-    current_hash = index_manager._get_codebase_hash()
-    index_manager._save_index_state(
-        {
-            "codebase_hash": current_hash,
-            "indexed_at": str(temp_repo.resolve()),
-        }
-    )
+    # Mock _run_graph_builder to prevent actual CLI execution
+    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
+        # Save current hash and path
+        current_hash = index_manager._get_codebase_hash()
+        index_manager._save_index_state(
+            {
+                "codebase_hash": current_hash,
+                "indexed_at": str(temp_repo.resolve()),
+            }
+        )
 
-    result = index_manager.update_index(force=True)
-    assert result is True
+        result = index_manager.update_index(force=True)
+        assert result is True
 
-    # Verify state was updated
-    state = index_manager._load_index_state()
-    assert state["codebase_hash"] == current_hash
+        # Verify state was updated
+        state = index_manager._load_index_state()
+        assert state["codebase_hash"] == current_hash
 
 
 @pytest.mark.slow
 def test_ensure_index_up_to_date_when_up_to_date(index_manager, temp_repo):
     """Test ensure_index_up_to_date when index is up to date."""
-    # Save current hash and path
-    current_hash = index_manager._get_codebase_hash()
-    index_manager._save_index_state(
-        {
-            "codebase_hash": current_hash,
-            "indexed_at": str(temp_repo.resolve()),
-        }
-    )
+    # Mock _run_graph_builder to prevent actual CLI execution
+    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
+        # Save current hash and path
+        current_hash = index_manager._get_codebase_hash()
+        index_manager._save_index_state(
+            {
+                "codebase_hash": current_hash,
+                "indexed_at": str(temp_repo.resolve()),
+            }
+        )
 
-    result = index_manager.ensure_index_up_to_date()
-    assert result is True
+        result = index_manager.ensure_index_up_to_date()
+        assert result is True
 
 
 @pytest.mark.slow
 def test_ensure_index_up_to_date_when_outdated(index_manager, temp_repo):
     """Test ensure_index_up_to_date when index is outdated."""
-    # Save old hash with current path
-    index_manager._save_index_state(
-        {
-            "codebase_hash": "old_hash",
-            "indexed_at": str(temp_repo.resolve()),
-        }
-    )
+    # Mock _run_graph_builder to prevent actual CLI execution
+    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
+        # Save old hash with current path
+        index_manager._save_index_state(
+            {
+                "codebase_hash": "old_hash",
+                "indexed_at": str(temp_repo.resolve()),
+            }
+        )
 
-    result = index_manager.ensure_index_up_to_date()
-    assert result is True
+        result = index_manager.ensure_index_up_to_date()
+        assert result is True
 
-    # Verify state was updated
-    state = index_manager._load_index_state()
-    assert state["codebase_hash"] == index_manager._get_codebase_hash()
+        # Verify state was updated
+        state = index_manager._load_index_state()
+        assert state["codebase_hash"] == index_manager._get_codebase_hash()
 
 
 @pytest.mark.slow
 def test_update_index_saves_indexed_at(index_manager):
     """Test that update_index saves indexed_at field."""
-    result = index_manager.update_index(force=True)
-    assert result is True
+    # Mock _run_graph_builder to prevent actual CLI execution
+    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
+        result = index_manager.update_index(force=True)
+        assert result is True
 
-    state = index_manager._load_index_state()
-    assert "indexed_at" in state
-    assert isinstance(state["indexed_at"], str)
-    # Verify indexed_at is the resolved repo_path
-    assert Path(state["indexed_at"]).resolve() == index_manager.repo_path.resolve()
+        state = index_manager._load_index_state()
+        assert "indexed_at" in state
+        assert isinstance(state["indexed_at"], str)
+        # Verify indexed_at is the resolved repo_path
+        assert Path(state["indexed_at"]).resolve() == index_manager.repo_path.resolve()
 
 
 @pytest.mark.slow
