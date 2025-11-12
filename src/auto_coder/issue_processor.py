@@ -343,8 +343,8 @@ def _apply_issue_actions_directly(
                     # Create parent issue branch if it doesn't exist
                     logger.info(f"Parent branch {parent_branch} does not exist, creating it")
 
-                    # Create parent issue branch (automatically pushed to remote)
-                    with branch_context(parent_branch, create_new=True):
+                    # Create parent issue branch from the configured main branch (automatically pushed to remote)
+                    with branch_context(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
                         actions.append(f"Created and published parent branch: {parent_branch}")
                         logger.info(f"Successfully created and published parent branch: {parent_branch}")
 
