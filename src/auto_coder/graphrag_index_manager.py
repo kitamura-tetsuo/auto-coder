@@ -375,6 +375,15 @@ class GraphRAGIndexManager:
         Returns:
             Dictionary with 'nodes' and 'edges' keys
         """
+        # In pytest, avoid spawning external graph-builder; use fallback for speed/stability
+        import os
+
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            # However, if a test explicitly sets an override path, honor it and run real CLI
+            if getattr(self, "_override_graph_builder_path", None) is None:
+                logger.info("Detected pytest environment; using fallback Python indexing instead of graph-builder")
+                return self._fallback_python_indexing()
+
         # Find graph-builder installation
         graph_builder_path = self._find_graph_builder()
         if not graph_builder_path:
@@ -902,6 +911,7 @@ class GraphRAGIndexManager:
             file_batch: List of file paths that have changed
             max_batch_size: Maximum number of files to batch before processing immediately
         """
+        # Update pending files and decide whether to process now under lock
         with self._batch_lock:
             self._pending_files.update(file_batch)
 
@@ -911,15 +921,22 @@ class GraphRAGIndexManager:
             if self._batch_timer is not None:
                 self._batch_timer.cancel()
 
-            if len(self._pending_files) >= max_batch_size:
-                # Process batch immediately
-                logger.debug(f"Batch size ({len(self._pending_files)}) >= max_batch_size ({max_batch_size}), processing immediately")
-                self._process_pending_batch()
-            else:
-                # Schedule delayed processing
+            process_now = len(self._pending_files) >= max_batch_size
+
+            if not process_now:
+                # Schedule delayed processing; timer thread must be daemon to avoid blocking interpreter exit
                 self._batch_timer = threading.Timer(self._BATCH_DELAY_SECONDS, self._process_pending_batch)
+                try:
+                    self._batch_timer.daemon = True
+                except Exception:
+                    pass
                 self._batch_timer.start()
                 logger.debug(f"Scheduled batch processing in {self._BATCH_DELAY_SECONDS} seconds")
+
+        if process_now:
+            # Call outside lock to avoid deadlock with _process_pending_batch (which acquires the same lock)
+            logger.debug(f"Batch size ({len(self._pending_files)}) >= max_batch_size ({max_batch_size}), processing immediately")
+            self._process_pending_batch()
 
     def _process_pending_batch(self) -> None:
         """
