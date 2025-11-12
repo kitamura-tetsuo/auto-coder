@@ -506,16 +506,31 @@ def git_checkout_branch(
         if not commit_result.success:
             logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
 
-    # Build checkout command
+    # Build checkout command (enforce correct base for new branches)
     checkout_cmd: List[str] = ["git", "checkout"]
+    resolved_base_ref: Optional[str] = None
     if create_new:
-        if base_branch:
-            # Create new branch from base_branch (or reset if exists)
-            checkout_cmd.append("-B")
+        if base_branch is None:
+            # Fail fast to detect incorrect call sites
+            raise ValueError("When create_new=True, base_branch must be provided (e.g., 'main').")
+
+        # Always fetch latest refs before creating a new branch
+        logger.info("Fetching 'origin' with --prune --tags before creating new branch...")
+        cmd.run_command(["git", "fetch", "origin", "--prune", "--tags"], cwd=cwd)
+
+        # Prefer origin/<base_branch> if it exists; otherwise fall back to local <base_branch>
+        origin_ref = f"origin/{base_branch}"
+        origin_check = cmd.run_command(["git", "rev-parse", "--verify", origin_ref], cwd=cwd)
+        if origin_check.success:
+            resolved_base_ref = origin_ref
         else:
-            # Create new branch
-            checkout_cmd.append("-b")
-    checkout_cmd.append(branch_name)
+            local_check = cmd.run_command(["git", "rev-parse", "--verify", base_branch], cwd=cwd)
+            resolved_base_ref = base_branch if local_check.success else base_branch
+
+        logger.info(f"Creating new branch '{branch_name}' from '{resolved_base_ref}'")
+        checkout_cmd.extend(["-B", branch_name, resolved_base_ref])
+    else:
+        checkout_cmd.append(branch_name)
 
     # Execute checkout
     result = cmd.run_command(checkout_cmd, cwd=cwd)
