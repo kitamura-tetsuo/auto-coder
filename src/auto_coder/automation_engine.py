@@ -5,7 +5,7 @@ Main automation engine for Auto-Coder.
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, cast
 
 from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from auto_coder.github_client import GitHubClient
@@ -23,6 +23,7 @@ from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import process_pull_request
 from .progress_footer import ProgressStage
+from .test_result import TestResult
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -797,44 +798,73 @@ class AutomationEngine:
                 "return_code": -1,
             }
 
-    def _extract_important_errors(self, test_result: Dict[str, Any]) -> str:
-        """Extract important errors from test output."""
-        import re
+    def _extract_important_errors(self, test_result: Union[TestResult, Dict[str, Any]]) -> str:
+        """Extract important errors using the structured TestResult flow when available.
 
-        important_lines = []
+        Falls back to the legacy regex-based extraction when conversion fails.
+        """
+        try:
+            # Prefer structured extractor from fix_to_pass_tests_runner
+            if isinstance(test_result, TestResult):
+                return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(test_result))
+            # Convert legacy dict payloads to TestResult for better extraction
+            tr = fix_to_pass_tests_runner_module._to_test_result(test_result)
+            return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(tr))
+        except Exception:
+            # Legacy fallback: minimal regex-based extraction from dict payloads
+            import re
 
-        # Extract important error patterns from output
-        output = test_result.get("output", "")
-        if output:
-            # Look for common error patterns
-            error_patterns = [
-                r"ERROR:.*",
-                r"FAILED:.*",
-                r"Failures?:.*",
-                r"Error.*",
-                r"Exception.*",
-                r"Traceback.*",
-            ]
+            important_lines: List[str] = []
+            output = ""
+            errors_field = ""
+            try:
+                if isinstance(test_result, dict):
+                    output = str(test_result.get("output", ""))
+                    errors_field = str(test_result.get("errors", ""))
+            except Exception:
+                pass
 
-            for line in output.split("\n"):
-                line = line.strip()
-                if any(re.search(pattern, line, re.IGNORECASE) for pattern in error_patterns):
-                    if line and line not in important_lines:
-                        important_lines.append(line)
+            if output:
+                error_patterns = [
+                    r"ERROR:.*",
+                    r"FAILED:.*",
+                    r"Failures?:.*",
+                    r"Error.*",
+                    r"Exception.*",
+                    r"Traceback.*",
+                ]
+                for line in output.split("\n"):
+                    line = line.strip()
+                    if any(re.search(pattern, line, re.IGNORECASE) for pattern in error_patterns):
+                        if line and line not in important_lines:
+                            important_lines.append(line)
 
-        # Include the errors field if present
-        errors = test_result.get("errors", "")
-        if errors and errors not in important_lines:
-            important_lines.append(errors)
+            if errors_field and errors_field not in important_lines:
+                important_lines.append(errors_field)
 
-        return "\n".join(important_lines)
+            return "\n".join(important_lines)
 
-    def _apply_github_actions_fix(self, repo_name: str, pr_data: Dict[str, Any], github_logs: str) -> List[str]:
-        """Apply GitHub Actions fix."""
-        actions = []
+    def _apply_github_actions_fix(
+        self,
+        repo_name: str,
+        pr_data: Dict[str, Any],
+        test_result: TestResult,
+        github_logs: Optional[str] = None,
+    ) -> List[str]:
+        """Apply GitHub Actions fix using structured TestResult context.
+
+        - Accepts TestResult to enable richer, framework-aware error extraction
+        - Passes structured metadata to the LLM prompt for targeted fixes
+        """
+        actions: List[str] = []
 
         try:
-            # Load prompt from yaml file and format with context
+            # Derive a concise error summary using the structured extractor
+            error_summary = cast(str, fix_to_pass_tests_runner_module.extract_important_errors(test_result))
+            if not github_logs:
+                github_logs = error_summary
+
+            # Prepare enhanced prompt with structured context
             prompt = render_prompt(
                 "pr.github_actions_fix_direct",
                 data={
@@ -842,12 +872,16 @@ class AutomationEngine:
                     "pr_title": pr_data.get("title", "N/A"),
                     "pr_body": pr_data.get("body", "N/A"),
                     "pr_number": pr_data.get("number", "N/A"),
-                    "github_logs": github_logs,
+                    "github_logs": (github_logs or ""),
+                    # Structured enhancements
+                    "structured_errors": test_result.extraction_context or {},
+                    "framework_type": test_result.framework_type or "unknown",
                 },
             )
 
             llm_response = run_llm_prompt(prompt)
-            actions.append(f"Applied GitHub Actions fix")
+            preview = (llm_response or "").strip()[:256]
+            actions.append(f"Applied GitHub Actions fix{': ' + preview + '...' if preview else ''}")
 
             # Commit the changes using the centralized commit logic
             commit_result = git_commit_with_retry(f"Auto-Coder: Fix GitHub Actions issues for PR #{pr_data.get('number', 'N/A')}")
