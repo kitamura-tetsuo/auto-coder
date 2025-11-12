@@ -34,6 +34,7 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
+from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, log_action
 
@@ -1182,8 +1183,19 @@ def _apply_local_test_fix(
         pr_number = pr_data["number"]
 
         try:
-            # Extract important error information
-            error_summary = extract_important_errors(test_result)
+            # Extract important error information (convert legacy dict to TestResult)
+            tr = TestResult(
+                success=bool(test_result.get("success", False)),
+                output=str(test_result.get("output", "")),
+                errors=str(test_result.get("errors", "")),
+                return_code=int(test_result.get("return_code", test_result.get("returncode", -1)) or -1),
+                command=str(test_result.get("command", "")),
+                test_file=test_result.get("test_file"),
+                stability_issue=bool(test_result.get("stability_issue", False)),
+                extraction_context=test_result.get("extraction_context", {}) if isinstance(test_result.get("extraction_context", {}), dict) else {},
+                framework_type=test_result.get("framework_type"),
+            )
+            error_summary = extract_important_errors(tr)
 
             if not error_summary:
                 actions.append(f"No actionable errors found in local test output for PR #{pr_number}")

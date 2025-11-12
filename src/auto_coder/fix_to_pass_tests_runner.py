@@ -15,6 +15,7 @@ from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_com
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
+from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, change_fraction, extract_first_failed_test, log_action
 
@@ -36,6 +37,41 @@ class WorkspaceFixResult:
     raw_response: Optional[str]
     backend: str
     model: str
+
+
+def _to_test_result(data: Any) -> TestResult:
+    """Convert legacy dict payloads into a TestResult.
+
+    Accepts either a TestResult (returned as-is) or a Dict[str, Any] produced by
+    run_local_tests and related helpers. Provides a compatibility bridge while
+    the codebase migrates to structured results.
+    """
+    if isinstance(data, TestResult):
+        return data
+    if not isinstance(data, dict):  # Fallback empty container
+        return TestResult(success=False, output="", errors="", return_code=-1)
+
+    rc_raw = data.get("return_code", data.get("returncode", -1))
+    try:
+        rc = int(rc_raw) if rc_raw is not None else -1
+    except Exception:
+        rc = -1
+
+    extraction_ctx = data.get("extraction_context", {})
+    if not isinstance(extraction_ctx, dict):
+        extraction_ctx = {}
+
+    return TestResult(
+        success=bool(data.get("success", False)),
+        output=str(data.get("output", "")),
+        errors=str(data.get("errors", "")),
+        return_code=rc,
+        command=str(data.get("command", "")),
+        test_file=data.get("test_file"),
+        stability_issue=bool(data.get("stability_issue", False)),
+        extraction_context=extraction_ctx,
+        framework_type=data.get("framework_type"),
+    )
 
 
 def _normalize_test_file(test_file: Optional[str]) -> str:
@@ -362,7 +398,9 @@ def apply_workspace_test_fix(
     backend, model = _extract_backend_model(llm_backend_manager)
 
     try:
-        error_summary = extract_important_errors(test_result)
+        # Convert legacy dict payloads to TestResult for structured extraction
+        tr = _to_test_result(test_result)
+        error_summary = extract_important_errors(tr)
         if not error_summary:
             logger.info("Skipping LLM workspace fix because no actionable errors were extracted")
             return WorkspaceFixResult(
@@ -726,21 +764,26 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
 
 
 @log_calls  # type: ignore[misc]
-def extract_important_errors(test_result: Dict[str, Any]) -> str:
+def extract_important_errors(test_result: TestResult) -> str:
     """Extract important error information from test output.
 
-    Improvements:
-    - Prefer extracting Playwright-style failure blocks (e.g., "Error: 1) [suite] › ... .spec.ts ...") with broader context
-    - Make it easier to include expectation/received lines, the matching expect line, and the "X failed" summary
+    Preserves multi-framework detection (pytest, Playwright, Vitest),
+    Unicode markers (×, ›), and ANSI-friendly parsing.
     """
-    if test_result["success"]:
+    if test_result.success:
         return ""
 
-    errors = test_result.get("errors", "")
-    output = test_result.get("output", "")
+    errors = test_result.errors or ""
+    output = test_result.output or ""
 
     # Combine stderr and stdout
     full_output = f"{errors}\n{output}".strip()
+    logger.debug(
+        "extract_important_errors: len(output)=%d len(errors)=%d framework=%s",
+        len(output),
+        len(errors),
+        test_result.framework_type or "unknown",
+    )
 
     if not full_output:
         return "Tests failed but no error output available"
