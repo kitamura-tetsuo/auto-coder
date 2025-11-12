@@ -154,11 +154,13 @@ fi
 
 
 # Check if a specific test file is provided as an argument
-if [ $# -eq 1 ]; then
+if [ $# -ge 1 ]; then
     SPECIFIC_TEST_FILE=$1
+    shift  # Remove first argument
     if [ -f "$SPECIFIC_TEST_FILE" ]; then
         echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
-        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE"
+        # Don't generate HTML coverage report for single test files (faster)
+        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE" "$@"
         exit $?
     else
         echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"

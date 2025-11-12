@@ -1,4 +1,4 @@
-version: "2025.11.11.4+gf5bbddf"
+version: "2025.11.12.1+daemon-fix"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -187,10 +187,21 @@ features:
     auto_setup: true
     mcp_config_check: true
     index_update: available via CLI
+    pytest_fallback: "Under pytest, GraphRAGIndexManager avoids external graph-builder and uses fast Python fallback indexing"
     docker_manager:
       fallback_recovery: true
       external_network: true
       auto_retry_on_failure: true
+  test_watcher:
+    playwright_safety:
+      - "Skips Playwright execution under pytest or when AC_DISABLE_PLAYWRIGHT=1; returns synthetic report"
+      - "Quick availability probe: 'npx playwright --version' with 5s timeout"
+      - "Process timeout: 120s communicate() timeout; force-kill on timeout"
+    watchdog_daemon: "Observer thread is daemonized; does not block interpreter exit"
+    concurrency:
+      - "Run-on-change spawns daemon threads for Playwright and GraphRAG update"
+      - "GraphRAG retry timers are daemonized"
+
   logging:
     library: loguru
     console: colored, includes file:function:line with trimmed project-relative paths
@@ -225,6 +236,7 @@ env:
   OPENAI_BASE_URL: OpenAI-compatible base URL for qwen backend
   AUTO_CODER_QWEN_CONFIG: Override path to qwen-providers.toml
   AUTO_CODER_CONFIG_DIR: Directory that contains qwen-providers.toml
+  AC_DISABLE_PLAYWRIGHT: "If set to 1, TestWatcherTool skips Playwright execution and returns a synthetic report (useful in CI)"
 
 external_dependencies:
   graphrag:
