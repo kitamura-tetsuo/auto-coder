@@ -35,6 +35,16 @@ echo "Environment configuration:"
 echo "  CI environment: ${IS_CI}"
 echo "  Container: ${IN_CONTAINER}"
 echo ""
+# -----------------------------------------------------------------------------
+# Pytest verbosity flags
+# -----------------------------------------------------------------------------
+if [ "$IS_CI" -eq 1 ]; then
+    PYTEST_ALL_FLAGS="-vv"
+    PYTEST_SINGLE_FLAGS="-vv"
+else
+    PYTEST_ALL_FLAGS="-q"
+    PYTEST_SINGLE_FLAGS="-v"
+fi
 
 # -----------------------------------------------------------------------------
 # Dependency checking
@@ -160,7 +170,7 @@ if [ $# -ge 1 ]; then
     if [ -f "$SPECIFIC_TEST_FILE" ]; then
         echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
         # Don't generate HTML coverage report for single test files (faster)
-        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE" "$@"
+        $RUN pytest $PYTEST_SINGLE_FLAGS --tb=short --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE" "$@"
         exit $?
     else
         echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
@@ -175,7 +185,7 @@ TEST_OUTPUT_FILE=$(mktemp)
 # Don't exit on errors - we want to capture the exit code
 set +e
 
-$RUN pytest -q --tb=short --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
+$RUN pytest $PYTEST_ALL_FLAGS --tb=short --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
 EXIT_CODE=${PIPESTATUS[0]}
 
 # Re-enable exit on errors
@@ -199,7 +209,7 @@ if [ $EXIT_CODE -ne 0 ]; then
     # If we found a failed test, run only that test
     if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
         echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        $RUN pytest -v --tb=short --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
+        $RUN pytest $PYTEST_SINGLE_FLAGS --tb=short --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
         RESULT=$?
         rm "$TEST_OUTPUT_FILE"
         exit $RESULT

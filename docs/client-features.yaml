@@ -98,6 +98,8 @@ cli:
           - Falls back to system Python's pytest when uv is not available
           - Optionally activates local virtualenv when AC_USE_LOCAL_VENV=1
           - Always enables auto-syncing dependencies with uv
+          - Pytest verbosity flags: CI uses -vv for both full runs and single-file reruns; locally, -q for full suite and -v for single-file reruns
+          - On full-suite failure, detects the first failed test and re-runs only that file using the configured single-file verbosity flags
         - If LLM makes no edits in an iteration, stops with error
         - Supports separate message backends for summarization/communication
     - name: get-actions-logs
@@ -177,6 +179,8 @@ features:
     - Re-run tests and apply LLM fixes until success or max attempts
     - Default max attempts (engine): 30
     - No-op edit detection halts the loop with error
+    - structured_results: "Test runs produce a TestResult dataclass (success, output, errors, return_code, command, test_file, stability_issue, extraction_context, framework_type)"
+    - error_extraction_api: "extract_important_errors now accepts TestResult; preserves multi-framework detection (pytest/Playwright/Vitest) and logs framework_type"
   backends:
     supported: [codex, codex-mcp, gemini, qwen, auggie, claude]
     rotation:
