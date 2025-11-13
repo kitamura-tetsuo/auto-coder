@@ -196,13 +196,25 @@ def _perform_base_branch_merge_and_conflict_resolution(
             logger.error(f"Failed to fetch {base_branch} branch: {fetch_result.stderr}")
             return False
 
-        # Step 3: Attempt to merge base branch
-        logger.info(f"Merging origin/{base_branch} into PR #{pr_number}")
-        merge_result = cmd.run_command(["git", "merge", f"origin/{base_branch}"])
+        # Step 3: Attempt to merge base branch (resolve to fully qualified ref to avoid ambiguity)
+        origin_ref = f"refs/remotes/origin/{base_branch}"
+        base_check = cmd.run_command(["git", "rev-parse", "--verify", origin_ref])
+        if base_check.success:
+            resolved_base = origin_ref
+        else:
+            # Fallback to local branch name if remote-tracking ref is unavailable
+            local_check = cmd.run_command(["git", "rev-parse", "--verify", base_branch])
+            if not local_check.success:
+                logger.error(f"Failed to resolve base branch ref for {base_branch}")
+                return False
+            resolved_base = base_branch
+
+        logger.info(f"Merging {resolved_base} into PR #{pr_number}")
+        merge_result = cmd.run_command(["git", "merge", resolved_base])
 
         if merge_result.success:
             # No conflicts, push the updated branch using centralized helper with retry
-            logger.info(f"Successfully merged {base_branch} into PR #{pr_number}, pushing changes")
+            logger.info(f"Successfully merged {resolved_base} into PR #{pr_number}, pushing changes")
             push_result = git_push()
 
             if push_result.success:
