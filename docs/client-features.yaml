@@ -166,7 +166,7 @@ features:
     - Skips issues when 5+ open issues without sub-issues are present
     - Single-item processing via --only (URL or number)
     - Auto-resume when on a non-main branch with an associated PR/Issue
-    - label_management: Removed duplicate LabelManager usage from issue processing; LabelManager is now used only for PR processing to prevent concurrent processing. Added thread reentrancy detection to prevent deadlock scenarios in concurrent contexts. Added PR label wrapper methods (add_labels_to_pr/remove_labels_from_pr/has_label_on_pr). Fixed check-only exception handling in LabelManager to fail-open (returns True on error) and added pre-check to skip when label already exists.
+    - label_management: Removed duplicate LabelManager usage from issue processing; LabelManager is now used only for PR processing to prevent concurrent processing. Added thread reentrancy detection to prevent deadlock scenarios in concurrent contexts. Added PR label wrapper methods (add_labels_to_pr/remove_labels_from_pr/has_label_on_pr). Fixed check-only exception handling in LabelManager to fail-open (returns True on error) and added pre-check to skip when label already exists. Ensured remove_labels is always called with the correct item_type ("issue" vs "pr") so GitHub logs and API paths stay consistent.
     - git_operations: "Enhanced git commit/push failure resolution: unknown commit errors trigger LLM remediation; after LLM, code retries commit and treats as success when nothing is left to commit. Push fallback via LLM remains and works even without commit message."
     - branch_creation: "New issue branches are always created from refs/remotes/origin/<default> (default: refs/remotes/origin/main). When create_new=True, base_branch is required; checkout runs 'git fetch origin --prune --tags' and then 'git checkout -B <branch> <resolved-base-ref>' (prefers refs/remotes/origin/<base_branch>, falls back to local). Logs explicitly show the resolved base ref used."
     - ref_handling: "Use fully qualified remote refs (refs/remotes/origin/<branch>) in Git operations to avoid ambiguous 'origin/<branch>' warnings and failures"
@@ -209,6 +209,7 @@ features:
     concurrency:
       - "Run-on-change spawns daemon threads for Playwright and GraphRAG update"
       - "GraphRAG retry timers are daemonized"
+      - "GraphRAG index updates in TestWatcherTool are scoped to project_root, keeping pytest flows fast on temporary project trees"
 
   logging:
     library: loguru

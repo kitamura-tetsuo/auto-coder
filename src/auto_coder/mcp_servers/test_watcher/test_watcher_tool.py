@@ -320,7 +320,7 @@ class TestWatcherTool:
         try:
             from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
-            manager = GraphRAGIndexManager()
+            manager = GraphRAGIndexManager(repo_path=str(self.project_root))
 
             # Use smart update for better performance
             if hasattr(manager, "smart_update_trigger"):
@@ -378,7 +378,7 @@ class TestWatcherTool:
         try:
             from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
-            manager = GraphRAGIndexManager()
+            manager = GraphRAGIndexManager(repo_path=str(self.project_root))
             # Use lightweight check to avoid heavy operations during retries
             if hasattr(manager, "lightweight_update_check"):
                 success = manager.lightweight_update_check()
