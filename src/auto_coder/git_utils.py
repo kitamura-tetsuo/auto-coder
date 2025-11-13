@@ -129,20 +129,24 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
         if current_branch == base_branch:
             return ""
 
-        # Check if the base branch exists
-        base_check = cmd.run_command(["git", "rev-parse", "--verify", f"origin/{base_branch}"], cwd=cwd)
-        if not base_check.success:
-            # Try without 'origin/' prefix
+        # Resolve base reference preferring remote-tracking ref to avoid ambiguity
+        origin_ref = f"refs/remotes/origin/{base_branch}"
+        base_check = cmd.run_command(["git", "rev-parse", "--verify", origin_ref], cwd=cwd)
+        if base_check.success:
+            resolved_base = origin_ref
+        else:
+            # Try without remote prefix
             base_check = cmd.run_command(["git", "rev-parse", "--verify", base_branch], cwd=cwd)
             if not base_check.success:
                 logger.warning(f"Base branch {base_branch} not found")
                 return ""
+            resolved_base = base_branch
 
         # Get the common ancestor (merge base) between current branch and base branch
-        merge_base_result = cmd.run_command(["git", "merge-base", "HEAD", base_branch], cwd=cwd)
+        merge_base_result = cmd.run_command(["git", "merge-base", "HEAD", resolved_base], cwd=cwd)
 
         if not merge_base_result.success:
-            logger.warning(f"Failed to find merge base with {base_branch}: {merge_base_result.stderr}")
+            logger.warning(f"Failed to find merge base with {resolved_base}: {merge_base_result.stderr}")
             return ""
 
         merge_base_commit = merge_base_result.stdout.strip()
@@ -518,8 +522,8 @@ def git_checkout_branch(
         logger.info("Fetching 'origin' with --prune --tags before creating new branch...")
         cmd.run_command(["git", "fetch", "origin", "--prune", "--tags"], cwd=cwd)
 
-        # Prefer origin/<base_branch> if it exists; otherwise fall back to local <base_branch>
-        origin_ref = f"origin/{base_branch}"
+        # Prefer refs/remotes/origin/<base_branch> if it exists; otherwise fall back to local <base_branch>
+        origin_ref = f"refs/remotes/origin/{base_branch}"
         origin_check = cmd.run_command(["git", "rev-parse", "--verify", origin_ref], cwd=cwd)
         if origin_check.success:
             resolved_base_ref = origin_ref
@@ -1537,7 +1541,7 @@ def migrate_pr_branches(
                     switch_result = cmd.run_command(["git", "checkout", "main"], cwd=cwd)
                     if not switch_result.success:
                         # Try main as fallback
-                        switch_result = cmd.run_command(["git", "checkout", "origin/main"], cwd=cwd)
+                        switch_result = cmd.run_command(["git", "checkout", "refs/remotes/origin/main"], cwd=cwd)
                 else:
                     logger.info(f"[DRY-RUN] Would switch from {branch_name} to main")
 
