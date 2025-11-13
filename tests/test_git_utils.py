@@ -116,9 +116,7 @@ class TestGitCommitWithRetry:
 
     def test_commit_with_unknown_error_llm_fallback_and_retry_success(self):
         """Unknown commit error triggers LLM fallback and retry commit succeeds."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, patch(
-            "src.auto_coder.git_utils.try_llm_commit_push"
-        ) as mock_llm:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, patch("src.auto_coder.git_utils.try_llm_commit_push") as mock_llm:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_llm.return_value = True
@@ -137,9 +135,7 @@ class TestGitCommitWithRetry:
 
     def test_commit_with_unknown_error_llm_fallback_nothing_to_commit(self):
         """Unknown commit error triggers LLM fallback; treat as success when nothing left to commit."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, patch(
-            "src.auto_coder.git_utils.try_llm_commit_push"
-        ) as mock_llm:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, patch("src.auto_coder.git_utils.try_llm_commit_push") as mock_llm:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_llm.return_value = True
