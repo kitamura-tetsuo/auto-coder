@@ -811,7 +811,7 @@ class TestGitCheckoutBranch:
                 "git",
                 "rev-parse",
                 "--verify",
-                "origin/main",
+                "refs/remotes/origin/main",
             ]
             # Verify checkout command with -B flag and base ref (now at index 6)
             assert mock_cmd.run_command.call_args_list[6][0][0] == [
@@ -819,7 +819,7 @@ class TestGitCheckoutBranch:
                 "checkout",
                 "-B",
                 "new-feature",
-                "origin/main",
+                "refs/remotes/origin/main",
             ]
             # Verify push command (now at index 8)
             assert mock_cmd.run_command.call_args_list[8][0][0] == [
@@ -878,7 +878,7 @@ class TestGitCheckoutBranch:
                 "git",
                 "rev-parse",
                 "--verify",
-                "origin/main",
+                "refs/remotes/origin/main",
             ]
             # Verify checkout command with -B flag and base ref (now at index 4)
             assert mock_cmd.run_command.call_args_list[4][0][0] == [
@@ -886,7 +886,7 @@ class TestGitCheckoutBranch:
                 "checkout",
                 "-B",
                 "new-feature",
-                "origin/main",
+                "refs/remotes/origin/main",
             ]
             # Verify push command (now at index 6)
             assert mock_cmd.run_command.call_args_list[6][0][0] == [
@@ -965,7 +965,7 @@ class TestGitCheckoutBranch:
                 "git",
                 "rev-parse",
                 "--verify",
-                "origin/main",
+                "refs/remotes/origin/main",
             ]
             assert mock_cmd.run_command.call_args_list[4][0][0] == [
                 "git",
