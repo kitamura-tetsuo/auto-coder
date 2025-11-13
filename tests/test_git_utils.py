@@ -114,23 +114,43 @@ class TestGitCommitWithRetry:
             assert result.success is False
             assert "Formatting issues detected" in result.stderr
 
-    def test_commit_with_non_dprint_error(self):
-        """Test commit with non-dprint error does not trigger retry."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+    def test_commit_with_unknown_error_llm_fallback_and_retry_success(self):
+        """Unknown commit error triggers LLM fallback and retry commit succeeds."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, patch("src.auto_coder.git_utils.try_llm_commit_push") as mock_llm:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
-            mock_cmd.run_command.return_value = CommandResult(
-                success=False,
-                stdout="",
-                stderr="nothing to commit, working tree clean",
-                returncode=1,
-            )
+            mock_llm.return_value = True
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=False, stdout="", stderr="pre-commit hook failed", returncode=1),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),
+            ]
 
             result = git_commit_with_retry("Test commit message")
 
-            assert result.success is False
-            # Should only be called once (no retry for non-dprint errors)
-            mock_cmd.run_command.assert_called_once()
+            assert result.success is True
+            assert mock_llm.call_count == 1
+            assert mock_cmd.run_command.call_count == 2
+            # second call should be retry commit
+            assert mock_cmd.run_command.call_args_list[1][0][0] == ["git", "commit", "-m", "Test commit message"]
+
+    def test_commit_with_unknown_error_llm_fallback_nothing_to_commit(self):
+        """Unknown commit error triggers LLM fallback; treat as success when nothing left to commit."""
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor, patch("src.auto_coder.git_utils.try_llm_commit_push") as mock_llm:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_llm.return_value = True
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=False, stdout="", stderr="some unknown error", returncode=1),
+                CommandResult(success=False, stdout="", stderr="nothing to commit, working tree clean", returncode=1),
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status --porcelain -> clean
+            ]
+
+            result = git_commit_with_retry("Test commit message")
+
+            assert result.success is True
+            assert mock_llm.call_count == 1
+            assert mock_cmd.run_command.call_count == 3
+            assert mock_cmd.run_command.call_args_list[2][0][0] == ["git", "status", "--porcelain"]
 
     def test_commit_with_cwd(self):
         """Test commit with custom working directory."""

@@ -417,8 +417,26 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
             else:
                 logger.warning(f"Max retries ({max_retries}) reached for commit with formatter issues")
         else:
-            # Non-formatter error, exit immediately
+            # Non-formatter or unknown error: attempt LLM-based remediation, then retry commit
             logger.warning(f"Failed to commit changes: {result.stderr}")
+            logger.info("Attempting to resolve commit failure using LLM...")
+            try:
+                llm_success = try_llm_commit_push(commit_message, error_output, verify_push=False)
+            except TypeError:
+                # Backward compatibility if verify_push param is not available
+                llm_success = try_llm_commit_push(commit_message, error_output)  # type: ignore
+            if llm_success:
+                # After LLM intervention, try committing again
+                retry_result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
+                if retry_result.success:
+                    logger.info("Successfully committed changes after LLM intervention")
+                    return retry_result
+                # If commit still fails, treat as success when nothing is left to commit
+                status_check = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
+                if status_check.success and not status_check.stdout.strip():
+                    logger.info("No changes left to commit after LLM intervention; treating as success")
+                    return CommandResult(success=True, stdout="No changes to commit after LLM fix", stderr="", returncode=0)
+            # If LLM couldn't resolve, return the original failure
             return result
 
     # If we get here, all attempts failed
@@ -1191,6 +1209,7 @@ def git_pull(
 def try_llm_commit_push(
     commit_message: str | None,
     error_message: str,
+    verify_push: bool = True,
 ) -> bool:
     """
     Try to use LLM to resolve commit/push failures.
@@ -1231,12 +1250,13 @@ def try_llm_commit_push(
                 logger.error(f"Uncommitted changes: {status_result.stdout}")
                 return False
 
-            # Verify that the push was successful by checking if there are unpushed commits
-            unpushed_result = cmd.run_command(["git", "log", "@{u}..HEAD", "--oneline"])
-            if unpushed_result.success and unpushed_result.stdout.strip():
-                logger.error("LLM claimed success but there are still unpushed commits")
-                logger.error(f"Unpushed commits: {unpushed_result.stdout}")
-                return False
+            # Optionally verify that the push was successful by checking for unpushed commits
+            if verify_push:
+                unpushed_result = cmd.run_command(["git", "log", "@{u}..HEAD", "--oneline"])
+                if unpushed_result.success and unpushed_result.stdout.strip():
+                    logger.error("LLM claimed success but there are still unpushed commits")
+                    logger.error(f"Unpushed commits: {unpushed_result.stdout}")
+                    return False
 
             return True
         elif "COMMIT_PUSH_RESULT: FAILED:" in response:
