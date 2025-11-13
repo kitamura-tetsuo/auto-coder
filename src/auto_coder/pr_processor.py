@@ -1123,11 +1123,14 @@ def _apply_github_actions_fix(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_logs: str,
+    test_result: Optional[TestResult] = None,
 ) -> List[str]:
     """Apply initial fix using GitHub Actions error logs.
 
-    Implementation updated: The LLM is instructed to edit files only; committing
-    and pushing are handled by this code after a conflict-marker check.
+    Enhanced: Optionally accepts a TestResult to pass structured error metadata
+    and framework context to the LLM prompt for more targeted fixes.
+    The LLM is instructed to edit files only; committing and pushing are handled
+    by this code after a conflict-marker check.
     """
     actions: List[str] = []
     pr_number = pr_data["number"]
@@ -1144,6 +1147,9 @@ def _apply_github_actions_fix(
             pr_title=pr_data.get("title", "Unknown"),
             github_logs=(github_logs or "")[: config.MAX_PROMPT_SIZE],
             commit_log=commit_log or "(No commit history)",
+            # Structured additions (safe if None)
+            structured_errors=(test_result.extraction_context if test_result else {}),
+            framework_type=(test_result.framework_type if test_result else None),
         )
         logger.debug(
             "Prepared GitHub Actions fix prompt for PR #%s (preview: %s)",

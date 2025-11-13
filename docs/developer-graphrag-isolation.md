@@ -598,4 +598,4 @@ class SessionMetrics:
 - Provide migration examples
 - Include troubleshooting guides
 - Maintain change logs
->>>>>>> 7dc5c55e7030dbc8f587adc70f5dcfbe0a15b3ac
+

@@ -45,4 +45,3 @@ def test_perform_base_merge_uses_fq_remote_ref():
         assert ["git", "fetch", "origin", "main"] in calls
         assert ["git", "rev-parse", "--verify", "refs/remotes/origin/main"] in calls
         assert ["git", "merge", "refs/remotes/origin/main"] in calls
-
