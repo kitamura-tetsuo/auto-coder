@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 
 _USAGE_STATE_ENV = "AUTO_CODER_AUGGIE_USAGE_DIR"
 _USAGE_FILENAME = "auggie_usage.json"
-_DAILY_LIMIT = 20
+_DAILY_LIMIT = 20000
 
 
 class AuggieClient(LLMClientBase):

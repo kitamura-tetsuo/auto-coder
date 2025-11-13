@@ -642,7 +642,11 @@ class AutomationEngine:
             # If base branch is not main, fetch and merge it
             if base_branch != "main":
                 self.cmd.run_command(["git", "fetch", "origin", base_branch])
-                self.cmd.run_command(["git", "merge", f"origin/{base_branch}"])
+                # Resolve base to a fully qualified remote ref to avoid ambiguity
+                origin_ref = f"refs/remotes/origin/{base_branch}"
+                base_check = self.cmd.run_command(["git", "rev-parse", "--verify", origin_ref])
+                resolved_base = origin_ref if base_check.success else base_branch
+                self.cmd.run_command(["git", "merge", resolved_base])
 
             # Push the resolved conflicts
             self.cmd.run_command(["git", "push"])
@@ -670,7 +674,7 @@ class AutomationEngine:
 
             # Check how many commits behind the base branch we are
             rev_list_result = subprocess.run(
-                ["git", "rev-list", "--count", f"HEAD..origin/{base_branch}"],
+                ["git", "rev-list", "--count", f"HEAD..refs/remotes/origin/{base_branch}"],
                 capture_output=True,
                 text=True,
             )
@@ -682,7 +686,7 @@ class AutomationEngine:
 
                     # Merge the base branch
                     merge_result = subprocess.run(
-                        ["git", "merge", f"origin/{base_branch}", "--no-edit"],
+                        ["git", "merge", f"refs/remotes/origin/{base_branch}", "--no-edit"],
                         capture_output=True,
                         text=True,
                     )

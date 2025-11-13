@@ -556,7 +556,7 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
                 return False
 
         # Now the branch is checked out, reset it to match the fetched commit
-        reset_result = cmd.run_command(["git", "reset", "--hard", f"origin/pull/{pr_number}/head"])
+        reset_result = cmd.run_command(["git", "reset", "--hard", f"refs/remotes/origin/pull/{pr_number}/head"])
         if not reset_result.success:
             log_action(f"Failed to reset branch '{branch_name}' to PR head", False, reset_result.stderr)
             return False
@@ -599,7 +599,7 @@ def _update_with_base_branch(
             return actions
 
         # Check if base branch has new commits
-        result = cmd.run_command(["git", "rev-list", "--count", f"HEAD..origin/{target_branch}"])
+        result = cmd.run_command(["git", "rev-list", "--count", f"HEAD..refs/remotes/origin/{target_branch}"])
         if not result.success:
             actions.append(f"Failed to check {target_branch} branch status: {result.stderr}")
             return actions
@@ -612,7 +612,7 @@ def _update_with_base_branch(
         actions.append(f"PR #{pr_number} is {commits_behind} commits behind {target_branch}, updating...")
 
         # Try to merge base branch
-        result = cmd.run_command(["git", "merge", f"origin/{target_branch}"])
+        result = cmd.run_command(["git", "merge", f"refs/remotes/origin/{target_branch}"])
         if result.success:
             actions.append(f"Successfully merged {target_branch} branch into PR #{pr_number}")
 
@@ -997,8 +997,8 @@ def _resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automati
             return False
 
         # Step 3: Attempt to merge base branch
-        logger.info(f"Merging origin/{base_branch} into PR #{pr_number}")
-        merge_result = cmd.run_command(["git", "merge", f"origin/{base_branch}"])
+        logger.info(f"Merging refs/remotes/origin/{base_branch} into PR #{pr_number}")
+        merge_result = cmd.run_command(["git", "merge", f"refs/remotes/origin/{base_branch}"])
 
         if merge_result.success:
             # No conflicts, push the updated branch using centralized helper with retry
