@@ -243,7 +243,7 @@ class TestAutomationEngine:
         assert ["git", "clean", "-fd"] in calls
         assert ["git", "merge", "--abort"] in calls
         assert ["git", "fetch", "origin", "develop"] in calls  # Fetch base branch
-        assert ["git", "merge", "origin/develop"] in calls  # Merge base branch
+        assert ["git", "merge", "refs/remotes/origin/develop"] in calls  # Merge base branch
         assert ["git", "push"] in calls
         # Check that the gh pr checkout command was called
         subprocess_calls = [call[0][0] for call in mock_subprocess.call_args_list]

@@ -171,7 +171,6 @@ features:
     - branch_creation: "New issue branches are always created from refs/remotes/origin/<default> (default: refs/remotes/origin/main). When create_new=True, base_branch is required; checkout runs 'git fetch origin --prune --tags' and then 'git checkout -B <branch> <resolved-base-ref>' (prefers refs/remotes/origin/<base_branch>, falls back to local). Logs explicitly show the resolved base ref used."
     - ref_handling: "Use fully qualified remote refs (refs/remotes/origin/<branch>) in Git operations to avoid ambiguous 'origin/<branch>' warnings and failures"
 
-
   dependency_management:
     - description: Automatic dependency checking for issue processing
     - patterns: Supports "Depends on: #123", "depends on #456", "blocked by #789" patterns (case-insensitive)
