@@ -100,8 +100,20 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
             click.echo("   2. Check container status: auto-coder graphrag status")
             click.echo("   3. Check Docker logs: docker-compose -f docker-compose.graphrag.yml logs")
             raise click.ClickException("Failed to initialize GraphRAG environment. " "Run 'auto-coder graphrag start' to start containers.")
+
         logger.info("GraphRAG environment ready")
         click.echo("✅ GraphRAG environment ready")
+
+        # Optionally run snapshot cleanup after successful initialization
+        cleanup_raw = os.environ.get("GRAPHRAG_CLEANUP_ON_INIT", "1")
+        cleanup_enabled = cleanup_raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+        if cleanup_enabled:
+            try:
+                logger.info("Running GraphRAG snapshot cleanup after initialization...")
+                graphrag_integration.run_cleanup(dry_run=False)
+            except Exception as cleanup_error:
+                logger.warning(f"GraphRAG cleanup during initialization failed: {cleanup_error}")
     except click.ClickException:
         raise
     except Exception as e:
