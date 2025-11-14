@@ -117,18 +117,39 @@ def process_pull_request(
         )
 
 
-def _is_dependabot_pr(pr_obj: Any) -> bool:
-    """Return True if the PR is authored by Dependabot.
+def _get_pr_author_login(pr_obj: Any) -> Optional[str]:
+    """Extract author login from a PR-like object or dict.
 
-    Detects common Dependabot actors such as 'dependabot[bot]' or accounts containing 'dependabot'.
+    Supports both PyGithub PR objects (with .user.login) and dictionaries
+    returned from GitHubClient.get_pr_details().
     """
     try:
-        user = getattr(pr_obj, "user", None)
-        login = getattr(user, "login", None) if user is not None else None
-        if isinstance(login, str) and "dependabot" in login.lower():
+        if isinstance(pr_obj, dict):
+            login = pr_obj.get("author")
+        else:
+            user = getattr(pr_obj, "user", None)
+            login = getattr(user, "login", None) if user is not None else None
+        return login if isinstance(login, str) else None
+    except Exception:
+        return None
+
+
+def _is_dependabot_pr(pr_obj: Any) -> bool:
+    """Return True if the PR is authored by a dependency bot.
+
+    Dependency bots include Dependabot, Renovate, and accounts whose login
+    ends with '[bot]' when IGNORE_DEPENDABOT_PRS is enabled.
+    """
+    try:
+        login = _get_pr_author_login(pr_obj)
+        if not login:
+            return False
+        login_lower = login.lower()
+        if "dependabot" in login_lower or "renovate" in login_lower or login_lower.endswith("[bot]"):
             return True
     except Exception:
-        pass
+        # Best-effort detection only; never fail hard here
+        return False
     return False
 
 

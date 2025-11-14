@@ -94,7 +94,7 @@ logger = get_logger(__name__)
 @click.option(
     "--ignore-dependabot-prs/--no-ignore-dependabot-prs",
     default=False,
-    help="Ignore PRs opened by Dependabot when processing PRs (default: do not ignore)",
+    help="Skip non-ready dependency-bot PRs (Dependabot/Renovate/[bot]); still auto-merge when checks pass and PR is mergeable.",
 )
 @click.option(
     "--force-clean-before-checkout/--no-force-clean-before-checkout",

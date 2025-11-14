@@ -49,7 +49,8 @@ class AutomationConfig:
     # to reduce noisy rebases.
     SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: bool = True
 
-    # Ignore Dependabot-authored PRs entirely when processing PRs
+    # Skip dependency-bot PRs (Dependabot/Renovate/[bot]) for fix flows.
+    # Green, mergeable dependency-bot PRs are still auto-merge candidates.
     IGNORE_DEPENDABOT_PRS: bool = False
 
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)
