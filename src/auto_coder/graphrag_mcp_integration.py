@@ -12,10 +12,10 @@ import shlex
 import subprocess
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import IO, Optional
 
 from .graphrag_docker_manager import GraphRAGDockerManager
-from .graphrag_index_manager import GraphRAGIndexManager
+from .graphrag_index_manager import GraphRAGIndexManager, SnapshotCleanupResult
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -57,11 +57,11 @@ class GraphRAGMCPIntegration:
             Repository-specific label in the format 'Repo_XXXXXXXX'
         """
         if repo_path is None:
-            repo_path = self.index_manager.repo_path
+            repo_path_obj = self.index_manager.repo_path
         else:
-            repo_path = Path(repo_path)
+            repo_path_obj = Path(repo_path)
 
-        repo_hash = hashlib.sha256(str(repo_path.resolve()).encode()).hexdigest()[:8].upper()
+        repo_hash = hashlib.sha256(str(repo_path_obj.resolve()).encode()).hexdigest()[:8].upper()
         return f"Repo_{repo_hash}"
 
     def ensure_ready(self, max_retries: int = 2, force_reindex: bool = False) -> bool:
@@ -194,7 +194,7 @@ class GraphRAGMCPIntegration:
             logger.error(f"Failed to start MCP server: {e}")
             return False
 
-    def _pump_stderr(self, stderr) -> None:
+    def _pump_stderr(self, stderr: IO[bytes]) -> None:
         """Pump stderr from MCP server to logger.
 
         Args:
@@ -248,6 +248,28 @@ class GraphRAGMCPIntegration:
     def cleanup(self) -> None:
         """Cleanup resources."""
         self.stop_mcp_server()
+
+    def run_cleanup(
+        self,
+        dry_run: bool = False,
+        retention_days: Optional[int] = None,
+        max_snapshots_per_repo: Optional[int] = None,
+    ) -> Optional[SnapshotCleanupResult]:
+        """Run GraphRAG snapshot cleanup via the index manager.
+
+        This is a thin wrapper so callers do not have to depend directly on
+        :class:`GraphRAGIndexManager`.
+        """
+
+        try:
+            return self.index_manager.cleanup_snapshots(
+                dry_run=dry_run,
+                retention_days=retention_days,
+                max_snapshots_per_repo=max_snapshots_per_repo,
+            )
+        except Exception as e:
+            logger.warning(f"GraphRAG cleanup via integration failed: {e}")
+            return None
 
     def get_mcp_config_for_llm(self) -> Optional[dict]:
         """Get MCP configuration to pass to LLM client.

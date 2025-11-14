@@ -512,6 +512,7 @@ def graphrag_group() -> None:
     - stop: Stop Docker containers
     - status: Show container status
     - update-index: Update the codebase index
+    - cleanup: Apply snapshot retention policy and remove stale data
     - setup-mcp: Automatically set up the GraphRAG MCP server
     """
     pass
@@ -735,6 +736,75 @@ def graphrag_update_index(force: bool, repo_path: Optional[str]) -> None:
         click.echo("   2. Verify file permissions in repository")
         click.echo("   3. Check available disk space")
         raise click.ClickException(f"Error updating index: {e}")
+
+
+@graphrag_group.command("cleanup")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would be deleted without performing cleanup",
+)
+@click.option(
+    "--retention-days",
+    type=int,
+    default=None,
+    help="Override GRAPHRAG_RETENTION_DAYS (default: 7)",
+)
+@click.option(
+    "--max-per-repo",
+    type=int,
+    default=None,
+    help="Override GRAPHRAG_MAX_SNAPSHOTS_PER_REPO (default: 9)",
+)
+@click.option(
+    "--repo-path",
+    type=click.Path(exists=True, file_okay=False, dir_okay=True),
+    help="Repository path whose GraphRAG snapshots to clean (default: current directory)",
+)
+@click.option(
+    "--verbose",
+    is_flag=True,
+    help="Enable verbose logging for cleanup details",
+)
+def graphrag_cleanup(
+    dry_run: bool,
+    retention_days: Optional[int],
+    max_per_repo: Optional[int],
+    repo_path: Optional[str],
+    verbose: bool,
+) -> None:
+    """Run GraphRAG snapshot cleanup for the given repository."""
+
+    from .graphrag_index_manager import GraphRAGIndexManager
+
+    log_level = "DEBUG" if verbose else None
+    setup_logger(log_level=log_level)
+
+    click.echo("Running GraphRAG snapshot cleanup...")
+
+    try:
+        index_manager = GraphRAGIndexManager(repo_path=repo_path)
+    except Exception as e:
+        click.echo()
+        click.echo(f"❌ Error initializing index manager for cleanup: {e}")
+        raise click.ClickException(f"Error initializing index manager for cleanup: {e}")
+
+    try:
+        result = index_manager.cleanup_snapshots(
+            dry_run=dry_run,
+            retention_days=retention_days,
+            max_snapshots_per_repo=max_per_repo,
+        )
+    except Exception as e:
+        click.echo()
+        click.echo(f"❌ Error during GraphRAG cleanup: {e}")
+        raise click.ClickException(f"Error during GraphRAG cleanup: {e}")
+
+    deleted_count = len(result.deleted)
+    if result.dry_run:
+        click.echo(f"✅ Dry-run complete: would delete {deleted_count} snapshot(s); " f"{result.total_snapshots_before} snapshot(s) currently recorded.")
+    else:
+        click.echo(f"✅ Cleanup complete: deleted {deleted_count} snapshot(s); " f"{result.total_snapshots_after} snapshot(s) remain.")
 
 
 @graphrag_group.command("setup-mcp")

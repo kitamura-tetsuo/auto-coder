@@ -138,6 +138,14 @@ cli:
           options:
             - { name: --force, flag: true }
             - { name: --repo-path, type: path }
+        - name: cleanup
+          options:
+            - { name: --dry-run, flag: true }
+            - { name: --retention-days, type: int, default: 7 }
+            - { name: --max-per-repo, type: int, default: 9 }
+            - { name: --repo-path, type: path }
+            - { name: --verbose, flag: true }
+
         - name: setup-mcp
           options:
             - { name: --install-dir, default: "~/graphrag_mcp" }
@@ -195,6 +203,18 @@ features:
     auto_setup: true
     mcp_config_check: true
     index_update: available via CLI
+    snapshot_cleanup:
+      retention_days_default: 7
+      max_snapshots_per_repo_default: 9
+      env_flags:
+        - GRAPHRAG_RETENTION_DAYS
+        - GRAPHRAG_MAX_SNAPSHOTS_PER_REPO
+        - GRAPHRAG_CLEANUP_ON_INIT
+        - GRAPHRAG_CLEANUP_ON_UPDATE
+      cli_command: "auto-coder graphrag cleanup [--dry-run] [--retention-days N] [--max-per-repo M] [--repo-path PATH]"
+      hooks:
+        - initialize_graphrag
+        - GraphRAGIndexManager.update_index
     pytest_fallback: "Under pytest, GraphRAGIndexManager avoids external graph-builder and uses fast Python fallback indexing"
     docker_manager:
       fallback_recovery: true
@@ -246,6 +266,11 @@ env:
   AUTO_CODER_QWEN_CONFIG: Override path to qwen-providers.toml
   AUTO_CODER_CONFIG_DIR: Directory that contains qwen-providers.toml
   AC_DISABLE_PLAYWRIGHT: "If set to 1, TestWatcherTool skips Playwright execution and returns a synthetic report (useful in CI)"
+  GRAPHRAG_RETENTION_DAYS: "Number of days to retain GraphRAG index snapshots before cleanup (default: 7)"
+  GRAPHRAG_MAX_SNAPSHOTS_PER_REPO: "Maximum number of GraphRAG index snapshots to keep per repository (default: 9)"
+  GRAPHRAG_CLEANUP_ON_INIT: "Enable automatic GraphRAG snapshot cleanup during initialize_graphrag (default: 1)"
+  GRAPHRAG_CLEANUP_ON_UPDATE: "Enable automatic GraphRAG snapshot cleanup after each index update (default: 1)"
+
 
 external_dependencies:
   graphrag:

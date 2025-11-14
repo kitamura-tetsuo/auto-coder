@@ -9,13 +9,83 @@ import json
 import os
 import subprocess
 import threading
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
+from urllib.parse import urlsplit, urlunsplit
 
 from .logger_config import get_logger
 from .utils import is_running_in_container
 
 logger = get_logger(__name__)
+
+
+def _get_env_int(name: str, default: int) -> int:
+    """Get an integer value from environment variables with a safe default.
+
+    Any invalid or missing value falls back to ``default``.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+        return value
+    except Exception:
+        return default
+
+
+def _get_env_flag(name: str, default: bool) -> bool:
+    """Get a boolean flag from environment variables.
+
+    Accepts common truthy/falsey strings; anything else falls back to ``default``.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+@dataclass
+class SnapshotMetadata:
+    """Metadata for a single GraphRAG index snapshot for a repository."""
+
+    repo_key: str
+    snapshot_id: str
+    indexed_at: str  # UTC ISO8601
+    repo_path: str
+    codebase_hash: Optional[str] = None
+
+
+@dataclass
+class SnapshotCleanupAction:
+    """Represents a single snapshot deletion action."""
+
+    repo_key: str
+    snapshot_id: str
+    reason: str
+
+
+@dataclass
+class SnapshotCleanupResult:
+    """Summary of a cleanup run for logging and tests."""
+
+    dry_run: bool
+    retention_days: int
+    max_snapshots_per_repo: int
+    deleted: list[SnapshotCleanupAction]
+    total_snapshots_before: int
+    total_snapshots_after: int
 
 
 class GraphRAGIndexManager:
@@ -39,6 +109,11 @@ class GraphRAGIndexManager:
         self.index_state_file = Path(index_state_file)
         # Override path for testing - set to None for normal operation
         self._override_graph_builder_path: Optional[Path] = None
+
+        # Snapshot book-keeping for retention/cleanup
+        self._current_snapshot_id: Optional[str] = None
+        self._current_snapshot_indexed_at: Optional[str] = None
+        self._cached_repo_key: Optional[str] = None
 
         # Batch processing for smart updates
         self._batch_lock = threading.Lock()
@@ -111,11 +186,17 @@ class GraphRAGIndexManager:
             return {}
 
         try:
-            with open(self.index_state_file, "r") as f:
-                return cast(dict[str, Any], json.load(f))
+            with open(self.index_state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
         except Exception as e:
             logger.warning(f"Failed to load index state: {e}")
             return {}
+
+        if isinstance(data, dict):
+            return cast(dict[str, Any], data)
+
+        logger.warning(f"Invalid index state type {type(data)!r}, resetting to empty dict")
+        return {}
 
     def _save_index_state(self, state: dict) -> None:
         """Save index state to file.
@@ -216,10 +297,19 @@ class GraphRAGIndexManager:
             # Silently ignore logging errors during shutdown
             pass
 
+        # Prepare snapshot metadata for this indexing run
+        snapshot_id = uuid.uuid4().hex
+        indexed_at_utc = datetime.now(timezone.utc).isoformat()
+        self._current_snapshot_id = snapshot_id
+        self._current_snapshot_indexed_at = indexed_at_utc
+
         # Perform actual indexing
         try:
             self._index_codebase()
         except Exception as e:
+            # Clear snapshot markers before returning
+            self._current_snapshot_id = None
+            self._current_snapshot_indexed_at = None
             try:
                 logger.error(f"Failed to index codebase: {e}")
             except Exception:
@@ -227,19 +317,48 @@ class GraphRAGIndexManager:
                 pass
             return False
 
-        # Update the hash to mark as indexed
+        # Clear snapshot markers (storage helpers no longer need them)
+        self._current_snapshot_id = None
+        self._current_snapshot_indexed_at = None
+
+        # Update the hash to mark as indexed and append snapshot metadata
         current_hash = self._get_codebase_hash()
-        state = {
-            "codebase_hash": current_hash,
-            "indexed_at": str(self.repo_path.resolve()),
-        }
+        state = self._load_index_state()
+        state["codebase_hash"] = current_hash
+        state["indexed_at"] = str(self.repo_path.resolve())
+
+        snapshots = self._load_snapshots_from_state(state)
+        repo_key = self._build_repo_key()
+        snapshots.append(
+            SnapshotMetadata(
+                repo_key=repo_key,
+                snapshot_id=snapshot_id,
+                indexed_at=indexed_at_utc,
+                repo_path=str(self.repo_path.resolve()),
+                codebase_hash=current_hash,
+            )
+        )
+        # Keep snapshots sorted oldest-first for predictable cleanup behaviour
+        snapshots.sort(key=lambda s: s.indexed_at)
+        state["snapshots"] = [self._snapshot_to_dict(s) for s in snapshots]
         self._save_index_state(state)
 
         try:
-            logger.info("Index updated successfully")
+            logger.info(f"Index updated successfully (snapshot_id={snapshot_id}, repo_key={repo_key})")
         except Exception:
             # Silently ignore logging errors during shutdown
             pass
+
+        # Optionally run cleanup after update
+        if _get_env_flag("GRAPHRAG_CLEANUP_ON_UPDATE", True):
+            try:
+                self.cleanup_snapshots()
+            except Exception as e:
+                try:
+                    logger.warning(f"GraphRAG cleanup after index update failed: {e}")
+                except Exception:
+                    pass
+
         return True
 
     def _index_codebase(self) -> None:
@@ -683,6 +802,9 @@ class GraphRAGIndexManager:
         repo_path_str = str(self.repo_path.resolve())
         repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
         repo_label = f"Repo_{repo_hash}"
+        repo_key = self._build_repo_key()
+        snapshot_id = self._current_snapshot_id
+        snapshot_indexed_at = self._current_snapshot_indexed_at
 
         logger.info(f"Using repository label: {repo_label}")
 
@@ -707,6 +829,11 @@ class GraphRAGIndexManager:
                     node_data["repo_path"] = repo_path_str
                     node_data["repo_hash"] = repo_hash
                     node_data["repo_label"] = repo_label
+                    node_data["repo_key"] = repo_key
+                    if snapshot_id:
+                        node_data["snapshot_id"] = snapshot_id
+                    if snapshot_indexed_at:
+                        node_data["snapshot_indexed_at"] = snapshot_indexed_at
 
                     session.run(
                         """
@@ -725,7 +852,7 @@ class GraphRAGIndexManager:
                         f"""
                         MATCH (from:{repo_label}:CodeNode {{id: $from_id, repo_path: $repo_path}})
                         MATCH (to:{repo_label}:CodeNode {{id: $to_id, repo_path: $repo_path}})
-                        CREATE (from)-[r:RELATES {{type: $type, count: $count, repo_hash: $repo_hash}}]->(to)
+                        CREATE (from)-[r:RELATES {{type: $type, count: $count, repo_hash: $repo_hash, repo_key: $repo_key, snapshot_id: $snapshot_id}}]->(to)
                         """,
                         from_id=edge.get("from"),
                         to_id=edge.get("to"),
@@ -733,6 +860,8 @@ class GraphRAGIndexManager:
                         count=edge.get("count", 1),
                         repo_path=repo_path_str,
                         repo_hash=repo_hash,
+                        repo_key=repo_key,
+                        snapshot_id=snapshot_id,
                     )
 
                 logger.info(f"Inserted {len(edges)} edges into Neo4j")
@@ -776,6 +905,9 @@ class GraphRAGIndexManager:
             repo_path_str = str(self.repo_path.resolve())
             repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
             repo_label = f"Repo_{repo_hash}"
+            repo_key = self._build_repo_key()
+            snapshot_id = self._current_snapshot_id
+            snapshot_indexed_at = self._current_snapshot_indexed_at
 
             # Load embedding model
             logger.info("Loading embedding model...")
@@ -840,6 +972,9 @@ class GraphRAGIndexManager:
                             "repo_path": repo_path_str,
                             "repo_hash": repo_hash,
                             "repo_label": repo_label,
+                            "repo_key": repo_key,
+                            "snapshot_id": snapshot_id,
+                            "snapshot_indexed_at": snapshot_indexed_at,
                         },
                     )
                     points.append(point)
@@ -860,6 +995,335 @@ class GraphRAGIndexManager:
             logger.info(f"Successfully indexed {len(nodes)} nodes into Qdrant")
         except Exception as e:
             logger.warning(f"Skipping Qdrant indexing due to error: {e}")
+
+    def _build_repo_key(self) -> str:
+        """Build a stable key for this repository for snapshot grouping.
+
+        The key uses the absolute repo path and, if available, the sanitized
+        ``remote.origin.url`` with credentials stripped.
+        """
+
+        if self._cached_repo_key is not None:
+            return self._cached_repo_key
+
+        repo_path_str = str(self.repo_path.resolve())
+        remote = None
+
+        try:
+            result = subprocess.run(
+                ["git", "-C", repo_path_str, "config", "--get", "remote.origin.url"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                remote_raw = result.stdout.strip()
+                if remote_raw:
+                    parts = urlsplit(remote_raw)
+                    netloc = parts.netloc.split("@", 1)[1] if "@" in parts.netloc else parts.netloc
+                    remote = urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        except Exception:
+            # If git or remote configuration is unavailable, fall back to path-only key
+            remote = None
+
+        key = f"{repo_path_str}|{remote}" if remote else repo_path_str
+        self._cached_repo_key = key
+        return key
+
+    def _load_snapshots_from_state(self, state: dict[str, Any]) -> list[SnapshotMetadata]:
+        """Deserialize snapshot metadata from index state."""
+
+        raw = state.get("snapshots") or []
+        snapshots: list[SnapshotMetadata] = []
+        if not isinstance(raw, list):
+            return snapshots
+
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            try:
+                repo_key = str(item.get("repo_key") or "")
+                snapshot_id = str(item.get("snapshot_id") or "")
+                indexed_at = str(item.get("indexed_at") or "")
+                repo_path = str(item.get("repo_path") or str(self.repo_path.resolve()))
+            except Exception:
+                continue
+
+            if not (repo_key and snapshot_id and indexed_at):
+                continue
+
+            snapshots.append(
+                SnapshotMetadata(
+                    repo_key=repo_key,
+                    snapshot_id=snapshot_id,
+                    indexed_at=indexed_at,
+                    repo_path=repo_path,
+                    codebase_hash=item.get("codebase_hash"),
+                )
+            )
+
+        return snapshots
+
+    def _snapshot_to_dict(self, snapshot: SnapshotMetadata) -> dict[str, Any]:
+        return {
+            "repo_key": snapshot.repo_key,
+            "snapshot_id": snapshot.snapshot_id,
+            "indexed_at": snapshot.indexed_at,
+            "repo_path": snapshot.repo_path,
+            "codebase_hash": snapshot.codebase_hash,
+        }
+
+    def cleanup_snapshots(
+        self,
+        dry_run: bool = False,
+        retention_days: Optional[int] = None,
+        max_snapshots_per_repo: Optional[int] = None,
+    ) -> SnapshotCleanupResult:
+        """Apply retention policy to GraphRAG index snapshots.
+
+        Per ``repo_key`` this will:
+        - Delete snapshots strictly older than ``retention_days``.
+        - Ensure at most ``max_snapshots_per_repo`` snapshots remain.
+        - Always keep the newest snapshot.
+        """
+
+        state = self._load_index_state()
+        snapshots = self._load_snapshots_from_state(state)
+        total_before = len(snapshots)
+
+        retention_days_value = retention_days if retention_days is not None else _get_env_int("GRAPHRAG_RETENTION_DAYS", 7)
+        max_per_repo_value = max_snapshots_per_repo if max_snapshots_per_repo is not None else _get_env_int("GRAPHRAG_MAX_SNAPSHOTS_PER_REPO", 9)
+        if max_per_repo_value < 1:
+            max_per_repo_value = 1
+
+        if total_before == 0:
+            return SnapshotCleanupResult(
+                dry_run=dry_run,
+                retention_days=retention_days_value,
+                max_snapshots_per_repo=max_per_repo_value,
+                deleted=[],
+                total_snapshots_before=0,
+                total_snapshots_after=0,
+            )
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=retention_days_value)
+
+        by_repo: dict[str, list[SnapshotMetadata]] = {}
+        for snap in snapshots:
+            by_repo.setdefault(snap.repo_key, []).append(snap)
+
+        to_delete: list[SnapshotMetadata] = []
+        actions: list[SnapshotCleanupAction] = []
+
+        for repo_key, repo_snaps in by_repo.items():
+            if len(repo_snaps) <= 1:
+                # Always keep at least one snapshot per repo
+                continue
+
+            try:
+                sorted_snaps = sorted(repo_snaps, key=lambda s: datetime.fromisoformat(s.indexed_at))
+            except Exception:
+                sorted_snaps = sorted(repo_snaps, key=lambda s: s.indexed_at)
+
+            n = len(sorted_snaps)
+            delete_indices: set[int] = set()
+            reasons: dict[int, str] = {}
+
+            # Time-based deletions (excluding newest snapshot)
+            for idx, snap in enumerate(sorted_snaps[:-1]):
+                try:
+                    ts = datetime.fromisoformat(snap.indexed_at)
+                except Exception:
+                    # If timestamp cannot be parsed, skip time-based evaluation for this snapshot
+                    continue
+
+                if ts < cutoff:
+                    delete_indices.add(idx)
+                    reasons[idx] = "time"
+
+            # Count-based deletions (still excluding newest snapshot)
+            remaining = n - len(delete_indices)
+            if remaining > max_per_repo_value:
+                extra = remaining - max_per_repo_value
+                for idx in range(n - 1):
+                    if extra <= 0:
+                        break
+                    if idx in delete_indices:
+                        continue
+                    delete_indices.add(idx)
+                    reasons[idx] = "time+count" if idx in reasons else "count"
+                    extra -= 1
+
+            for idx in sorted(delete_indices):
+                snap = sorted_snaps[idx]
+                to_delete.append(snap)
+                actions.append(
+                    SnapshotCleanupAction(
+                        repo_key=repo_key,
+                        snapshot_id=snap.snapshot_id,
+                        reason=reasons.get(idx, "unknown"),
+                    )
+                )
+
+        if not to_delete:
+            try:
+                logger.info("GraphRAG cleanup: no snapshots to delete " f"(total_snapshots={total_before}, retention_days={retention_days_value}, " f"max_per_repo={max_per_repo_value})")
+            except Exception:
+                pass
+
+            return SnapshotCleanupResult(
+                dry_run=dry_run,
+                retention_days=retention_days_value,
+                max_snapshots_per_repo=max_per_repo_value,
+                deleted=[],
+                total_snapshots_before=total_before,
+                total_snapshots_after=total_before,
+            )
+
+        if dry_run:
+            for action in actions:
+                try:
+                    logger.info("GraphRAG cleanup (dry-run): would delete snapshot " f"repo_key={action.repo_key}, snapshot_id={action.snapshot_id}, reason={action.reason}")
+                except Exception:
+                    pass
+
+            total_after = total_before
+        else:
+            for snap, action in zip(to_delete, actions):
+                try:
+                    logger.info("GraphRAG cleanup: deleting snapshot " f"repo_key={action.repo_key}, snapshot_id={action.snapshot_id}, reason={action.reason}")
+                except Exception:
+                    pass
+
+                try:
+                    self._delete_snapshot_from_stores(snap)
+                except Exception as e:
+                    try:
+                        logger.warning("GraphRAG cleanup: failed to delete snapshot " f"{action.snapshot_id}: {e}")
+                    except Exception:
+                        pass
+
+            remaining_snaps = [s for s in snapshots if s not in to_delete]
+            state["snapshots"] = [self._snapshot_to_dict(s) for s in remaining_snaps]
+            self._save_index_state(state)
+            total_after = len(remaining_snaps)
+
+        try:
+            logger.info(
+                "GraphRAG cleanup %s: deleted %d/%d snapshots " "(retention_days=%d, max_per_repo=%d, remaining=%d)",
+                "dry-run" if dry_run else "executed",
+                len(actions),
+                total_before,
+                retention_days_value,
+                max_per_repo_value,
+                total_after,
+            )
+        except Exception:
+            pass
+
+        return SnapshotCleanupResult(
+            dry_run=dry_run,
+            retention_days=retention_days_value,
+            max_snapshots_per_repo=max_per_repo_value,
+            deleted=actions,
+            total_snapshots_before=total_before,
+            total_snapshots_after=total_after,
+        )
+
+    def _delete_snapshot_from_stores(self, snapshot: SnapshotMetadata) -> None:
+        """Delete snapshot data from Neo4j and Qdrant.
+
+        All operations are best-effort; failures are logged and do not raise.
+        """
+
+        try:
+            self._delete_snapshot_from_neo4j(snapshot)
+        except Exception as e:
+            try:
+                logger.warning("GraphRAG cleanup: Neo4j deletion failed for snapshot " f"{snapshot.snapshot_id}: {e}")
+            except Exception:
+                pass
+
+        try:
+            self._delete_snapshot_from_qdrant(snapshot)
+        except Exception as e:
+            try:
+                logger.warning("GraphRAG cleanup: Qdrant deletion failed for snapshot " f"{snapshot.snapshot_id}: {e}")
+            except Exception:
+                pass
+
+    def _delete_snapshot_from_neo4j(self, snapshot: SnapshotMetadata) -> None:
+        """Delete nodes/edges for a snapshot from Neo4j (best-effort)."""
+
+        try:
+            from neo4j import GraphDatabase
+        except ImportError:
+            # Optional dependency; nothing to do if missing.
+            return
+
+        in_container = is_running_in_container()
+        neo4j_uri = "bolt://auto-coder-neo4j:7687" if in_container else "bolt://localhost:7687"
+        neo4j_user = os.environ.get("NEO4J_USER", "neo4j")
+        neo4j_password = os.environ.get("NEO4J_PASSWORD", "password")
+
+        repo_path_str = snapshot.repo_path
+        repo_hash = hashlib.md5(repo_path_str.encode()).hexdigest()[:8]
+        repo_label = f"Repo_{repo_hash}"
+
+        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+        try:
+            with driver.session() as session:
+                if snapshot.snapshot_id:
+                    session.run(
+                        f"""
+                        MATCH (n:{repo_label}:CodeNode {{repo_path: $repo_path, snapshot_id: $snapshot_id}})
+                        DETACH DELETE n
+                        """,
+                        repo_path=repo_path_str,
+                        snapshot_id=snapshot.snapshot_id,
+                    )
+                    session.run(
+                        """
+                        MATCH ()-[r:RELATES {repo_hash: $repo_hash, snapshot_id: $snapshot_id}]-()
+                        DELETE r
+                        """,
+                        repo_hash=repo_hash,
+                        snapshot_id=snapshot.snapshot_id,
+                    )
+                else:
+                    # Fallback: delete by repo_path only
+                    session.run(
+                        f"MATCH (n:{repo_label}:CodeNode {{repo_path: $repo_path}}) DETACH DELETE n",
+                        repo_path=repo_path_str,
+                    )
+        finally:
+            driver.close()
+
+    def _delete_snapshot_from_qdrant(self, snapshot: SnapshotMetadata) -> None:
+        """Delete snapshot vectors from Qdrant (best-effort).
+
+        The current integration uses a single collection for all repos.
+        Deleting the whole collection keeps behaviour consistent with indexing,
+        which recreates the collection on every run.
+        """
+
+        try:
+            from qdrant_client import QdrantClient
+        except ImportError:
+            return
+
+        in_container = is_running_in_container()
+        qdrant_url = "http://auto-coder-qdrant:6333" if in_container else "http://localhost:6333"
+        collection_name = "code_embeddings"
+
+        client = QdrantClient(url=qdrant_url, timeout=2)
+
+        try:
+            client.delete_collection(collection_name)
+        except Exception:
+            # Ignore failures; cleanup is best-effort.
+            pass
 
     def ensure_index_up_to_date(self) -> bool:
         """Ensure index is up to date, updating if necessary.
