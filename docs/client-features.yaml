@@ -30,7 +30,7 @@ cli:
         - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
         - { name: --check-labels/--no-check-labels, default: true, help: "Enable checking for existing @auto-coder label before processing (default: enabled)" }
         - { name: --skip-main-update/--no-skip-main-update, default: true }
-        - { name: --ignore-dependabot-prs/--no-ignore-dependabot-prs, default: false }
+        - { name: --ignore-dependabot-prs/--no-ignore-dependabot-prs, default: false, help: "Skip non-ready dependency-bot PRs (Dependabot/Renovate/[bot]); still auto-merge when checks pass and PR is mergeable" }
         - { name: --force-clean-before-checkout/--no-force-clean-before-checkout, default: false }
         - { name: --enable-graphrag/--disable-graphrag, default: true }
         - { name: --only, type: string, help: "PR/Issue URL or number" }
@@ -228,7 +228,7 @@ config:
     MAX_FIX_ATTEMPTS: 30
     MAIN_BRANCH: "main"
     SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: true
-    IGNORE_DEPENDABOT_PRS: false
+    IGNORE_DEPENDABOT_PRS: false  # Skip non-ready dependency-bot PRs; still auto-merge when green and mergeable
     FORCE_CLEAN_BEFORE_CHECKOUT: false
     DISABLE_LABELS: false
     CHECK_LABELS: true

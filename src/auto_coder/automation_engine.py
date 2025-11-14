@@ -58,7 +58,7 @@ class AutomationEngine:
         - Priority descending (3 -> 0)
         - Creation time ascending (oldest first)
         """
-        from .pr_processor import _extract_linked_issues_from_pr_body
+        from .pr_processor import _extract_linked_issues_from_pr_body, _is_dependabot_pr
         from .util.github_action import _check_github_actions_status
 
         candidates: List[Candidate] = []
@@ -70,32 +70,39 @@ class AutomationEngine:
             pr_data = self.github.get_pr_details(pr)
             labels = pr_data.get("labels", []) or []
 
-            # Ignore PRs created by bots (dependabot, renovate, etc.)
-            author = pr_data.get("author")
-            if author:
-                # List common bot author names
-                bot_authors = ["app/dependabot", "dependabot-preview", "renovate-bot", "dependabot[bot]"]
-                if author in bot_authors or author.endswith("[bot]"):
-                    continue
-            candidates_count += 1
-
-            # Skip if another instance is processing (@auto-coder label present) using LabelManager check
             pr_number = pr_data.get("number")
             if not isinstance(pr_number, int):
                 logger.warning(f"Skipping PR missing/invalid number in data: {pr_data}")
                 continue
+
+            # Skip if another instance is processing (@auto-coder label present) using LabelManager check
             if not self.github.check_should_process_with_label_manager(repo_name, pr_number, item_type="pr"):
                 continue
 
-            # Calculate priority
+            # Calculate GitHub Actions status for the PR
             checks = _check_github_actions_status(repo_name, pr_data, self.config)
 
             # Skip PRs with running CI processes
             if checks.in_progress:
-                logger.debug(f"Skipping PR #{pr_data.get('number')} - CI checks are in progress")
+                logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
                 continue
 
             mergeable = pr_data.get("mergeable", True)
+
+            # Handle dependency-bot PRs based on configuration
+            is_dependency_bot = _is_dependabot_pr(pr_data)
+            if self.config.IGNORE_DEPENDABOT_PRS and is_dependency_bot:
+                # When IGNORE_DEPENDABOT_PRS is enabled, only process dependency-bot
+                # PRs that are fully green and mergeable (auto-merge candidates).
+                # Non-ready dependency-bot PRs are skipped to avoid expensive fix loops.
+                if not (checks.success and bool(mergeable)):
+                    logger.debug(f"Skipping dependency-bot PR #{pr_number} - IGNORE_DEPENDABOT_PRS enabled and PR " "is not green/mergeable")
+                    continue
+
+            # Count only PRs that we will actually consider as candidates
+            candidates_count += 1
+
+            # Calculate priority
             pr_priority = 3 if (checks.success and mergeable) else 2
 
             if "urgent" in labels:
