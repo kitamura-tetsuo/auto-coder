@@ -30,7 +30,7 @@ class TestLabelManager:
             mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
 
         # Label should be removed after exiting context
-        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
 
     def test_label_manager_skips_when_label_already_exists(self):
         mock_github_client = Mock()
@@ -99,7 +99,7 @@ class TestLabelManager:
             pass
 
         # Label should still be removed after exception
-        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
 
     def test_label_manager_with_custom_label_name(self):
         """Test that LabelManager works with custom label names."""
@@ -124,7 +124,7 @@ class TestLabelManager:
             mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 123, ["custom-label"], "issue")
 
         # Custom label should be removed
-        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["custom-label"])
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["custom-label"], "issue")
 
     def test_label_manager_pr_type(self):
         """Test that LabelManager works with PR type."""
@@ -142,7 +142,7 @@ class TestLabelManager:
             mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 456, ["@auto-coder"], "pr")
 
         # Label should be removed from PR
-        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 456, ["@auto-coder"])
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 456, ["@auto-coder"], "pr")
 
     def test_label_manager_retry_on_add_failure(self):
         """Test that LabelManager retries on label addition failure."""
@@ -239,7 +239,7 @@ class TestLabelManager:
             assert should_process is True
             mock_github_client.try_add_labels_to_issue.assert_called_once()
 
-        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"])
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
 
     def test_label_manager_network_error_on_label_check(self):
         """Test that LabelManager handles network errors during label check."""
@@ -331,7 +331,7 @@ class TestLabelManager:
             mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
 
         # Label should be removed
-        mock_github_client.remove_labels.assert_called_once_with("owner/repo", "123", ["@auto-coder"])
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", "123", ["@auto-coder"], "issue")
 
     def test_label_manager_nested_contexts_different_items(self):
         """Test that nested LabelManager contexts work for different items."""

@@ -219,7 +219,13 @@ class LabelManager:
             # Remove the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    self.github_client.remove_labels(self.repo_name, self.item_number, [self.label_name])
+                    # Respect the item type ("issue" vs "pr") so logs and GitHub API paths are consistent
+                    self.github_client.remove_labels(
+                        self.repo_name,
+                        self.item_number,
+                        [self.label_name],
+                        self.item_type,
+                    )
                     logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
                     return
 
