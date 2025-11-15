@@ -17,9 +17,10 @@ import sys
 from functools import wraps
 from inspect import iscoroutinefunction, signature
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Union
 
-from loguru import logger
+# Add type import for logger
+from loguru import Logger, logger
 
 from .config import settings
 
@@ -59,7 +60,10 @@ def format_path_for_log(file_path: str) -> str:
     return str(resolved)
 
 
-def _patch_record(record) -> None:
+from loguru import Record
+
+
+def _patch_record(record: Record) -> None:
     """Enrich log records with shortened file paths."""
 
     record["extra"]["short_path"] = format_path_for_log(record["file"].path)
@@ -69,8 +73,8 @@ def setup_logger(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
     include_file_info: bool = True,
-    stream=sys.stdout,
-    progress_footer=None,
+    stream: Any = sys.stdout,
+    progress_footer: Any = None,
 ) -> None:
     """
     Setup loguru logger with file and line information.
@@ -155,7 +159,7 @@ def setup_logger(
         )
 
 
-def get_logger(name: str):
+def get_logger(name: str) -> Logger:
     """
     Get a logger instance with the specified name.
 
@@ -168,7 +172,17 @@ def get_logger(name: str):
     return logger.bind(name=name)
 
 
-def _format_args(func, args, kwargs, max_len=120):
+def get_config_logger() -> Logger:
+    """
+    Get a logger instance specifically for configuration-related operations.
+
+    Returns:
+        Logger instance for configuration logging
+    """
+    return logger.bind(name="config")
+
+
+def _format_args(func: Any, args: Any, kwargs: Any, max_len: int = 120) -> str:
     """Build a compact call signature string for logging."""
     bound = signature(func).bind_partial(*args, **kwargs)
     bound.apply_defaults()
@@ -178,7 +192,17 @@ def _format_args(func, args, kwargs, max_len=120):
     return s
 
 
-def log_calls(func):
+from typing import Any, Callable, TypeVar
+
+# Add type import for logger
+from loguru import Logger, logger
+
+from .config import settings
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def log_calls(func: F) -> F:
     """Decorator: log the fully qualified name on every call (sync & async)."""
     qualname = getattr(func, "__qualname__", getattr(func, "__name__", "<?>"))
     module = getattr(func, "__module__", "<module>")
@@ -187,23 +211,23 @@ def log_calls(func):
     if iscoroutinefunction(func):
 
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = await func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
 
-        return wrapper
+        return wrapper  # type: ignore
     else:
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
 
-        return wrapper
+        return wrapper  # type: ignore
 
 
 # Initialize logger on module import

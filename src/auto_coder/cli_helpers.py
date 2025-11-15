@@ -15,6 +15,7 @@ from .claude_client import ClaudeClient
 from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
 from .gemini_client import GeminiClient
+from .llm_backend_config import LLMBackendConfig, LLMBackendConfigManager
 from .qwen_client import QwenClient
 
 

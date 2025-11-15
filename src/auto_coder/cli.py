@@ -2,6 +2,8 @@
 
 import os
 import sys
+from os import PathLike
+from typing import IO, Union
 
 import click
 
@@ -9,12 +11,13 @@ try:
     from dotenv import load_dotenv
 except ImportError:
     # Fallback if python-dotenv is not installed
-    def load_dotenv():
+    def load_dotenv(dotenv_path: Union[str, PathLike[str], None] = None, stream: Union[IO[str], None] = None, verbose: bool = False, override: bool = False, interpolate: bool = True, encoding: Union[str, None] = "utf-8") -> bool:
         """No-op function when python-dotenv is not installed."""
-        pass
+        return True
 
 
 from . import __version__ as AUTO_CODER_VERSION
+from .cli_commands_config import config_group
 from .cli_commands_graphrag import graphrag_group
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
 from .cli_commands_mcp import mcp_group
@@ -28,7 +31,7 @@ load_dotenv()
 
 
 @click.group()
-@click.version_option(version=AUTO_CODER_VERSION, package_name="auto-coder")
+@click.version_option(version=AUTO_CODER_VERSION)
 def main() -> None:
     """Auto-Coder: Automated application development using Gemini CLI and GitHub integration."""
     record_startup_options(sys.argv, os.environ)
@@ -44,6 +47,7 @@ main.add_command(auth_status)
 main.add_command(migrate_branches)
 
 # Register command groups
+main.add_command(config_group)
 main.add_command(graphrag_group)
 main.add_command(mcp_group)
 main.add_command(mcp_pdb_group)
