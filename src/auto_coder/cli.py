@@ -40,8 +40,10 @@ load_dotenv()
 @click.version_option(version=AUTO_CODER_VERSION, package_name="auto-coder")
 def main() -> None:
     """Auto-Coder: Automated application development using Gemini CLI and GitHub integration."""
-    record_startup_options(sys.argv, os.environ)
-    maybe_run_auto_update()
+    # Only run initialization if not showing help
+    if "--help" not in sys.argv and "-h" not in sys.argv:
+        record_startup_options(sys.argv, os.environ)
+        maybe_run_auto_update()
 
 
 # Set the command name to 'auto-coder' when used as a CLI
