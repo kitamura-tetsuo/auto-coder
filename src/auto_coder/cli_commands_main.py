@@ -249,9 +249,13 @@ def process_issues(
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Initialize message backend manager using configuration from TOML file
+    # If message_backends are specified via CLI, use those instead of config
     from .cli_helpers import build_message_backend_manager
 
     message_manager = build_message_backend_manager(
+        selected_backends=list(message_backends) if message_backends else None,
+        primary_backend=message_backends[0] if message_backends else None,
+        models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude) if message_backends else None,
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
@@ -532,10 +536,13 @@ def create_feature_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    from .cli_helpers import build_backend_manager_from_config
+    from .cli_helpers import build_backend_manager
 
-    # Create manager using configuration from TOML file
-    manager = build_backend_manager_from_config(
+    # Create manager using CLI parameters
+    manager = build_backend_manager(
+        selected_backends=selected_backends,
+        primary_backend=primary_backend,
+        models=models,
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
@@ -750,9 +757,13 @@ def fix_to_pass_tests_command(
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     # Initialize message backend manager using configuration from TOML file
+    # If message_backends are specified via CLI, use those instead of config
     from .cli_helpers import build_message_backend_manager
 
     message_manager = build_message_backend_manager(
+        selected_backends=list(message_backends) if message_backends else None,
+        primary_backend=message_backends[0] if message_backends else None,
+        models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude) if message_backends else None,
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
