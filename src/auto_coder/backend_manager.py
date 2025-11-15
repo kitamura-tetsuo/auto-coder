@@ -324,11 +324,9 @@ class LLMBackendManager:
        ```python
        from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 
-       manager = get_llm_backend_manager(
-           default_backend="codex",
-           default_client=client,
-           factories={"codex": lambda: client}
-       )
+       # Using TOML configuration file (new approach)
+       from auto_coder.cli_helpers import build_backend_manager_from_config
+       manager = build_backend_manager_from_config()
        response = run_llm_prompt("Your prompt here")
        ```
 
@@ -338,6 +336,7 @@ class LLMBackendManager:
     - The singleton is thread-safe and can be accessed from multiple threads
     - Use force_reinitialize=True to reconfigure with new parameters
     - Call manager.close() during application shutdown for cleanup
+    - Configuration can now be read from a TOML file at ~/.auto-coder/llm_config.toml
     """
 
     _instance: Optional[BackendManager] = None
