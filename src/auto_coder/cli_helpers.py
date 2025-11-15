@@ -692,8 +692,9 @@ def build_message_backend_manager(
     effective_openai_api_key = openai_api_key or (qwen_config.openai_api_key if qwen_config else None)
     effective_openai_base_url = openai_base_url or (qwen_config.openai_base_url if qwen_config else None)
 
-    # Reuse the existing build_backend_manager logic but return the singleton
-    backend_manager = build_backend_manager(
+    # Create a backend manager with the appropriate configuration
+    # This will be used to initialize the singleton
+    temp_backend_manager = build_backend_manager(
         selected_backends=selected_backends,
         primary_backend=primary_backend,
         models=models,
@@ -705,16 +706,17 @@ def build_message_backend_manager(
         enable_graphrag=False,  # GraphRAG not needed for messages
     )
 
-    # Get default client and factories for singleton initialization
-    default_client = backend_manager._clients[primary_backend]
-    factories = backend_manager._factories
+    # Get the default client and factories to initialize the singleton
+    default_client = temp_backend_manager._clients[primary_backend]
+    factories = temp_backend_manager._factories
 
-    # Initialize the singleton
-    message_manager = LLMBackendManager.get_message_instance(
+    # Initialize the message singleton instance
+    LLMBackendManager.get_message_instance(
         default_backend=primary_backend,
         default_client=default_client,
         factories=factories,
         order=selected_backends,
     )
 
-    return message_manager
+    # Get and return the already initialized message instance
+    return LLMBackendManager.get_message_instance()

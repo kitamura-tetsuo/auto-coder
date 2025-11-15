@@ -255,16 +255,27 @@ def process_issues(
     # If message_backends are specified via CLI, use those instead of config
     from .cli_helpers import build_message_backend_manager
 
-    message_manager = build_message_backend_manager(
-        selected_backends=list(message_backends) if message_backends else None,
-        primary_backend=message_backends[0] if message_backends else None,
-        models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude) if message_backends else None,
-        gemini_api_key=gemini_api_key,
-        openai_api_key=openai_api_key,
-        openai_base_url=openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
-    )
+    # Only pass message backends and models if they were explicitly specified via CLI
+    if message_backends:
+        message_manager = build_message_backend_manager(
+            selected_backends=list(message_backends),
+            primary_backend=message_backends[0],
+            models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude),
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
+    else:
+        # Use default configuration
+        message_manager = build_message_backend_manager(
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
 
     # Get actual message backends and primary backend from the manager
     message_backend_list = message_manager._all_backends[:]
@@ -760,16 +771,27 @@ def fix_to_pass_tests_command(
     # If message_backends are specified via CLI, use those instead of config
     from .cli_helpers import build_message_backend_manager
 
-    message_manager = build_message_backend_manager(
-        selected_backends=list(message_backends) if message_backends else None,
-        primary_backend=message_backends[0] if message_backends else None,
-        models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude) if message_backends else None,
-        gemini_api_key=gemini_api_key,
-        openai_api_key=openai_api_key,
-        openai_base_url=openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
-    )
+    # Only pass message backends and models if they were explicitly specified via CLI
+    if message_backends:
+        message_manager = build_message_backend_manager(
+            selected_backends=list(message_backends),
+            primary_backend=message_backends[0],
+            models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude),
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
+    else:
+        # Use default configuration
+        message_manager = build_message_backend_manager(
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
 
     # Get actual message backends and primary backend from the manager
     message_backend_list = message_manager._all_backends[:]

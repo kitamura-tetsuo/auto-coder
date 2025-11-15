@@ -5,7 +5,7 @@ set -e
 echo "Testing CLI entry point..."
 
 # Run auto-coder --help and verify it exits successfully
-OUTPUT=$(auto-coder --help)
+OUTPUT=$(uv run auto-coder --help 2>&1)
 echo "$OUTPUT"
 
 # Check for expected help content
