@@ -27,13 +27,14 @@ from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
 from .graphrag_mcp_integration import GraphRAGMCPIntegration
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
 
 
-def _safe_debug(msg):
+def _safe_debug(msg: Any) -> None:
     """Safely call logger.debug, ignoring errors during shutdown."""
     try:
         # Check if logger handlers are still valid
@@ -50,12 +51,12 @@ def _safe_debug(msg):
         pass
 
 
-def _is_running_under_pytest():
+def _is_running_under_pytest() -> bool:
     """Check if we're running under pytest."""
     return "pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
 
 
-def _pump_bytes(stream, log_fn) -> None:
+def _pump_bytes(stream: Any, log_fn: Any) -> None:
     try:
         for line in iter(stream.readline, b""):
             try:
@@ -84,10 +85,14 @@ class CodexMCPClient(LLMClientBase):
 
     def __init__(
         self,
-        model_name: str = "codex-mcp",
+        model_name: Optional[str] = None,
         enable_graphrag: bool = False,
     ) -> None:
-        self.model_name = model_name or "codex-mcp"
+        config = get_llm_config()
+        config_backend = config.get_backend_config("codex-mcp")
+
+        # Use provided value, fall back to config, then to default
+        self.model_name = model_name or (config_backend and config_backend.model) or "codex-mcp"
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.proc: Optional[subprocess.Popen] = None
@@ -241,7 +246,9 @@ class CodexMCPClient(LLMClientBase):
         length = self._read_headers(deadline)
         body = self._read_n(length, deadline)
         try:
-            return json.loads(body.decode("utf-8"))
+            parsed = json.loads(body.decode("utf-8"))
+            result: Dict[str, Any] = parsed if isinstance(parsed, dict) else {}
+            return result
         except Exception as e:
             raise RuntimeError(f"Invalid JSON-RPC body: {e}")
 
