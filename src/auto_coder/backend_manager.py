@@ -9,6 +9,7 @@ import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .exceptions import AutoCoderUsageLimitError
+from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
@@ -17,6 +18,7 @@ logger = get_logger(__name__)
 
 # Global singleton instance for general LLM operations
 _llm_instance: Optional[BackendManager] = None
+_message_instance: Optional[BackendManager] = None
 _instance_lock = threading.Lock()
 _initialization_lock = threading.Lock()
 
@@ -339,6 +341,7 @@ class LLMBackendManager:
     """
 
     _instance: Optional[BackendManager] = None
+    _message_instance: Optional[BackendManager] = None
     _init_params: Optional[Dict[str, Any]] = None
     _lock = threading.Lock()
 
@@ -455,8 +458,6 @@ class LLMBackendManager:
         """
         Get or create the singleton backend manager instance for message operations.
 
-        This method delegates to get_llm_instance() for unified backend management.
-
         Args:
             default_backend: Name of the default backend
             default_client: Default client instance
@@ -470,13 +471,40 @@ class LLMBackendManager:
         Raises:
             RuntimeError: If called without initialization parameters on first call
         """
-        return cls.get_llm_instance(
-            default_backend=default_backend,
-            default_client=default_client,
-            factories=factories,
-            order=order,
-            force_reinitialize=force_reinitialize,
-        )
+        # Fast path: check if instance exists and is initialized
+        with cls._lock:
+            # Check if we need to initialize
+            if cls._message_instance is None or force_reinitialize:
+                # Validate initialization parameters
+                if default_backend is None or default_client is None or factories is None:
+                    if cls._message_instance is None or force_reinitialize:
+                        raise RuntimeError("LLMBackendManager.get_message_instance() must be called with " "initialization parameters (default_backend, default_client, factories) " "on first use or when force_reinitialize=True")
+                else:
+                    # If force_reinitialize and instance exists, close it first
+                    if force_reinitialize and cls._message_instance is not None:
+                        logger.info(f"Reinitializing message LLMBackendManager singleton with default backend: {default_backend}")
+                        try:
+                            cls._message_instance.close()
+                        except Exception:
+                            pass  # Best effort cleanup
+                    elif cls._message_instance is None:
+                        # Initialize singleton with parameters
+                        logger.info(f"Initializing message LLMBackendManager singleton with default backend: {default_backend}")
+
+                    # Create new instance (or reuse if force_reinitialize)
+                    if cls._message_instance is None or force_reinitialize:
+                        cls._message_instance = BackendManager(
+                            default_backend=default_backend,
+                            default_client=default_client,
+                            factories=factories,
+                            order=order,
+                        )
+            elif default_backend is not None or default_client is not None or factories is not None:
+                # Parameters provided but instance already exists (and not forcing reinit)
+                # This is allowed - we just ignore the parameters and return existing instance
+                logger.debug("LLMBackendManager message singleton already initialized, ignoring new parameters")
+
+            return cls._message_instance
 
 
 # Global convenience functions for message backend operations
