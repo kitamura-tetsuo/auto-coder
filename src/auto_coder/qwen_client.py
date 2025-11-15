@@ -279,7 +279,7 @@ class QwenClient(LLMClientBase):
     def _build_provider_chain(self) -> List["_QwenProviderOption"]:
         providers: List[_QwenProviderOption] = []
 
-        if self.openai_api_key or self.openai_base_url:
+        if self.openai_api_key and self.openai_base_url:
             providers.append(
                 _QwenProviderOption(
                     name="custom-openai",
@@ -340,7 +340,7 @@ class QwenClient(LLMClientBase):
             return []
 
     def _create_feature_suggestion_prompt(self, repo_context: Dict[str, Any]) -> str:
-        return render_prompt(
+        result: str = render_prompt(
             "feature.suggestion",
             repo_name=repo_context.get("name", "Unknown"),
             description=repo_context.get("description", "No description"),
@@ -348,6 +348,7 @@ class QwenClient(LLMClientBase):
             recent_issues=repo_context.get("recent_issues", []),
             recent_prs=repo_context.get("recent_prs", []),
         )
+        return result
 
     def _parse_feature_suggestions(self, response_text: str) -> List[Dict[str, Any]]:
         try:
@@ -355,7 +356,8 @@ class QwenClient(LLMClientBase):
             end_idx = response_text.rfind("]") + 1
             if start_idx != -1 and end_idx != -1:
                 json_str = response_text[start_idx:end_idx]
-                return json.loads(json_str)
+                result: List[Dict[str, Any]] = json.loads(json_str)
+                return result
             return []
         except json.JSONDecodeError:
             return []
