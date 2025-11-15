@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 # Add type import for logger
-from loguru import Logger, logger
+from loguru import Logger, Record, logger
 
 from .config import settings
 
@@ -58,9 +58,6 @@ def format_path_for_log(file_path: str) -> str:
             return trimmed.as_posix()
 
     return str(resolved)
-
-
-from loguru import Record
 
 
 def _patch_record(record: Record) -> None:
@@ -195,7 +192,7 @@ def _format_args(func: Any, args: Any, kwargs: Any, max_len: int = 120) -> str:
 from typing import Any, Callable, TypeVar
 
 # Add type import for logger
-from loguru import Logger, logger
+from loguru import Logger, Record, logger
 
 from .config import settings
 
