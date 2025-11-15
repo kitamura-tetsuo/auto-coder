@@ -122,8 +122,41 @@ cli:
         - If issue-xx doesn't exist, creates it from pr-xx
         - Deletes the pr-xx branch after successful merge (unless --no-delete is used)
         - Safe to run multiple times (idempotent)
-  groups:
-    - name: graphrag
+    - name: config
+      purpose: Configuration management for LLM backends and related settings
+      subcommands:
+        - name: show
+          purpose: Display current configuration
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/config.json)" }
+        - name: edit
+          purpose: Open configuration file in default editor
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/config.json)" }
+        - name: set
+          purpose: Set a configuration value
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/config.json)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to set (supports dot notation for nested properties)" }
+            - { name: value, required: true, purpose: "Value to set for the key" }
+        - name: get
+          purpose: Get a configuration value
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/config.json)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to get (supports dot notation for nested properties)" }
+        - name: reset
+          purpose: Reset configuration to default values
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/config.json)" }
+        - name: validate
+          purpose: Validate configuration file format
+
+groups:
+  - name: config
+    description: Configuration management commands for LLM backends
+  - name: graphrag
       description: Manage Neo4j + Qdrant and the GraphRAG MCP server
       subcommands:
         - name: start
