@@ -221,10 +221,13 @@ def process_issues(
     # Use global LLMBackendManager for main backend
     from auto_coder.backend_manager import get_llm_backend_manager
 
-    from .cli_helpers import build_backend_manager_from_config
+    from .cli_helpers import build_backend_manager
 
-    # Create manager using configuration from TOML file
-    temp_manager = build_backend_manager_from_config(
+    # Create manager using CLI parameters
+    manager = build_backend_manager(
+        selected_backends=selected_backends,
+        primary_backend=primary_backend,
+        models=models,
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
@@ -233,17 +236,20 @@ def process_issues(
         enable_graphrag=enable_graphrag,
     )
 
-    # Initialize the global singleton with proper configuration
-    selected_backends = temp_manager._all_backends[:]
-    primary_backend = temp_manager._default_backend
-
-    manager = get_llm_backend_manager(
-        default_backend=primary_backend,
-        default_client=temp_manager._clients[primary_backend],
-        factories=temp_manager._factories,
-        order=selected_backends,
-        force_reinitialize=True,
-    )
+    # Get actual backends and primary backend from the manager
+    selected_backends = manager._all_backends[:]
+    primary_backend = manager._default_backend
+    primary_model = None
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+        # Get the actual model from the client
+        client = manager._clients[primary_backend]
+        if client is not None:
+            try:
+                primary_model = client.model_name
+            except AttributeError:
+                primary_model = models.get(primary_backend)
+        else:
+            primary_model = models.get(primary_backend)
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
@@ -726,10 +732,13 @@ def fix_to_pass_tests_command(
 
         github_client = _Dummy()  # type: ignore
 
-    from .cli_helpers import build_backend_manager_from_config
+    from .cli_helpers import build_backend_manager
 
-    # Create manager using configuration from TOML file
-    manager = build_backend_manager_from_config(
+    # Create manager using CLI parameters
+    manager = build_backend_manager(
+        selected_backends=selected_backends,
+        primary_backend=primary_backend,
+        models=models,
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,

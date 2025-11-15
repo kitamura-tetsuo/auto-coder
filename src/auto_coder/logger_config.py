@@ -17,9 +17,17 @@ import sys
 from functools import wraps
 from inspect import iscoroutinefunction, signature
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional, TextIO, Union
 
 from loguru import logger
+
+# Import types for type checking (only used for type hints)
+try:
+    from loguru import Record
+
+    Record  # to avoid unused import warning
+except ImportError:
+    pass  # Record will be used as a forward reference
 
 from .config import settings
 
@@ -59,7 +67,7 @@ def format_path_for_log(file_path: str) -> str:
     return str(resolved)
 
 
-def _patch_record(record) -> None:
+def _patch_record(record: dict) -> None:
     """Enrich log records with shortened file paths."""
 
     record["extra"]["short_path"] = format_path_for_log(record["file"].path)
@@ -69,8 +77,8 @@ def setup_logger(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
     include_file_info: bool = True,
-    stream=sys.stdout,
-    progress_footer=None,
+    stream: TextIO = sys.stdout,
+    progress_footer: Any = None,
 ) -> None:
     """
     Setup loguru logger with file and line information.
@@ -101,7 +109,7 @@ def setup_logger(
 
     if include_file_info:
         # Ensure records include shortened file paths for formatting
-        logger.configure(patcher=_patch_record)
+        logger.configure(patcher=_patch_record)  # type: ignore
 
     # Format with file and line information (VS Code clickable path:line)
     if include_file_info:
@@ -155,7 +163,10 @@ def setup_logger(
         )
 
 
-def get_logger(name: str):
+from loguru import logger
+
+
+def get_logger(name: str) -> Any:
     """
     Get a logger instance with the specified name.
 
@@ -168,7 +179,7 @@ def get_logger(name: str):
     return logger.bind(name=name)
 
 
-def _format_args(func, args, kwargs, max_len=120):
+def _format_args(func: Callable, args: tuple, kwargs: dict, max_len: int = 120) -> str:
     """Build a compact call signature string for logging."""
     bound = signature(func).bind_partial(*args, **kwargs)
     bound.apply_defaults()
@@ -178,7 +189,7 @@ def _format_args(func, args, kwargs, max_len=120):
     return s
 
 
-def log_calls(func):
+def log_calls(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator: log the fully qualified name on every call (sync & async)."""
     qualname = getattr(func, "__qualname__", getattr(func, "__name__", "<?>"))
     module = getattr(func, "__module__", "<module>")
@@ -187,7 +198,7 @@ def log_calls(func):
     if iscoroutinefunction(func):
 
         @wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):  # type: ignore
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = await func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
@@ -197,7 +208,7 @@ def log_calls(func):
     else:
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args, **kwargs):  # type: ignore
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
@@ -206,5 +217,15 @@ def log_calls(func):
         return wrapper
 
 
-# Initialize logger on module import
-setup_logger()
+# Initialize logger on module import if possible
+try:
+    setup_logger()
+except Exception as e:
+    # If logger setup fails, we'll have limited logging but the CLI should still work
+    # This handles cases where configuration files or environment variables aren't available
+    import sys
+    import warnings
+
+    warnings.warn(f"Logger setup failed: {e}. CLI may work but with limited logging.")
+    # We still need to ensure the logger object exists minimally
+    from loguru import logger
