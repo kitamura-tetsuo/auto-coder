@@ -41,7 +41,11 @@ load_dotenv()
 def main() -> None:
     """Auto-Coder: Automated application development using Gemini CLI and GitHub integration."""
     # Only run initialization if not showing help
-    if "--help" not in sys.argv and "-h" not in sys.argv:
+    # Check for multiple help-related flags to avoid initialization during help display
+    help_flags = ["--help", "-h", "--version", "-V"]
+    has_help_flag = any(help_flag in sys.argv for help_flag in help_flags)
+
+    if not has_help_flag:
         record_startup_options(sys.argv, os.environ)
         maybe_run_auto_update()
 
