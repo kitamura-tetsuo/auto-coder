@@ -221,19 +221,18 @@ def process_issues(
     # Use global LLMBackendManager for main backend
     from auto_coder.backend_manager import get_llm_backend_manager
 
-    from .cli_helpers import build_backend_manager
+    from .cli_helpers import build_backend_manager_from_config
 
-    # Create manager using CLI parameters
-    manager = build_backend_manager(
-        selected_backends=selected_backends,
-        primary_backend=primary_backend,
-        models=models,
+    # Create manager using configuration from TOML file with CLI parameter overrides
+    manager = build_backend_manager_from_config(
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
 
     # Get actual backends and primary backend from the manager
@@ -247,9 +246,7 @@ def process_issues(
             try:
                 primary_model = client.model_name
             except AttributeError:
-                primary_model = models.get(primary_backend)
-        else:
-            primary_model = models.get(primary_backend)
+                primary_model = None  # Will be resolved from config
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
@@ -542,19 +539,18 @@ def create_feature_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    from .cli_helpers import build_backend_manager
+    from .cli_helpers import build_backend_manager_from_config
 
-    # Create manager using CLI parameters
-    manager = build_backend_manager(
-        selected_backends=selected_backends,
-        primary_backend=primary_backend,
-        models=models,
+    # Create manager using configuration from TOML file with CLI parameter overrides
+    manager = build_backend_manager_from_config(
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
 
     # Get actual backends and primary backend from the manager
@@ -568,9 +564,7 @@ def create_feature_issues(
             try:
                 primary_model = client.model_name
             except AttributeError:
-                primary_model = models.get(primary_backend)
-        else:
-            primary_model = models.get(primary_backend)
+                primary_model = None  # Will be resolved from config
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
@@ -732,19 +726,18 @@ def fix_to_pass_tests_command(
 
         github_client = _Dummy()  # type: ignore
 
-    from .cli_helpers import build_backend_manager
+    from .cli_helpers import build_backend_manager_from_config
 
-    # Create manager using CLI parameters
-    manager = build_backend_manager(
-        selected_backends=selected_backends,
-        primary_backend=primary_backend,
-        models=models,
+    # Create manager using configuration from TOML file with CLI parameter overrides
+    manager = build_backend_manager_from_config(
         gemini_api_key=gemini_api_key,
         openai_api_key=openai_api_key,
         openai_base_url=openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
 
     # Get actual backends and primary backend from the manager
@@ -758,9 +751,7 @@ def fix_to_pass_tests_command(
             try:
                 primary_model = client.model_name
             except AttributeError:
-                primary_model = models.get(primary_backend)
-        else:
-            primary_model = models.get(primary_backend)
+                primary_model = None  # Will be resolved from config
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)

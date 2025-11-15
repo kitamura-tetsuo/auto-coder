@@ -531,6 +531,8 @@ def build_backend_manager_from_config(
     qwen_use_env_vars: bool = True,
     qwen_preserve_env: bool = False,
     enable_graphrag: bool = True,
+    cli_models: Optional[Dict[str, str]] = None,
+    cli_backends: Optional[List[str]] = None,
 ) -> BackendManager:
     """Construct BackendManager using configuration from the TOML file.
 
@@ -545,20 +547,38 @@ def build_backend_manager_from_config(
         qwen_use_env_vars: Pass Qwen credentials via environment variables (default: True)
         qwen_preserve_env: Preserve existing OPENAI_* environment variables (default: False)
         enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True)
+        cli_models: Dictionary mapping backend names to models specified via CLI, which will
+                   override both config file and default models (optional)
+        cli_backends: List of backend names specified via CLI. If provided, only these
+                     backends will be included in the manager. If None, uses all active
+                     backends from the configuration file.
 
     Returns:
         BackendManager: The configured backend manager instance
     """
     config = get_llm_config()
 
-    # Get active backends from configuration
-    selected_backends = config.get_active_backends()
-    primary_backend = config.default_backend
+    # Get active backends from configuration, filtered by CLI backends if provided
+    all_configured_backends = config.get_active_backends()
+    if cli_backends:
+        # Filter to only CLI-specified backends that are also enabled in config
+        selected_backends = [backend for backend in cli_backends if backend in all_configured_backends]
+        # Primary backend should be the first CLI-specified backend that's enabled
+        primary_backend = next((backend for backend in cli_backends if backend in all_configured_backends), config.default_backend)
+    else:
+        # Use all configured backends
+        selected_backends = all_configured_backends
+        primary_backend = config.default_backend
 
     # Build models map from configuration
     models = {}
     for backend_name in selected_backends:
-        models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
+        # CLI models take precedence over config file models
+        if cli_models and backend_name in cli_models:
+            model_value = cli_models[backend_name] or backend_name  # Ensure non-None value
+        else:
+            model_value = config.get_model_for_backend(backend_name) or backend_name
+        models[backend_name] = model_value
 
     # Override with env vars if provided
     gemini_config = config.get_backend_config("gemini")
