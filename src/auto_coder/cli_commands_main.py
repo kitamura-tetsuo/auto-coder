@@ -32,7 +32,7 @@ logger = get_logger(__name__)
     multiple=True,
     default=("codex",),
     type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) to use in priority order (default: codex)",
+    help="[DEPRECATED] AI backend(s) to use in priority order (default: codex). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--message-backend",
@@ -40,37 +40,37 @@ logger = get_logger(__name__)
     multiple=True,
     default=None,
     type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) for message generation in priority order (default: same as --backend)",
+    help="[DEPRECATED] AI backend(s) for message generation in priority order (default: same as --backend). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--gemini-api-key",
     envvar="GEMINI_API_KEY",
-    help="Gemini API key (optional, used when backend=gemini)",
+    help="[DEPRECATED] Gemini API key (optional, used when backend=gemini). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--openai-api-key",
     envvar="OPENAI_API_KEY",
-    help="OpenAI-style API key (optional, used when backend=qwen)",
+    help="[DEPRECATED] OpenAI-style API key (optional, used when backend=qwen). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--openai-base-url",
     envvar="OPENAI_BASE_URL",
-    help="OpenAI-style Base URL (optional, used when backend=qwen)",
+    help="[DEPRECATED] OpenAI-style Base URL (optional, used when backend=qwen). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--qwen-use-env-vars/--qwen-use-cli-options",
     default=False,
-    help="Pass Qwen credentials via environment variables or CLI options (default)",
+    help="[DEPRECATED] Pass Qwen credentials via environment variables or CLI options (default). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--qwen-preserve-env/--qwen-clear-env",
     default=False,
-    help="Preserve existing OPENAI_* environment variables (default: clear before setting)",
+    help="[DEPRECATED] Preserve existing OPENAI_* environment variables (default: clear before setting). Use configuration file instead: auto-coder config edit",
 )
-@click.option("--model-gemini", help="Model to use when backend=gemini")
-@click.option("--model-qwen", help="Model to use when backend=qwen")
-@click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
-@click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
+@click.option("--model-gemini", help="[DEPRECATED] Model to use when backend=gemini. Use configuration file instead: auto-coder config edit")
+@click.option("--model-qwen", help="[DEPRECATED] Model to use when backend=qwen. Use configuration file instead: auto-coder config edit")
+@click.option("--model-auggie", help="[DEPRECATED] Model to use when backend=auggie (defaults to GPT-5). Use configuration file instead: auto-coder config edit")
+@click.option("--model-claude", help="[DEPRECATED] Model to use when backend=claude (defaults to sonnet). Use configuration file instead: auto-coder config edit")
 @click.option(
     "--jules-mode/--no-jules-mode",
     default=True,
@@ -125,6 +125,12 @@ logger = get_logger(__name__)
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
+@click.option(
+    "--skip-deprecation-warnings",
+    is_flag=True,
+    default=False,
+    help="Skip deprecation warnings for CLI options (useful for scripts)",
+)
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -151,8 +157,24 @@ def process_issues(
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
+    skip_deprecation_warnings: bool,
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
+
+    # Show deprecation warnings unless explicitly skipped
+    if not skip_deprecation_warnings:
+        if backends != ("codex",) or message_backends is not None:
+            click.echo("⚠️  WARNING: --backend and --message-backend options are deprecated. Use configuration file instead: auto-coder config edit")
+            click.echo("💡 HINT: Run 'auto-coder config edit' to set up your configuration file.")
+
+        if gemini_api_key or openai_api_key or openai_base_url:
+            click.echo("⚠️  WARNING: API key and URL options are deprecated. Use configuration file instead: auto-coder config edit")
+
+        if qwen_use_env_vars or qwen_preserve_env:
+            click.echo("⚠️  WARNING: Qwen-specific environment options are deprecated. Use configuration file instead: auto-coder config edit")
+
+        if model_gemini or model_qwen or model_auggie or model_claude:
+            click.echo("⚠️  WARNING: Model options are deprecated. Use configuration file instead: auto-coder config edit")
 
     selected_backends = normalize_backends(backends)
     primary_backend = selected_backends[0]
@@ -411,7 +433,7 @@ def process_issues(
     multiple=True,
     default=("codex",),
     type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) to use in priority order (default: codex)",
+    help="[DEPRECATED] AI backend(s) to use in priority order (default: codex). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--disable-labels/--no-disable-labels",
@@ -466,6 +488,12 @@ def process_issues(
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
+@click.option(
+    "--skip-deprecation-warnings",
+    is_flag=True,
+    default=False,
+    help="Skip deprecation warnings for CLI options (useful for scripts)",
+)
 def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
@@ -485,8 +513,24 @@ def create_feature_issues(
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
+    skip_deprecation_warnings: bool,
 ) -> None:
     """Analyze repository and create feature enhancement issues."""
+
+    # Show deprecation warnings unless explicitly skipped
+    if not skip_deprecation_warnings:
+        if backends != ("codex",):
+            click.echo("⚠️  WARNING: --backend option is deprecated. Use configuration file instead: auto-coder config edit")
+            click.echo("💡 HINT: Run 'auto-coder config edit' to set up your configuration file.")
+
+        if gemini_api_key or openai_api_key or openai_base_url:
+            click.echo("⚠️  WARNING: API key and URL options are deprecated. Use configuration file instead: auto-coder config edit")
+
+        if qwen_use_env_vars or qwen_preserve_env:
+            click.echo("⚠️  WARNING: Qwen-specific environment options are deprecated. Use configuration file instead: auto-coder config edit")
+
+        if model_gemini or model_qwen or model_auggie or model_claude:
+            click.echo("⚠️  WARNING: Model options are deprecated. Use configuration file instead: auto-coder config edit")
 
     selected_backends = normalize_backends(backends)
     primary_backend = selected_backends[0]
@@ -568,7 +612,7 @@ def create_feature_issues(
     multiple=True,
     default=("codex",),
     type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) to use in priority order (default: codex)",
+    help="[DEPRECATED] AI backend(s) to use in priority order (default: codex). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--message-backend",
@@ -576,7 +620,7 @@ def create_feature_issues(
     multiple=True,
     default=None,
     type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) for message generation in priority order (default: same as --backend)",
+    help="[DEPRECATED] AI backend(s) for message generation in priority order (default: same as --backend). Use configuration file instead: auto-coder config edit",
 )
 @click.option(
     "--disable-labels/--no-disable-labels",
@@ -637,6 +681,12 @@ def create_feature_issues(
 )
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
+@click.option(
+    "--skip-deprecation-warnings",
+    is_flag=True,
+    default=False,
+    help="Skip deprecation warnings for CLI options (useful for scripts)",
+)
 def fix_to_pass_tests_command(
     backends: tuple[str, ...],
     message_backends: Optional[tuple[str, ...]],
@@ -656,11 +706,27 @@ def fix_to_pass_tests_command(
     log_level: str,
     log_file: Optional[str],
     verbose: bool,
+    skip_deprecation_warnings: bool,
 ) -> None:
     """Run local tests and repeatedly request LLM fixes until tests pass.
 
     If the LLM makes no edits in an iteration, error and stop.
     """
+    # Show deprecation warnings unless explicitly skipped
+    if not skip_deprecation_warnings:
+        if backends != ("codex",) or message_backends is not None:
+            click.echo("⚠️  WARNING: --backend and --message-backend options are deprecated. Use configuration file instead: auto-coder config edit")
+            click.echo("💡 HINT: Run 'auto-coder config edit' to set up your configuration file.")
+
+        if gemini_api_key or openai_api_key or openai_base_url:
+            click.echo("⚠️  WARNING: API key and URL options are deprecated. Use configuration file instead: auto-coder config edit")
+
+        if qwen_use_env_vars or qwen_preserve_env:
+            click.echo("⚠️  WARNING: Qwen-specific environment options are deprecated. Use configuration file instead: auto-coder config edit")
+
+        if model_gemini or model_qwen or model_auggie or model_claude:
+            click.echo("⚠️  WARNING: Model options are deprecated. Use configuration file instead: auto-coder config edit")
+
     selected_backends = normalize_backends(backends)
     primary_backend = selected_backends[0]
     models = build_models_map(model_gemini, model_qwen, model_auggie, model_claude)

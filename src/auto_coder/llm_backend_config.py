@@ -334,6 +334,9 @@ class LLMBackendConfig:
 
         # Write the default configuration
         with open(target_path, "w", encoding="utf-8") as f:
+            # Add comment about TOML format for syntax highlighting in editors
+            f.write("# Auto-Coder LLM Backend Configuration (TOML format)\n")
+            f.write("# For syntax highlighting, most editors will recognize .toml extension\n\n")
             toml.dump(default_config, f)
 
     def validate_config(self) -> List[str]:

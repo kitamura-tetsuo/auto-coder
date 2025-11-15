@@ -180,6 +180,8 @@ module = [
     "pygithub.*",
     "loguru.*",
     "yaml.*",
+    "rich.*",
+    "dotenv.*",
 ]
 ignore_missing_imports = true
 
