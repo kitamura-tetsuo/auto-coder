@@ -136,7 +136,10 @@ class LLMBackendConfiguration:
             return [name for name, config in self.backends.items() if config.enabled]
 
     def get_active_message_backends(self) -> List[str]:
-        """Get list of enabled message backends in the configured order."""
+        """Get list of enabled message backends in the configured order.
+
+        Returns message backend order if specifically configured, otherwise falls back to general backends.
+        """
         if self.message_backend_order:
             # Filter to only include enabled backends that are in message order
             return [name for name in self.message_backend_order if self.backends.get(name, BackendConfig(name=name)).enabled]
@@ -145,10 +148,20 @@ class LLMBackendConfiguration:
             return self.get_active_backends()
 
     def get_message_default_backend(self) -> str:
-        """Get the default backend for message generation."""
+        """Get the default backend for message generation.
+
+        Returns message backend default if specifically configured, otherwise falls back to general default.
+        """
         if self.message_default_backend and self.backends.get(self.message_default_backend, BackendConfig(name=self.message_default_backend)).enabled:
             return self.message_default_backend
         return self.default_backend
+
+    def has_dual_configuration(self) -> bool:
+        """Check if both general backend and message backend configurations are explicitly set."""
+        # Check if message-specific configurations exist
+        has_message_config = bool(self.message_backend_order or self.message_default_backend)
+        has_general_config = bool(self.backend_order or self.default_backend)
+        return has_message_config and has_general_config
 
     def get_model_for_backend(self, backend_name: str) -> Optional[str]:
         """Get the model for a specific backend, with fallback to backend defaults."""

@@ -673,6 +673,13 @@ def build_message_backend_manager(
 
     config = get_llm_config()
 
+    # Log if dual configuration is detected
+    if config.has_dual_configuration():
+        from .logger_config import get_logger
+
+        logger = get_logger(__name__)
+        logger.info("Dual backend configuration detected - using separate settings for message generation")
+
     # Use configuration values as defaults if not provided
     if selected_backends is None:
         selected_backends = config.get_active_message_backends()

@@ -36,10 +36,9 @@ from .update_manager import maybe_run_auto_update, record_startup_options
 load_dotenv()
 
 
-@click.group(invoke_without_command=True)
+@click.group(invoke_without_command=True, help="Auto-Coder: Automated application development using Gemini CLI and GitHub integration.")
 @click.version_option(version=AUTO_CODER_VERSION, package_name="auto-coder")
 def main() -> None:
-    """Auto-Coder: Automated application development using Gemini CLI and GitHub integration."""
     # Only run initialization if not showing help
     # Check for multiple help-related flags to avoid initialization during help display
     help_flags = ["--help", "-h", "--version", "-V"]
