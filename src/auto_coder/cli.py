@@ -2,6 +2,8 @@
 
 import os
 import sys
+from os import PathLike
+from typing import IO
 
 import click
 
@@ -9,9 +11,16 @@ try:
     from dotenv import load_dotenv
 except ImportError:
     # Fallback if python-dotenv is not installed
-    def load_dotenv():
+    def load_dotenv(
+        dotenv_path: str | PathLike[str] | None = None,
+        stream: IO[str] | None = None,
+        verbose: bool = False,
+        override: bool = False,
+        interpolate: bool = True,
+        encoding: str | None = "utf-8",
+    ) -> bool:
         """No-op function when python-dotenv is not installed."""
-        pass
+        return True
 
 
 from . import __version__ as AUTO_CODER_VERSION
@@ -27,12 +36,16 @@ from .update_manager import maybe_run_auto_update, record_startup_options
 load_dotenv()
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(version=AUTO_CODER_VERSION, package_name="auto-coder")
 def main() -> None:
     """Auto-Coder: Automated application development using Gemini CLI and GitHub integration."""
     record_startup_options(sys.argv, os.environ)
     maybe_run_auto_update()
+
+
+# Set the command name to 'auto-coder' when used as a CLI
+main.name = "auto-coder"
 
 
 # Register main commands
