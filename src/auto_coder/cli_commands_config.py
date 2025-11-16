@@ -270,9 +270,10 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
 
     # Check each backend
     for name, backend_config in config.backends.items():
-        # Type validation is handled by the dataclass definition
-        # Additional validations can be added here if needed
-
-        pass
+        # Validate temperature - should be float or None
+        if backend_config.temperature is not None:
+            # Convert int to float if needed
+            if isinstance(backend_config.temperature, int):
+                backend_config.temperature = float(backend_config.temperature)
 
     return errors
