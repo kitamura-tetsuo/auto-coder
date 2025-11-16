@@ -17,10 +17,12 @@ import sys
 from functools import wraps
 from inspect import iscoroutinefunction, signature
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union
 
-# Add type import for logger
-from loguru import Logger, Record, logger
+from loguru import logger
+
+if TYPE_CHECKING:
+    from loguru import Logger
 
 from .config import settings
 
@@ -60,7 +62,7 @@ def format_path_for_log(file_path: str) -> str:
     return str(resolved)
 
 
-def _patch_record(record: Record) -> None:
+def _patch_record(record: Any) -> None:
     """Enrich log records with shortened file paths."""
 
     record["extra"]["short_path"] = format_path_for_log(record["file"].path)
@@ -156,7 +158,7 @@ def setup_logger(
         )
 
 
-def get_logger(name: str) -> Logger:
+def get_logger(name: str) -> "Logger":
     """
     Get a logger instance with the specified name.
 
@@ -169,7 +171,7 @@ def get_logger(name: str) -> Logger:
     return logger.bind(name=name)
 
 
-def get_config_logger() -> Logger:
+def get_config_logger() -> "Logger":
     """
     Get a logger instance specifically for configuration-related operations.
 
@@ -188,13 +190,6 @@ def _format_args(func: Any, args: Any, kwargs: Any, max_len: int = 120) -> str:
         s = s[:max_len] + "…"
     return s
 
-
-from typing import Any, Callable, TypeVar
-
-# Add type import for logger
-from loguru import Logger, Record, logger
-
-from .config import settings
 
 F = TypeVar("F", bound=Callable[..., Any])
 
