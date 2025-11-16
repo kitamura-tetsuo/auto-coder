@@ -163,9 +163,6 @@ def setup_logger(
         )
 
 
-from loguru import logger
-
-
 def get_logger(name: str) -> Any:
     """
     Get a logger instance with the specified name.
@@ -228,4 +225,4 @@ except Exception as e:
 
     warnings.warn(f"Logger setup failed: {e}. CLI may work but with limited logging.")
     # We still need to ensure the logger object exists minimally
-    from loguru import logger
+    # logger is already imported at the module level

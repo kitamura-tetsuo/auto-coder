@@ -22,6 +22,10 @@ class BackendConfig:
     # Additional backend-specific settings
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+    # LLM parameters
+    temperature: Optional[float] = None
+    timeout: Optional[int] = None
+    max_retries: Optional[int] = None
     # For OpenAI-compatible backends
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
@@ -86,6 +90,9 @@ class LLMBackendConfiguration:
                     model=config_data.get("model"),
                     api_key=config_data.get("api_key"),
                     base_url=config_data.get("base_url"),
+                    temperature=config_data.get("temperature"),
+                    timeout=config_data.get("timeout"),
+                    max_retries=config_data.get("max_retries"),
                     openai_api_key=config_data.get("openai_api_key"),
                     openai_base_url=config_data.get("openai_base_url"),
                     extra_args=config_data.get("extra_args", {}),
@@ -114,7 +121,18 @@ class LLMBackendConfiguration:
         # Prepare data for TOML
         backend_data = {}
         for name, config in self.backends.items():
-            backend_data[name] = {"enabled": config.enabled, "model": config.model, "api_key": config.api_key, "base_url": config.base_url, "openai_api_key": config.openai_api_key, "openai_base_url": config.openai_base_url, "extra_args": config.extra_args}
+            backend_data[name] = {
+                "enabled": config.enabled,
+                "model": config.model,
+                "api_key": config.api_key,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+                "timeout": config.timeout,
+                "max_retries": config.max_retries,
+                "openai_api_key": config.openai_api_key,
+                "openai_base_url": config.openai_base_url,
+                "extra_args": config.extra_args,
+            }
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}
 

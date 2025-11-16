@@ -24,6 +24,7 @@ except ImportError:
 
 
 from . import __version__ as AUTO_CODER_VERSION
+from .cli_commands_config import config_group
 from .cli_commands_graphrag import graphrag_group
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
 from .cli_commands_mcp import mcp_group
@@ -62,6 +63,7 @@ main.add_command(auth_status)
 main.add_command(migrate_branches)
 
 # Register command groups
+main.add_command(config_group)
 main.add_command(graphrag_group)
 main.add_command(mcp_group)
 main.add_command(mcp_pdb_group)
