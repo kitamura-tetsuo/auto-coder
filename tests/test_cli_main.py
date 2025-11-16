@@ -49,10 +49,11 @@ class TestCLIMain:
         assert result.exit_code == 0
         assert "--repo" in result.output
         assert "--github-token" in result.output
-        assert "--backend" in result.output
-        assert "--model-gemini" in result.output
-        assert "--model-qwen" in result.output
-        assert "--model-auggie" in result.output
+        # Backend options are no longer available (replaced by configuration file)
+        assert "--backend" not in result.output
+        assert "--model-gemini" not in result.output
+        assert "--model-qwen" not in result.output
+        assert "--model-auggie" not in result.output
         assert "--verbose" in result.output
 
     def test_create_feature_issues_help(self):
@@ -63,8 +64,9 @@ class TestCLIMain:
         assert result.exit_code == 0
         assert "--repo" in result.output
         assert "--github-token" in result.output
-        assert "--backend" in result.output
-        assert "--model-gemini" in result.output
-        assert "--model-qwen" in result.output
-        assert "--model-auggie" in result.output
+        # Backend options are no longer available (replaced by configuration file)
+        assert "--backend" not in result.output
+        assert "--model-gemini" not in result.output
+        assert "--model-qwen" not in result.output
+        assert "--model-auggie" not in result.output
         assert "--verbose" in result.output

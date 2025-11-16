@@ -6,6 +6,7 @@ for different LLM backends (gemini, qwen, auggie, codex, claude).
 
 import json
 from pathlib import Path
+from typing import Any, Optional
 
 from .logger_config import get_logger
 
@@ -124,6 +125,7 @@ def _check_auggie_mcp() -> bool:
         return False
     except Exception as e:
         logger.debug(f"Failed to check Auggie MCP config: {e}")
+        return False
 
 
 def _check_claude_mcp() -> bool:
@@ -379,7 +381,7 @@ def ensure_mcp_server_configured(
     server_name: str,
     backend: str,
     auto_setup: bool = True,
-    env_vars: dict = None,
+    env_vars: Optional[dict[Any, Any]] = None,
 ) -> bool:
     """Ensure an MCP server is configured for the given backend.
 
@@ -411,7 +413,6 @@ def ensure_mcp_server_configured(
             server_name=server_name,
             install_dir=None,  # Use default
             env_vars=env_vars,
-            backends=[backend],
             silent=True,  # Suppress verbose output
         )
 
@@ -467,7 +468,6 @@ def ensure_graphrag_mcp_configured(backend: str, auto_setup: bool = True) -> boo
             neo4j_password="password",
             qdrant_url="http://localhost:6333",
             skip_clone=False,
-            backends=[backend],
             silent=True,  # Suppress verbose output
         )
 

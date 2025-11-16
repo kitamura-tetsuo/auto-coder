@@ -29,7 +29,7 @@ class TestCLICreateFeatureIssues:
         mock_check_cli,
         mock_initialize_graphrag,
     ):
-        """When backend=codex and --model is provided for create-feature-issues, warn and do not print Using model."""
+        """Test create-feature-issues with codex backend via config."""
         mock_github_client_class.return_value = Mock()
         mock_codex_client_class.return_value = Mock()
         automation_engine = Mock()
@@ -45,15 +45,11 @@ class TestCLICreateFeatureIssues:
                 "test/repo",
                 "--github-token",
                 "test_token",
-                "--model-gemini",
-                "some-model",
             ],
         )
 
         assert result.exit_code == 0
         assert "Using backends: codex (default: codex)" in result.output
-        assert "Warning:" not in result.output
-        assert "Using model:" not in result.output
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
@@ -170,23 +166,23 @@ class TestCLICreateFeatureIssues:
         mock_codex_client_class.assert_called_once()
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
-    @patch("src.auto_coder.cli_helpers.check_gemini_cli_or_fail")
+    @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
     @patch("src.auto_coder.cli_commands_main.AutomationEngine")
-    @patch("src.auto_coder.cli_helpers.GeminiClient")
+    @patch("src.auto_coder.cli_helpers.CodexClient")
     @patch("src.auto_coder.cli_commands_main.GitHubClient")
     @patch("src.auto_coder.cli_commands_main.check_github_sub_issue_or_setup")
-    def test_create_feature_issues_backend_gemini_custom_model(
+    def test_create_feature_issues_with_configured_backend(
         self,
         mock_check_github_sub_issue,
         mock_github_client_class,
-        mock_gemini_client_class,
+        mock_codex_client_class,
         mock_automation_engine_class,
         mock_check_cli,
         mock_initialize_graphrag,
     ):
-        """When backend=gemini, model is passed for create-feature-issues."""
+        """Test create-feature-issues uses default backend from configuration."""
         mock_github_client_class.return_value = Mock()
-        mock_gemini_client_class.return_value = Mock()
+        mock_codex_client_class.return_value = Mock()
         automation_engine = Mock()
         automation_engine.create_feature_issues.return_value = []
         mock_automation_engine_class.return_value = automation_engine
@@ -200,15 +196,12 @@ class TestCLICreateFeatureIssues:
                 "test/repo",
                 "--github-token",
                 "test_token",
-                "--backend",
-                "gemini",
-                "--model-gemini",
-                "gemini-custom",
             ],
         )
 
         assert result.exit_code == 0
-        mock_gemini_client_class.assert_called_once_with(model_name="gemini-custom")
+        # With the new configuration system, the default backend (codex) should be used
+        mock_codex_client_class.assert_called_once()
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
