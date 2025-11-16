@@ -187,6 +187,14 @@ features:
     - configurable: CHECK_DEPENDENCIES flag (default: enabled)
     - error_handling: Missing or inaccessible dependency issues are treated as unresolved
 
+  test_timeout:
+    - description: "Added pytest-timeout dependency and 60-second timeout to all pytest runs for better test reliability and CI stability"
+    - dependency: "pytest-timeout>=2.1.0"
+    - configuration:
+      - "Added --timeout=60 flag to all pytest commands in scripts/test.sh"
+      - "Applies to both full test suite runs and single test file runs"
+      - "Prevents tests from hanging indefinitely and improves CI pipeline reliability"
+
   fix_loop:
     - Re-run tests and apply LLM fixes until success or max attempts
     - Default max attempts (engine): 30
