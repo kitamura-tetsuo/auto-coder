@@ -270,10 +270,60 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
 
     # Check each backend
     for name, backend_config in config.backends.items():
+        # Validate model - should be str or None
+        if backend_config.model is not None and not isinstance(backend_config.model, str):
+            errors.append(f"{name}.model must be a string")  # type: ignore[unreachable]
+
+        # Validate enabled - should be bool
+        if not isinstance(backend_config.enabled, bool):
+            errors.append(f"{name}.enabled must be a boolean")  # type: ignore[unreachable]
+
+        # Validate api_key - should be str or None
+        if backend_config.api_key is not None and not isinstance(backend_config.api_key, str):
+            errors.append(f"{name}.api_key must be a string")  # type: ignore[unreachable]
+
+        # Validate base_url - should be str or None
+        if backend_config.base_url is not None and not isinstance(backend_config.base_url, str):
+            errors.append(f"{name}.base_url must be a string")  # type: ignore[unreachable]
+
         # Validate temperature - should be float or None
-        if backend_config.temperature is not None:
-            # Convert int to float if needed
-            if isinstance(backend_config.temperature, int):
-                backend_config.temperature = float(backend_config.temperature)
+        if backend_config.temperature is not None and not isinstance(backend_config.temperature, (float, int)):
+            errors.append(f"{name}.temperature must be a number")  # type: ignore[unreachable]
+
+        # Validate timeout - should be int or None
+        if backend_config.timeout is not None and not isinstance(backend_config.timeout, int):
+            errors.append(f"{name}.timeout must be an integer")  # type: ignore[unreachable]
+
+        # Validate max_retries - should be int or None
+        if backend_config.max_retries is not None and not isinstance(backend_config.max_retries, int):
+            errors.append(f"{name}.max_retries must be an integer")  # type: ignore[unreachable]
+
+        # Validate openai_api_key - should be str or None
+        if backend_config.openai_api_key is not None and not isinstance(backend_config.openai_api_key, str):
+            errors.append(f"{name}.openai_api_key must be a string")  # type: ignore[unreachable]
+
+        # Validate openai_base_url - should be str or None
+        if backend_config.openai_base_url is not None and not isinstance(backend_config.openai_base_url, str):
+            errors.append(f"{name}.openai_base_url must be a string")  # type: ignore[unreachable]
+
+        # Validate extra_args - should be dict
+        if not isinstance(backend_config.extra_args, dict):
+            errors.append(f"{name}.extra_args must be a dictionary")  # type: ignore[unreachable]
+
+    # Validate backend_order - should be list
+    if not isinstance(config.backend_order, list):
+        errors.append("backend.order must be a list")  # type: ignore[unreachable]
+
+    # Validate default_backend - should be str
+    if not isinstance(config.default_backend, str):
+        errors.append("backend.default must be a string")  # type: ignore[unreachable]
+
+    # Validate message_backend_order - should be list
+    if not isinstance(config.message_backend_order, list):
+        errors.append("message_backend.order must be a list")  # type: ignore[unreachable]
+
+    # Validate message_default_backend - should be str or None
+    if config.message_default_backend is not None and not isinstance(config.message_default_backend, str):
+        errors.append("message_backend.default must be a string")  # type: ignore[unreachable]
 
     return errors
