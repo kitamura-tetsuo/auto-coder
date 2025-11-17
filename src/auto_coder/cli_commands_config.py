@@ -36,18 +36,32 @@ def config_group() -> None:
 @click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
 def show(config_file: Optional[str]) -> None:
     """Display current configuration."""
-    config_path = get_config_path(config_file)
+    try:
+        config_path = get_config_path(config_file)
 
-    # Load the configuration
-    if config_path.exists():
-        config = LLMBackendConfiguration.load_from_file(str(config_path))
-    else:
-        # Create a default configuration if it doesn't exist
-        config = LLMBackendConfiguration()
+        # Load the configuration
+        if config_path.exists():
+            config = LLMBackendConfiguration.load_from_file(str(config_path))
+        else:
+            # Create a default configuration if it doesn't exist
+            config = LLMBackendConfiguration()
 
-    # Convert to dict and display
-    config_dict = config_to_dict(config)
-    click.echo(json.dumps(config_dict, indent=2))
+        # Convert to dict and display
+        config_dict = config_to_dict(config)
+
+        # Ensure the dictionary has the expected structure
+        if not isinstance(config_dict, dict):
+            raise ValueError(f"config_to_dict returned {type(config_dict)} instead of dict")
+
+        if "backends" not in config_dict:
+            raise ValueError("config_to_dict result missing 'backends' key")
+
+        # Output as JSON
+        click.echo(json.dumps(config_dict, indent=2))
+    except Exception as e:
+        logger.error(f"Error in config show: {e}")
+        click.echo(f"Error displaying configuration: {e}", err=True)
+        raise
 
 
 @config_group.command()
@@ -234,6 +248,15 @@ def validate(config_file: Optional[str]) -> None:
 
 def config_to_dict(config: LLMBackendConfiguration) -> Dict[str, Any]:
     """Convert LLMBackendConfiguration to a dictionary."""
+    # Ensure config has backends initialized
+    if not config.backends:
+        # Re-initialize with default backends if missing
+        default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
+        for backend_name in default_backends:
+            from .llm_backend_config import BackendConfig
+
+            config.backends[backend_name] = BackendConfig(name=backend_name)
+
     result: Dict[str, Any] = {
         "backend": {
             "order": config.backend_order,
