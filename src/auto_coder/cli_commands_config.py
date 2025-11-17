@@ -284,6 +284,16 @@ def config_to_dict(config: LLMBackendConfiguration) -> Dict[str, Any]:
         "default": config.message_default_backend,
     }
 
+    # Validate the result before returning
+    if not isinstance(result, dict):
+        raise ValueError(f"config_to_dict returned {type(result)} instead of dict")
+
+    if "backends" not in result:
+        raise ValueError("config_to_dict result missing 'backends' key")
+
+    if not isinstance(result["backends"], dict):
+        raise ValueError(f"config_to_dict['backends'] is {type(result['backends'])} instead of dict")
+
     return result
 
 
