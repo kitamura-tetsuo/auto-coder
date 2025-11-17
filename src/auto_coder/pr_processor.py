@@ -1111,6 +1111,8 @@ def _fix_pr_issues_with_testing(
 
                 if test_result["success"]:
                     actions.append(f"Local tests passed on attempt {attempt}")
+                    git_commit_with_retry(f"Local tests passed on attempt {attempt}")
+                    git_push()
                     break
                 else:
                     actions.append(f"Local tests failed on attempt {attempt}")
