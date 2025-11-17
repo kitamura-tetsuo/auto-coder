@@ -232,7 +232,6 @@ try:
 except Exception as e:
     # If logger setup fails, we'll have limited logging but the CLI should still work
     # This handles cases where configuration files or environment variables aren't available
-    import sys
     import warnings
 
     warnings.warn(f"Logger setup failed: {e}. CLI may work but with limited logging.")
