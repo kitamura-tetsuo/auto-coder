@@ -28,7 +28,7 @@ from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
 from .gh_logger import get_gh_logger
-from .git_utils import branch_context, get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import branch_context, commit_and_push_changes, get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
@@ -232,13 +232,9 @@ def _take_pr_actions(
 
         # If merge process completed successfully (PR was merged), skip analysis
         if any("Successfully merged" in action for action in merge_actions):
-            actions.append(f"PR #{pr_number} was merged, skipping further analysis")
+            actions.append(f"PR #{pr_number} was merged.")
         elif "ACTION_FLAG:SKIP_ANALYSIS" in merge_actions or any("skipping to next PR" in action for action in merge_actions):
-            actions.append(f"PR #{pr_number} processing deferred, skipping analysis")
-        else:
-            # Only do Gemini analysis if merge process didn't complete
-            analysis_results = _apply_pr_actions_directly(github_client, repo_name, pr_data, config)
-            actions.extend(analysis_results)
+            actions.append(f"PR #{pr_number} processing deferred.")
 
     except Exception as e:
         actions.append(f"Error taking PR actions for PR #{pr_number}: {e}")
@@ -1111,6 +1107,7 @@ def _fix_pr_issues_with_testing(
 
                 if test_result["success"]:
                     actions.append(f"Local tests passed on attempt {attempt}")
+                    commit_and_push_changes({"summary": f"Auto-Coder: Address PR #{pr_number}"})
                     break
                 else:
                     actions.append(f"Local tests failed on attempt {attempt}")
@@ -1160,13 +1157,24 @@ def _apply_github_actions_fix(
         # Get commit log since branch creation
         commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
+        # Extract important error information from GitHub Actions logs using extract_important_errors
+        github_test_result = TestResult(success=False, output=github_logs or "", errors="", return_code=1, command="github_actions_logs", test_file=None, stability_issue=False, extraction_context={}, framework_type="github_actions")
+
+        # Use extract_important_errors to extract failed log file names and error details
+        extracted_errors = extract_important_errors(github_test_result)
+
+        if not extracted_errors:
+            extracted_errors = github_logs[:500] if github_logs else "No error information available"
+
+        logger.info(f"Extracted important errors from GitHub Actions logs for PR #{pr_number}")
+
         # Create prompt for GitHub Actions error fix (no commit/push by LLM)
         fix_prompt = render_prompt(
             "pr.github_actions_fix",
             pr_number=pr_number,
             repo_name=repo_name,
             pr_title=pr_data.get("title", "Unknown"),
-            github_logs=(github_logs or "")[: config.MAX_PROMPT_SIZE],
+            extracted_errors=extracted_errors,
             commit_log=commit_log or "(No commit history)",
             # Structured additions (safe if None)
             structured_errors=(test_result.extraction_context if test_result else {}),
