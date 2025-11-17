@@ -141,6 +141,9 @@ class TestWatcherTool:
         self._recent_file_changes: Dict[str, float] = {}
         self._enhancement_window = 1.0  # 1 second window for enhanced debouncing
 
+        # Flag to prevent file events during shutdown
+        self._stopping = False
+
         try:
             logger.info(f"TestWatcherTool initialized with project root: {self.project_root}")
         except Exception:
@@ -228,10 +231,32 @@ class TestWatcherTool:
                     "message": "File watcher is not running",
                 }
 
-            try:  # type: ignore[unreachable]
+            # Set a flag to prevent new file events from processing
+            self._stopping = True  # type: ignore[unreachable]
+
+            try:
                 self.observer.stop()
-                self.observer.join(timeout=5)
+
+                # Release the lock before joining to avoid deadlock
+                # The observer cleanup may trigger file events that need the lock
+                self.lock.release()
+
+                try:
+                    # Use a longer timeout in CI environments where I/O can be slower
+                    import os
+
+                    join_timeout = 10 if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS") else 5
+                    self.observer.join(timeout=join_timeout)
+
+                    # Force cleanup if observer didn't stop in time
+                    if self.observer.is_alive():
+                        logger.warning("Observer thread did not stop within timeout, forcing cleanup")
+                finally:
+                    # Re-acquire the lock before cleanup
+                    self.lock.acquire()
+
                 self.observer = None
+                self._stopping = False
 
                 logger.info("Stopped file watcher")
 
@@ -251,6 +276,10 @@ class TestWatcherTool:
         Args:
             file_path: Path to the changed file
         """
+        # Don't process file changes while stopping to avoid deadlock
+        if self._stopping:
+            return
+
         # In pytest, avoid thread overhead: call synchronously and return fast
         if os.environ.get("PYTEST_CURRENT_TEST"):
             # During pytest, keep overhead minimal for synthetic dirs used in perf tests.

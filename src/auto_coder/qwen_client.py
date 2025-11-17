@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .exceptions import AutoCoderUsageLimitError
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -34,31 +35,35 @@ class QwenClient(LLMClientBase):
 
     def __init__(
         self,
-        model_name: str = "qwen3-coder-plus",
+        model_name: Optional[str] = None,
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
         use_env_vars: bool = True,
         preserve_existing_env: bool = False,
-    ):
+    ) -> None:
         """Initialize QwenClient.
 
         Args:
-            model_name: Model name to use (default: qwen3-coder-plus)
-            openai_api_key: OpenAI API key (optional)
-            openai_base_url: OpenAI base URL (optional)
+            model_name: Model name to use (will use config default if not provided)
+            openai_api_key: OpenAI API key (will use config value if not provided)
+            openai_base_url: OpenAI base URL (will use config value if not provided)
             use_env_vars: If True, pass credentials via environment variables.
                          If False, use command-line options (default: True)
             preserve_existing_env: If True, preserve existing OPENAI_* env vars.
                                   If False, clear them before setting new values (default: False)
         """
-        self.model_name = model_name or "qwen3-coder-plus"
+        config = get_llm_config()
+        config_backend = config.get_backend_config("qwen")
+
+        # Use provided values, fall back to config, then to default
+        self.model_name = model_name or (config_backend and config_backend.model) or "qwen3-coder-plus"
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
         self.conflict_model = self.model_name
         self.timeout: Optional[int] = None
-        # OpenAI-compatible env overrides (Qwen backend only)
-        self.openai_api_key = openai_api_key
-        self.openai_base_url = openai_base_url
+        # Use provided values or config values, with environment variables as another fallback
+        self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key) or os.environ.get("OPENAI_API_KEY")
+        self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url) or os.environ.get("OPENAI_BASE_URL")
         self.use_env_vars = use_env_vars
         self.preserve_existing_env = preserve_existing_env
 

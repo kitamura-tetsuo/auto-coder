@@ -221,51 +221,67 @@ def process_issues(
     # Use global LLMBackendManager for main backend
     from auto_coder.backend_manager import get_llm_backend_manager
 
-    from .cli_helpers import build_backend_manager
+    from .cli_helpers import build_backend_manager_from_config
 
-    # First create a temporary manager to get the configuration
-    temp_manager = build_backend_manager(
-        selected_backends,
-        primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
+    # Create manager using configuration from TOML file with CLI parameter overrides
+    manager = build_backend_manager_from_config(
+        gemini_api_key=gemini_api_key,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
 
-    # Initialize the global singleton with proper configuration
-
-    manager = get_llm_backend_manager(
-        default_backend=primary_backend,
-        default_client=temp_manager._clients[primary_backend],
-        factories=temp_manager._factories,
-        order=selected_backends,
-        force_reinitialize=True,
-    )
+    # Get actual backends and primary backend from the manager
+    selected_backends = manager._all_backends[:]
+    primary_backend = manager._default_backend
+    primary_model = None
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+        # Get the actual model from the client
+        client = manager._clients[primary_backend]
+        if client is not None:
+            try:
+                primary_model = client.model_name
+            except AttributeError:
+                primary_model = None  # Will be resolved from config
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    # Initialize message backend manager (use same backends if not specified)
+    # Initialize message backend manager using configuration from TOML file
+    # If message_backends are specified via CLI, use those instead of config
     from .cli_helpers import build_message_backend_manager
 
-    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
-    message_primary_backend = message_backend_list[0]
-    message_manager = build_message_backend_manager(
-        message_backend_list,
-        message_primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
-    )
-
+    # Only pass message backends and models if they were explicitly specified via CLI
     if message_backends:
+        message_manager = build_message_backend_manager(
+            selected_backends=list(message_backends),
+            primary_backend=message_backends[0],
+            models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude),
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
+    else:
+        # Use default configuration
+        message_manager = build_message_backend_manager(
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
+
+    # Get actual message backends and primary backend from the manager
+    message_backend_list = message_manager._all_backends[:]
+    message_primary_backend = message_manager._default_backend
+
+    if message_backends:  # This indicates if message backends were explicitly specified via CLI
         message_backend_str = ", ".join(message_backend_list)
         logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
         click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
@@ -534,17 +550,32 @@ def create_feature_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    manager = build_backend_manager(
-        selected_backends,
-        primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
+    from .cli_helpers import build_backend_manager_from_config
+
+    # Create manager using configuration from TOML file with CLI parameter overrides
+    manager = build_backend_manager_from_config(
+        gemini_api_key=gemini_api_key,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
+
+    # Get actual backends and primary backend from the manager
+    selected_backends = manager._all_backends[:]
+    primary_backend = manager._default_backend
+    primary_model = None
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+        # Get the actual model from the client
+        client = manager._clients[primary_backend]
+        if client is not None:
+            try:
+                primary_model = client.model_name
+            except AttributeError:
+                primary_model = None  # Will be resolved from config
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
@@ -706,38 +737,67 @@ def fix_to_pass_tests_command(
 
         github_client = _Dummy()  # type: ignore
 
-    manager = build_backend_manager(
-        selected_backends,
-        primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
+    from .cli_helpers import build_backend_manager_from_config
+
+    # Create manager using configuration from TOML file with CLI parameter overrides
+    manager = build_backend_manager_from_config(
+        gemini_api_key=gemini_api_key,
+        openai_api_key=openai_api_key,
+        openai_base_url=openai_base_url,
         qwen_use_env_vars=qwen_use_env_vars,
         qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
+
+    # Get actual backends and primary backend from the manager
+    selected_backends = manager._all_backends[:]
+    primary_backend = manager._default_backend
+    primary_model = None
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+        # Get the actual model from the client
+        client = manager._clients[primary_backend]
+        if client is not None:
+            try:
+                primary_model = client.model_name
+            except AttributeError:
+                primary_model = None  # Will be resolved from config
 
     # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    # Initialize message backend manager (use same backends if not specified)
+    # Initialize message backend manager using configuration from TOML file
+    # If message_backends are specified via CLI, use those instead of config
     from .cli_helpers import build_message_backend_manager
 
-    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
-    message_primary_backend = message_backend_list[0]
-    message_manager = build_message_backend_manager(
-        message_backend_list,
-        message_primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
-    )
-
+    # Only pass message backends and models if they were explicitly specified via CLI
     if message_backends:
+        message_manager = build_message_backend_manager(
+            selected_backends=list(message_backends),
+            primary_backend=message_backends[0],
+            models=build_models_map(model_gemini, model_qwen, model_auggie, model_claude),
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
+    else:
+        # Use default configuration
+        message_manager = build_message_backend_manager(
+            gemini_api_key=gemini_api_key,
+            openai_api_key=openai_api_key,
+            openai_base_url=openai_base_url,
+            qwen_use_env_vars=qwen_use_env_vars,
+            qwen_preserve_env=qwen_preserve_env,
+        )
+
+    # Get actual message backends and primary backend from the manager
+    message_backend_list = message_manager._all_backends[:]
+    message_primary_backend = message_manager._default_backend
+
+    if message_backends:  # This indicates if message backends were explicitly specified via CLI
         message_backend_str = ", ".join(message_backend_list)
         logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
         click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")

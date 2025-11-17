@@ -3,6 +3,7 @@ Gemini CLI client for Auto-Coder.
 """
 
 import json
+import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +14,7 @@ except Exception:  # Avoid runtime dependency
     genai = None  # Replaced via patch in tests
 
 from .exceptions import AutoCoderUsageLimitError
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -24,27 +26,31 @@ logger = get_logger(__name__)
 class GeminiClient(LLMClientBase):
     """Gemini client that uses google.generativeai SDK primarily in tests and a CLI fallback."""
 
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-pro"):
+    def __init__(self, api_key: Optional[str] = None, model_name: Optional[str] = None) -> None:
         """Initialize Gemini client.
 
         In tests, genai is patched and used. In production, we still verify gemini CLI presence
         for the CLI-based paths used elsewhere in the tool.
-        """
-        # Allow single positional argument to be treated as model_name when it looks like a model id
-        if api_key and isinstance(api_key, str) and api_key.lower().startswith("gemini-") and model_name == "gemini-2.5-pro":
-            model_name, api_key = api_key, None
 
-        self.api_key = api_key
-        self.model_name = model_name
-        self.default_model = model_name
+        Args:
+            api_key: API key (optional, will be loaded from config if not provided)
+            model_name: Model name (optional, will be loaded from config if not provided)
+        """
+        config = get_llm_config()
+        config_backend = config.get_backend_config("gemini")
+
+        # Use provided values, fall back to config, then to default
+        self.api_key = api_key or (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
+        self.model_name = model_name or (config_backend and config_backend.model) or "gemini-2.5-pro"
+        self.default_model = self.model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
         self.timeout = None  # No timeout - let gemini CLI run as long as needed
 
         # Configure genai if available (tests patch this symbol)
-        if genai is not None and api_key:
+        if genai is not None and self.api_key:
             try:
-                genai.configure(api_key=api_key)
-                self.model = genai.GenerativeModel(model_name)
+                genai.configure(api_key=self.api_key)
+                self.model = genai.GenerativeModel(self.model_name)
             except Exception:
                 # Fall back silently for tests that don't rely on real SDK
                 self.model = None
@@ -173,7 +179,7 @@ class GeminiClient(LLMClientBase):
 
     def _create_pr_analysis_prompt(self, pr_data: Dict[str, Any]) -> str:
         """Create prompt for pull request analysis."""
-        return render_prompt(
+        result: str = render_prompt(
             "gemini.pr_analysis",
             title=pr_data.get("title", ""),
             body=pr_data.get("body", ""),
@@ -186,10 +192,11 @@ class GeminiClient(LLMClientBase):
             draft=pr_data.get("draft", False),
             mergeable=pr_data.get("mergeable", False),
         )
+        return result
 
     def _create_feature_suggestion_prompt(self, repo_context: Dict[str, Any]) -> str:
         """Create prompt for feature suggestions."""
-        return render_prompt(
+        result: str = render_prompt(
             "feature.suggestion",
             repo_name=repo_context.get("name", "Unknown"),
             description=repo_context.get("description", "No description"),
@@ -197,6 +204,7 @@ class GeminiClient(LLMClientBase):
             recent_issues=repo_context.get("recent_issues", []),
             recent_prs=repo_context.get("recent_prs", []),
         )
+        return result
 
     # SDK-based analysis helpers removed per LLM execution policy.
     # analyze_issue / analyze_pull_request / generate_solution are intentionally removed.
@@ -209,7 +217,9 @@ class GeminiClient(LLMClientBase):
             start = response_text.find("{")
             end = response_text.rfind("}") + 1
             if start != -1 and end != -1:
-                return json.loads(response_text[start:end])
+                parsed = json.loads(response_text[start:end])
+                result: Dict[str, Any] = parsed if isinstance(parsed, dict) else {}
+                return result
         except Exception:
             pass
         # Fallback default per tests expectations
@@ -221,7 +231,18 @@ class GeminiClient(LLMClientBase):
 
     def _parse_solution_response(self, response_text: str) -> Dict[str, Any]:
         try:
-            return json.loads(response_text)
+            parsed = json.loads(response_text)
+            result: Dict[str, Any] = (
+                parsed
+                if isinstance(parsed, dict)
+                else {
+                    "solution_type": "investigation",
+                    "summary": f"Invalid JSON: {response_text[:200]}",
+                    "steps": [],
+                    "code_changes": [],
+                }
+            )
+            return result
         except Exception:
             return {
                 "solution_type": "investigation",
@@ -239,7 +260,9 @@ class GeminiClient(LLMClientBase):
 
             if start_idx != -1 and end_idx != -1:
                 json_str = response_text[start_idx:end_idx]
-                return json.loads(json_str)
+                parsed = json.loads(json_str)
+                result: List[Dict[str, Any]] = parsed if isinstance(parsed, list) else []
+                return result
             else:
                 return []
         except json.JSONDecodeError:
