@@ -1107,9 +1107,7 @@ def _fix_pr_issues_with_testing(
 
                 if test_result["success"]:
                     actions.append(f"Local tests passed on attempt {attempt}")
-                    commit_and_push_changes(
-                            {"summary": f"Auto-Coder: Address PR #{pr_number}"}
-                    )
+                    commit_and_push_changes({"summary": f"Auto-Coder: Address PR #{pr_number}"})
                     break
                 else:
                     actions.append(f"Local tests failed on attempt {attempt}")
@@ -1160,21 +1158,11 @@ def _apply_github_actions_fix(
         commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
         # Extract important error information from GitHub Actions logs using extract_important_errors
-        github_test_result = TestResult(
-            success=False,
-            output=github_logs or "",
-            errors="",
-            return_code=1,
-            command="github_actions_logs",
-            test_file=None,
-            stability_issue=False,
-            extraction_context={},
-            framework_type="github_actions"
-        )
-        
+        github_test_result = TestResult(success=False, output=github_logs or "", errors="", return_code=1, command="github_actions_logs", test_file=None, stability_issue=False, extraction_context={}, framework_type="github_actions")
+
         # Use extract_important_errors to extract failed log file names and error details
         extracted_errors = extract_important_errors(github_test_result)
-        
+
         if not extracted_errors:
             extracted_errors = github_logs[:500] if github_logs else "No error information available"
 
