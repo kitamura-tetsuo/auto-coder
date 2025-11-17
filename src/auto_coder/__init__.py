@@ -8,31 +8,13 @@ __description__ = "Automated application development using Gemini CLI and GitHub
 
 # Export LLM backend configuration classes
 from .llm_backend_config import (
-    AuggieBackendConfig,
     BackendConfig,
-    ClaudeBackendConfig,
-    CodexBackendConfig,
-    CodexMCPBackendConfig,
-    GeminiBackendConfig,
-    LLMBackendConfig,
-    LLMBackendConfigManager,
-    QwenBackendConfig,
-    ensure_config_directory,
-    get_llm_backend_config,
-    initialize_llm_backend_config,
+    LLMBackendConfiguration,
+    get_llm_config,
 )
 
 __all__ = [
-    "LLMBackendConfig",
+    "LLMBackendConfiguration",
     "BackendConfig",
-    "CodexBackendConfig",
-    "CodexMCPBackendConfig",
-    "GeminiBackendConfig",
-    "QwenBackendConfig",
-    "ClaudeBackendConfig",
-    "AuggieBackendConfig",
-    "LLMBackendConfigManager",
-    "get_llm_backend_config",
-    "initialize_llm_backend_config",
-    "ensure_config_directory",
+    "get_llm_config",
 ]
