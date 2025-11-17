@@ -1,4 +1,4 @@
-version: "2025.11.16+gd095ca5"
+version: "2025.11.17+update-backend-config"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -279,6 +279,13 @@ env:
   GRAPHRAG_CLEANUP_ON_INIT: "Enable automatic GraphRAG snapshot cleanup during initialize_graphrag (default: 1)"
   GRAPHRAG_CLEANUP_ON_UPDATE: "Enable automatic GraphRAG snapshot cleanup after each index update (default: 1)"
 
+changes:
+  - date: "2025-11-17"
+    version: "2025.11.17+update-backend-config"
+    changes:
+      - "Updated .vscode/launch.json to enable multiple AI backends (claude, gemini, codex) with their respective models"
+      - "Enhanced PR processor to automatically commit and push changes when local tests pass during fix iterations"
+      - "Added git_commit_with_retry and git_push calls in _fix_pr_issues_with_testing function for better automation"
 
 external_dependencies:
   graphrag:
