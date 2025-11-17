@@ -281,6 +281,13 @@ env:
 
 changes:
   - date: "2025-11-17"
+    version: "2025.11.17+improve-pr-processing"
+    changes:
+      - "Simplified PR action handling by removing redundant LLM analysis after successful merge or deferred processing"
+      - "Enhanced GitHub Actions error handling to use extract_important_errors for better error extraction from logs"
+      - "Updated GitHub Actions fix prompt to use extracted errors instead of truncated raw logs for more focused debugging"
+      - "Improved PR fix workflow to use centralized commit_and_push_changes helper for consistency"
+  - date: "2025-11-17"
     version: "2025.11.17+update-backend-config"
     changes:
       - "Updated .vscode/launch.json to enable multiple AI backends (claude, gemini, codex) with their respective models"
