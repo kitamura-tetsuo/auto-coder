@@ -77,7 +77,7 @@ def setup_logger(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
     include_file_info: bool = True,
-    stream: TextIO = sys.stdout,
+    stream: Optional[TextIO] = None,
     progress_footer: Any = None,
 ) -> None:
     """
@@ -87,7 +87,9 @@ def setup_logger(
         log_level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_file: Optional log file path
         include_file_info: Whether to include file and line information in logs
-        stream: Stream to write console logs to (default: sys.stdout). Use sys.stderr to avoid polluting stdout.
+        stream: Stream to write console logs to. Defaults to stderr unless verbose
+            logging is requested via AUTOCODER_VERBOSE, in which case stdout is used
+            so end-to-end runs can assert on log content.
         progress_footer: Optional ProgressFooter instance to use for sink wrapping
 
     Raises:
@@ -121,6 +123,16 @@ def setup_logger(
     # Use non-enqueue mode during pytest to avoid background queue growth
     use_enqueue = False if os.environ.get("PYTEST_CURRENT_TEST") else True
 
+    # Prefer caller-provided stream; fall back to stdout when verbose logging is
+    # enabled so tests capturing stdout can see the trace, otherwise stderr to
+    # keep machine-readable stdout clean.
+    selected_stream: TextIO
+    if stream is not None:
+        selected_stream = stream
+    else:
+        verbose_requested = os.environ.get("AUTOCODER_VERBOSE", "").strip().lower() in {"1", "true", "yes"}
+        selected_stream = sys.stdout if verbose_requested else sys.stderr
+
     # Add console handler (to specified stream or progress footer sink)
     if progress_footer is not None:
         logger.add(
@@ -133,7 +145,7 @@ def setup_logger(
         )
     else:
         logger.add(
-            stream,
+            selected_stream,
             format=format_string,
             level=level,
             colorize=True,
