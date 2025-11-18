@@ -53,6 +53,7 @@ dev = [
     "isort>=5.0.0",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
+    "types-toml>=0.10.0",
     "pre-commit>=4.3.0",
     "pytest>=9.0.0",
     "types-toml>=0.10.8.20240310",
@@ -183,6 +184,8 @@ module = [
     "pygithub.*",
     "loguru.*",
     "yaml.*",
+    "rich.*",
+    "dotenv.*",
 ]
 ignore_missing_imports = true
 

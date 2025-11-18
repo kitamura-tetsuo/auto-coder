@@ -122,51 +122,38 @@ cli:
         - If issue-xx doesn't exist, creates it from pr-xx
         - Deletes the pr-xx branch after successful merge (unless --no-delete is used)
         - Safe to run multiple times (idempotent)
-  groups:
-    - name: graphrag
-      description: Manage Neo4j + Qdrant and the GraphRAG MCP server
+    - name: config
+      purpose: Configuration management for LLM backends and related settings
       subcommands:
-        - name: start
+        - name: show
+          purpose: Display current configuration
           options:
-            - { name: --wait/--no-wait, default: true }
-            - { name: --timeout, type: int, default: 120 }
-        - name: stop
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: edit
+          purpose: Open configuration file in default editor
           options:
-            - { name: --timeout, type: int, default: 60 }
-        - name: status
-        - name: update-index
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: set
+          purpose: Set a configuration value
           options:
-            - { name: --force, flag: true }
-            - { name: --repo-path, type: path }
-        - name: cleanup
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to set (supports dot notation for nested properties)" }
+            - { name: value, required: true, purpose: "Value to set for the key" }
+        - name: get
+          purpose: Get a configuration value
           options:
-            - { name: --dry-run, flag: true }
-            - { name: --retention-days, type: int, default: 7 }
-            - { name: --max-per-repo, type: int, default: 9 }
-            - { name: --repo-path, type: path }
-            - { name: --verbose, flag: true }
-
-        - name: setup-mcp
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to get (supports dot notation for nested properties)" }
+        - name: reset
+          purpose: Reset configuration to default values
           options:
-            - { name: --install-dir, default: "~/graphrag_mcp" }
-            - { name: --neo4j-uri, default: "bolt://localhost:7687" }
-            - { name: --neo4j-user, default: "neo4j" }
-            - { name: --neo4j-password, default: "password" }
-            - { name: --qdrant-url, default: "http://localhost:6333" }
-            - { name: --skip-clone, flag: true }
-            - { name: --backends, multiple: true, choices: [codex, gemini, qwen, windsurf] }
-    - name: mcp
-      description: Install and inspect MCP servers
-      subcommands:
-        - { name: setup <server_name>, options: [--install-dir, --force] }
-        - { name: list }
-        - { name: status <server_name> }
-        - { name: test <server_name> }
-    - name: mcp-pdb
-      description: Helpers for MCP-PDB setup
-      subcommands:
-        - { name: print-config, options: [--target (windsurf|claude), --write-to] }
-        - { name: status }
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: validate
+          purpose: Validate configuration file format
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
 
 features:
   github_automation:
