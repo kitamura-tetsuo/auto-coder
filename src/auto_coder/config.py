@@ -40,5 +40,34 @@ class Settings(BaseSettings):
     )
 
 
-# Global settings instance
-settings = Settings()
+from typing import Union
+
+# Define type for the settings instance
+SettingsType = Union[Settings, "DefaultSettings"]
+
+# Global settings instance with error handling to prevent import-time failures
+try:
+    _settings = Settings()
+except Exception as e:
+    # In case of settings loading failure, create a minimal configuration
+    # This allows the CLI to at least show help without crashing
+    import warnings
+
+    warnings.warn(f"Failed to load settings: {e}. Using default configuration.")
+
+    # Create a default settings object with basic values
+    class DefaultSettings(Settings):
+        log_level: str = "INFO"
+        github_token: Optional[str] = None
+        github_api_url: str = "https://api.github.com"
+        gemini_api_key: Optional[str] = None
+        gemini_model: str = "gemini-pro"
+        max_issues_per_run: int = -1
+        max_prs_per_run: int = -1
+        check_dependencies: bool = True
+        log_format: str = "%(asctime)s - %(name)s - %(message)s"
+
+    _settings = DefaultSettings()
+
+# Export the settings instance with proper type
+settings: SettingsType = _settings

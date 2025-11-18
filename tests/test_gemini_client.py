@@ -196,7 +196,7 @@ class TestGeminiClient:
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
 
-        client = GeminiClient("gemini-2.5-pro")
+        client = GeminiClient(model_name="gemini-2.5-pro")
 
         # Initially should be using default model
         assert client.model_name == "gemini-2.5-pro"
@@ -217,7 +217,7 @@ class TestGeminiClient:
         # Mock subprocess for version check
         mock_subprocess.return_value.returncode = 0
 
-        client = GeminiClient("gemini-2.5-flash")
+        client = GeminiClient(model_name="gemini-2.5-flash")
 
         # Should already be using conflict model
         assert client.model_name == "gemini-2.5-flash"

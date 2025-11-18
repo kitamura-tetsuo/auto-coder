@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .exceptions import AutoCoderUsageLimitError
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
@@ -34,8 +35,12 @@ class AuggieClient(LLMClientBase):
 
     DAILY_CALL_LIMIT = _DAILY_LIMIT
 
-    def __init__(self, model_name: str = "GPT-5") -> None:
-        self.model_name = model_name or "GPT-5"
+    def __init__(self, model_name: Optional[str] = None) -> None:
+        config = get_llm_config()
+        config_backend = config.get_backend_config("auggie")
+
+        # Use provided value, fall back to config, then to default
+        self.model_name = model_name or (config_backend and config_backend.model) or "GPT-5"
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None

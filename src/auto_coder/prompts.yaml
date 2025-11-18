@@ -73,13 +73,13 @@ pr:
     Commit History Since Branch Creation:
     $commit_log
 
-    GitHub Actions Error Logs (truncated):
-    $github_logs
+    Extracted Important Errors (failed test files and key error details):
+    $extracted_errors
 
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     Your task:
-    1) Identify the root cause(s) of the failing checks based on the logs.
+    1) Identify the root cause(s) of the failing checks based on the extracted errors.
     2) Apply the necessary code changes directly in the repository to fix them.
     3) After applying changes, run the appropriate quick checks if available (linters/unit tests) to sanity-verify.
     4) Do NOT run git commit/push; the system will handle committing and pushing.

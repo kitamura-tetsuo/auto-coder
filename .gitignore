@@ -212,8 +212,6 @@ test-results/
 playwright-report/
 playwright/.cache/
 
-
-<MagicMock *
 reports/
 .auto-coder/
 .gemini/settings.json
@@ -231,5 +229,12 @@ CONTINUATION_SESSION_PROMPT.md
 tmp/
 *.md
 *.txt
+
+# Temporary test files in root
+/test_*.py
+/test_*.sh
+
+# Backup files
+*.bak
 
 pyright_results.json

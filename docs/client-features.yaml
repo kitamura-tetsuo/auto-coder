@@ -1,4 +1,4 @@
-version: "2025.11.15+g697f91e"
+version: "2025.11.17.2+g640bc05"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -174,6 +174,14 @@ features:
     - configurable: CHECK_DEPENDENCIES flag (default: enabled)
     - error_handling: Missing or inaccessible dependency issues are treated as unresolved
 
+  test_timeout:
+    - description: "Added pytest-timeout dependency and 60-second timeout to all pytest runs for better test reliability and CI stability"
+    - dependency: "pytest-timeout>=2.1.0"
+    - configuration:
+      - "Added --timeout=60 flag to all pytest commands in scripts/test.sh"
+      - "Applies to both full test suite runs and single test file runs"
+      - "Prevents tests from hanging indefinitely and improves CI pipeline reliability"
+
   fix_loop:
     - Re-run tests and apply LLM fixes until success or max attempts
     - Default max attempts (engine): 30
@@ -258,6 +266,20 @@ env:
   GRAPHRAG_CLEANUP_ON_INIT: "Enable automatic GraphRAG snapshot cleanup during initialize_graphrag (default: 1)"
   GRAPHRAG_CLEANUP_ON_UPDATE: "Enable automatic GraphRAG snapshot cleanup after each index update (default: 1)"
 
+changes:
+  - date: "2025-11-17"
+    version: "2025.11.17+improve-pr-processing"
+    changes:
+      - "Simplified PR action handling by removing redundant LLM analysis after successful merge or deferred processing"
+      - "Enhanced GitHub Actions error handling to use extract_important_errors for better error extraction from logs"
+      - "Updated GitHub Actions fix prompt to use extracted errors instead of truncated raw logs for more focused debugging"
+      - "Improved PR fix workflow to use centralized commit_and_push_changes helper for consistency"
+  - date: "2025-11-17"
+    version: "2025.11.17+update-backend-config"
+    changes:
+      - "Updated .vscode/launch.json to enable multiple AI backends (claude, gemini, codex) with their respective models"
+      - "Enhanced PR processor to automatically commit and push changes when local tests pass during fix iterations"
+      - "Added git_commit_with_retry and git_push calls in _fix_pr_issues_with_testing function for better automation"
 
 external_dependencies:
   graphrag:

@@ -17,12 +17,17 @@ import sys
 from functools import wraps
 from inspect import iscoroutinefunction, signature
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional, TypeVar, Union
+from typing import Any, Callable, Optional, TextIO, Union
 
 from loguru import logger
 
-if TYPE_CHECKING:
-    from loguru import Logger
+# Import types for type checking (only used for type hints)
+try:
+    from loguru import Record
+
+    Record  # to avoid unused import warning
+except ImportError:
+    pass  # Record will be used as a forward reference
 
 from .config import settings
 
@@ -62,7 +67,7 @@ def format_path_for_log(file_path: str) -> str:
     return str(resolved)
 
 
-def _patch_record(record: Any) -> None:
+def _patch_record(record: dict) -> None:
     """Enrich log records with shortened file paths."""
 
     record["extra"]["short_path"] = format_path_for_log(record["file"].path)
@@ -72,7 +77,7 @@ def setup_logger(
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
     include_file_info: bool = True,
-    stream: Any = sys.stdout,
+    stream: Optional[TextIO] = None,
     progress_footer: Any = None,
 ) -> None:
     """
@@ -82,7 +87,9 @@ def setup_logger(
         log_level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_file: Optional log file path
         include_file_info: Whether to include file and line information in logs
-        stream: Stream to write console logs to (default: sys.stdout). Use sys.stderr to avoid polluting stdout.
+        stream: Stream to write console logs to. Defaults to stderr unless verbose
+            logging is requested via AUTOCODER_VERBOSE, in which case stdout is used
+            so end-to-end runs can assert on log content.
         progress_footer: Optional ProgressFooter instance to use for sink wrapping
 
     Raises:
@@ -104,7 +111,7 @@ def setup_logger(
 
     if include_file_info:
         # Ensure records include shortened file paths for formatting
-        logger.configure(patcher=_patch_record)
+        logger.configure(patcher=_patch_record)  # type: ignore
 
     # Format with file and line information (VS Code clickable path:line)
     if include_file_info:
@@ -115,6 +122,16 @@ def setup_logger(
 
     # Use non-enqueue mode during pytest to avoid background queue growth
     use_enqueue = False if os.environ.get("PYTEST_CURRENT_TEST") else True
+
+    # Prefer caller-provided stream; fall back to stdout when verbose logging is
+    # enabled so tests capturing stdout can see the trace, otherwise stderr to
+    # keep machine-readable stdout clean.
+    selected_stream: TextIO
+    if stream is not None:
+        selected_stream = stream
+    else:
+        verbose_requested = os.environ.get("AUTOCODER_VERBOSE", "").strip().lower() in {"1", "true", "yes"}
+        selected_stream = sys.stdout if verbose_requested else sys.stderr
 
     # Add console handler (to specified stream or progress footer sink)
     if progress_footer is not None:
@@ -128,7 +145,7 @@ def setup_logger(
         )
     else:
         logger.add(
-            stream,
+            selected_stream,
             format=format_string,
             level=level,
             colorize=True,
@@ -158,7 +175,7 @@ def setup_logger(
         )
 
 
-def get_logger(name: str) -> "Logger":
+def get_logger(name: str) -> Any:
     """
     Get a logger instance with the specified name.
 
@@ -171,17 +188,7 @@ def get_logger(name: str) -> "Logger":
     return logger.bind(name=name)
 
 
-def get_config_logger() -> "Logger":
-    """
-    Get a logger instance specifically for configuration-related operations.
-
-    Returns:
-        Logger instance for configuration logging
-    """
-    return logger.bind(name="config")
-
-
-def _format_args(func: Any, args: Any, kwargs: Any, max_len: int = 120) -> str:
+def _format_args(func: Callable, args: tuple, kwargs: dict, max_len: int = 120) -> str:
     """Build a compact call signature string for logging."""
     bound = signature(func).bind_partial(*args, **kwargs)
     bound.apply_defaults()
@@ -191,10 +198,7 @@ def _format_args(func: Any, args: Any, kwargs: Any, max_len: int = 120) -> str:
     return s
 
 
-F = TypeVar("F", bound=Callable[..., Any])
-
-
-def log_calls(func: F) -> F:
+def log_calls(func: Callable[..., Any]) -> Callable[..., Any]:
     """Decorator: log the fully qualified name on every call (sync & async)."""
     qualname = getattr(func, "__qualname__", getattr(func, "__name__", "<?>"))
     module = getattr(func, "__module__", "<module>")
@@ -203,24 +207,33 @@ def log_calls(func: F) -> F:
     if iscoroutinefunction(func):
 
         @wraps(func)
-        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        async def wrapper(*args, **kwargs):  # type: ignore
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = await func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
 
-        return wrapper  # type: ignore
+        return wrapper
     else:
 
         @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
+        def wrapper(*args, **kwargs):  # type: ignore
             logger.opt(depth=1).debug(f"CALL {where}({_format_args(func, args, kwargs)})")
             result = func(*args, **kwargs)
             logger.opt(depth=1).debug(f"RET  {where} -> {result!r}")
             return result
 
-        return wrapper  # type: ignore
+        return wrapper
 
 
-# Initialize logger on module import
-setup_logger()
+# Initialize logger on module import if possible
+try:
+    setup_logger()
+except Exception as e:
+    # If logger setup fails, we'll have limited logging but the CLI should still work
+    # This handles cases where configuration files or environment variables aren't available
+    import warnings
+
+    warnings.warn(f"Logger setup failed: {e}. CLI may work but with limited logging.")
+    # We still need to ensure the logger object exists minimally
+    # logger is already imported at the module level
