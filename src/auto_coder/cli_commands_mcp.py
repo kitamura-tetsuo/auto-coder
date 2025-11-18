@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 
 
 @click.group(name="mcp")
-def mcp_group():
+def mcp_group() -> None:
     """MCP server management commands."""
     pass
 
@@ -29,14 +29,6 @@ def mcp_group():
     type=click.Path(),
     default=None,
     help="Installation directory (default: ~/mcp_servers/{server_name})",
-)
-@click.option(
-    "--backend",
-    "-b",
-    multiple=True,
-    type=click.Choice(["codex", "gemini", "qwen", "auggie", "all"]),
-    default=["all"],
-    help="Backend(s) to configure (default: all)",
 )
 @click.option(
     "--env",
@@ -53,7 +45,6 @@ def mcp_group():
 def mcp_setup(
     server_name: str,
     install_dir: Optional[str],
-    backend: tuple,
     env: tuple,
     silent: bool,
 ) -> None:
@@ -96,18 +87,13 @@ def mcp_setup(
         key, value = env_str.split("=", 1)
         env_vars[key] = value
 
-    # Determine backends
-    backends = list(backend)
-    if "all" in backends:
-        backends = ["codex", "gemini", "qwen", "auggie"]
-
-    # Setup server
+    # Setup server with all backends
     install_path = Path(install_dir) if install_dir else None
     success = manager.setup_server(
         server_name,
         install_dir=install_path,
         env_vars=env_vars,
-        backends=backends,
+        backends=["codex", "gemini", "qwen", "auggie"],
         silent=silent,
     )
 
@@ -165,14 +151,16 @@ def mcp_status(server_name: str) -> None:
         logger.info(f"Path: {server_path}")
 
         # Check if .env file exists
-        env_file = server_path / ".env"
-        if env_file.exists():
-            logger.info(f"Configuration: {env_file}")
+        if server_path:
+            env_file = server_path / ".env"
+            if env_file.exists():
+                logger.info(f"Configuration: {env_file}")
 
         # Check if run_server.sh exists
-        run_script = server_path / "run_server.sh"
-        if run_script.exists():
-            logger.info(f"Run script: {run_script}")
+        if server_path:
+            run_script = server_path / "run_server.sh"
+            if run_script.exists():
+                logger.info(f"Run script: {run_script}")
     else:
         logger.info(f"Run 'auto-coder mcp setup {server_name}' to install")
 
@@ -201,6 +189,10 @@ def mcp_test(server_name: str) -> None:
         return
 
     # Try to run the server
+    if not server_path:
+        logger.error(f"Failed to get server path for {server_name}")
+        return
+
     run_script = server_path / "run_server.sh"
     if run_script.exists():
         cmd = [str(run_script)]
@@ -233,7 +225,6 @@ def setup_mcp_programmatically(
     server_name: str,
     install_dir: Optional[str] = None,
     env_vars: Optional[dict] = None,
-    backends: Optional[list] = None,
     silent: bool = False,
 ) -> bool:
     """Setup an MCP server programmatically.
@@ -242,7 +233,6 @@ def setup_mcp_programmatically(
         server_name: Name of the MCP server
         install_dir: Installation directory (default: ~/mcp_servers/{server_name})
         env_vars: Environment variables to set
-        backends: List of backends to configure (default: all)
         silent: Suppress user prompts
 
     Returns:
@@ -262,6 +252,6 @@ def setup_mcp_programmatically(
         server_name,
         install_dir=install_path,
         env_vars=env_vars,
-        backends=backends,
+        backends=["codex", "gemini", "qwen", "auggie"],
         silent=silent,
     )

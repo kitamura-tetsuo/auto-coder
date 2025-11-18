@@ -77,7 +77,6 @@ def initialize_graphrag(force_reindex: bool = False) -> None:
             neo4j_password="password",
             qdrant_url="http://localhost:6333",
             skip_clone=False,
-            backends=None,  # Configure all backends
             silent=True,  # Suppress verbose output during auto-setup
         )
 
