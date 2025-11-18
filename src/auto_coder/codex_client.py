@@ -5,8 +5,10 @@ Codex CLI client for Auto-Coder.
 import json
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from .exceptions import AutoCoderUsageLimitError
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .utils import CommandExecutor
@@ -17,13 +19,18 @@ logger = get_logger(__name__)
 class CodexClient(LLMClientBase):
     """Codex CLI client for analyzing issues and generating solutions."""
 
-    def __init__(self, model_name: str = "codex"):
+    def __init__(self, model_name: Optional[str] = None) -> None:
         """Initialize Codex CLI client.
 
         Args:
             model_name: Model name (not used by codex CLI, accepted for interface compatibility).
+                        If None, will use the configuration value, then fall back to default.
         """
-        self.model_name = model_name or "codex"
+        config = get_llm_config()
+        config_backend = config.get_backend_config("codex")
+
+        # Use provided value, fall back to config, then to default
+        self.model_name = model_name or (config_backend and config_backend.model) or "codex"
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None

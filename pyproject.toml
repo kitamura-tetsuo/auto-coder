@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.11.15+g697f91e"
+version = "2025.11.17.2+g640bc05"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -24,9 +24,9 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "click>=8.1.0",
     "python-dotenv>=1.0.0",
-    "pygithub>=1.59.0",
-    "pyyaml>=6.0",
+    "PyGithub>=2.0.0",
     "GitPython>=3.1.0",
+    "pyyaml>=6.0",
     "loguru>=0.7.0",
     "neo4j>=5.14.0",
     "qdrant-client>=1.7.0",
@@ -42,26 +42,30 @@ dependencies = [
 
 [dependency-groups]
 test = [
-    "pytest>=7.0.0",
+    "pytest>=9.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
+    "pytest-timeout>=2.1.0",
 ]
 dev = [
     "black>=24.0.0",
     "isort>=5.0.0",
     "flake8>=6.0.0",
     "mypy>=1.0.0",
+    "types-toml>=0.10.0",
     "pre-commit>=4.3.0",
-    "pytest>=8.4.2",
+    "pytest>=9.0.0",
+    "types-toml>=0.10.8.20240310",
 ]
 
 [project.optional-dependencies]
 test = [
-    "pytest>=7.0.0",
+    "pytest>=9.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
+    "pytest-timeout>=2.1.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -180,6 +184,8 @@ module = [
     "pygithub.*",
     "loguru.*",
     "yaml.*",
+    "rich.*",
+    "dotenv.*",
 ]
 ignore_missing_imports = true
 

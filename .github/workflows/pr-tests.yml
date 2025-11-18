@@ -57,6 +57,11 @@ jobs:
         run: |
           uv sync --dev --extra test
 
+      - name: Install package in development mode
+        run: |
+          # Install package with console scripts to make auto-coder command available
+          uv pip install -e .
+
       - name: Test CLI entry point
         run: |
           # Run auto-coder --help and verify it exits successfully

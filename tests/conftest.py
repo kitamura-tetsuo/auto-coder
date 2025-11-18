@@ -37,6 +37,8 @@ def _clear_sensitive_env(monkeypatch, request):
     # Clear influential environment variables
     for key in ("GITHUB_TOKEN", "GEMINI_API_KEY"):
         monkeypatch.delenv(key, raising=False)
+    # Disable auto-update to avoid noisy stderr output that can break JSON parsing in CLI tests
+    monkeypatch.setenv("AUTO_CODER_DISABLE_AUTO_UPDATE", "1")
     # Switch home directory to temporary directory, blocking effects of real files like ~/.config/gh/hosts.yml
     tmp_home = tempfile.mkdtemp(prefix="ac_test_home_")
     monkeypatch.setenv("HOME", tmp_home)

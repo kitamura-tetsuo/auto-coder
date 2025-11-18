@@ -1,4 +1,4 @@
-version: "2025.11.15+g697f91e"
+version: "2025.11.17.2+g640bc05"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -118,39 +118,39 @@ cli:
         - If issue-xx doesn't exist, creates it from pr-xx
         - Deletes the pr-xx branch after successful merge (unless --no-delete is used)
         - Safe to run multiple times (idempotent)
-  groups:
-    - name: graphrag
-      description: Manage Neo4j + Qdrant and the GraphRAG MCP server
+    - name: config
+      purpose: Configuration management for LLM backends and related settings
       subcommands:
-        - name: start
+        - name: show
+          purpose: Display current configuration
           options:
-            - { name: --wait/--no-wait, default: true }
-            - { name: --timeout, type: int, default: 120 }
-        - name: stop
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: edit
+          purpose: Open configuration file in default editor
           options:
-            - { name: --timeout, type: int, default: 60 }
-        - name: status
-        - name: update-index
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: set
+          purpose: Set a configuration value
           options:
-            - { name: --force, flag: true }
-            - { name: --repo-path, type: path }
-        - name: cleanup
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to set (supports dot notation for nested properties)" }
+            - { name: value, required: true, purpose: "Value to set for the key" }
+        - name: get
+          purpose: Get a configuration value
           options:
-            - { name: --dry-run, flag: true }
-            - { name: --retention-days, type: int, default: 7 }
-            - { name: --max-per-repo, type: int, default: 9 }
-            - { name: --repo-path, type: path }
-            - { name: --verbose, flag: true }
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to get (supports dot notation for nested properties)" }
+        - name: reset
+          purpose: Reset configuration to default values
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: validate
+          purpose: Validate configuration file format
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
 
-        - name: setup-mcp
-          options:
-            - { name: --install-dir, default: "~/graphrag_mcp" }
-            - { name: --neo4j-uri, default: "bolt://localhost:7687" }
-            - { name: --neo4j-user, default: "neo4j" }
-            - { name: --neo4j-password, default: "password" }
-            - { name: --qdrant-url, default: "http://localhost:6333" }
-            - { name: --skip-clone, flag: true }
-    
     - name: mcp
       description: Install and inspect MCP servers
       subcommands:
@@ -182,6 +182,14 @@ features:
     - behavior: Skips issues with unresolved dependencies (dependency issues still open)
     - configurable: CHECK_DEPENDENCIES flag (default: enabled)
     - error_handling: Missing or inaccessible dependency issues are treated as unresolved
+
+  test_timeout:
+    - description: "Added pytest-timeout dependency and 60-second timeout to all pytest runs for better test reliability and CI stability"
+    - dependency: "pytest-timeout>=2.1.0"
+    - configuration:
+      - "Added --timeout=60 flag to all pytest commands in scripts/test.sh"
+      - "Applies to both full test suite runs and single test file runs"
+      - "Prevents tests from hanging indefinitely and improves CI pipeline reliability"
 
   fix_loop:
     - Re-run tests and apply LLM fixes until success or max attempts
@@ -267,6 +275,20 @@ env:
   GRAPHRAG_CLEANUP_ON_INIT: "Enable automatic GraphRAG snapshot cleanup during initialize_graphrag (default: 1)"
   GRAPHRAG_CLEANUP_ON_UPDATE: "Enable automatic GraphRAG snapshot cleanup after each index update (default: 1)"
 
+changes:
+  - date: "2025-11-17"
+    version: "2025.11.17+improve-pr-processing"
+    changes:
+      - "Simplified PR action handling by removing redundant LLM analysis after successful merge or deferred processing"
+      - "Enhanced GitHub Actions error handling to use extract_important_errors for better error extraction from logs"
+      - "Updated GitHub Actions fix prompt to use extracted errors instead of truncated raw logs for more focused debugging"
+      - "Improved PR fix workflow to use centralized commit_and_push_changes helper for consistency"
+  - date: "2025-11-17"
+    version: "2025.11.17+update-backend-config"
+    changes:
+      - "Updated .vscode/launch.json to enable multiple AI backends (claude, gemini, codex) with their respective models"
+      - "Enhanced PR processor to automatically commit and push changes when local tests pass during fix iterations"
+      - "Added git_commit_with_retry and git_push calls in _fix_pr_issues_with_testing function for better automation"
 
 external_dependencies:
   graphrag:
@@ -286,4 +308,3 @@ external_dependencies:
     env_override:
       - AUTO_CODER_QWEN_CONFIG  # full path override
       - AUTO_CODER_CONFIG_DIR   # directory override
-

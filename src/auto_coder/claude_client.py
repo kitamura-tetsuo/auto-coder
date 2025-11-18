@@ -3,8 +3,10 @@ Claude CLI client for Auto-Coder.
 """
 
 import subprocess
+from typing import Optional
 
 from .exceptions import AutoCoderUsageLimitError
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .utils import CommandExecutor
@@ -15,13 +17,17 @@ logger = get_logger(__name__)
 class ClaudeClient(LLMClientBase):
     """Claude CLI client for analyzing issues and generating solutions."""
 
-    def __init__(self, model_name: str = "sonnet"):
+    def __init__(self, model_name: Optional[str] = None) -> None:
         """Initialize Claude CLI client.
 
         Args:
             model_name: Model to use (e.g., 'sonnet', 'opus', or full model name)
         """
-        self.model_name = model_name or "sonnet"
+        config = get_llm_config()
+        config_backend = config.get_backend_config("claude")
+
+        # Use provided value, fall back to config, then to default
+        self.model_name = model_name or (config_backend and config_backend.model) or "sonnet"
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
         self.timeout = None
