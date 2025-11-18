@@ -1,4 +1,4 @@
-version: "2025.11.17.2+g640bc05"
+version: "2025.11.18+gbc43447"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -276,6 +276,12 @@ env:
   GRAPHRAG_CLEANUP_ON_UPDATE: "Enable automatic GraphRAG snapshot cleanup after each index update (default: 1)"
 
 changes:
+  - date: "2025-11-18"
+    version: "2025.11.18+include-cancelled-checks-in-failures"
+    changes:
+      - "Modified get_detailed_checks_from_history function to treat cancelled GitHub Actions checks as failures"
+      - "Cancelled checks (including timeout cancellations) are now included in failed_checks list for proper error handling"
+      - "Updated check processing logic in src/auto_coder/util/github_action.py to recognize cancelled status"
   - date: "2025-11-17"
     version: "2025.11.17+improve-pr-processing"
     changes:
