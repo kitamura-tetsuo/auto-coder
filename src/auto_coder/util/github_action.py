@@ -751,7 +751,7 @@ def get_detailed_checks_from_history(
                         all_checks.append(check_info)
 
                         # Track overall status
-                        if conclusion in ["failure", "failed", "error"]:
+                        if conclusion in ["failure", "failed", "error", "cancelled"]:
                             any_failed = True
                             all_failed_checks.append(check_info)
                         elif status in ["in_progress", "queued", "pending"]:
@@ -760,6 +760,7 @@ def get_detailed_checks_from_history(
                             "failure",
                             "failed",
                             "error",
+                            "cancelled",
                         ]:
                             any_failed = True
                             all_failed_checks.append(check_info)
@@ -792,7 +793,7 @@ def get_detailed_checks_from_history(
 
                         all_checks.append(check_info)
 
-                        if run_conclusion in ["failure", "failed", "error"]:
+                        if run_conclusion in ["failure", "failed", "error", "cancelled"]:
                             any_failed = True
                             all_failed_checks.append(check_info)
                         elif run_status in ["in_progress", "queued", "pending"]:
