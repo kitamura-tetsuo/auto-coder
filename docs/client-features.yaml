@@ -15,8 +15,7 @@ cli:
       options:
         - { name: --repo, type: string, default: auto-detect from current git repo, env: null }
         - { name: --github-token, type: string, env: GITHUB_TOKEN, default: null }
-        - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
-        - { name: --message-backend, multiple: true, default: same as --backend, choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
+
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
         - { name: --openai-api-key, env: OPENAI_API_KEY }
         - { name: --openai-base-url, env: OPENAI_BASE_URL }
@@ -52,7 +51,6 @@ cli:
       options:
         - { name: --repo, type: string, default: auto-detect }
         - { name: --github-token, env: GITHUB_TOKEN }
-        - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
         - { name: --disable-labels/--no-disable-labels, default: false }
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
         - { name: --openai-api-key, env: OPENAI_API_KEY }
@@ -74,8 +72,6 @@ cli:
     - name: fix-to-pass-tests
       purpose: Run local tests and iteratively apply LLM fixes until tests pass
       options:
-        - { name: --backend, multiple: true, default: [codex], choices: [codex, codex-mcp, gemini, qwen, auggie, claude] }
-        - { name: --message-backend, multiple: true, default: same as --backend }
         - { name: --disable-labels/--no-disable-labels, default: false }
         - { name: --gemini-api-key, env: GEMINI_API_KEY }
         - { name: --openai-api-key, env: OPENAI_API_KEY }
@@ -154,6 +150,19 @@ cli:
           purpose: Validate configuration file format
           options:
             - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+
+    - name: mcp
+      description: Install and inspect MCP servers
+      subcommands:
+        - { name: setup <server_name>, options: [--install-dir, --force] }
+        - { name: list }
+        - { name: status <server_name> }
+        - { name: test <server_name> }
+    - name: mcp-pdb
+      description: Helpers for MCP-PDB setup
+      subcommands:
+        - { name: print-config, options: [--target (windsurf|claude), --write-to] }
+        - { name: status }
 
 features:
   github_automation:
@@ -299,4 +308,3 @@ external_dependencies:
     env_override:
       - AUTO_CODER_QWEN_CONFIG  # full path override
       - AUTO_CODER_CONFIG_DIR   # directory override
-
