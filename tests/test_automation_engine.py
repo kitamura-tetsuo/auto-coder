@@ -1231,31 +1231,32 @@ class TestGetCandidates:
         mock_gemini_client,
         test_repo_name,
     ):
-        """Test that candidates are sorted by priority (urgent > ready > needs fix > regular)."""
+        """Test that candidates are sorted by priority with enhanced unmergeable PR priority."""
         # Setup
         engine = AutomationEngine(mock_github_client)
 
         # Mock GitHub client to return various PRs and issues
         mock_github_client.get_open_pull_requests.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),  # PR needs fix (priority 1)
-            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # PR ready for merge (priority 2)
-            Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Urgent PR (priority 3)
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),  # Unmergeable PR (priority 2)
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # PR ready for merge (priority 3)
+            Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Urgent unmergeable PR (priority 6)
+            Mock(number=4, created_at="2024-01-04T00:00:00Z"),  # PR needs fix (priority 1)
         ]
 
         mock_github_client.get_open_issues.return_value = [
-            Mock(number=10, created_at="2024-01-04T00:00:00Z"),  # Regular issue (priority 0)
-            Mock(number=11, created_at="2024-01-05T00:00:00Z"),  # Urgent issue (priority 3)
+            Mock(number=10, created_at="2024-01-05T00:00:00Z"),  # Regular issue (priority 0)
+            Mock(number=11, created_at="2024-01-06T00:00:00Z"),  # Urgent issue (priority 1)
         ]
 
         # Mock PR details
         pr_data = {
             1: {
                 "number": 1,
-                "title": "PR with failing checks",
+                "title": "Unmergeable PR",
                 "body": "",
                 "head": {"ref": "pr-1"},
                 "labels": [],
-                "mergeable": False,
+                "mergeable": False,  # Unmergeable (merge conflicts)
                 "created_at": "2024-01-01T00:00:00Z",
             },
             2: {
@@ -1269,12 +1270,21 @@ class TestGetCandidates:
             },
             3: {
                 "number": 3,
-                "title": "Urgent PR",
+                "title": "Urgent unmergeable PR",
                 "body": "",
                 "head": {"ref": "pr-3"},
                 "labels": ["urgent"],
-                "mergeable": False,
+                "mergeable": False,  # Unmergeable (merge conflicts)
                 "created_at": "2024-01-03T00:00:00Z",
+            },
+            4: {
+                "number": 4,
+                "title": "PR with failing checks",
+                "body": "",
+                "head": {"ref": "pr-4"},
+                "labels": [],
+                "mergeable": True,  # Mergeable but has failing checks
+                "created_at": "2024-01-04T00:00:00Z",
             },
         }
 
@@ -1297,10 +1307,16 @@ class TestGetCandidates:
         # Mock GitHub Actions checks
         def check_actions_side_effect(repo_name, pr_data, config):
             if pr_data["number"] == 1:
-                return GitHubActionsStatusResult(success=False, ids=[])
+                # Unmergeable PR with passing checks
+                return GitHubActionsStatusResult(success=True, ids=[])
             elif pr_data["number"] == 2:
+                # Ready to merge PR
                 return GitHubActionsStatusResult(success=True, ids=[])
             elif pr_data["number"] == 3:
+                # Urgent unmergeable PR with passing checks
+                return GitHubActionsStatusResult(success=True, ids=[])
+            elif pr_data["number"] == 4:
+                # PR with failing checks
                 return GitHubActionsStatusResult(success=False, ids=[])
             return GitHubActionsStatusResult(success=True, ids=[])
 
@@ -1314,23 +1330,34 @@ class TestGetCandidates:
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
         # Assert - Should be sorted by priority (6 -> 0), then by creation date (oldest first)
-        assert len(candidates) == 5
+        assert len(candidates) == 6
 
-        # Priority order: urgent PR (6) > ready PR (3) > needs fix PR (2) > urgent issue (1) > regular issue (0)
+        # Enhanced priority order:
+        # - Urgent unmergeable PR #3: priority 6 (2 unmergeable + 4 urgent boost)
+        # - Ready to merge PR #2: priority 3
+        # - Unmergeable PR #1: priority 2
+        # - PR needs fix #4: priority 1
+        # - Urgent issue #11: priority 1
+        # - Regular issue #10: priority 0
+
         assert candidates[0].priority == 6
-        assert candidates[0].data["number"] == 3  # Urgent PR with failing checks
+        assert candidates[0].data["number"] == 3  # Urgent unmergeable PR
 
         assert candidates[1].priority == 3
         assert candidates[1].data["number"] == 2  # PR ready for merge
 
         assert candidates[2].priority == 2
-        assert candidates[2].data["number"] == 1  # PR needing fix
+        assert candidates[2].data["number"] == 1  # Unmergeable PR
 
+        # For same priority (1), issues come before PRs due to type sorting
         assert candidates[3].priority == 1
-        assert candidates[3].data["number"] == 11  # Urgent issue
+        assert candidates[3].data["number"] == 11  # Urgent issue (type=issue, type_order=0)
 
-        assert candidates[4].priority == 0
-        assert candidates[4].data["number"] == 10  # Regular issue
+        assert candidates[4].priority == 1
+        assert candidates[4].data["number"] == 4  # PR needing fix (type=pr, type_order=1)
+
+        assert candidates[5].priority == 0
+        assert candidates[5].data["number"] == 10  # Regular issue
 
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -1472,8 +1499,8 @@ class TestGetCandidates:
         assert numbers == [1, 2]
 
         priorities = {c.data["number"]: c.priority for c in candidates}
-        assert priorities[1] == 3
-        assert priorities[2] == 2
+        assert priorities[1] == 3  # Ready to merge (passing checks + mergeable)
+        assert priorities[2] == 2  # Unmergeable (mergeable=False takes precedence)
 
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
