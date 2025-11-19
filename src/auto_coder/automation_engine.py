@@ -102,9 +102,18 @@ class AutomationEngine:
             # Count only PRs that we will actually consider as candidates
             candidates_count += 1
 
-            # Calculate priority
-            # Base priority: 3 (mergeable + green), 2 (failing or not mergeable)
-            pr_priority = 3 if (checks.success and mergeable) else 2
+            # Calculate priority with enhanced unmergeable PR handling
+            # Priority hierarchy: breaking-change > urgent > unmergeable > regular fixes
+            # Base priority calculation:
+            # - 3: Checks pass + mergeable (ready to merge)
+            # - 2: Not mergeable (merge conflicts - higher priority than just failing checks)
+            # - 1: Checks fail + mergeable (needs fix but can be merged once fixed)
+            if checks.success and mergeable:
+                pr_priority = 3  # Ready to merge
+            elif not mergeable:
+                pr_priority = 2  # Unmergeable (merge conflicts) - prioritize conflict resolution
+            else:
+                pr_priority = 1  # Failing checks but mergeable
 
             # Check for breaking-change related labels (highest priority, maintain backward compatibility)
             # Breaking-change gets boost to ensure it's processed before urgent
