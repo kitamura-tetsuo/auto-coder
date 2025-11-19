@@ -77,6 +77,7 @@ class CodexClient(LLMClientBase):
                 "rate limit",
                 "usage limit",
                 "upgrade to pro",
+                "too many requests",
             )
 
             result = CommandExecutor.run_command(
