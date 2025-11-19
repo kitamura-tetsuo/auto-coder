@@ -1629,6 +1629,123 @@ class TestGetCandidates:
 
         mock_extract_issues.assert_called_once_with("This PR fixes #10 and #20")
 
+    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_skips_issues_with_elder_sibling_dependencies(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that issues with open elder sibling issues are skipped."""
+        # Setup
+        engine = AutomationEngine(mock_github_client)
+
+        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.get_open_issues.return_value = [
+            Mock(number=10, created_at="2024-01-01T00:00:00Z"),  # Eldest sibling - should be included
+            Mock(number=11, created_at="2024-01-02T00:00:00Z"),  # Has elder sibling (10) - should be skipped
+            Mock(number=12, created_at="2024-01-03T00:00:00Z"),  # Has elder siblings (10, 11) - should be skipped
+            Mock(number=13, created_at="2024-01-04T00:00:00Z"),  # No parent - should be included
+        ]
+
+        def get_issue_details_side_effect(issue):
+            return {
+                "number": issue.number,
+                "title": f"Issue {issue.number}",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": issue.created_at,
+            }
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+
+        # Mock get_parent_issue to simulate parent-child relationships
+        # Issues 10, 11, 12 are all children of parent issue #100
+        # Issue 13 has no parent
+        def get_parent_issue_side_effect(repo, issue_num):
+            if issue_num in [10, 11, 12]:
+                return 100
+            return None
+
+        mock_github_client.get_parent_issue.side_effect = get_parent_issue_side_effect
+
+        # Mock get_open_sub_issues to return open sub-issues for parent #100
+        # Issue #10 is the eldest, #11 and #12 are younger siblings
+        def get_open_sub_issues_side_effect(repo, parent_num):
+            if parent_num == 100:
+                return [10, 11, 12]  # All three are open
+            return []
+
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - Only issues #10 (eldest sibling) and #13 (no parent) should be returned
+        assert len(candidates) == 2
+        candidate_numbers = [c.data["number"] for c in candidates]
+        assert 10 in candidate_numbers  # Eldest sibling - should be included
+        assert 13 in candidate_numbers  # No parent - should be included
+        assert 11 not in candidate_numbers  # Has elder sibling #10 - should be skipped
+        assert 12 not in candidate_numbers  # Has elder siblings #10, #11 - should be skipped
+
+    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_includes_issues_when_elder_siblings_are_closed(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that issues are included when elder siblings are closed."""
+        # Setup
+        engine = AutomationEngine(mock_github_client)
+
+        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.get_open_issues.return_value = [
+            Mock(number=10, created_at="2024-01-01T00:00:00Z"),  # Eldest sibling
+            Mock(number=11, created_at="2024-01-02T00:00:00Z"),  # Younger sibling
+            Mock(number=12, created_at="2024-01-03T00:00:00Z"),  # Youngest sibling
+        ]
+
+        def get_issue_details_side_effect(issue):
+            return {
+                "number": issue.number,
+                "title": f"Issue {issue.number}",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": issue.created_at,
+            }
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_parent_issue.return_value = 100  # All have parent #100
+
+        # Mock get_open_sub_issues to return only open sub-issues
+        # For this test, only #11 and #12 are open (elder sibling #10 is closed)
+        mock_github_client.get_open_sub_issues.side_effect = lambda repo, parent_num: ([11, 12] if parent_num == 100 else [])
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - Issues #10 and #11 should be returned
+        # (since get_open_sub_issues only returns open issues, #10 is not in the list when checking #11)
+        assert len(candidates) == 2
+        candidate_numbers = [c.data["number"] for c in candidates]
+        assert 10 in candidate_numbers
+        assert 11 in candidate_numbers
+        assert 12 not in candidate_numbers  # #12 has elder sibling #11 which is open
+
 
 class TestUrgentLabelPropagation:
     """Test cases for urgent label propagation in PR creation."""

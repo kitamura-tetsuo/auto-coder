@@ -140,6 +140,19 @@ class AutomationEngine:
                 if self.github.has_linked_pr(repo_name, number):
                     continue
 
+                # Check for elder sibling dependencies
+                parent_issue_number = self.github.get_parent_issue(repo_name, number)
+                if parent_issue_number is not None:
+                    # Get all open sub-issues under the parent
+                    sibling_issues = self.github.get_open_sub_issues(repo_name, parent_issue_number)
+                    # Filter to get only elder siblings (issues with lower numbers than current)
+                    elder_siblings = [sibling for sibling in sibling_issues if sibling < number]
+
+                    if elder_siblings:
+                        # Skip this issue if there are open elder sibling issues
+                        logger.debug(f"Skipping issue #{number} - has open elder sibling issues: {elder_siblings}")
+                        continue
+
                 issue_priority = 1 if "urgent" in labels else 0
 
                 candidates.append(
