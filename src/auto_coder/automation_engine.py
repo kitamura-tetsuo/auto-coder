@@ -49,13 +49,15 @@ class AutomationEngine:
         """Collect PR/Issue candidates with priority.
 
         Priority definitions:
-        - 3: PR/Issue with 'urgent' label (highest priority)
-        - 2: Mergeable PR with successful GitHub Actions (auto-merge candidate)
-        - 1: PR requiring fixes (GH Actions failed or mergeable=False)
+        - 7: Breaking-change PR (breaking-change, breaking, api-change, deprecation, version-major)
+        - 4: Urgent + unmergeable PR (highest priority after breaking-change)
+        - 3: Urgent + mergeable PR or urgent issue
+        - 2: Unmergeable PR needing conflict resolution
+        - 1: PR requiring fixes (GH Actions failed but mergeable)
         - 0: Regular issues
 
         Sort order:
-        - Priority descending (3 -> 0)
+        - Priority descending (7 -> 0)
         - Creation time ascending (oldest first)
         """
         from .pr_processor import _extract_linked_issues_from_pr_body, _is_dependabot_pr
@@ -103,23 +105,22 @@ class AutomationEngine:
             candidates_count += 1
 
             # Calculate priority
-            # Base priority: 3 (mergeable + green), 2 (failing or not mergeable)
-            pr_priority = 3 if (checks.success and mergeable) else 2
-
-            # Check for breaking-change related labels (highest priority, maintain backward compatibility)
-            # Breaking-change gets boost to ensure it's processed before urgent
-            breaking_change_labels = [
-                "breaking-change",
-                "breaking",
-                "api-change",
-                "deprecation",
-                "version-major",
-            ]
-            if any(label in labels for label in breaking_change_labels):
-                # Breaking-change gets boost to priority 7 (above urgent's boost)
+            # Enhanced priority logic to distinguish unmergeable PRs
+            if any(label in labels for label in ["breaking-change", "breaking", "api-change", "deprecation", "version-major"]):
+                # Breaking-change PRs get highest priority (7)
                 pr_priority = 7
             elif "urgent" in labels:
-                pr_priority += 4
+                # Urgent items get high priority
+                if not mergeable:
+                    pr_priority = 4  # Urgent + unmergeable (highest urgent priority)
+                else:
+                    pr_priority = 3  # Urgent + mergeable
+            elif not mergeable:
+                pr_priority = 2  # Unmergeable PRs (elevated from priority 1)
+            elif not checks.success:
+                pr_priority = 1  # Fix-required but mergeable PRs
+            else:
+                pr_priority = 2  # Mergeable with successful checks (auto-merge candidate)
 
             candidates.append(
                 Candidate(
@@ -167,13 +168,11 @@ class AutomationEngine:
                     continue
 
                 # Calculate priority
-                # Priority levels (maintain backward compatibility):
-                # - 2: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
-                # - 1: Urgent
+                # Priority levels:
+                # - 7: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
+                # - 3: Urgent
                 # - 0: Regular issues
                 issue_priority = 0
-                if "urgent" in labels:
-                    issue_priority = 1
                 # Check for breaking-change related labels (highest priority)
                 breaking_change_labels = [
                     "breaking-change",
@@ -183,7 +182,9 @@ class AutomationEngine:
                     "version-major",
                 ]
                 if any(label in labels for label in breaking_change_labels):
-                    issue_priority = 2
+                    issue_priority = 7
+                elif "urgent" in labels:
+                    issue_priority = 3
 
                 candidates.append(
                     Candidate(
