@@ -209,7 +209,7 @@ def get_label_specific_prompt(
     return prompt_key
 
 
-@log_calls  # type: ignore[misc]
+@log_calls
 def render_prompt(
     key: str,
     *,
@@ -258,8 +258,11 @@ def render_prompt(
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
+            except SystemExit:
+                # Handle SystemExit (e.g., when template doesn't exist) and fall back to original key
+                logger.warning(f"Label-specific prompt '{label_specific_key}' caused SystemExit, " f"falling back to '{key}'")
             except Exception:
-                # Log warning and fall back to original key
+                # Log warning and fall back to original key for other exceptions
                 logger.warning(f"Failed to render label-specific prompt '{label_specific_key}', " f"falling back to '{key}'")
 
     # Fall back to original key-based rendering
