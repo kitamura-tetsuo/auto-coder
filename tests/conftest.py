@@ -621,9 +621,13 @@ def mock_code_tool():
 # Backend Manager Test Fixtures
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def mock_backend_manager():
-    """Mock LLM backend manager for testing."""
+    """Mock LLM backend manager for testing.
+
+    Note: Only applied to tests that explicitly request this fixture.
+    E2E tests that don't use LLM backends should not request this fixture.
+    """
     from unittest.mock import Mock
 
     # Reset singleton before setting up mock
