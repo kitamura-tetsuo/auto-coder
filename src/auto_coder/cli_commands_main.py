@@ -98,8 +98,6 @@ def process_issues(
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
-    from .llm_backend_config import get_llm_config
-
     config = get_llm_config()
 
     active_backends = config.get_active_backends()
@@ -362,8 +360,6 @@ def create_feature_issues(
 ) -> None:
     """Analyze repository and create feature enhancement issues."""
 
-    from .llm_backend_config import get_llm_config
-
     config = get_llm_config()
 
     active_backends = config.get_active_backends()
@@ -485,8 +481,6 @@ def fix_to_pass_tests_command(
 
     If the LLM makes no edits in an iteration, error and stop.
     """
-    from .llm_backend_config import get_llm_config
-
     config = get_llm_config()
 
     active_backends = config.get_active_backends()
