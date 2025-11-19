@@ -492,6 +492,297 @@ class TestSemanticLabelFunctions:
         result = get_semantic_labels_from_issue(issue_labels, label_mappings)
         assert result == ["bug"]
 
+
+class TestFuzzyMatching:
+    """Test fuzzy matching functionality for label detection."""
+
+    def test_fuzzy_match_normalization(self):
+        """Test label normalization for fuzzy matching."""
+        from src.auto_coder.label_manager import _normalize_label
+
+        # Test basic normalization
+        assert _normalize_label("BUG-FIX") == "bug-fix"
+        assert _normalize_label("bug fix") == "bug-fix"
+        assert _normalize_label("bug_fix") == "bug-fix"
+        assert _normalize_label("bug__fix") == "bug-fix"
+        assert _normalize_label("breaking_change") == "breaking-change"
+
+        # Test special characters
+        assert _normalize_label("bug!@#$fix") == "bugfix"
+        assert _normalize_label("breaking-change") == "breaking-change"
+
+        # Test duplicate hyphens
+        assert _normalize_label("bug---fix") == "bug-fix"
+        assert _normalize_label("--bug-fix--") == "bug-fix"
+
+        # Test mixed case
+        assert _normalize_label("BuG-FiX") == "bug-fix"
+        assert _normalize_label("BREAKING-CHANGE") == "breaking-change"
+
+    def test_fuzzy_match_exact(self):
+        """Test exact matching with fuzzy matching enabled."""
+        from src.auto_coder.label_manager import _is_fuzzy_match
+
+        # Exact matches should work
+        assert _is_fuzzy_match("bug", "bug") is True
+        assert _is_fuzzy_match("BUG", "bug") is True
+        assert _is_fuzzy_match("breaking-change", "breaking-change") is True
+
+    def test_fuzzy_match_hyphen_variations(self):
+        """Test fuzzy matching with hyphen/underscore/space variations."""
+        from src.auto_coder.label_manager import _is_fuzzy_match
+
+        # Different separators should match
+        assert _is_fuzzy_match("bug-fix", "bugfix") is True
+        assert _is_fuzzy_match("bugfix", "bug-fix") is True
+        assert _is_fuzzy_match("bug_fix", "bug-fix") is True
+        assert _is_fuzzy_match("breaking change", "breaking-change") is True
+
+    def test_fuzzy_match_partial(self):
+        """Test fuzzy matching with partial string matches."""
+        from src.auto_coder.label_manager import _is_fuzzy_match
+
+        # Partial matches should work for meaningful strings
+        assert _is_fuzzy_match("bc-breaking", "breaking-change") is True
+        assert _is_fuzzy_match("breaking-change", "bc-breaking") is True
+
+    def test_fuzzy_match_levenshtein_distance(self):
+        """Test fuzzy matching with Levenshtein distance (typos)."""
+        from src.auto_coder.label_manager import _is_fuzzy_match
+
+        # One character difference
+        assert _is_fuzzy_match("bug", "bugs") is True
+        assert _is_fuzzy_match("fix", "fiix") is True
+
+        # Two character difference for longer strings
+        assert _is_fuzzy_match("breaking", "brekaing") is True
+
+        # Too many differences
+        assert _is_fuzzy_match("bug", "feature") is False
+
+    def test_fuzzy_match_case_variations(self):
+        """Test fuzzy matching with different case variations."""
+        from src.auto_coder.label_manager import _is_fuzzy_match
+
+        assert _is_fuzzy_match("BUG", "bug") is True
+        assert _is_fuzzy_match("BuG-FiX", "bugfix") is True
+        assert _is_fuzzy_match("BREAKING-CHANGE", "breaking change") is True
+
+    def test_fuzzy_match_false_positives(self):
+        """Test that fuzzy matching doesn't create false positives."""
+        from src.auto_coder.label_manager import _is_fuzzy_match
+
+        # Too short strings should not match
+        assert _is_fuzzy_match("b", "bug") is False
+        assert _is_fuzzy_match("x", "fix") is False
+
+        # Completely different strings
+        assert _is_fuzzy_match("bug", "feature") is False
+        assert _is_fuzzy_match("urgent", "documentation") is False
+
+    def test_get_semantic_labels_with_fuzzy_matching_enabled(self):
+        """Test semantic label detection with fuzzy matching enabled."""
+        issue_labels = ["bc-breaking", "bugg", "docss", "feat"]
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix"],
+            "documentation": ["documentation", "docs"],
+            "enhancement": ["enhancement", "feature"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings, use_fuzzy_matching=True)
+        # bc-breaking should match breaking-change, feat should match enhancement
+        # bugg might match bug (typo), docss might match docs (typo)
+        assert len(result) >= 2
+
+    def test_get_semantic_labels_with_fuzzy_matching_disabled(self):
+        """Test semantic label detection with fuzzy matching disabled."""
+        issue_labels = ["bc-breaking", "feat"]
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "enhancement": ["enhancement", "feature"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings, use_fuzzy_matching=False)
+        # Should only match if exact (case-insensitive)
+        assert "enhancement" not in result  # "feat" should not match "feature" without fuzzy matching
+        assert "breaking-change" not in result  # "bc-breaking" should not match "breaking-change" without fuzzy matching
+
+
+class TestLabelFamilies:
+    """Test detection of specific label families."""
+
+    def test_breaking_change_family_detection(self):
+        """Test breaking-change label family detection."""
+        breaking_change_labels = [
+            "breaking-change",
+            "breaking change",
+            "bc-breaking",
+            "breaking",
+            "incompatible",
+        ]
+
+        label_mappings = {
+            "breaking-change": [
+                "breaking-change",
+                "breaking change",
+                "bc-breaking",
+                "breaking",
+                "incompatible",
+            ],
+            "bug": ["bug", "bugfix"],
+            "documentation": ["documentation", "docs"],
+            "enhancement": ["enhancement", "feature"],
+        }
+
+        for label in breaking_change_labels:
+            result = get_semantic_labels_from_issue([label], label_mappings)
+            assert "breaking-change" in result, f"Failed to detect breaking-change label: {label}"
+
+    def test_bug_family_detection(self):
+        """Test bug label family detection."""
+        bug_labels = [
+            "bug",
+            "bugfix",
+            "fix",
+            "error",
+            "issue",
+            "defect",
+            "broken",
+        ]
+
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": [
+                "bug",
+                "bugfix",
+                "fix",
+                "error",
+                "issue",
+                "defect",
+                "broken",
+            ],
+            "documentation": ["documentation", "docs"],
+            "enhancement": ["enhancement", "feature"],
+        }
+
+        for label in bug_labels:
+            result = get_semantic_labels_from_issue([label], label_mappings)
+            assert "bug" in result, f"Failed to detect bug label: {label}"
+
+    def test_documentation_family_detection(self):
+        """Test documentation label family detection."""
+        doc_labels = ["docs", "documentation", "doc", "readme", "guide"]
+
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix"],
+            "documentation": ["documentation", "docs", "doc", "readme", "guide"],
+            "enhancement": ["enhancement", "feature"],
+        }
+
+        for label in doc_labels:
+            result = get_semantic_labels_from_issue([label], label_mappings)
+            assert "documentation" in result, f"Failed to detect documentation label: {label}"
+
+    def test_enhancement_family_detection(self):
+        """Test enhancement label family detection."""
+        enhancement_labels = [
+            "enhancement",
+            "feature",
+            "improvement",
+            "feat",
+            "request",
+        ]
+
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix"],
+            "documentation": ["documentation", "docs"],
+            "enhancement": [
+                "enhancement",
+                "feature",
+                "improvement",
+                "feat",
+                "request",
+            ],
+        }
+
+        for label in enhancement_labels:
+            result = get_semantic_labels_from_issue([label], label_mappings)
+            assert "enhancement" in result, f"Failed to detect enhancement label: {label}"
+
+    def test_urgent_family_detection(self):
+        """Test urgent label family detection."""
+        urgent_labels = [
+            "urgent",
+            "high-priority",
+            "critical",
+            "asap",
+            "priority-high",
+            "blocker",
+        ]
+
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix"],
+            "urgent": [
+                "urgent",
+                "high-priority",
+                "critical",
+                "asap",
+                "priority-high",
+                "blocker",
+            ],
+            "documentation": ["documentation", "docs"],
+            "enhancement": ["enhancement", "feature"],
+        }
+
+        for label in urgent_labels:
+            result = get_semantic_labels_from_issue([label], label_mappings)
+            assert "urgent" in result, f"Failed to detect urgent label: {label}"
+
+    def test_question_family_detection(self):
+        """Test question label family detection."""
+        question_labels = [
+            "question",
+            "help wanted",
+            "support",
+            "q&a",
+        ]
+
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix"],
+            "documentation": ["documentation", "docs"],
+            "enhancement": ["enhancement", "feature"],
+            "question": ["question", "help wanted", "support", "q&a"],
+        }
+
+        for label in question_labels:
+            result = get_semantic_labels_from_issue([label], label_mappings)
+            assert "question" in result, f"Failed to detect question label: {label}"
+
+    def test_fuzzy_matching_for_label_variants(self):
+        """Test fuzzy matching with various label format variants."""
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix", "fix"],
+            "documentation": ["documentation", "docs"],
+            "enhancement": ["enhancement", "feature"],
+        }
+
+        # Test with fuzzy label variants
+        test_cases = [
+            (["bc--breaking"], "breaking-change"),  # Multiple hyphens
+            (["bugg"], "bug"),  # Typo
+            (["doc--guide"], "documentation"),  # Multiple hyphens
+        ]
+
+        for issue_labels, expected_label in test_cases:
+            result = get_semantic_labels_from_issue(issue_labels, label_mappings, use_fuzzy_matching=True)
+            assert expected_label in result, f"Failed to match {issue_labels} to {expected_label}"
+
     def test_resolve_pr_labels_with_priority_all_labels(self):
         """Test priority-based label resolution with all semantic labels."""
         issue_labels = ["bug", "documentation", "enhancement", "urgent", "breaking-change"]
@@ -500,8 +791,8 @@ class TestSemanticLabelFunctions:
         # Note: config already has default priorities
 
         result = resolve_pr_labels_with_priority(issue_labels, config)
-        # Should be sorted by priority: breaking-change > urgent > bug > enhancement > documentation
-        assert result == ["breaking-change", "urgent", "bug", "enhancement", "documentation"]
+        # Should be sorted by priority: urgent > breaking-change > bug > enhancement > documentation
+        assert result == ["urgent", "breaking-change", "bug", "enhancement", "documentation"]
 
     def test_resolve_pr_labels_with_priority_limited(self):
         """Test priority-based label resolution respects max count."""
@@ -510,7 +801,7 @@ class TestSemanticLabelFunctions:
         config.PR_LABEL_MAX_COUNT = 2
 
         result = resolve_pr_labels_with_priority(issue_labels, config)
-        assert result == ["breaking-change", "urgent"]
+        assert result == ["urgent", "breaking-change"]
 
     def test_resolve_pr_labels_with_priority_zero_limit(self):
         """Test priority-based label resolution with zero max count."""
