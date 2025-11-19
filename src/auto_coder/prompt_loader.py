@@ -162,7 +162,11 @@ def _get_prompt_for_labels(
     resolved_label = _resolve_label_priority(issue_labels, label_prompt_mappings, label_priorities)
 
     if resolved_label:
-        return label_prompt_mappings.get(resolved_label)
+        try:
+            return label_prompt_mappings.get(resolved_label)
+        except AttributeError:
+            # Handle case where label_prompt_mappings is not a dict
+            return None
 
     return None
 
