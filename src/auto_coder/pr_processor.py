@@ -664,8 +664,8 @@ def _update_with_base_branch(
                 pr_number,
                 target_branch,
                 config,
-                repo_name,
                 pr_data,
+                repo_name,
             )
 
             if conflict_resolved:
