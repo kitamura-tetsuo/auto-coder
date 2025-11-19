@@ -296,6 +296,7 @@ changes:
       - "Enhanced PR processor to automatically commit and push changes when local tests pass during fix iterations"
       - "Added git_commit_with_retry and git_push calls in _fix_pr_issues_with_testing function for better automation"
 
+
 external_dependencies:
   graphrag:
     services: [neo4j, qdrant]
