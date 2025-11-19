@@ -182,7 +182,8 @@ class TestGetPromptForLabelsEdgeCases:
         mappings = {"bug": "issue.bug"}
 
         result = _get_prompt_for_labels(labels, mappings, [])
-        assert result is None
+        # Empty priorities list falls back to first applicable label
+        assert result == "issue.bug"
 
     def test_mappings_with_non_string_values(self):
         """Test mappings with non-string prompt keys (should still work)."""

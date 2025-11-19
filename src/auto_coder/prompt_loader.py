@@ -76,7 +76,7 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
 def _resolve_label_priority(
     issue_labels: List[str],
     label_prompt_mappings: Dict[str, str],
-    label_priorities: List[str],
+    label_priorities: Optional[List[str]],
 ) -> Optional[str]:
     """Resolve highest priority label that has a prompt mapping.
 
@@ -89,10 +89,25 @@ def _resolve_label_priority(
         The highest priority label that has a prompt mapping, or None if no applicable labels
     """
     # Filter to labels with configured prompt mappings
-    applicable_labels = [label for label in issue_labels if label in label_prompt_mappings]
+    applicable_labels = []
+    for label in issue_labels:
+        try:
+            if label in label_prompt_mappings:
+                applicable_labels.append(label)
+        except TypeError:
+            # Skip unhashable types (e.g., dict, list)
+            continue
 
     if not applicable_labels:
         return None
+
+    # If priorities is None, return None (no priority system configured)
+    if label_priorities is None:
+        return None
+
+    # If priorities is empty list, fallback to first applicable label
+    if not label_priorities:
+        return applicable_labels[0]
 
     # Sort by priority and return highest priority
     for priority_label in label_priorities:
@@ -124,7 +139,7 @@ def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
 def _get_prompt_for_labels(
     issue_labels: List[str],
     label_prompt_mappings: Dict[str, str],
-    label_priorities: List[str],
+    label_priorities: Optional[List[str]],
 ) -> Optional[str]:
     """Get the appropriate prompt template key based on issue labels.
 
@@ -137,7 +152,10 @@ def _get_prompt_for_labels(
         The prompt template key for the highest priority applicable label,
         or None if no label-specific prompt mapping exists
     """
-    if not issue_labels or not label_prompt_mappings or not label_priorities:
+    if not issue_labels:
+        return None
+
+    if not label_prompt_mappings:
         return None
 
     # Resolve to the highest priority applicable label
