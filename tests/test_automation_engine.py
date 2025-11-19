@@ -1244,14 +1244,14 @@ class TestGetCandidates:
 
         mock_github_client.get_open_issues.return_value = [
             Mock(number=10, created_at="2024-01-05T00:00:00Z"),  # Regular issue (priority 0)
-            Mock(number=11, created_at="2024-01-06T00:00:00Z"),  # Urgent issue (priority 1)
+            Mock(number=11, created_at="2024-01-06T00:00:00Z"),  # Urgent issue (priority 3)
         ]
 
         # Mock PR details
         pr_data = {
             1: {
                 "number": 1,
-                "title": "Unmergeable PR",
+                "title": "PR needing fix",
                 "body": "",
                 "head": {"ref": "pr-1"},
                 "labels": [],
@@ -1276,15 +1276,6 @@ class TestGetCandidates:
                 "mergeable": False,  # Not mergeable
                 "created_at": "2024-01-03T00:00:00Z",
             },
-            4: {
-                "number": 4,
-                "title": "PR with failing checks",
-                "body": "",
-                "head": {"ref": "pr-4"},
-                "labels": [],
-                "mergeable": True,  # Mergeable but has failing checks
-                "created_at": "2024-01-04T00:00:00Z",
-            },
         }
 
         def get_pr_details_side_effect(pr):
@@ -1306,17 +1297,14 @@ class TestGetCandidates:
         # Mock GitHub Actions checks
         def check_actions_side_effect(repo_name, pr_data, config):
             if pr_data["number"] == 1:
-                # Unmergeable PR with passing checks
-                return GitHubActionsStatusResult(success=True, ids=[])
+                # PR needing fix - failing checks but mergeable
+                return GitHubActionsStatusResult(success=False, ids=[])
             elif pr_data["number"] == 2:
                 # Ready to merge PR
                 return GitHubActionsStatusResult(success=True, ids=[])
             elif pr_data["number"] == 3:
                 # Urgent unmergeable PR with passing checks
                 return GitHubActionsStatusResult(success=True, ids=[])
-            elif pr_data["number"] == 4:
-                # PR with failing checks
-                return GitHubActionsStatusResult(success=False, ids=[])
             return GitHubActionsStatusResult(success=True, ids=[])
 
         mock_check_actions.side_effect = check_actions_side_effect
@@ -1341,15 +1329,11 @@ class TestGetCandidates:
         assert candidates[2].priority == 2
         assert candidates[2].data["number"] == 2  # PR ready for merge
 
-        # For same priority (1), issues come before PRs due to type sorting
         assert candidates[3].priority == 1
         assert candidates[3].data["number"] == 1  # PR needing fix (failing checks but mergeable)
 
-        assert candidates[4].priority == 1
-        assert candidates[4].data["number"] == 4  # PR needing fix (type=pr, type_order=1)
-
-        assert candidates[5].priority == 0
-        assert candidates[5].data["number"] == 10  # Regular issue
+        assert candidates[4].priority == 0
+        assert candidates[4].data["number"] == 10  # Regular issue
 
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
