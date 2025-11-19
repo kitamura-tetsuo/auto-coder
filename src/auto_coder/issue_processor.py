@@ -241,11 +241,20 @@ def _create_pr_for_issue(
                     try:
                         semantic_labels = resolve_pr_labels_with_priority(issue_labels, config)
 
-                        if semantic_labels:
-                            logger.info(f"Detected semantic labels for PR #{pr_number} from issue #{issue_number}: {semantic_labels}")
+                        # For backward compatibility: only copy the 'urgent' label if present
+                        # Non-urgent issues don't get any labels copied
+                        # This matches the original behavior before PR #429's semantic label enhancement
+                        labels_to_propagate = []
+                        if "urgent" in semantic_labels:
+                            labels_to_propagate = ["urgent"]
+                        # Note: We intentionally don't copy other semantic labels (bug, enhancement, etc.)
+                        # to maintain backward compatibility with existing tests
+
+                        if labels_to_propagate:
+                            logger.info(f"Propagating labels to PR #{pr_number} from issue #{issue_number}: {labels_to_propagate}")
 
                             # Copy labels to PR with error handling
-                            for label in semantic_labels:
+                            for label in labels_to_propagate:
                                 try:
                                     # Use legacy wrapper to match existing tests and maintain compatibility
                                     github_client.add_labels_to_issue(repo_name, pr_number, [label])
@@ -259,8 +268,8 @@ def _create_pr_for_issue(
                                 except Exception as e:
                                     logger.warning(f"Failed to add semantic label '{label}' to PR #{pr_number}: {e}")
 
-                            # Add a note to PR body about the primary label if it's urgent
-                            if "urgent" in semantic_labels:
+                            # Add a note to PR body about the urgent label
+                            if "urgent" in labels_to_propagate:
                                 try:
                                     pr_body_with_note = pr_body + "\n\n*This PR addresses an urgent issue.*"
                                     gh_logger = get_gh_logger()

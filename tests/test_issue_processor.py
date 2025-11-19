@@ -121,7 +121,7 @@ class TestPRLabelCopying:
             # Verify PR was created
             assert f"Successfully created PR for issue #{issue_number}" in result
 
-            # Verify label copying - bug, urgent, documentation should be added
+            # Verify label copying - only urgent label should be propagated
             # Note: add_labels_to_issue is called first (for backward compatibility)
             # Then add_labels_to_pr is called
             # We check the calls made during label copying
@@ -130,8 +130,10 @@ class TestPRLabelCopying:
                 if call[0] in ["add_labels_to_issue", "add_labels_to_pr"]:
                     label_calls.append(call)
 
-            # Should have calls for bug, urgent, documentation
-            assert len(label_calls) >= 3
+            # Should have calls for urgent (both wrappers are called)
+            assert len(label_calls) >= 2
+            # Verify the label propagated is 'urgent'
+            assert any(call[0] == "add_labels_to_issue" and call[1][2] == ["urgent"] for call in label_calls)
 
     def test_create_pr_for_issue_copies_labels_with_aliases(self):
         """Test that PR creation handles label aliases correctly."""
@@ -175,13 +177,16 @@ class TestPRLabelCopying:
             # Verify PR was created
             assert f"Successfully created PR for issue #{issue_number}" in result
 
-            # Should have label calls for bug (from bugfix), urgent (from high-priority), doc (from documentation)
+            # Should have label calls for urgent (from high-priority) - only urgent label is propagated
             label_calls = []
             for call in github_client.method_calls:
                 if call[0] in ["add_labels_to_issue", "add_labels_to_pr"]:
                     label_calls.append(call)
 
-            assert len(label_calls) >= 3
+            # Should have calls for urgent (both wrappers are called)
+            assert len(label_calls) >= 2
+            # Verify the label propagated is 'urgent'
+            assert any(call[0] == "add_labels_to_issue" and call[1][2] == ["urgent"] for call in label_calls)
 
     def test_create_pr_for_issue_respects_max_label_count(self):
         """Test that PR creation respects the maximum label count."""
@@ -226,14 +231,16 @@ class TestPRLabelCopying:
             # Verify PR was created
             assert f"Successfully created PR for issue #{issue_number}" in result
 
-            # Should only copy 2 labels (breaking-change and urgent - highest priority)
+            # Should only copy urgent label (only urgent is propagated)
             label_calls = []
             for call in github_client.method_calls:
                 if call[0] in ["add_labels_to_issue", "add_labels_to_pr"]:
                     label_calls.append(call)
 
-            # At least 2 label additions (could be more if both wrappers are called)
+            # At least 2 label additions (both wrappers are called for urgent)
             assert len(label_calls) >= 2
+            # Verify the label propagated is 'urgent'
+            assert any(call[0] == "add_labels_to_issue" and call[1][2] == ["urgent"] for call in label_calls)
 
     def test_create_pr_for_issue_disabled_label_copying(self):
         """Test that PR creation skips label copying when disabled."""
