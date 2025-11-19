@@ -186,3 +186,8 @@ module = [
     "graph_builder.*",
 ]
 ignore_errors = true
+
+[dependency-groups]
+dev = [
+    "black>=25.9.0",
+]
