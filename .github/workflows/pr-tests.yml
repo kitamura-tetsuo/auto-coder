@@ -56,6 +56,7 @@ jobs:
       - name: Sync dependencies with uv
         run: |
           uv sync --dev --extra test
+          uv pip install --dev --extra test
 
       - name: Test CLI entry point
         run: |
