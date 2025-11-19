@@ -311,16 +311,10 @@ def check_claude_cli_or_fail() -> None:
     raise click.ClickException("Claude CLI is required. Please install it from:\n" "https://claude.ai/download")
 
 
-def build_models_map(
-    model_gemini: Optional[str] = None,
-    model_qwen: Optional[str] = None,
-    model_auggie: Optional[str] = None,
-    model_claude: Optional[str] = None,
-) -> Dict[str, str]:
+def build_models_map() -> Dict[str, str]:
     """Compute per-backend model map with sensible defaults.
 
-    Priority per backend: specific flag (--model-<backend>) > config file > backend default.
-    Backend defaults:
+    Uses configuration file settings with sensible defaults:
       - gemini: gemini-2.5-pro
       - qwen: qwen3-coder-plus
       - auggie: GPT-5
@@ -333,14 +327,14 @@ def build_models_map(
     # codex backends (accepted for compatibility, not actually used by CLI)
     models["codex"] = "codex"
     models["codex-mcp"] = "codex-mcp"
-    # gemini - Check CLI, config, then default
-    models["gemini"] = model_gemini or config.get_model_for_backend("gemini") or "gemini-2.5-pro"
+    # gemini - Check config, then default
+    models["gemini"] = config.get_model_for_backend("gemini") or "gemini-2.5-pro"
     # qwen
-    models["qwen"] = model_qwen or config.get_model_for_backend("qwen") or "qwen3-coder-plus"
+    models["qwen"] = config.get_model_for_backend("qwen") or "qwen3-coder-plus"
     # auggie
-    models["auggie"] = model_auggie or config.get_model_for_backend("auggie") or "GPT-5"
+    models["auggie"] = config.get_model_for_backend("auggie") or "GPT-5"
     # claude
-    models["claude"] = model_claude or config.get_model_for_backend("claude") or "sonnet"
+    models["claude"] = config.get_model_for_backend("claude") or "sonnet"
     return models
 
 
@@ -380,29 +374,22 @@ def build_backend_manager(
     selected_backends: list[str],
     primary_backend: str,
     models: dict[str, str],
-    gemini_api_key: Optional[str] = None,
-    openai_api_key: Optional[str] = None,
-    openai_base_url: Optional[str] = None,
-    qwen_use_env_vars: bool = True,
-    qwen_preserve_env: bool = False,
     enable_graphrag: bool = True,
 ) -> BackendManager:
     """Construct BackendManager with per-backend model selection.
 
     models: mapping backend -> model_name (codex backends ignored but accepted).
-    qwen_use_env_vars: Pass Qwen credentials via environment variables (default: True).
-    qwen_preserve_env: Preserve existing OPENAI_* environment variables (default: False).
     enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True).
     """
     config = get_llm_config()
 
-    # Override with env vars if provided
+    # Get API keys and base URLs from configuration
     gemini_config = config.get_backend_config("gemini")
     qwen_config = config.get_backend_config("qwen")
 
-    effective_gemini_api_key = gemini_api_key or (gemini_config.api_key if gemini_config else None)
-    effective_openai_api_key = openai_api_key or (qwen_config.openai_api_key if qwen_config else None)
-    effective_openai_base_url = openai_base_url or (qwen_config.openai_base_url if qwen_config else None)
+    effective_gemini_api_key = gemini_config.api_key if gemini_config else None
+    effective_openai_api_key = qwen_config.openai_api_key if qwen_config else None
+    effective_openai_base_url = qwen_config.openai_base_url if qwen_config else None
 
     def _gm() -> str:
         return models.get("gemini", "gemini-2.5-pro")
@@ -424,8 +411,8 @@ def build_backend_manager(
             model_name=_qm(),
             openai_api_key=effective_openai_api_key,
             openai_base_url=effective_openai_base_url,
-            use_env_vars=qwen_use_env_vars,
-            preserve_existing_env=qwen_preserve_env,
+            use_env_vars=True,
+            preserve_existing_env=False,
         ),
         "auggie": lambda: AuggieClient(model_name=_am()),
         "claude": lambda: ClaudeClient(model_name=_cm()),
@@ -524,11 +511,6 @@ def check_github_sub_issue_or_setup() -> None:
 
 
 def build_backend_manager_from_config(
-    gemini_api_key: Optional[str] = None,
-    openai_api_key: Optional[str] = None,
-    openai_base_url: Optional[str] = None,
-    qwen_use_env_vars: bool = True,
-    qwen_preserve_env: bool = False,
     enable_graphrag: bool = True,
     cli_models: Optional[Dict[str, str]] = None,
     cli_backends: Optional[List[str]] = None,
@@ -536,15 +518,9 @@ def build_backend_manager_from_config(
     """Construct BackendManager using configuration from the TOML file.
 
     This function creates a BackendManager instance using the configuration
-    specified in the TOML configuration file, with optional overrides via
-    environment variables or direct parameters.
+    specified in the TOML configuration file, with optional CLI overrides.
 
     Args:
-        gemini_api_key: Override for Gemini API key (optional)
-        openai_api_key: Override for OpenAI API key (optional)
-        openai_base_url: Override for OpenAI base URL (optional)
-        qwen_use_env_vars: Pass Qwen credentials via environment variables (default: True)
-        qwen_preserve_env: Preserve existing OPENAI_* environment variables (default: False)
         enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True)
         cli_models: Dictionary mapping backend names to models specified via CLI, which will
                    override both config file and default models (optional)
@@ -579,23 +555,10 @@ def build_backend_manager_from_config(
             model_value = config.get_model_for_backend(backend_name) or backend_name
         models[backend_name] = model_value
 
-    # Override with env vars if provided
-    gemini_config = config.get_backend_config("gemini")
-    qwen_config = config.get_backend_config("qwen")
-
-    effective_gemini_api_key = gemini_api_key or (gemini_config.api_key if gemini_config else None)
-    effective_openai_api_key = openai_api_key or (qwen_config.openai_api_key if qwen_config else None)
-    effective_openai_base_url = openai_base_url or (qwen_config.openai_base_url if qwen_config else None)
-
     return build_backend_manager(
         selected_backends=selected_backends,
         primary_backend=primary_backend,
         models=models,
-        gemini_api_key=effective_gemini_api_key,
-        openai_api_key=effective_openai_api_key,
-        openai_base_url=effective_openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=enable_graphrag,
     )
 
@@ -641,11 +604,6 @@ def build_message_backend_manager(
     selected_backends: Optional[list[str]] = None,
     primary_backend: Optional[str] = None,
     models: Optional[dict[str, str]] = None,
-    gemini_api_key: Optional[str] = None,
-    openai_api_key: Optional[str] = None,
-    openai_base_url: Optional[str] = None,
-    qwen_use_env_vars: bool = True,
-    qwen_preserve_env: bool = False,
 ) -> BackendManager:
     """Construct and initialize LLMBackendManager singleton with selected backends.
 
@@ -656,11 +614,6 @@ def build_message_backend_manager(
         selected_backends: List of backend names in priority order (defaults to config)
         primary_backend: Primary backend name (defaults to config)
         models: mapping backend -> model_name (defaults to config)
-        gemini_api_key: Gemini API key (optional)
-        openai_api_key: OpenAI-style API key (optional)
-        openai_base_url: OpenAI-style Base URL (optional)
-        qwen_use_env_vars: Pass Qwen credentials via environment variables (default: True)
-        qwen_preserve_env: Preserve existing OPENAI_* environment variables (default: False)
 
     Returns:
         BackendManager: The singleton instance for message generation operations
@@ -690,25 +643,12 @@ def build_message_backend_manager(
         for backend_name in selected_backends:
             models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
 
-    # Override with env vars if provided
-    gemini_config = config.get_backend_config("gemini")
-    qwen_config = config.get_backend_config("qwen")
-
-    effective_gemini_api_key = gemini_api_key or (gemini_config.api_key if gemini_config else None)
-    effective_openai_api_key = openai_api_key or (qwen_config.openai_api_key if qwen_config else None)
-    effective_openai_base_url = openai_base_url or (qwen_config.openai_base_url if qwen_config else None)
-
     # Create a backend manager with the appropriate configuration
     # This will be used to initialize the singleton
     temp_backend_manager = build_backend_manager(
         selected_backends=selected_backends,
         primary_backend=primary_backend,
         models=models,
-        gemini_api_key=effective_gemini_api_key,
-        openai_api_key=effective_openai_api_key,
-        openai_base_url=effective_openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
         enable_graphrag=False,  # GraphRAG not needed for messages
     )
 
