@@ -1,12 +1,12 @@
 # Auto-Coder
 
-A Python application that automates application development using an AI CLI backend (default: `codex`, configurable fallback order for `gemini` / `qwen` / `auggie` / `codex-mcp` via multiple `--backend` arguments). It retrieves issues and error-related PRs from GitHub to build and fix the application, and automatically creates feature-addition issues when necessary.
+A Python application that automates application development using an AI CLI backend. It retrieves issues and error-related PRs from GitHub to build and fix the application, and automatically creates feature-addition issues when necessary.
 
 ## Features
 
 ### 🔧 Core Features
 - **GitHub API Integration**: Automatic retrieval and management of issues and PRs
-- **AI Analysis (codex default / Gemini, Qwen, Auggie, codex-mcp configurable via multiple `--backend` arguments with fallback order)**: Automatic analysis of issue and PR content
+- **AI Analysis (multiple backends configurable via configuration file)**: Automatic analysis of issue and PR content
 - **Automated Processing**: Automatic actions based on analysis results
 - **Feature Proposals**: Automatic proposal of new features from repository analysis
 - **Report Generation**: Detailed reports of processing results
@@ -111,20 +111,8 @@ Basically, just run `gh auth login`. When using the Gemini backend, running `gem
 
 #### Processing Issues and PRs
 ```bash
-# Run with default (codex backend)
+# Run with configuration file defaults
 auto-coder process-issues --repo owner/repo
-
-# Switch backend to gemini and specify model
-auto-coder process-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro
-
-# Switch backend to qwen and specify model (example: qwen3-coder-plus)
-auto-coder process-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus
-
-# Switch backend to auggie (uses GPT-5 by default)
-auto-coder process-issues --repo owner/repo --backend auggie
-
-# Set codex as default, Gemini as fallback
-auto-coder process-issues --repo owner/repo --backend codex --backend gemini
 
 # Process only specific Issue/PR (by number)
 auto-coder process-issues --repo owner/repo --only 123
@@ -135,40 +123,16 @@ auto-coder process-issues --repo owner/repo --only https://github.com/owner/repo
 
 #### Creating Feature Proposal Issues
 ```bash
-# Run with default (codex backend)
+# Run with configuration file defaults
 auto-coder create-feature-issues --repo owner/repo
-
-# Switch backend to gemini and specify model
-auto-coder create-feature-issues --repo owner/repo --backend gemini --model-gemini gemini-2.5-pro
-
-# Switch backend to qwen and specify model (example: qwen3-coder-plus)
-auto-coder create-feature-issues --repo owner/repo --backend qwen --model-qwen qwen3-coder-plus
-
-# Switch backend to auggie (uses GPT-5 by default)
-auto-coder create-feature-issues --repo owner/repo --backend auggie
-
-# Set codex as default, Gemini as fallback
-auto-coder create-feature-issues --repo owner/repo --backend codex --backend gemini
 ```
 
 #### Auto-fix until tests pass (fix-to-pass-tests)
 Run local tests, and if they fail, ask the LLM for minimal fixes and repeatedly re-execute. Stops with an error if the LLM doesn't make any edits.
 
 ```bash
-# Run with default (codex backend)
+# Run with configuration file defaults
 auto-coder fix-to-pass-tests
-
-# Switch backend to gemini and specify model
-auto-coder fix-to-pass-tests --backend gemini --model-gemini gemini-2.5-pro
-
-# Switch backend to qwen and specify model (example: qwen3-coder-plus)
-auto-coder fix-to-pass-tests --backend qwen --model-qwen qwen3-coder-plus
-
-# Switch backend to auggie (uses GPT-5 by default)
-auto-coder fix-to-pass-tests --backend auggie
-
-# Set codex as default, Gemini as fallback
-auto-coder fix-to-pass-tests --backend codex --backend gemini
 
 # Specify number of attempts (example: max 5 times)
 auto-coder fix-to-pass-tests --max-attempts 5
@@ -178,8 +142,6 @@ auto-coder fix-to-pass-tests --max-attempts 5
 
 #### `process-issues`
 - `--repo`: GitHub repository (owner/repo format)
-- `--backend`: AI backend to use (codex|codex-mcp|gemini|qwen|auggie). Multiple backends can be specified for fallback in order, with the first being default. Default is codex.
-- `--model`: Model specification (valid for Gemini/Qwen/Auggie. Ignored when backend=codex/codex-mcp, with warning displayed. Auggie uses GPT-5 when unspecified)
 - `--skip-main-update/--no-skip-main-update`: Switch behavior of whether to merge PR base branch into PR branch before attempting fixes when PR checks fail (default: skip base branch merge).
   - Default: `--skip-main-update` (skip)
   - Specify `--no-skip-main-update` to explicitly perform base branch merge
@@ -188,21 +150,14 @@ auto-coder fix-to-pass-tests --max-attempts 5
 
 Options:
 - `--github-token`: Manual specification when not using gh CLI authentication
-- `--gemini-api-key`: Manual specification when not using CLI authentication for Gemini backend
 
 #### `create-feature-issues`
 - `--repo`: GitHub repository (owner/repo format)
-- `--backend`: AI backend to use (codex|codex-mcp|gemini|qwen|auggie). Multiple backends can be specified for fallback in order, with the first being default. Default is codex.
-- `--model`: Model specification (valid for Gemini/Qwen/Auggie. Ignored when backend=codex/codex-mcp, with warning displayed. Auggie uses GPT-5 when unspecified)
 
 Options:
 - `--github-token`: Manual specification when not using gh CLI authentication
-- `--gemini-api-key`: Manual specification when not using CLI authentication for Gemini backend
 
 #### `fix-to-pass-tests`
-- `--backend`: AI backend to use (codex|codex-mcp|gemini|qwen|auggie). Multiple backends can be specified for fallback in order, with the first being default. Default is codex.
-- `--model`: Model specification (valid for Gemini/Qwen/Auggie. Ignored when backend=codex/codex-mcp, with warning displayed. Auggie uses GPT-5 when unspecified)
-- `--gemini-api-key`: Manual specification when not using CLI authentication for Gemini backend
 - `--max-attempts`: Maximum number of test fix attempts (uses engine default when omitted)
 
 Behavior Specification:
@@ -217,19 +172,120 @@ Behavior Specification:
 
 ## Configuration
 
+### Configuration File (TOML)
+
+Auto-Coder uses a TOML configuration file for backend settings. The configuration file is located at `~/.auto-coder/llm_config.toml` by default.
+
+To manage the configuration file, use the built-in config commands:
+```bash
+# Show current configuration
+auto-coder config show
+
+# Edit configuration file
+auto-coder config edit
+
+# Validate configuration
+auto-coder config validate
+
+# Create backup of configuration
+auto-coder config backup
+
+# Interactive setup wizard
+auto-coder config setup
+
+# Show usage examples
+auto-coder config examples
+
+# Migrate from environment variables
+auto-coder config migrate
+```
+
+Example configuration file (`~/.auto-coder/llm_config.toml`):
+```toml
+version = "1.0.0"
+created_at = "2023-01-01T00:00:00"
+updated_at = "2023-01-01T00:00:00"
+
+[backends.codex]
+api_key = ""
+base_url = ""
+model = "codex"
+temperature = 0.7
+timeout = 30
+max_retries = 3
+
+[backends.codex_mcp]
+api_key = ""
+base_url = ""
+model = "codex-mcp"
+temperature = 0.7
+timeout = 30
+max_retries = 3
+
+[backends.gemini]
+api_key = "your-gemini-api-key"  # Alternatively use GEMINI_API_KEY env var
+base_url = ""
+model = "gemini-2.5-pro"
+temperature = 0.7
+timeout = 30
+max_retries = 3
+
+[backends.qwen]
+api_key = "your-qwen-api-key"  # Alternatively use OPENAI_API_KEY env var
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Or your OpenAI-compatible endpoint
+model = "qwen3-coder-plus"
+temperature = 0.7
+timeout = 30
+max_retries = 3
+
+[backends.claude]
+api_key = "your-claude-api-key"  # Alternatively use ANTHROPIC_API_KEY env var
+base_url = ""
+model = "sonnet"
+temperature = 0.7
+timeout = 30
+max_retries = 3
+
+[backends.auggie]
+api_key = ""
+base_url = ""
+model = "GPT-5"
+temperature = 0.7
+timeout = 30
+max_retries = 3
+
+[defaults]
+backend = "codex"
+fallback_order = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
+```
+
 ### Environment Variables
+
+Environment variables can be used to override configuration file values or provide sensitive information like API keys:
 
 | Variable Name | Description | Default Value | Required |
 |--------------|-------------|---------------|----------|
 | `GITHUB_TOKEN` | GitHub API token (to override gh CLI authentication) | - | ❌ |
-| `GEMINI_API_KEY` | Gemini API key (to override Gemini CLI authentication) | - | ❌ |
 | `GITHUB_API_URL` | GitHub API URL | `https://api.github.com` | ❌ |
-| `GEMINI_MODEL` | Gemini model to use | `gemini-pro` | ❌ |
 | `MAX_ISSUES_PER_RUN` | Maximum issues to process per run | `-1` | ❌ |
 | `MAX_PRS_PER_RUN` | Maximum PRs to process per run | `-1` | ❌ |
 | `LOG_LEVEL` | Log level | `INFO` | ❌ |
+| `AUTO_CODER_DEFAULT_BACKEND` | Set default backend (e.g., 'gemini', 'codex') | `codex` | ❌ |
+| `AUTO_CODER_<BACKEND>_API_KEY` | Set API key for specific backend | - | ❌ |
+| `AUTO_CODER_OPENAI_API_KEY` | Set OpenAI-compatible API key | - | ❌ |
+| `AUTO_CODER_OPENAI_BASE_URL` | Set OpenAI-compatible base URL | - | ❌ |
+
+**Backend-specific environment variables:**
+- `AUTO_CODER_CODEX_API_KEY`, `AUTO_CODER_GEMINI_API_KEY`, `AUTO_CODER_QWEN_API_KEY`, `AUTO_CODER_CLAUDE_API_KEY`, `AUTO_CODER_AUGGIE_API_KEY`
+- Model-specific variables: `AUTO_CODER_<BACKEND>_MODEL` (e.g., `AUTO_CODER_GEMINI_MODEL`)
 
 `MAX_ISSUES_PER_RUN` and `MAX_PRS_PER_RUN` are set to unlimited (`-1`) by default. Specify positive integers if you want to limit the number of items processed.
+
+**Migration from old environment variables:**
+If you were using the old environment variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.), you can migrate them automatically:
+```bash
+auto-coder config migrate
+```
 
 ## GraphRAG Integration (Experimental Feature)
 

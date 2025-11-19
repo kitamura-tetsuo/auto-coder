@@ -18,7 +18,6 @@ def run_graphrag_setup_mcp_programmatically(
     neo4j_password: str = "password",
     qdrant_url: str = "http://localhost:6333",
     skip_clone: bool = False,
-    backends: Optional[list] = None,
     silent: bool = False,
 ) -> bool:
     """Programmatically set up the GraphRAG MCP server.
@@ -335,12 +334,8 @@ if __name__ == "__main__":
             logger.info("✅ GraphRAG MCP server setup completed!")
             logger.info("=" * 60)
 
-        # Automatically configure backends
-        # If no backends specified, configure all
-        if not backends:
-            backends_to_configure = ["codex", "gemini", "qwen", "windsurf"]
-        else:
-            backends_to_configure = list(backends)
+        # Automatically configure all backends
+        backends_to_configure = ["codex", "gemini", "qwen", "windsurf"]
 
         if not silent:
             logger.info("Automatically updating configuration files for each backend...")
@@ -839,12 +834,6 @@ def graphrag_cleanup(
     is_flag=True,
     help="Use existing directory (skip clone)",
 )
-@click.option(
-    "--backends",
-    multiple=True,
-    type=click.Choice(["codex", "gemini", "qwen", "windsurf"], case_sensitive=False),
-    help="Specify backends to configure (default: all)",
-)
 def graphrag_setup_mcp(
     install_dir: Optional[str],
     neo4j_uri: str,
@@ -852,7 +841,6 @@ def graphrag_setup_mcp(
     neo4j_password: str,
     qdrant_url: str,
     skip_clone: bool,
-    backends: tuple,
 ) -> None:
     """Automatically set up the GraphRAG MCP server.
 
@@ -896,7 +884,6 @@ def graphrag_setup_mcp(
         neo4j_password=neo4j_password,
         qdrant_url=qdrant_url,
         skip_clone=skip_clone,
-        backends=list(backends) if backends else None,
         silent=False,
     )
 

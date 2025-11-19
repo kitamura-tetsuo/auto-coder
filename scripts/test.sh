@@ -147,11 +147,21 @@ if [ "${AC_USE_LOCAL_VENV:-0}" = "1" ]; then
   fi
 fi
 
+# Unset VIRTUAL_ENV to prevent conflicts with uv's environment detection
+# This prevents warnings about VIRTUAL_ENV not matching the project environment path
+if [ -n "${VIRTUAL_ENV:-}" ]; then
+  unset VIRTUAL_ENV
+fi
+
 # Always sync dependencies with uv when available
 # Skip sync in CI to avoid conflicts with pre-synced environment
 if [ "$USE_UV" -eq 1 ] && [ "${GITHUB_ACTIONS:-}" != "true" ] && [ "${CI:-}" != "true" ]; then
   uv sync -q
-  uv pip install -q -e .[test]
+  # Install test dependencies including pytest-timeout
+  # Note: We need to ensure pytest-timeout is installed in the environment that uv uses
+  if ! uv run python -c "import pytest_timeout" 2>/dev/null; then
+    uv pip install pytest-timeout
+  fi
 fi
 
 RUN=""

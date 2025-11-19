@@ -2,7 +2,6 @@
 
 import os
 import re
-from pathlib import Path
 from typing import Optional
 
 import click
@@ -10,12 +9,13 @@ import click
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
-from .cli_helpers import build_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag, normalize_backends
+from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
 from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
+from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
-from .utils import VERBOSE_ENV_FLAG, CommandExecutor
+from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)
 
@@ -26,51 +26,6 @@ logger = get_logger(__name__)
     help="GitHub repository (owner/repo). If not specified, auto-detects from current Git repository.",
 )
 @click.option("--github-token", envvar="GITHUB_TOKEN", help="GitHub API token")
-@click.option(
-    "--backend",
-    "backends",
-    multiple=True,
-    default=("codex",),
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) to use in priority order (default: codex)",
-)
-@click.option(
-    "--message-backend",
-    "message_backends",
-    multiple=True,
-    default=None,
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) for message generation in priority order (default: same as --backend)",
-)
-@click.option(
-    "--gemini-api-key",
-    envvar="GEMINI_API_KEY",
-    help="Gemini API key (optional, used when backend=gemini)",
-)
-@click.option(
-    "--openai-api-key",
-    envvar="OPENAI_API_KEY",
-    help="OpenAI-style API key (optional, used when backend=qwen)",
-)
-@click.option(
-    "--openai-base-url",
-    envvar="OPENAI_BASE_URL",
-    help="OpenAI-style Base URL (optional, used when backend=qwen)",
-)
-@click.option(
-    "--qwen-use-env-vars/--qwen-use-cli-options",
-    default=False,
-    help="Pass Qwen credentials via environment variables or CLI options (default)",
-)
-@click.option(
-    "--qwen-preserve-env/--qwen-clear-env",
-    default=False,
-    help="Preserve existing OPENAI_* environment variables (default: clear before setting)",
-)
-@click.option("--model-gemini", help="Model to use when backend=gemini")
-@click.option("--model-qwen", help="Model to use when backend=qwen")
-@click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
-@click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
 @click.option(
     "--jules-mode/--no-jules-mode",
     default=True,
@@ -128,17 +83,6 @@ logger = get_logger(__name__)
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
-    backends: tuple[str, ...],
-    message_backends: Optional[tuple[str, ...]],
-    gemini_api_key: Optional[str],
-    openai_api_key: Optional[str],
-    openai_base_url: Optional[str],
-    qwen_use_env_vars: bool,
-    qwen_preserve_env: bool,
-    model_gemini: Optional[str],
-    model_qwen: Optional[str],
-    model_auggie: Optional[str],
-    model_claude: Optional[str],
     jules_mode: bool,
     disable_labels: Optional[bool],
     check_labels: bool,
@@ -154,9 +98,13 @@ def process_issues(
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
-    selected_backends = normalize_backends(backends)
+    config = get_llm_config()
+
+    active_backends = config.get_active_backends()
+    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
+    selected_backends = ordered_backends or [config.default_backend or "codex"]
     primary_backend = selected_backends[0]
-    models = build_models_map(model_gemini, model_qwen, model_auggie, model_claude)
+    models = build_models_map()
     primary_model = models.get(primary_backend)
 
     # Configure verbose flag and setup logger with specified options
@@ -218,57 +166,27 @@ def process_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    # Use global LLMBackendManager for main backend
-    from auto_coder.backend_manager import get_llm_backend_manager
-
-    from .cli_helpers import build_backend_manager
-
-    # First create a temporary manager to get the configuration
-    temp_manager = build_backend_manager(
-        selected_backends,
-        primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
+    manager = build_backend_manager_from_config(
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
 
-    # Initialize the global singleton with proper configuration
+    selected_backends = manager._all_backends[:]
+    primary_backend = manager._default_backend
+    primary_model = None
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+        client = manager._clients.get(primary_backend)
+        if client is not None:
+            primary_model = getattr(client, "model_name", None)
 
-    manager = get_llm_backend_manager(
-        default_backend=primary_backend,
-        default_client=temp_manager._clients[primary_backend],
-        factories=temp_manager._factories,
-        order=selected_backends,
-        force_reinitialize=True,
-    )
-
-    # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    # Initialize message backend manager (use same backends if not specified)
-    from .cli_helpers import build_message_backend_manager
-
-    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
-    message_primary_backend = message_backend_list[0]
-    message_manager = build_message_backend_manager(
-        message_backend_list,
-        message_primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
-    )
-
-    if message_backends:
-        message_backend_str = ", ".join(message_backend_list)
-        logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-        click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
+    message_manager = build_message_backend_manager(models=models)
+    message_backend_list = message_manager._all_backends[:]
+    message_primary_backend = message_manager._default_backend
+    message_backend_str = ", ".join(message_backend_list)
+    logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
@@ -387,7 +305,8 @@ def process_issues(
         return
 
     # Run automation
-    if primary_backend == "gemini" and gemini_api_key is not None:
+    gemini_config = config.get_backend_config("gemini")
+    if primary_backend == "gemini" and gemini_config and gemini_config.api_key:
         automation_engine.run(repo_name)
     else:
         automation_engine.run(repo_name, jules_mode=jules_mode)
@@ -406,47 +325,10 @@ def process_issues(
 )
 @click.option("--github-token", envvar="GITHUB_TOKEN", help="GitHub API token")
 @click.option(
-    "--backend",
-    "backends",
-    multiple=True,
-    default=("codex",),
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) to use in priority order (default: codex)",
-)
-@click.option(
     "--disable-labels/--no-disable-labels",
     default=False,
     help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
-@click.option(
-    "--gemini-api-key",
-    envvar="GEMINI_API_KEY",
-    help="Gemini API key (optional, used when backend=gemini)",
-)
-@click.option(
-    "--openai-api-key",
-    envvar="OPENAI_API_KEY",
-    help="OpenAI-style API key (optional, used when backend=qwen)",
-)
-@click.option(
-    "--openai-base-url",
-    envvar="OPENAI_BASE_URL",
-    help="OpenAI-style Base URL (optional, used when backend=qwen)",
-)
-@click.option(
-    "--qwen-use-env-vars/--qwen-use-cli-options",
-    default=True,
-    help="Pass Qwen credentials via environment variables (default) or CLI options",
-)
-@click.option(
-    "--qwen-preserve-env/--qwen-clear-env",
-    default=False,
-    help="Preserve existing OPENAI_* environment variables (default: clear before setting)",
-)
-@click.option("--model-gemini", help="Model to use when backend=gemini")
-@click.option("--model-qwen", help="Model to use when backend=qwen")
-@click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
-@click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
 @click.option(
     "--enable-graphrag/--disable-graphrag",
     default=True,
@@ -469,17 +351,7 @@ def process_issues(
 def create_feature_issues(
     repo: Optional[str],
     github_token: Optional[str],
-    backends: tuple[str, ...],
     disable_labels: Optional[bool],
-    gemini_api_key: Optional[str],
-    openai_api_key: Optional[str],
-    openai_base_url: Optional[str],
-    qwen_use_env_vars: bool,
-    qwen_preserve_env: bool,
-    model_gemini: Optional[str],
-    model_qwen: Optional[str],
-    model_auggie: Optional[str],
-    model_claude: Optional[str],
     enable_graphrag: bool,
     force_reindex: bool,
     log_level: str,
@@ -488,9 +360,13 @@ def create_feature_issues(
 ) -> None:
     """Analyze repository and create feature enhancement issues."""
 
-    selected_backends = normalize_backends(backends)
+    config = get_llm_config()
+
+    active_backends = config.get_active_backends()
+    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
+    selected_backends = ordered_backends or [config.default_backend or "codex"]
     primary_backend = selected_backends[0]
-    models = build_models_map(model_gemini, model_qwen, model_auggie, model_claude)
+    models = build_models_map()
     primary_model = models.get(primary_backend)
 
     # Configure verbose flag and setup logger with specified options
@@ -534,19 +410,19 @@ def create_feature_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    manager = build_backend_manager(
-        selected_backends,
-        primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
+    manager = build_backend_manager_from_config(
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
 
-    # Check GraphRAG MCP configuration for selected backends using client
+    selected_backends = manager._all_backends[:]
+    primary_backend = manager._default_backend
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+        client = manager._clients.get(primary_backend)
+        if client is not None:
+            primary_model = getattr(client, "model_name", None)
+
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     automation_engine = AutomationEngine(github_client)
@@ -563,55 +439,10 @@ def create_feature_issues(
 
 @click.command(name="fix-to-pass-tests")
 @click.option(
-    "--backend",
-    "backends",
-    multiple=True,
-    default=("codex",),
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) to use in priority order (default: codex)",
-)
-@click.option(
-    "--message-backend",
-    "message_backends",
-    multiple=True,
-    default=None,
-    type=click.Choice(["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]),
-    help="AI backend(s) for message generation in priority order (default: same as --backend)",
-)
-@click.option(
     "--disable-labels/--no-disable-labels",
     default=False,
     help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
 )
-@click.option(
-    "--gemini-api-key",
-    envvar="GEMINI_API_KEY",
-    help="Gemini API key (optional, used when backend=gemini)",
-)
-@click.option(
-    "--openai-api-key",
-    envvar="OPENAI_API_KEY",
-    help="OpenAI-style API key (optional, used when backend=qwen)",
-)
-@click.option(
-    "--openai-base-url",
-    envvar="OPENAI_BASE_URL",
-    help="OpenAI-style Base URL (optional, used when backend=qwen)",
-)
-@click.option(
-    "--qwen-use-env-vars/--qwen-use-cli-options",
-    default=True,
-    help="Pass Qwen credentials via environment variables (default) or CLI options",
-)
-@click.option(
-    "--qwen-preserve-env/--qwen-clear-env",
-    default=False,
-    help="Preserve existing OPENAI_* environment variables (default: clear before setting)",
-)
-@click.option("--model-gemini", help="Model to use when backend=gemini")
-@click.option("--model-qwen", help="Model to use when backend=qwen")
-@click.option("--model-auggie", help="Model to use when backend=auggie (defaults to GPT-5)")
-@click.option("--model-claude", help="Model to use when backend=claude (defaults to sonnet)")
 @click.option(
     "--max-attempts",
     type=int,
@@ -638,18 +469,7 @@ def create_feature_issues(
 @click.option("--log-file", help="Log file path (optional)")
 @click.option("--verbose", is_flag=True, help="Enable verbose logging and detailed command traces")
 def fix_to_pass_tests_command(
-    backends: tuple[str, ...],
-    message_backends: Optional[tuple[str, ...]],
     disable_labels: Optional[bool],
-    gemini_api_key: Optional[str],
-    openai_api_key: Optional[str],
-    openai_base_url: Optional[str],
-    qwen_use_env_vars: bool,
-    qwen_preserve_env: bool,
-    model_gemini: Optional[str],
-    model_qwen: Optional[str],
-    model_auggie: Optional[str],
-    model_claude: Optional[str],
     max_attempts: Optional[int],
     enable_graphrag: bool,
     force_reindex: bool,
@@ -661,9 +481,13 @@ def fix_to_pass_tests_command(
 
     If the LLM makes no edits in an iteration, error and stop.
     """
-    selected_backends = normalize_backends(backends)
+    config = get_llm_config()
+
+    active_backends = config.get_active_backends()
+    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
+    selected_backends = ordered_backends or [config.default_backend or "codex"]
     primary_backend = selected_backends[0]
-    models = build_models_map(model_gemini, model_qwen, model_auggie, model_claude)
+    models = build_models_map()
     primary_model = models.get(primary_backend)
 
     if verbose:
@@ -706,42 +530,25 @@ def fix_to_pass_tests_command(
 
         github_client = _Dummy()  # type: ignore
 
-    manager = build_backend_manager(
-        selected_backends,
-        primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
+    manager = build_backend_manager_from_config(
         enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
     )
 
-    # Check GraphRAG MCP configuration for selected backends using client
+    selected_backends = manager._all_backends[:]
+    primary_backend = manager._default_backend
+    if primary_backend in ("gemini", "qwen", "auggie", "claude"):
+        client = manager._clients.get(primary_backend)
+        if client is not None:
+            primary_model = getattr(client, "model_name", None)
+
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    # Initialize message backend manager (use same backends if not specified)
-    from .cli_helpers import build_message_backend_manager
-
-    message_backend_list = normalize_backends(message_backends) if message_backends else selected_backends
-    message_primary_backend = message_backend_list[0]
-    message_manager = build_message_backend_manager(
-        message_backend_list,
-        message_primary_backend,
-        models,
-        gemini_api_key,
-        openai_api_key,
-        openai_base_url,
-        qwen_use_env_vars=qwen_use_env_vars,
-        qwen_preserve_env=qwen_preserve_env,
-    )
-
-    if message_backends:
-        message_backend_str = ", ".join(message_backend_list)
-        logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-        click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-
+    message_manager = build_message_backend_manager(models=models)
+    message_backend_list = message_manager._all_backends[:]
+    message_primary_backend = message_manager._default_backend
+    logger.info(f"Message backends: {', '.join(message_backend_list)} (default: {message_primary_backend})")
     engine_config = AutomationConfig()
     engine = AutomationEngine(github_client, config=engine_config)
 
