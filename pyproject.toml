@@ -192,4 +192,5 @@ ignore_errors = true
 dev = [
     "black>=25.9.0",
     "isort>=5.0.0",
+    "flake8>=6.0.0",
 ]

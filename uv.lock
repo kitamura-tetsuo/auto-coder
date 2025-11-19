@@ -80,6 +80,7 @@ test = [
 [package.dev-dependencies]
 dev = [
     { name = "black" },
+    { name = "flake8" },
     { name = "isort" },
 ]
 
@@ -121,6 +122,7 @@ provides-extras = ["test", "dev"]
 [package.metadata.requires-dev]
 dev = [
     { name = "black", specifier = ">=25.9.0" },
+    { name = "flake8", specifier = ">=6.0.0" },
     { name = "isort", specifier = ">=5.0.0" },
 ]
 
