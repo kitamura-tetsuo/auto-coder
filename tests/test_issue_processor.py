@@ -76,6 +76,117 @@ def test_parent_issue_branch_creation_uses_main_base():
     assert first_kwargs.get("base_branch") == config.MAIN_BRANCH
 
 
+def test_existing_work_branch_not_recreated():
+    """Test that when work branch exists locally, it should not be recreated."""
+    repo_name = "owner/repo"
+    issue_number = 456
+    issue_data = {"number": issue_number, "title": "Test Issue"}
+    config = AutomationConfig()
+
+    # Capture calls to branch_context
+    captured_calls = []
+
+    @contextmanager
+    def fake_branch_context(*args, **kwargs):
+        captured_calls.append((args, kwargs))
+        yield
+
+    @contextmanager
+    def fake_label_manager(*_args, **_kwargs):
+        yield True
+
+    # CommandExecutor instance in issue_processor module
+    with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        # Simulate: work branch already exists locally
+        # git rev-parse --abbrev-ref HEAD (get current branch)
+        # git rev-parse --verify work_branch (check if work branch exists)
+        mock_cmd.run_command.side_effect = [
+            _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+            _cmd_result(success=True, stdout="issue-456", returncode=0),  # rev-parse work branch exists
+        ]
+
+        with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                # Minimal GitHub client mock
+                github_client = MagicMock()
+                github_client.get_parent_issue.return_value = None  # No parent issue
+
+                # Avoid deeper execution
+                class DummyLLM:
+                    def _run_llm_cli(self, *_args, **_kwargs):
+                        return None
+
+                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                    _apply_issue_actions_directly(
+                        repo_name,
+                        issue_data,
+                        config,
+                        github_client,
+                    )
+
+    # Verify that branch_context was called with create_new=False
+    assert captured_calls, "branch_context was not called"
+    first_args, first_kwargs = captured_calls[0]
+    assert first_args[0] == "issue-456"
+    assert first_kwargs.get("create_new") is False, "Work branch should not be recreated when it already exists"
+
+
+def test_missing_work_branch_created_with_correct_base():
+    """Test that when work branch doesn't exist, it's created from the correct base branch."""
+    repo_name = "owner/repo"
+    issue_number = 789
+    issue_data = {"number": issue_number, "title": "Test Issue"}
+    config = AutomationConfig()
+
+    # Capture calls to branch_context
+    captured_calls = []
+
+    @contextmanager
+    def fake_branch_context(*args, **kwargs):
+        captured_calls.append((args, kwargs))
+        yield
+
+    @contextmanager
+    def fake_label_manager(*_args, **_kwargs):
+        yield True
+
+    # CommandExecutor instance in issue_processor module
+    with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        # Simulate: work branch does not exist locally
+        # git rev-parse --abbrev-ref HEAD (get current branch)
+        # git rev-parse --verify work_branch (check if work branch exists)
+        mock_cmd.run_command.side_effect = [
+            _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+            _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+        ]
+
+        with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                # Minimal GitHub client mock
+                github_client = MagicMock()
+                github_client.get_parent_issue.return_value = None  # No parent issue
+
+                # Avoid deeper execution
+                class DummyLLM:
+                    def _run_llm_cli(self, *_args, **_kwargs):
+                        return None
+
+                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                    _apply_issue_actions_directly(
+                        repo_name,
+                        issue_data,
+                        config,
+                        github_client,
+                    )
+
+    # Verify that branch_context was called with create_new=True and correct base_branch
+    assert captured_calls, "branch_context was not called"
+    first_args, first_kwargs = captured_calls[0]
+    assert first_args[0] == "issue-789"
+    assert first_kwargs.get("create_new") is True, "Work branch should be created when it doesn't exist"
+    assert first_kwargs.get("base_branch") == config.MAIN_BRANCH, "Work branch should be created from MAIN_BRANCH when no parent issue"
+
+
 class TestPRLabelCopying:
     """Integration tests for PR label copying functionality."""
 
