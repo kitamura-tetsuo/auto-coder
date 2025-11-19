@@ -6,6 +6,7 @@ from src.auto_coder import prompt_loader
 from src.auto_coder.prompt_loader import (
     DEFAULT_PROMPTS_PATH,
     _get_prompt_for_labels,
+    _is_breaking_change_issue,
     _resolve_label_priority,
     clear_prompt_cache,
     get_label_specific_prompt,
@@ -373,3 +374,103 @@ def test_render_prompt_empty_labels(label_prompt_file):
 
     # Should fall back to default
     assert "Default issue action" in result
+
+
+# Tests for breaking-change label detection
+
+
+def test_is_breaking_change_issue_with_breaking_change_label():
+    """Test that breaking-change label is detected."""
+    labels = ["bug", "breaking-change"]
+    assert _is_breaking_change_issue(labels) is True
+
+
+def test_is_breaking_change_issue_with_breaking_label():
+    """Test that breaking label is detected."""
+    labels = ["feature", "breaking"]
+    assert _is_breaking_change_issue(labels) is True
+
+
+def test_is_breaking_change_issue_with_api_change_label():
+    """Test that api-change label is detected."""
+    labels = ["enhancement", "api-change"]
+    assert _is_breaking_change_issue(labels) is True
+
+
+def test_is_breaking_change_issue_with_deprecation_label():
+    """Test that deprecation label is detected."""
+    labels = ["documentation", "deprecation"]
+    assert _is_breaking_change_issue(labels) is True
+
+
+def test_is_breaking_change_issue_with_version_major_label():
+    """Test that version-major label is detected."""
+    labels = ["feature", "version-major"]
+    assert _is_breaking_change_issue(labels) is True
+
+
+def test_is_breaking_change_issue_without_breaking_labels():
+    """Test that non-breaking labels are not detected."""
+    labels = ["bug", "feature", "enhancement", "documentation"]
+    assert _is_breaking_change_issue(labels) is False
+
+
+def test_is_breaking_change_issue_with_empty_list():
+    """Test that empty label list returns False."""
+    assert _is_breaking_change_issue([]) is False
+
+
+def test_is_breaking_change_issue_case_insensitive():
+    """Test that label detection is case-insensitive."""
+    labels = ["Feature", "BUG", "Breaking-Change"]
+    assert _is_breaking_change_issue(labels) is True
+
+
+def test_breaking_change_label_has_highest_priority():
+    """Test that breaking-change label has higher priority than urgent."""
+    labels = ["urgent", "breaking-change"]
+    mappings = {
+        "breaking-change": "issue.breaking_change",
+        "urgent": "issue.urgent",
+    }
+    priorities = [
+        "breaking-change",
+        "breaking",
+        "api-change",
+        "deprecation",
+        "version-major",
+        "urgent",
+    ]
+
+    result = _resolve_label_priority(labels, mappings, priorities)
+    assert result == "breaking-change"
+
+
+def test_render_prompt_with_breaking_change_label(label_prompt_file):
+    """Test that render_prompt uses breaking-change prompt when label is present."""
+    clear_prompt_cache()
+
+    # Update the label_prompt_file to include breaking_change prompt
+    from pathlib import Path
+
+    label_prompt_file.write_text(
+        'issue:\n  action: "Default issue action"\n  breaking_change: "Breaking change prompt"\n',
+        encoding="utf-8",
+    )
+    clear_prompt_cache()
+
+    labels = ["breaking-change"]
+    mappings = {
+        "breaking-change": "issue.breaking_change",
+    }
+    priorities = ["breaking-change"]
+
+    result = render_prompt(
+        "issue.action",
+        path=str(label_prompt_file),
+        labels=labels,
+        label_prompt_mappings=mappings,
+        label_priorities=priorities,
+    )
+
+    assert "Breaking change prompt" in result

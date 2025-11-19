@@ -102,6 +102,25 @@ def _resolve_label_priority(
     return applicable_labels[0]  # Fallback to first applicable label
 
 
+def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
+    """Check if issue has breaking-change related labels.
+
+    Args:
+        issue_labels: List of labels from the issue
+
+    Returns:
+        True if issue has any breaking-change related labels, False otherwise
+    """
+    breaking_change_aliases = [
+        "breaking-change",
+        "breaking",
+        "api-change",
+        "deprecation",
+        "version-major",
+    ]
+    return any(label.lower() in breaking_change_aliases for label in issue_labels)
+
+
 def _get_prompt_for_labels(
     issue_labels: List[str],
     label_prompt_mappings: Dict[str, str],
