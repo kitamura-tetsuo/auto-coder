@@ -187,13 +187,14 @@ def test_get_prompt_for_labels_no_mappings():
 
 
 def test_get_prompt_for_labels_no_priorities():
-    """Test that None is returned when no priorities provided."""
+    """Test that first applicable label is returned as fallback when priorities is empty list."""
     labels = ["bug", "feature"]
     mappings = {"bug": "issue.bugfix"}
     priorities = []
 
     result = _get_prompt_for_labels(labels, mappings, priorities)
-    assert result is None
+    # Empty priorities list falls back to first applicable label
+    assert result == "issue.bugfix"
 
 
 # Tests for get_label_specific_prompt function
@@ -308,20 +309,17 @@ def test_render_prompt_label_fallback_missing_template(label_prompt_file):
     mappings = {"enhancement": "nonexistent.template"}
     priorities = ["enhancement"]
 
-    # When a non-existent template is referenced, the system should fail fast
-    # This is the expected behavior - the test verifies that the error handling works
-    with pytest.raises(SystemExit):
-        render_prompt(
-            "issue.action",
-            path=str(label_prompt_file),
-            labels=labels,
-            label_prompt_mappings=mappings,
-            label_priorities=priorities,
-        )
+    # SystemExit is now caught and handled, causing fallback to default template
+    result = render_prompt(
+        "issue.action",
+        path=str(label_prompt_file),
+        labels=labels,
+        label_prompt_mappings=mappings,
+        label_priorities=priorities,
+    )
 
-    # The key point is that it tried to use the label-specific template first
-    # and properly failed when it didn't exist, which demonstrates the
-    # label-based selection logic is working
+    # Should fall back to the original key
+    assert "Default issue action" in result
 
 
 def test_render_prompt_backward_compatibility(temp_prompt_file):
