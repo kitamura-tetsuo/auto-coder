@@ -62,6 +62,7 @@
                 "process-issues",
                 "--ignore-dependabot-prs",
                 "--no-jules-mode",
+                "--no-check-labels",
                 // "--force-reindex",
                 // "--disable-graphrag",
             ],

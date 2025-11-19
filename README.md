@@ -64,6 +64,67 @@ cp .env.example .env
 
 ## Usage
 
+### CLI Commands
+
+#### `process-issues`
+
+Process GitHub issues and PRs using AI CLI.
+
+```bash
+auto-coder process-issues [OPTIONS]
+```
+
+**Options:**
+
+- `--repo TEXT`: GitHub repository (owner/repo). Auto-detected if not specified.
+- `--github-token TEXT`: GitHub API token.
+- `--jules-mode / --no-jules-mode`: Run in jules mode (default: on).
+- `--disable-labels / --no-disable-labels`: Disable GitHub label operations (default: false).
+- `--check-labels / --no-check-labels`: Enable checking for existing @auto-coder label (default: enabled).
+- `--skip-main-update / --no-skip-main-update`: Skip merging base branch into PR when checks fail (default: skip).
+- `--ignore-dependabot-prs / --no-ignore-dependabot-prs`: Skip non-ready dependency-bot PRs (default: false).
+- `--force-clean-before-checkout / --no-force-clean-before-checkout`: Force clean workspace before checkout (default: false).
+- `--enable-graphrag / --disable-graphrag`: Enable GraphRAG integration (default: enabled).
+- `--only TEXT`: Process only a specific issue/PR by URL or number.
+- `--force-reindex`: Force GraphRAG code analysis reindexing.
+- `--log-level [DEBUG|INFO|WARNING|ERROR|CRITICAL]`: Set logging level (default: INFO).
+- `--log-file TEXT`: Log file path.
+- `--verbose`: Enable verbose logging.
+
+#### `create-feature-issues`
+
+Analyze repository and create feature enhancement issues.
+
+```bash
+auto-coder create-feature-issues [OPTIONS]
+```
+
+**Options:**
+
+- `--repo TEXT`: GitHub repository.
+- `--disable-labels / --no-disable-labels`: Disable GitHub label operations.
+- `--enable-graphrag / --disable-graphrag`: Enable GraphRAG integration.
+- `--force-reindex`: Force GraphRAG reindexing.
+- `--log-level`: Set logging level.
+- `--verbose`: Enable verbose logging.
+
+#### `fix-to-pass-tests`
+
+Run local tests and repeatedly request LLM fixes until tests pass.
+
+```bash
+auto-coder fix-to-pass-tests [OPTIONS]
+```
+
+**Options:**
+
+- `--disable-labels / --no-disable-labels`: Disable GitHub label operations.
+- `--max-attempts INTEGER`: Maximum fix attempts.
+- `--enable-graphrag / --disable-graphrag`: Enable GraphRAG integration.
+- `--force-reindex`: Force GraphRAG reindexing.
+- `--log-level`: Set logging level.
+- `--verbose`: Enable verbose logging.
+
 ### Authentication
 
 Basically, just run `gh auth login`. When using the Gemini backend, running `gemini login` allows you to use it without setting API keys in environment variables (the --model flag is ignored for the codex backend).

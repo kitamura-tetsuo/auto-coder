@@ -76,22 +76,14 @@ class ClaudeClient(LLMClientBase):
 
             usage_markers = (
                 "rate limit",
-                "quota",
-                "429",
                 "usage limit",
                 "upgrade to pro",
                 "overloaded",
             )
 
-            def _on_stream(stream_name: str, chunk: str) -> None:
-                low_chunk = chunk.lower()
-                if any(marker in low_chunk for marker in usage_markers):
-                    raise AutoCoderUsageLimitError(chunk.strip())
-
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
-                on_stream=_on_stream,
             )
             logger.info("=" * 60)
             stdout = (result.stdout or "").strip()
