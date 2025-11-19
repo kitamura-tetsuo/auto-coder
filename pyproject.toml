@@ -191,4 +191,5 @@ ignore_errors = true
 [dependency-groups]
 dev = [
     "black>=25.9.0",
+    "isort>=5.0.0",
 ]
