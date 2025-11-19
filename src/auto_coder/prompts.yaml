@@ -204,6 +204,46 @@ issue:
 
     Please proceed with analyzing and taking action on this issue now.
 
+  breaking_change: |-
+    You are processing a GitHub issue with the 'breaking-change' label.
+
+    BREAKING CHANGE REQUIREMENTS:
+    - This issue involves breaking changes that may break existing functionality
+    - Tests that fail due to breaking changes should be DELETED, not fixed
+    - Update version numbers according to semantic versioning (major version bump)
+    - Add migration guide for users to update their code
+    - Document all breaking changes clearly
+    - Consider backward compatibility impact
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Breaking Change Detected: YES
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    CRITICAL BREAKING CHANGE DIRECTIVES:
+    1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them
+    2. VERSION BUMP: Update version numbers with major version increment (semantic versioning)
+    3. MIGRATION GUIDE: Create clear migration instructions for users
+    4. DEPRECATION NOTICE: Document deprecated features and replacement approaches
+    5. BACKWARD COMPATIBILITY: Assess and document compatibility impact
+
+    COMMITMENT TO QUALITY:
+    - Breaking changes must be intentional and well-documented
+    - Users must be able to migrate their code successfully
+    - Version numbers must accurately reflect breaking changes
+    - No existing functionality should work incorrectly without clear migration path
+
+    Please proceed with analyzing and implementing this breaking change now.
+
 tests:
   workspace_fix: |-
     You are operating directly in this repository workspace with write access.

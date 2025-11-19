@@ -375,16 +375,22 @@ def _apply_issue_actions_directly(
                     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
                 # Create a comprehensive prompt for LLM CLI
+                # Extract issue labels for label-based prompt selection
+                issue_labels_list = issue_data.get("labels", [])
+
                 action_prompt = render_prompt(
                     "issue.action",
                     repo_name=repo_name,
                     issue_number=issue_data.get("number", "unknown"),
                     issue_title=issue_data.get("title", "Unknown"),
                     issue_body=(issue_data.get("body") or "")[:10000],
-                    issue_labels=", ".join(issue_data.get("labels", [])),
+                    issue_labels=", ".join(issue_labels_list),
                     issue_state=issue_data.get("state", "open"),
                     issue_author=issue_data.get("author", "unknown"),
                     commit_log=commit_log or "(No commit history)",
+                    labels=issue_labels_list,
+                    label_prompt_mappings=config.label_prompt_mappings,
+                    label_priorities=config.label_priorities,
                 )
                 logger.debug(
                     "Prepared issue-action prompt for #%s (preview: %s)",

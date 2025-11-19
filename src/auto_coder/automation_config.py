@@ -13,6 +13,35 @@ class AutomationConfig:
     REPORTS_DIR: str = "reports"
     TEST_SCRIPT_PATH: str = "scripts/test.sh"
 
+    # Label prompt mappings for label-based issue/PR processing
+    # Maps labels to prompt template keys
+    label_prompt_mappings: Dict[str, str] = field(
+        default_factory=lambda: {
+            # Breaking-change labels (highest priority)
+            "breaking-change": "issue.breaking_change",
+            "breaking": "issue.breaking_change",
+            "api-change": "issue.breaking_change",
+            "deprecation": "issue.breaking_change",
+            "version-major": "issue.breaking_change",
+        }
+    )
+
+    # Label priorities (highest priority first)
+    # Breaking-change has highest priority, above urgent
+    label_priorities: List[str] = field(
+        default_factory=lambda: [
+            "breaking-change",
+            "breaking",
+            "api-change",
+            "deprecation",
+            "version-major",
+            "urgent",
+            "enhancement",
+            "feature",
+            "bug",
+        ]
+    )
+
     def get_reports_dir(self, repo_name: str) -> str:
         """Get the reports directory for a specific repository.
 
