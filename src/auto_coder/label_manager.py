@@ -8,7 +8,7 @@ consistent error handling and logging.
 import threading
 import time
 from contextlib import contextmanager
-from typing import Any, Generator, Optional, Union
+from typing import Any, Dict, Generator, List, Optional, Union
 
 from github.GithubException import GithubException
 
@@ -17,6 +17,76 @@ from .github_client import GitHubClient
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
+
+
+def get_semantic_labels_from_issue(
+    issue_labels: List[str],
+    label_mappings: Dict[str, List[str]],
+) -> List[str]:
+    """Extract semantic labels from issue labels with alias support.
+
+    Args:
+        issue_labels: List of labels from the issue
+        label_mappings: Dictionary mapping primary labels to their aliases
+
+    Returns:
+        List of primary semantic labels detected (deduplicated)
+    """
+    detected_labels = []
+    issue_labels_lower = [label.lower() for label in issue_labels]
+
+    for primary_label, aliases in label_mappings.items():
+        # Check if any alias matches (case-insensitive)
+        for alias in aliases:
+            if alias.lower() in issue_labels_lower:
+                detected_labels.append(primary_label)
+                break  # Only add each primary label once
+
+    # Remove duplicates while preserving order
+    return list(dict.fromkeys(detected_labels))
+
+
+def resolve_pr_labels_with_priority(
+    issue_labels: List[str],
+    config: AutomationConfig,
+) -> List[str]:
+    """Resolve PR labels with priority-based selection.
+
+    Args:
+        issue_labels: List of labels from the source issue
+        config: AutomationConfig instance with PR label configuration
+
+    Returns:
+        List of semantic labels for the PR, sorted by priority and limited to max count
+    """
+    # Extract semantic labels from issue
+    semantic_labels = get_semantic_labels_from_issue(issue_labels, config.PR_LABEL_MAPPINGS)
+
+    if not semantic_labels:
+        return []
+
+    # Sort labels by priority
+    priority_order = {label: idx for idx, label in enumerate(config.PR_LABEL_PRIORITIES)}
+
+    # Separate labels into prioritized and unprioritized
+    prioritized = []
+
+    for label in semantic_labels:
+        if label in priority_order:
+            prioritized.append((label, priority_order[label]))
+        else:
+            # Use a high priority value for unprioritized labels
+            prioritized.append((label, 999))
+
+    # Sort by priority value
+    sorted_labels = [label for label, _ in sorted(prioritized, key=lambda x: x[1])]
+
+    # Limit to max labels
+    max_labels = config.PR_LABEL_MAX_COUNT
+    if max_labels >= 0:
+        sorted_labels = sorted_labels[:max_labels]
+
+    return sorted_labels
 
 
 class LabelOperationError(Exception):

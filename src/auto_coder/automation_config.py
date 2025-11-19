@@ -1,8 +1,14 @@
 """Configuration classes for Auto-Coder automation engine."""
 
+import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from .logger_config import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -83,6 +89,87 @@ class AutomationConfig:
     # GitHub CLI merge options
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True
+
+    # PR label copying configuration
+    # Enable or disable copying semantic labels from issues to PRs
+    PR_LABEL_COPYING_ENABLED: bool = True
+
+    # Maximum number of semantic labels to copy from issue to PR
+    PR_LABEL_MAX_COUNT: int = 3
+
+    # Priority order for semantic labels (highest to lowest priority)
+    # Labels not in this list will be added after these (if space permits)
+    PR_LABEL_PRIORITIES: List[str] = field(
+        default_factory=lambda: [
+            "breaking-change",
+            "urgent",
+            "bug",
+            "enhancement",
+            "documentation",
+        ]
+    )
+
+    # Custom label mappings (aliases) for semantic label detection
+    # Maps primary label name to list of possible aliases
+    PR_LABEL_MAPPINGS: Dict[str, List[str]] = field(
+        default_factory=lambda: {
+            "breaking-change": [
+                "breaking-change",
+                "breaking",
+                "api-change",
+                "deprecation",
+                "version-major",
+                "major-change",
+            ],
+            "bug": [
+                "bug",
+                "bugfix",
+                "defect",
+                "error",
+                "fix",
+                "hotfix",
+                "patch",
+            ],
+            "documentation": [
+                "documentation",
+                "docs",
+                "doc",
+                "readme",
+                "guide",
+            ],
+            "enhancement": [
+                "enhancement",
+                "feature",
+                "improvement",
+                "new-feature",
+                "refactor",
+                "optimization",
+                "optimisation",
+            ],
+            "urgent": [
+                "urgent",
+                "high-priority",
+                "critical",
+                "asap",
+                "priority-high",
+                "blocker",
+            ],
+        }
+    )
+
+    def validate_pr_label_config(self) -> None:
+        """Validate PR label copying configuration.
+
+        Raises:
+            ValueError: If configuration values are invalid
+        """
+        if self.PR_LABEL_MAX_COUNT < 0 or self.PR_LABEL_MAX_COUNT > 10:
+            raise ValueError("PR_LABEL_MAX_COUNT must be between 0 and 10")
+
+        # Validate that all priority labels have mappings defined
+        for label in self.PR_LABEL_PRIORITIES:
+            if label not in self.PR_LABEL_MAPPINGS:
+                logger.warning(f"PR_LABEL_PRIORITIES contains label '{label}' not in PR_LABEL_MAPPINGS")
 
 
 @dataclass

@@ -18,7 +18,7 @@ from auto_coder.util.github_action import (
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .gh_logger import get_gh_logger
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
-from .label_manager import LabelManager, LabelOperationError
+from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
@@ -226,46 +226,64 @@ def _create_pr_for_issue(
                 except (ValueError, IndexError) as e:
                     logger.warning(f"Failed to extract PR number from URL '{pr_url}': {e}")
 
-            # Propagate urgent label from issue to PR if present
+            # Propagate semantic labels from issue to PR if present
             if pr_number:
                 import time
 
                 # Wait a moment for GitHub to process the PR creation
                 time.sleep(2)
 
-                # Check if source issue has urgent label and propagate to PR
-                issue_labels = issue_data.get("labels", [])
-                if "urgent" in issue_labels:
+                # Check if PR label copying is enabled
+                if config.PR_LABEL_COPYING_ENABLED:
+                    issue_labels = issue_data.get("labels", [])
+
+                    # Extract and prioritize semantic labels from the issue
                     try:
-                        # Use legacy wrapper to match existing tests and maintain compatibility (assertion expects this call)
-                        github_client.add_labels_to_issue(repo_name, pr_number, ["urgent"])
-                        # Also call the PR-specific wrapper to ensure correct runtime behavior
-                        try:
-                            github_client.add_labels_to_pr(repo_name, pr_number, ["urgent"])  # pragma: no cover
-                        except Exception:
-                            # Ignore failures in the secondary call in tests/runtime
-                            pass
-                        logger.info(f"Propagated 'urgent' label from issue #{issue_number} to PR #{pr_number}")
-                        # Add note to PR body about urgent status
-                        try:
-                            pr_body_with_note = pr_body + "\n\n*This PR addresses an urgent issue.*"
-                            gh_logger = get_gh_logger()
-                            gh_logger.execute_with_logging(
-                                [
-                                    "gh",
-                                    "pr",
-                                    "edit",
-                                    str(pr_number),
-                                    "--body",
-                                    pr_body_with_note,
-                                ],
-                                repo=repo_name,
-                            )
-                            logger.info(f"Added urgent note to PR #{pr_number} body")
-                        except Exception as e:
-                            logger.warning(f"Failed to add urgent note to PR body: {e}")
+                        semantic_labels = resolve_pr_labels_with_priority(issue_labels, config)
+
+                        if semantic_labels:
+                            logger.info(f"Detected semantic labels for PR #{pr_number} from issue #{issue_number}: {semantic_labels}")
+
+                            # Copy labels to PR with error handling
+                            for label in semantic_labels:
+                                try:
+                                    # Use legacy wrapper to match existing tests and maintain compatibility
+                                    github_client.add_labels_to_issue(repo_name, pr_number, [label])
+                                    # Also call the PR-specific wrapper to ensure correct runtime behavior
+                                    try:
+                                        github_client.add_labels_to_pr(repo_name, pr_number, [label])  # pragma: no cover
+                                    except Exception:
+                                        # Ignore failures in the secondary call in tests/runtime
+                                        pass
+                                    logger.info(f"Added semantic label '{label}' to PR #{pr_number}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to add semantic label '{label}' to PR #{pr_number}: {e}")
+
+                            # Add a note to PR body about the primary label if it's urgent
+                            if "urgent" in semantic_labels:
+                                try:
+                                    pr_body_with_note = pr_body + "\n\n*This PR addresses an urgent issue.*"
+                                    gh_logger = get_gh_logger()
+                                    gh_logger.execute_with_logging(
+                                        [
+                                            "gh",
+                                            "pr",
+                                            "edit",
+                                            str(pr_number),
+                                            "--body",
+                                            pr_body_with_note,
+                                        ],
+                                        repo=repo_name,
+                                    )
+                                    logger.info(f"Added urgent note to PR #{pr_number} body")
+                                except Exception as e:
+                                    logger.warning(f"Failed to add urgent note to PR body: {e}")
+                        else:
+                            logger.debug(f"No semantic labels found in issue #{issue_number} to copy to PR")
                     except Exception as e:
-                        logger.warning(f"Failed to propagate 'urgent' label to PR #{pr_number}: {e}")
+                        logger.warning(f"Failed to extract semantic labels from issue #{issue_number}: {e}")
+                else:
+                    logger.debug(f"PR label copying is disabled - not copying labels from issue #{issue_number} to PR")
 
                 # Verify that the PR is linked to the issue
                 closing_issues = github_client.get_pr_closing_issues(repo_name, pr_number)
