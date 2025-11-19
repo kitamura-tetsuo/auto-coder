@@ -7,7 +7,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.label_manager import LabelManager
+from src.auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
 
 
 class TestLabelManager:
@@ -415,3 +415,191 @@ class TestLabelManager:
             assert should_process is False
             mock_github_client.try_add_labels_to_issue.assert_not_called()
         mock_github_client.remove_labels.assert_not_called()
+
+
+class TestSemanticLabelFunctions:
+    """Test semantic label detection and priority resolution functions."""
+
+    def test_get_semantic_labels_from_issue_with_exact_match(self):
+        """Test semantic label detection with exact label matches."""
+        issue_labels = ["bug", "urgent", "documentation"]
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix"],
+            "documentation": ["documentation", "docs"],
+            "enhancement": ["enhancement", "feature"],
+            "urgent": ["urgent"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings)
+        assert set(result) == {"bug", "urgent", "documentation"}
+
+    def test_get_semantic_labels_from_issue_with_aliases(self):
+        """Test semantic label detection with label aliases."""
+        issue_labels = ["bugfix", "high-priority", "doc", "feature"]
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "bug": ["bug", "bugfix", "defect"],
+            "documentation": ["documentation", "docs", "doc"],
+            "enhancement": ["enhancement", "feature", "improvement"],
+            "urgent": ["urgent", "high-priority", "critical"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings)
+        assert set(result) == {"bug", "documentation", "enhancement", "urgent"}
+
+    def test_get_semantic_labels_from_issue_case_insensitive(self):
+        """Test semantic label detection is case-insensitive."""
+        issue_labels = ["BUG", "URGENT", "Documentation"]
+        label_mappings = {
+            "bug": ["bug", "bugfix"],
+            "documentation": ["documentation", "docs"],
+            "urgent": ["urgent"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings)
+        assert set(result) == {"bug", "urgent", "documentation"}
+
+    def test_get_semantic_labels_from_issue_no_matches(self):
+        """Test semantic label detection with no matching labels."""
+        issue_labels = ["random-label", "another-label"]
+        label_mappings = {
+            "bug": ["bug", "bugfix"],
+            "urgent": ["urgent"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings)
+        assert result == []
+
+    def test_get_semantic_labels_from_issue_empty(self):
+        """Test semantic label detection with empty labels."""
+        issue_labels = []
+        label_mappings = {
+            "bug": ["bug", "bugfix"],
+            "urgent": ["urgent"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings)
+        assert result == []
+
+    def test_get_semantic_labels_no_duplicates(self):
+        """Test semantic label detection doesn't create duplicates."""
+        issue_labels = ["bug", "bugfix", "BugFix"]
+        label_mappings = {
+            "bug": ["bug", "bugfix", "defect"],
+        }
+
+        result = get_semantic_labels_from_issue(issue_labels, label_mappings)
+        assert result == ["bug"]
+
+    def test_resolve_pr_labels_with_priority_all_labels(self):
+        """Test priority-based label resolution with all semantic labels."""
+        issue_labels = ["bug", "documentation", "enhancement", "urgent", "breaking-change"]
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = 5  # Allow all 5 labels
+        # Note: config already has default priorities
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        # Should be sorted by priority: breaking-change > urgent > bug > enhancement > documentation
+        assert result == ["breaking-change", "urgent", "bug", "enhancement", "documentation"]
+
+    def test_resolve_pr_labels_with_priority_limited(self):
+        """Test priority-based label resolution respects max count."""
+        issue_labels = ["bug", "documentation", "enhancement", "urgent", "breaking-change"]
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = 2
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        assert result == ["breaking-change", "urgent"]
+
+    def test_resolve_pr_labels_with_priority_zero_limit(self):
+        """Test priority-based label resolution with zero max count."""
+        issue_labels = ["bug", "urgent"]
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = 0
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        # When max is 0, should return empty list
+        assert result == []
+
+    def test_resolve_pr_labels_with_priority_unprioritized(self):
+        """Test priority-based label resolution with unprioritized labels."""
+        # Create issue with labels not in priority list
+        issue_labels = ["custom-label", "feature", "fix"]
+        config = AutomationConfig()
+        # Default priorities: breaking-change, urgent, bug, enhancement, documentation
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        # feature -> enhancement, fix -> bug (from mappings)
+        # bug has priority 2, enhancement has priority 3
+        assert set(result) == {"bug", "enhancement"}
+        # Should be in priority order
+        assert result[0] == "bug"  # Higher priority
+
+    def test_resolve_pr_labels_with_priority_mixed(self):
+        """Test priority-based label resolution with mix of prioritized and unprioritized."""
+        issue_labels = ["bug", "custom-label", "feature"]
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = 3
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        # bug is prioritized (priority 2), feature -> enhancement (priority 3)
+        # Both should be included since we have space
+        assert set(result) == {"bug", "enhancement"}
+
+    def test_resolve_pr_labels_with_priority_empty(self):
+        """Test priority-based label resolution with no semantic labels."""
+        issue_labels = ["random-label"]
+        config = AutomationConfig()
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        assert result == []
+
+    def test_resolve_pr_labels_with_custom_priorities(self):
+        """Test priority-based label resolution with custom priority order."""
+        issue_labels = ["bug", "urgent", "enhancement", "documentation"]
+        config = AutomationConfig()
+        # Custom priority: enhancement > bug > documentation > urgent
+        config.PR_LABEL_PRIORITIES = ["enhancement", "bug", "documentation", "urgent"]
+        config.PR_LABEL_MAX_COUNT = 4
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        # Should follow custom priority order
+        assert result == ["enhancement", "bug", "documentation", "urgent"]
+
+    def test_resolve_pr_labels_with_custom_mappings(self):
+        """Test priority-based label resolution with custom label mappings."""
+        issue_labels = ["type-bug", "type-feature"]
+        config = AutomationConfig()
+        # Custom mappings
+        config.PR_LABEL_MAPPINGS = {
+            "bug": ["type-bug", "error"],
+            "enhancement": ["type-feature", "improvement"],
+            "urgent": ["urgent"],
+        }
+
+        result = resolve_pr_labels_with_priority(issue_labels, config)
+        assert set(result) == {"bug", "enhancement"}
+
+    def test_automation_config_validate_pr_label_config_valid(self):
+        """Test configuration validation with valid values."""
+        config = AutomationConfig()
+
+        # Should not raise any exception
+        config.validate_pr_label_config()
+
+    def test_automation_config_validate_pr_label_config_invalid_max_count(self):
+        """Test configuration validation rejects invalid max count."""
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = 15  # Too high
+
+        with pytest.raises(ValueError, match="PR_LABEL_MAX_COUNT must be between 0 and 10"):
+            config.validate_pr_label_config()
+
+    def test_automation_config_validate_pr_label_config_negative_count(self):
+        """Test configuration validation rejects negative max count."""
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = -1
+
+        with pytest.raises(ValueError, match="PR_LABEL_MAX_COUNT must be between 0 and 10"):
+            config.validate_pr_label_config()
