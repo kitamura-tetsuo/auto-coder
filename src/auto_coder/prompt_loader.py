@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from string import Template
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from .logger_config import get_logger, log_calls
 
@@ -73,6 +73,63 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
     return current
 
 
+def _resolve_label_priority(
+    issue_labels: List[str],
+    label_prompt_mappings: Dict[str, str],
+    label_priorities: List[str],
+) -> Optional[str]:
+    """Resolve highest priority label that has a prompt mapping.
+
+    Args:
+        issue_labels: List of labels from the issue
+        label_prompt_mappings: Dictionary mapping labels to prompt template keys
+        label_priorities: List of labels in priority order (highest priority first)
+
+    Returns:
+        The highest priority label that has a prompt mapping, or None if no applicable labels
+    """
+    # Filter to labels with configured prompt mappings
+    applicable_labels = [label for label in issue_labels if label in label_prompt_mappings]
+
+    if not applicable_labels:
+        return None
+
+    # Sort by priority and return highest priority
+    for priority_label in label_priorities:
+        if priority_label in applicable_labels:
+            return priority_label
+
+    return applicable_labels[0]  # Fallback to first applicable label
+
+
+def _get_prompt_for_labels(
+    issue_labels: List[str],
+    label_prompt_mappings: Dict[str, str],
+    label_priorities: List[str],
+) -> Optional[str]:
+    """Get the appropriate prompt template key based on issue labels.
+
+    Args:
+        issue_labels: List of labels from the issue
+        label_prompt_mappings: Dictionary mapping labels to prompt template keys
+        label_priorities: List of labels in priority order (highest priority first)
+
+    Returns:
+        The prompt template key for the highest priority applicable label,
+        or None if no label-specific prompt mapping exists
+    """
+    if not issue_labels or not label_prompt_mappings or not label_priorities:
+        return None
+
+    # Resolve to the highest priority applicable label
+    resolved_label = _resolve_label_priority(issue_labels, label_prompt_mappings, label_priorities)
+
+    if resolved_label:
+        return label_prompt_mappings.get(resolved_label)
+
+    return None
+
+
 def get_prompt_template(key: str, path: Optional[str] = None) -> str:
     """Return the raw prompt template string for the given key.
 
@@ -91,15 +148,102 @@ def get_prompt_template(key: str, path: Optional[str] = None) -> str:
     return template
 
 
-@log_calls
+def get_label_specific_prompt(
+    labels: List[str],
+    label_prompt_mappings: Dict[str, str],
+    label_priorities: List[str],
+    path: Optional[str] = None,
+) -> Optional[str]:
+    """Get the label-specific prompt template key.
+
+    Args:
+        labels: List of labels from the issue
+        label_prompt_mappings: Dictionary mapping labels to prompt template keys
+        label_priorities: List of labels in priority order (highest priority first)
+        path: Optional path to prompts.yaml file
+
+    Returns:
+        The prompt template key for the highest priority applicable label,
+        or None if no label-specific prompt mapping exists
+    """
+    # Validate configuration parameters
+    if not labels:
+        logger.debug("No labels provided for label-based prompt selection")
+        return None
+
+    if not label_prompt_mappings:
+        logger.debug("No label-to-prompt mappings provided")
+        return None
+
+    if not label_priorities:
+        logger.debug("No label priorities provided")
+        return None
+
+    # Get the prompt template key for the labels
+    prompt_key = _get_prompt_for_labels(labels, label_prompt_mappings, label_priorities)
+
+    if prompt_key:
+        logger.debug(f"Resolved label-specific prompt key '{prompt_key}' for labels: {labels}")
+    else:
+        logger.debug(f"No label-specific prompt mapping found for labels: {labels}")
+
+    return prompt_key
+
+
+@log_calls  # type: ignore[misc]
 def render_prompt(
     key: str,
     *,
     path: Optional[str] = None,
     data: Optional[Dict[str, Any]] = None,
+    labels: Optional[List[str]] = None,
+    label_prompt_mappings: Optional[Dict[str, str]] = None,
+    label_priorities: Optional[List[str]] = None,
     **kwargs: Any,
 ) -> str:
-    """Render a prompt template identified by key with provided parameters."""
+    """Render a prompt template identified by key with optional label-based selection.
+
+    Args:
+        key: The prompt template key (e.g., "issue.action")
+        path: Optional path to prompts.yaml file
+        data: Optional dictionary of data for template substitution
+        labels: Optional list of issue labels for label-based prompt selection
+        label_prompt_mappings: Optional dict mapping labels to prompt template keys
+        label_priorities: Optional list of labels in priority order (highest priority first)
+        **kwargs: Additional keyword arguments for template substitution
+
+    Returns:
+        The rendered prompt template string
+
+    Note:
+        If labels, label_prompt_mappings, and label_priorities are provided,
+        the function will attempt to use a label-specific prompt template.
+        If the label-specific template fails to render or doesn't exist,
+        it will fall back to the default key.
+    """
+    # If labels and mappings are provided, attempt label-based prompt selection
+    if labels and label_prompt_mappings and label_priorities:
+        label_specific_key = _get_prompt_for_labels(labels, label_prompt_mappings, label_priorities)
+
+        if label_specific_key:
+            logger.debug(f"Using label-specific prompt '{label_specific_key}' for labels: {labels}")
+            try:
+                # Recursively call render_prompt with the resolved label-specific key
+                result = render_prompt(
+                    label_specific_key,
+                    path=path,
+                    data=data,
+                    labels=None,  # Prevent infinite recursion
+                    label_prompt_mappings=None,
+                    label_priorities=None,
+                    **kwargs,
+                )
+                return result  # type: ignore[no-any-return]
+            except Exception:
+                # Log warning and fall back to original key
+                logger.warning(f"Failed to render label-specific prompt '{label_specific_key}', " f"falling back to '{key}'")
+
+    # Fall back to original key-based rendering
     template_str = get_prompt_template(key, path=path)
     template = Template(template_str)
 
