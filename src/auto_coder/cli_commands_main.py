@@ -174,6 +174,7 @@ def process_issues(
 
     # Initialize LLM backend manager singleton
     from .backend_manager import LLMBackendManager
+
     LLMBackendManager.get_llm_instance(
         default_backend=manager._default_backend,
         default_client=manager._clients[manager._default_backend],
@@ -427,6 +428,7 @@ def create_feature_issues(
 
     # Initialize LLM backend manager singleton
     from .backend_manager import LLMBackendManager
+
     LLMBackendManager.get_llm_instance(
         default_backend=manager._default_backend,
         default_client=manager._clients[manager._default_backend],
@@ -556,6 +558,7 @@ def fix_to_pass_tests_command(
 
     # Initialize LLM backend manager singleton
     from .backend_manager import LLMBackendManager
+
     LLMBackendManager.get_llm_instance(
         default_backend=manager._default_backend,
         default_client=manager._clients[manager._default_backend],
