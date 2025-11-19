@@ -2,43 +2,22 @@
 
 import os
 import re
-from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import click
 
 from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
-from .cli_helpers import build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
+from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
 from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
 from .progress_footer import setup_progress_footer_logging
-from .utils import VERBOSE_ENV_FLAG, CommandExecutor
+from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)
-
-
-def _resolve_backends_from_config(config: Any) -> list[str]:
-    """Return enabled backends honoring configured order, falling back to default backend."""
-    if getattr(config, "backend_order", None):
-        candidates = list(config.backend_order)
-    else:
-        candidates = [config.default_backend]
-
-    resolved: list[str] = []
-    for name in candidates:
-        backend_cfg = config.get_backend_config(name)
-        if backend_cfg is not None and not backend_cfg.enabled:
-            continue
-        if name not in resolved:
-            resolved.append(name)
-
-    if not resolved:
-        resolved.append("codex")
-    return resolved
 
 
 @click.command()
@@ -119,9 +98,14 @@ def process_issues(
 ) -> None:
     """Process GitHub issues and PRs using AI CLI (codex or gemini)."""
 
+    from .llm_backend_config import get_llm_config
+
     config = get_llm_config()
-    selected_backends = _resolve_backends_from_config(config)
-    primary_backend = config.default_backend
+
+    active_backends = config.get_active_backends()
+    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
+    selected_backends = ordered_backends or [config.default_backend or "codex"]
+    primary_backend = selected_backends[0]
     models = build_models_map()
     primary_model = models.get(primary_backend)
 
@@ -184,39 +168,27 @@ def process_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    # Use global LLMBackendManager for main backend
-    from auto_coder.backend_manager import get_llm_backend_manager
+    manager = build_backend_manager_from_config(
+        enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
+    )
 
-    from .cli_helpers import build_backend_manager_from_config
-
-    # Create manager using configuration from TOML file with CLI parameter overrides
-    manager = build_backend_manager_from_config(enable_graphrag=enable_graphrag, cli_models=models, cli_backends=selected_backends)
-
-    # Get actual backends and primary backend from the manager
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
     primary_model = None
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
-        # Get the actual model from the client
-        client = manager._clients[primary_backend]
+        client = manager._clients.get(primary_backend)
         if client is not None:
-            try:
-                primary_model = client.model_name
-            except AttributeError:
-                primary_model = None  # Will be resolved from config
+            primary_model = getattr(client, "model_name", None)
 
-    # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    # Initialize message backend manager using configuration from TOML file
-    from .cli_helpers import build_message_backend_manager
-
-    message_manager = build_message_backend_manager(selected_backends, selected_backends[0], models)
+    message_manager = build_message_backend_manager(models=models)
     message_backend_list = message_manager._all_backends[:]
     message_primary_backend = message_manager._default_backend
     message_backend_str = ", ".join(message_backend_list)
-    logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-    click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
+    logger.info(f"Message backends: {message_backend_str} (default: {message_primary_backend})")
 
     # Configure engine behavior flags
     engine_config = AutomationConfig()
@@ -336,7 +308,7 @@ def process_issues(
 
     # Run automation
     gemini_config = config.get_backend_config("gemini")
-    if primary_backend == "gemini" and gemini_config is not None and gemini_config.api_key is not None:
+    if primary_backend == "gemini" and gemini_config and gemini_config.api_key:
         automation_engine.run(repo_name)
     else:
         automation_engine.run(repo_name, jules_mode=jules_mode)
@@ -390,9 +362,14 @@ def create_feature_issues(
 ) -> None:
     """Analyze repository and create feature enhancement issues."""
 
+    from .llm_backend_config import get_llm_config
+
     config = get_llm_config()
-    selected_backends = _resolve_backends_from_config(config)
-    primary_backend = config.default_backend
+
+    active_backends = config.get_active_backends()
+    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
+    selected_backends = ordered_backends or [config.default_backend or "codex"]
+    primary_backend = selected_backends[0]
     models = build_models_map()
     primary_model = models.get(primary_backend)
 
@@ -437,25 +414,19 @@ def create_feature_issues(
 
     # Initialize clients
     github_client = GitHubClient.get_instance(github_token_final, disable_labels=bool(disable_labels))
-    from .cli_helpers import build_backend_manager_from_config
+    manager = build_backend_manager_from_config(
+        enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
+    )
 
-    # Create manager using configuration from TOML file with CLI parameter overrides
-    manager = build_backend_manager_from_config(enable_graphrag=enable_graphrag, cli_models=models, cli_backends=selected_backends)
-
-    # Get actual backends and primary backend from the manager
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
-    primary_model = None
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
-        # Get the actual model from the client
-        client = manager._clients[primary_backend]
+        client = manager._clients.get(primary_backend)
         if client is not None:
-            try:
-                primary_model = client.model_name
-            except AttributeError:
-                primary_model = None  # Will be resolved from config
+            primary_model = getattr(client, "model_name", None)
 
-    # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
     automation_engine = AutomationEngine(github_client)
@@ -514,9 +485,14 @@ def fix_to_pass_tests_command(
 
     If the LLM makes no edits in an iteration, error and stop.
     """
+    from .llm_backend_config import get_llm_config
+
     config = get_llm_config()
-    selected_backends = _resolve_backends_from_config(config)
-    primary_backend = config.default_backend
+
+    active_backends = config.get_active_backends()
+    ordered_backends = [backend for backend in (config.backend_order or []) if backend in active_backends]
+    selected_backends = ordered_backends or [config.default_backend or "codex"]
+    primary_backend = selected_backends[0]
     models = build_models_map()
     primary_model = models.get(primary_backend)
 
@@ -560,37 +536,25 @@ def fix_to_pass_tests_command(
 
         github_client = _Dummy()  # type: ignore
 
-    from .cli_helpers import build_backend_manager_from_config
+    manager = build_backend_manager_from_config(
+        enable_graphrag=enable_graphrag,
+        cli_models=models,
+        cli_backends=selected_backends,
+    )
 
-    # Create manager using configuration from TOML file with CLI parameter overrides
-    manager = build_backend_manager_from_config(enable_graphrag=enable_graphrag, cli_models=models, cli_backends=selected_backends)
-
-    # Get actual backends and primary backend from the manager
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
-    primary_model = None
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
-        # Get the actual model from the client
-        client = manager._clients[primary_backend]
+        client = manager._clients.get(primary_backend)
         if client is not None:
-            try:
-                primary_model = client.model_name
-            except AttributeError:
-                primary_model = None  # Will be resolved from config
+            primary_model = getattr(client, "model_name", None)
 
-    # Check GraphRAG MCP configuration for selected backends using client
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    # Initialize message backend manager using configuration from TOML file
-    from .cli_helpers import build_message_backend_manager
-
-    message_manager = build_message_backend_manager(selected_backends, selected_backends[0], models)
+    message_manager = build_message_backend_manager(models=models)
     message_backend_list = message_manager._all_backends[:]
     message_primary_backend = message_manager._default_backend
-    message_backend_str = ", ".join(message_backend_list)
-    logger.info(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-    click.echo(f"Using message backends: {message_backend_str} (default: {message_primary_backend})")
-
+    logger.info(f"Message backends: {', '.join(message_backend_list)} (default: {message_primary_backend})")
     engine_config = AutomationConfig()
     engine = AutomationEngine(github_client, config=engine_config)
 

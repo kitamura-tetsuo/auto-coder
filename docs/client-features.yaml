@@ -1,4 +1,4 @@
-version: "2025.11.15+g697f91e"
+version: "2025.11.18+gbc43447"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -118,39 +118,39 @@ cli:
         - If issue-xx doesn't exist, creates it from pr-xx
         - Deletes the pr-xx branch after successful merge (unless --no-delete is used)
         - Safe to run multiple times (idempotent)
-  groups:
-    - name: graphrag
-      description: Manage Neo4j + Qdrant and the GraphRAG MCP server
+    - name: config
+      purpose: Configuration management for LLM backends and related settings
       subcommands:
-        - name: start
+        - name: show
+          purpose: Display current configuration
           options:
-            - { name: --wait/--no-wait, default: true }
-            - { name: --timeout, type: int, default: 120 }
-        - name: stop
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: edit
+          purpose: Open configuration file in default editor
           options:
-            - { name: --timeout, type: int, default: 60 }
-        - name: status
-        - name: update-index
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: set
+          purpose: Set a configuration value
           options:
-            - { name: --force, flag: true }
-            - { name: --repo-path, type: path }
-        - name: cleanup
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to set (supports dot notation for nested properties)" }
+            - { name: value, required: true, purpose: "Value to set for the key" }
+        - name: get
+          purpose: Get a configuration value
           options:
-            - { name: --dry-run, flag: true }
-            - { name: --retention-days, type: int, default: 7 }
-            - { name: --max-per-repo, type: int, default: 9 }
-            - { name: --repo-path, type: path }
-            - { name: --verbose, flag: true }
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+          arguments:
+            - { name: key, required: true, purpose: "Configuration key to get (supports dot notation for nested properties)" }
+        - name: reset
+          purpose: Reset configuration to default values
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
+        - name: validate
+          purpose: Validate configuration file format
+          options:
+            - { name: --file, type: path, help: "Path to config file (default: ~/.auto-coder/llm_backend.toml)" }
 
-        - name: setup-mcp
-          options:
-            - { name: --install-dir, default: "~/graphrag_mcp" }
-            - { name: --neo4j-uri, default: "bolt://localhost:7687" }
-            - { name: --neo4j-user, default: "neo4j" }
-            - { name: --neo4j-password, default: "password" }
-            - { name: --qdrant-url, default: "http://localhost:6333" }
-            - { name: --skip-clone, flag: true }
-    
     - name: mcp
       description: Install and inspect MCP servers
       subcommands:
@@ -276,6 +276,12 @@ env:
   GRAPHRAG_CLEANUP_ON_UPDATE: "Enable automatic GraphRAG snapshot cleanup after each index update (default: 1)"
 
 changes:
+  - date: "2025-11-18"
+    version: "2025.11.18+include-cancelled-checks-in-failures"
+    changes:
+      - "Modified get_detailed_checks_from_history function to treat cancelled GitHub Actions checks as failures"
+      - "Cancelled checks (including timeout cancellations) are now included in failed_checks list for proper error handling"
+      - "Updated check processing logic in src/auto_coder/util/github_action.py to recognize cancelled status"
   - date: "2025-11-17"
     version: "2025.11.17+improve-pr-processing"
     changes:
