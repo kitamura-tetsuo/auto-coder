@@ -170,18 +170,18 @@ class TestUnmergeablePRPriority:
         urgent_fix = next(c for c in candidates if c.data["number"] == 2)
         regular_unmergeable = next(c for c in candidates if c.data["number"] == 3)
 
-        # Verify urgent unmergeable PR gets priority 6 (2 + 4 urgent boost)
-        assert urgent_unmergeable.priority == 6
+        # Verify urgent unmergeable PR gets priority 4
+        assert urgent_unmergeable.priority == 4
 
-        # Verify urgent fix PR gets priority 5 (1 + 4 urgent boost)
-        assert urgent_fix.priority == 5
+        # Verify urgent fix PR gets priority 3 (urgent + mergeable, failing checks)
+        assert urgent_fix.priority == 3
 
         # Verify regular unmergeable PR gets priority 2
         assert regular_unmergeable.priority == 2
 
         # Verify sorting order: highest priority first
-        assert candidates[0].data["number"] == 1  # Urgent unmergeable (priority 6)
-        assert candidates[1].data["number"] == 2  # Urgent fix (priority 5)
+        assert candidates[0].data["number"] == 1  # Urgent unmergeable (priority 4)
+        assert candidates[1].data["number"] == 2  # Urgent fix (priority 3)
         assert candidates[2].data["number"] == 3  # Regular unmergeable (priority 2)
 
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
@@ -275,23 +275,23 @@ class TestUnmergeablePRPriority:
         assert len(candidates) == 5
 
         # Expected priority order (highest to lowest):
-        # 1. Ready to merge PR #3 (priority 3)
-        # 2. Unmergeable PR #2 (priority 2)
-        # 3. Urgent issue #11 (priority 1, type=issue -> type_order=0)
-        # 4. Fix-required PR #1 (priority 1, type=pr -> type_order=1)
+        # 1. Urgent issue #11 (priority 3)
+        # 2. Ready to merge PR #3 (priority 2)
+        # 3. Unmergeable PR #2 (priority 2, older than PR #3)
+        # 4. Fix-required PR #1 (priority 1)
         # 5. Regular issue #10 (priority 0)
-        # Note: Same priority items are sorted by type (issues first), then creation time
+        # Note: Same priority items are sorted by creation time (oldest first)
 
-        expected_order = [3, 2, 11, 1, 10]
+        expected_order = [11, 2, 3, 1, 10]
         actual_order = [c.data["number"] for c in candidates]
         assert actual_order == expected_order
 
         # Verify priorities
         priorities = {c.data["number"]: c.priority for c in candidates}
-        assert priorities[3] == 3  # Ready to merge
+        assert priorities[3] == 2  # Ready to merge (mergeable with passing checks)
         assert priorities[2] == 2  # Unmergeable
         assert priorities[1] == 1  # Fix-required
-        assert priorities[11] == 1  # Urgent issue
+        assert priorities[11] == 3  # Urgent issue
         assert priorities[10] == 0  # Regular issue
 
 
@@ -358,9 +358,9 @@ class TestPriorityBackwardCompatibility:
         # Assert - Urgent PR should be first despite having failing checks
         assert len(candidates) == 2
         assert candidates[0].data["number"] == 1  # Urgent PR first
-        assert candidates[0].priority == 5  # 1 (fix-required) + 4 (urgent boost)
+        assert candidates[0].priority == 3  # Urgent + mergeable
         assert candidates[1].data["number"] == 2  # Ready PR second
-        assert candidates[1].priority == 3  # Ready to merge
+        assert candidates[1].priority == 2  # Ready to merge (mergeable with passing checks)
 
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -422,7 +422,7 @@ class TestPriorityBackwardCompatibility:
         assert candidates[0].data["number"] == 1  # Breaking-change PR first
         assert candidates[0].priority == 7  # Breaking-change priority
         assert candidates[1].data["number"] == 2  # Urgent unmergeable PR second
-        assert candidates[1].priority == 6  # 2 (unmergeable) + 4 (urgent boost)
+        assert candidates[1].priority == 4  # Urgent + unmergeable
 
 
 class TestPriorityEdgeCases:
@@ -572,7 +572,7 @@ class TestPriorityEdgeCases:
         mock_github_client,
         test_repo_name,
     ):
-        """Test mergeable PR with passing checks gets priority 3."""
+        """Test mergeable PR with passing checks gets priority 2."""
         # Setup
         engine = AutomationEngine(mock_github_client)
 
@@ -603,9 +603,9 @@ class TestPriorityEdgeCases:
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
-        # Assert - Ready to merge PR should get priority 3
+        # Assert - Ready to merge PR should get priority 2
         assert len(candidates) == 1
-        assert candidates[0].priority == 3
+        assert candidates[0].priority == 2
         assert candidates[0].data["mergeable"] is True
 
 
@@ -714,7 +714,7 @@ class TestPriorityIntegration:
                 "body": "",
                 "head": {"ref": f"pr-{i}"},
                 "labels": [],
-                "mergeable": i % 2 == 0,  # Even PRs are mergeable
+                "mergeable": i % 3 != 0,  # Every 3rd PR is unmergeable
                 "created_at": f"2024-01-01T00:00:{i:02d}Z",
             }
             for i in range(1, pr_count + 1)
@@ -726,7 +726,7 @@ class TestPriorityIntegration:
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
         def check_actions_side_effect(repo_name, pr_details, config):
-            # Odd PRs fail checks
+            # Every 2nd PR fails checks
             if pr_details["number"] % 2 == 1:
                 return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
             return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
@@ -745,9 +745,9 @@ class TestPriorityIntegration:
         assert len(candidates) == pr_count
 
         # Verify correct prioritization
-        # Even PRs with passing checks should be at the top (priority 3 - ready to merge)
-        # Odd unmergeable PRs should follow (priority 2 - unmergeable)
-        # Note: No PRs with priority 1 in this test (that would be mergeable with failing checks)
+        # - Every 3rd PR is unmergeable -> priority 2
+        # - Even PRs with passing checks -> priority 2 (mergeable with passing checks)
+        # - Odd PRs (not divisible by 3) with failing checks -> priority 1
         priorities = [c.priority for c in candidates]
-        assert max(priorities) == 3  # Ready to merge
-        assert min(priorities) == 2  # Unmergeable
+        assert max(priorities) == 2  # Unmergeable or ready to merge
+        assert min(priorities) == 1  # Mergeable with failing checks

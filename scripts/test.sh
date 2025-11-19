@@ -205,17 +205,22 @@ echo "Test run completed with exit code: $EXIT_CODE"
 
 if [ $EXIT_CODE -ne 0 ]; then
     echo "Some tests failed. Analyzing failures..."
-    
+
     # Extract the first failed test file
-    # Look for lines that start with "FAILED" and extract the test file path
-    FIRST_FAILED_TEST=$(grep "^FAILED" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/^FAILED\s+([^:]+):.*/\1/')
-    
-    # If we didn't find a FAILED line, check for Playwright-style failures
+    # Pytest output format: FAILED path/to/test_file.py::test_name - error message
+    # Try multiple patterns to extract the test file path
+    FIRST_FAILED_TEST=$(grep "^FAILED" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/^FAILED\s+([^:]+)::.*/\1/')
+
+    # If we didn't find a FAILED line with the first pattern, try another
     if [ -z "$FIRST_FAILED_TEST" ]; then
-        # Look for lines with .spec.ts and extract the test file path
-        FIRST_FAILED_TEST=$(grep "\.spec\.ts" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/.*([a-zA-Z0-9_/-]+\.spec\.ts).*/\1/')
+        FIRST_FAILED_TEST=$(grep -E "::(test_|Test)" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/^.*\s+([^:]+)::.*/\1/')
     fi
-    
+
+    # If we still didn't find it, try to extract from any line containing /tests/ and .py
+    if [ -z "$FIRST_FAILED_TEST" ]; then
+        FIRST_FAILED_TEST=$(grep "/tests/" "$TEST_OUTPUT_FILE" | head -1 | grep -E "::(test_|Test)" | sed -E 's/^.*\s+([^:]+\.py)::.*/\1/')
+    fi
+
     # If we found a failed test, run only that test
     if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
         echo "Running only the first failed test: $FIRST_FAILED_TEST"
@@ -225,6 +230,10 @@ if [ $EXIT_CODE -ne 0 ]; then
         exit $RESULT
     else
         echo "Could not identify the first failed test file or file does not exist."
+        # Output the last 50 lines of the test output for debugging
+        echo ""
+        echo "Last 50 lines of test output:"
+        tail -50 "$TEST_OUTPUT_FILE"
         rm "$TEST_OUTPUT_FILE"
         exit $EXIT_CODE
     fi
