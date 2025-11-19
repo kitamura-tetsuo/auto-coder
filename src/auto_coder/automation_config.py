@@ -29,22 +29,59 @@ class AutomationConfig:
             "api-change": "issue.breaking_change",
             "deprecation": "issue.breaking_change",
             "version-major": "issue.breaking_change",
+            # Urgent labels
+            "urgent": "issue.urgent",
+            "high-priority": "issue.urgent",
+            "critical": "issue.urgent",
+            "blocker": "issue.urgent",
+            # Bug labels
+            "bug": "issue.bug",
+            "bugfix": "issue.bug",
+            "defect": "issue.bug",
+            "error": "issue.bug",
+            "fix": "issue.bug",
+            # Enhancement labels
+            "enhancement": "issue.enhancement",
+            "feature": "issue.enhancement",
+            "improvement": "issue.enhancement",
+            "new-feature": "issue.enhancement",
+            # Documentation labels
+            "documentation": "issue.documentation",
+            "docs": "issue.documentation",
+            "doc": "issue.documentation",
         }
     )
 
     # Label priorities (highest priority first)
-    # Breaking-change has highest priority, above urgent
+    # Breaking-change has highest priority, followed by urgent, bug, enhancement, documentation
     label_priorities: List[str] = field(
         default_factory=lambda: [
+            # Breaking changes (highest priority)
             "breaking-change",
             "breaking",
             "api-change",
             "deprecation",
             "version-major",
+            # Urgent issues
             "urgent",
+            "high-priority",
+            "critical",
+            "blocker",
+            # Bug fixes
+            "bug",
+            "bugfix",
+            "defect",
+            "error",
+            "fix",
+            # Enhancements
             "enhancement",
             "feature",
-            "bug",
+            "improvement",
+            "new-feature",
+            # Documentation
+            "documentation",
+            "docs",
+            "doc",
         ]
     )
 

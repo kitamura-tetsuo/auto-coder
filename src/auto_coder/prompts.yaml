@@ -244,6 +244,244 @@ issue:
 
     Please proceed with analyzing and implementing this breaking change now.
 
+  urgent: |-
+    You are processing a GitHub issue with the 'urgent' label.
+
+    URGENT ISSUE REQUIREMENTS:
+    - This issue requires immediate attention and fast resolution
+    - Prioritize quick, effective solutions over extensive refactoring
+    - Focus on resolving the critical problem first
+    - Document any temporary workarounds or technical debt created
+    - Consider immediate impact on users and production systems
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Urgency Level: HIGH
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
+
+    URGENT ISSUE DIRECTIVES:
+    1. IMMEDIATE ACTION: Analyze and implement a solution as quickly as possible
+    2. MINIMAL SCOPE: Keep changes focused on resolving the urgent problem
+    3. RISK MITIGATION: Avoid introducing new bugs or breaking changes
+    4. TESTING: Ensure critical paths are thoroughly tested
+    5. DOCUMENTATION: Document any temporary solutions or follow-up work needed
+
+    QUALITY COMMITMENTS:
+    - Urgent doesn't mean careless - maintain code quality
+    - Test all critical functionality affected by changes
+    - Document any technical debt or follow-up work needed
+    - Communicate clearly about the impact and resolution
+
+    Please analyze this urgent issue and determine the appropriate action:
+
+    1. If this needs clarification, add a comment requesting more information
+    2. If this is a duplicate or invalid issue, close it with an appropriate comment
+    3. If this is a valid urgent issue, provide immediate analysis and implementation
+
+    For valid urgent issues:
+    - Analyze the requirements with focus on immediate impact
+    - Implement the necessary code changes quickly and safely
+    - Create or modify files as needed
+    - Ensure the implementation resolves the urgent problem
+    - Keep open the issue
+    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and taking action on this urgent issue now.
+
+  bug: |-
+    You are processing a GitHub issue with the 'bug' label.
+
+    BUG FIX REQUIREMENTS:
+    - This issue reports a bug or defect in existing functionality
+    - Focus on identifying root cause and implementing proper fix
+    - Add or update tests to prevent regression
+    - Verify the fix resolves the reported issue
+    - Consider edge cases and related scenarios
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Issue Type: BUG FIX
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
+
+    BUG FIX DIRECTIVES:
+    1. ROOT CAUSE ANALYSIS: Identify the underlying cause of the bug
+    2. PROPER FIX: Implement a fix that addresses the root cause, not just symptoms
+    3. REGRESSION TESTS: Add tests that would have caught this bug
+    4. EDGE CASES: Consider and test related edge cases
+    5. VERIFICATION: Verify the fix resolves the reported issue completely
+
+    DEBUGGING APPROACH:
+    - Reproduce the bug to understand the failure mode
+    - Trace through the code to identify the root cause
+    - Consider why existing tests didn't catch this
+    - Implement fix with comprehensive test coverage
+    - Verify fix doesn't introduce new issues
+
+    Please analyze this bug report and determine the appropriate action:
+
+    1. If this needs clarification or reproduction steps, add a comment requesting more information
+    2. If this is not actually a bug (working as intended), close it with an appropriate explanation
+    3. If this is a duplicate of another issue, close it with a reference to the original
+    4. If this is a valid bug, provide analysis and implementation
+
+    For valid bugs:
+    - Analyze the bug report and reproduce the issue if possible
+    - Identify the root cause in the codebase
+    - Implement the necessary code changes to fix the bug
+    - Add or update tests to prevent regression
+    - Ensure the implementation follows best practices
+    - Keep open the issue
+    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and fixing this bug now.
+
+  enhancement: |-
+    You are processing a GitHub issue with the 'enhancement' label.
+
+    ENHANCEMENT REQUIREMENTS:
+    - This issue requests a new feature or improvement to existing functionality
+    - Focus on implementing clean, maintainable, and well-tested code
+    - Consider architecture and design patterns
+    - Ensure backward compatibility unless explicitly stated otherwise
+    - Add comprehensive tests for new functionality
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Issue Type: ENHANCEMENT
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
+
+    ENHANCEMENT DIRECTIVES:
+    1. DESIGN: Consider architecture and design patterns before implementing
+    2. MAINTAINABILITY: Write clean, readable, and maintainable code
+    3. TESTING: Add comprehensive tests for new functionality
+    4. DOCUMENTATION: Update documentation and comments as needed
+    5. COMPATIBILITY: Ensure backward compatibility unless breaking change is intended
+
+    DEVELOPMENT APPROACH:
+    - Understand the requested enhancement and its use cases
+    - Consider how it fits into existing architecture
+    - Design a clean and maintainable implementation
+    - Write comprehensive tests (unit, integration, e2e as appropriate)
+    - Document new functionality clearly
+    - Consider performance and scalability implications
+
+    Please analyze this enhancement request and determine the appropriate action:
+
+    1. If this needs clarification or more details, add a comment requesting more information
+    2. If this is a duplicate or already exists, close it with an appropriate reference
+    3. If this is valid but needs more than about 30 file changes, break it down into multiple smaller sub issues via gh-sub-issue
+    4. If this is a valid enhancement that can be implemented, provide analysis and implementation
+
+    For valid enhancements:
+    - Analyze the requirements and design a solution
+    - Implement the necessary code changes following best practices
+    - Create or modify files as needed
+    - Add comprehensive tests for the new functionality
+    - Update documentation if needed
+    - Keep open the issue
+    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and implementing this enhancement now.
+
+  documentation: |-
+    You are processing a GitHub issue with the 'documentation' label.
+
+    DOCUMENTATION REQUIREMENTS:
+    - This issue requests improvements or additions to documentation
+    - Focus on clarity, accuracy, and completeness
+    - Ensure documentation matches current implementation
+    - Use clear language and helpful examples
+    - Consider different audiences (users vs developers)
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Issue Type: DOCUMENTATION
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123'). This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if appropriate.
+
+    DOCUMENTATION DIRECTIVES:
+    1. ACCURACY: Ensure documentation accurately reflects current implementation
+    2. CLARITY: Write clear, concise documentation that's easy to understand
+    3. COMPLETENESS: Cover all aspects of the feature or functionality
+    4. EXAMPLES: Include practical examples where helpful
+    5. AUDIENCE: Consider the target audience (end users, developers, contributors)
+
+    DOCUMENTATION APPROACH:
+    - Review existing documentation and identify gaps or inaccuracies
+    - Verify documentation against current code implementation
+    - Write clear, well-structured documentation
+    - Include examples, code snippets, or diagrams where helpful
+    - Use consistent terminology and formatting
+    - Consider SEO and discoverability
+
+    Please analyze this documentation request and determine the appropriate action:
+
+    1. If this needs clarification about what to document, add a comment requesting more information
+    2. If the requested documentation already exists, close it with a reference to the existing docs
+    3. If this is a valid documentation request, provide implementation
+
+    For valid documentation requests:
+    - Analyze what documentation is needed
+    - Review existing documentation and code implementation
+    - Create or update documentation files as needed
+    - Ensure documentation is accurate, clear, and complete
+    - Include examples and code snippets where helpful
+    - Keep open the issue
+    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and addressing this documentation request now.
+
 tests:
   workspace_fix: |-
     You are operating directly in this repository workspace with write access.
