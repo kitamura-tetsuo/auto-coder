@@ -385,10 +385,12 @@ def _apply_issue_actions_directly(
                 # Work branch exists
                 logger.info(f"Work branch {work_branch} already exists, will switch to it")
                 target_branch = work_branch
+                create_new_work_branch = False
             else:
                 # Work branch doesn't exist, will create it
                 logger.info(f"Work branch {work_branch} does not exist, will create from {base_branch}")
                 target_branch = work_branch
+                create_new_work_branch = True
 
         # Now perform all work on the target branch using branch_context
         assert target_branch is not None, "target_branch must be set before using branch_context"
@@ -396,7 +398,7 @@ def _apply_issue_actions_directly(
             if not should_process:
                 return actions
 
-            with branch_context(target_branch, create_new=(target_branch == work_branch), base_branch=(base_branch if "base_branch" in locals() else None)):
+            with branch_context(target_branch, create_new=create_new_work_branch, base_branch=(base_branch if "base_branch" in locals() else None)):
                 # Get commit log since branch creation
                 with ProgressStage("Getting commit log"):
                     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
