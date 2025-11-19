@@ -128,7 +128,18 @@ pr:
     After analyzing, apply the necessary fixes to the codebase.
 
   breaking_change: |-
-    You are processing a GitHub Pull Request with the 'breaking-change' label.
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'breaking-change' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
     BREAKING CHANGE REQUIREMENTS:
     - This PR involves breaking changes that may break existing functionality
@@ -166,10 +177,25 @@ pr:
     - Version numbers must accurately reflect breaking changes
     - No existing functionality should work incorrectly without clear migration path
 
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
+
     Please proceed with analyzing and implementing this breaking change now.
 
   urgent: |-
-    You are processing a GitHub Pull Request with the 'urgent' label.
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'urgent' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
     URGENT PR REQUIREMENTS:
     - This PR requires immediate attention and fast resolution
@@ -206,24 +232,25 @@ pr:
     - Document any technical debt or follow-up work needed
     - Communicate clearly about the impact and resolution
 
-    Please analyze this urgent PR and implement the necessary changes:
-
-    1. If this PR needs clarification, add a comment requesting more information
-    2. If this is a duplicate or invalid PR, close it with an appropriate explanation
-    3. If this is a valid urgent PR, provide immediate analysis and implementation
-
-    For valid urgent PRs:
-    - Analyze the requirements with focus on immediate impact
-    - Implement the necessary code changes quickly and safely
-    - Ensure the implementation resolves the urgent problem
-    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
-
-    After taking action, respond with a summary of what you did.
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
 
     Please proceed with analyzing and taking action on this urgent PR now.
 
   bug: |-
-    You are processing a GitHub Pull Request with the 'bug' label.
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'bug' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
     BUG FIX PR REQUIREMENTS:
     - This PR fixes a bug or defect in existing functionality
@@ -261,26 +288,25 @@ pr:
     - Implement fix with comprehensive test coverage
     - Verify fix doesn't introduce new issues
 
-    Please analyze this bug fix PR and implement the necessary changes:
-
-    1. If this PR needs clarification or reproduction steps, add a comment requesting more information
-    2. If this is not actually a bug fix (working as intended), close it with an appropriate explanation
-    3. If this is a valid bug fix PR, provide analysis and implementation
-
-    For valid bug fix PRs:
-    - Analyze the bug report and reproduce the issue if possible
-    - Identify the root cause in the codebase
-    - Implement the necessary code changes to fix the bug
-    - Add or update tests to prevent regression
-    - Ensure the implementation follows best practices
-    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
-
-    After taking action, respond with a summary of what you did.
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
 
     Please proceed with analyzing and fixing this PR now.
 
   enhancement: |-
-    You are processing a GitHub Pull Request with the 'enhancement' label.
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'enhancement' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
     ENHANCEMENT PR REQUIREMENTS:
     - This PR implements a new feature or improvement to existing functionality
@@ -319,25 +345,25 @@ pr:
     - Document new functionality clearly
     - Consider performance and scalability implications
 
-    Please analyze this enhancement PR and implement the necessary changes:
-
-    1. If this PR needs clarification or more details, add a comment requesting more information
-    2. If this is a duplicate or already exists, close it with an appropriate reference
-    3. If this is a valid enhancement PR, provide analysis and implementation
-
-    For valid enhancement PRs:
-    - Analyze the requirements and design a solution
-    - Implement the necessary code changes following best practices
-    - Add comprehensive tests for the new functionality
-    - Update documentation if needed
-    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
-
-    After taking action, respond with a summary of what you did.
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
 
     Please proceed with analyzing and implementing this enhancement now.
 
   documentation: |-
-    You are processing a GitHub Pull Request with the 'documentation' label.
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'documentation' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
 
     DOCUMENTATION PR REQUIREMENTS:
     - This PR improves or adds documentation
@@ -376,21 +402,9 @@ pr:
     - Use consistent terminology and formatting
     - Consider SEO and discoverability
 
-    Please analyze this documentation PR and implement the necessary changes:
-
-    1. If this PR needs clarification about what to document, add a comment requesting more information
-    2. If the requested documentation already exists, close it with a reference to the existing docs
-    3. If this is a valid documentation PR, provide implementation
-
-    For valid documentation PRs:
-    - Analyze what documentation is needed
-    - Review existing documentation and code implementation
-    - Create or update documentation files as needed
-    - Ensure documentation is accurate, clear, and complete
-    - Include examples and code snippets where helpful
-    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
-
-    After taking action, respond with a summary of what you did.
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
 
     Please proceed with analyzing and addressing this documentation request now.
 

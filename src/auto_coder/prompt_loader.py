@@ -244,6 +244,7 @@ def render_prompt(
     if labels and label_prompt_mappings and label_priorities:
         label_specific_key = _get_prompt_for_labels(labels, label_prompt_mappings, label_priorities)
 
+        # Only use label-specific prompt if we found a valid mapping
         if label_specific_key:
             logger.debug(f"Using label-specific prompt '{label_specific_key}' for labels: {labels}")
             try:

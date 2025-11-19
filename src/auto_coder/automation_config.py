@@ -256,6 +256,35 @@ class AutomationConfig:
             },
         )
 
+        # Initialize PR-specific label prompt mappings
+        object.__setattr__(
+            self,
+            "pr_label_prompt_mappings",
+            {
+                "breaking-change": "pr.breaking_change",
+                "breaking": "pr.breaking_change",
+                "api-change": "pr.breaking_change",
+                "deprecation": "pr.breaking_change",
+                "version-major": "pr.breaking_change",
+                "urgent": "pr.urgent",
+                "high-priority": "pr.urgent",
+                "critical": "pr.urgent",
+                "blocker": "pr.urgent",
+                "bug": "pr.bug",
+                "bugfix": "pr.bug",
+                "defect": "pr.bug",
+                "error": "pr.bug",
+                "fix": "pr.bug",
+                "enhancement": "pr.enhancement",
+                "feature": "pr.enhancement",
+                "improvement": "pr.enhancement",
+                "new-feature": "pr.enhancement",
+                "documentation": "pr.documentation",
+                "docs": "pr.documentation",
+                "doc": "pr.documentation",
+            },
+        )
+
         # Initialize label priorities
         object.__setattr__(
             self,
