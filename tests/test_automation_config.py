@@ -1,5 +1,9 @@
 """Tests for automation_config configuration validation."""
 
+import json
+import os
+from unittest.mock import patch
+
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
@@ -151,7 +155,7 @@ def test_get_reports_dir():
 
 def test_default_config_values():
     """Test other default configuration values."""
-    config = AutomationConfig()
+    config = AutomationConfig(env_override=False)
 
     # Test standard config values
     assert config.REPORTS_DIR == "reports"
@@ -171,3 +175,162 @@ def test_default_config_values():
     assert config.ENABLE_ACTIONS_HISTORY_FALLBACK is True
     assert config.MERGE_METHOD == "--squash"
     assert config.MERGE_AUTO is True
+
+
+# Environment Variable Tests
+
+
+def test_label_prompt_mappings_from_env_var():
+    """Test that label prompt mappings can be loaded from environment variable."""
+    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"custom": "issue.custom", "test": "issue.test"}'}):
+        config = AutomationConfig(env_override=True)
+        assert "custom" in config.label_prompt_mappings
+        assert "test" in config.label_prompt_mappings
+        assert config.label_prompt_mappings["custom"] == "issue.custom"
+        assert config.label_prompt_mappings["test"] == "issue.test"
+
+
+def test_label_priorities_from_env_var():
+    """Test that label priorities can be loaded from environment variable."""
+    priorities = '["custom", "urgent", "bug", "enhancement"]'
+    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PRIORITIES": priorities}):
+        config = AutomationConfig(env_override=True)
+        assert config.label_priorities == ["custom", "urgent", "bug", "enhancement"]
+
+
+def test_env_var_mappings_override_defaults():
+    """Test that environment variable mappings override defaults."""
+    with patch.dict(
+        os.environ,
+        {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"bug": "issue.custom_bug", "custom": "issue.custom"}'},
+        clear=False,  # Don't clear existing env vars
+    ):
+        config = AutomationConfig(env_override=True)
+        # Custom mapping should override default
+        assert config.label_prompt_mappings["bug"] == "issue.custom_bug"
+        # New custom mapping should be added
+        assert "custom" in config.label_prompt_mappings
+        assert config.label_prompt_mappings["custom"] == "issue.custom"
+        # Other default mappings should still exist
+        assert config.label_prompt_mappings["breaking-change"] == "issue.breaking_change"
+
+
+def test_env_var_invalid_json_mappings():
+    """Test that invalid JSON in mappings env var is handled gracefully."""
+    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"invalid": json'}, clear=False):
+        config = AutomationConfig(env_override=True)
+        # Should fall back to defaults
+        assert config.label_prompt_mappings["bug"] == "issue.bug"
+        assert "invalid" not in config.label_prompt_mappings
+
+
+def test_env_var_invalid_json_priorities():
+    """Test that invalid JSON in priorities env var is handled gracefully."""
+    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PRIORITIES": '["invalid" json]'}, clear=False):
+        config = AutomationConfig(env_override=True)
+        # Should fall back to defaults
+        assert "breaking-change" in config.label_priorities
+
+
+def test_env_var_mappings_non_dict():
+    """Test that non-dict values in mappings env var are rejected."""
+    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '["bug", "feature"]'}, clear=False):
+        config = AutomationConfig(env_override=True)
+        # Should fall back to defaults
+        assert config.label_prompt_mappings["bug"] == "issue.bug"
+
+
+def test_env_var_priorities_non_list():
+    """Test that non-list values in priorities env var are rejected."""
+    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PRIORITIES": '{"bug": "feature"}'}, clear=False):
+        config = AutomationConfig(env_override=True)
+        # Should fall back to defaults
+        assert isinstance(config.label_priorities, list)
+        assert "breaking-change" in config.label_priorities
+
+
+def test_env_override_disabled():
+    """Test that environment variables are ignored when env_override=False."""
+    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"custom": "issue.custom"}'}, clear=False):
+        config = AutomationConfig(env_override=False)
+        # Should use defaults only
+        assert "custom" not in config.label_prompt_mappings
+        assert config.label_prompt_mappings["bug"] == "issue.bug"
+
+
+def test_custom_label_mappings_parameter():
+    """Test custom_label_mappings parameter."""
+    custom_mappings = {"custom": "issue.custom", "test": "issue.test"}
+    config = AutomationConfig(env_override=False, custom_label_mappings=custom_mappings)
+
+    assert "custom" in config.label_prompt_mappings
+    assert "test" in config.label_prompt_mappings
+    assert config.label_prompt_mappings["custom"] == "issue.custom"
+    assert config.label_prompt_mappings["test"] == "issue.test"
+
+
+def test_custom_priorities_parameter():
+    """Test custom_priorities parameter."""
+    custom_priorities = ["custom", "bug", "feature"]
+    config = AutomationConfig(env_override=False, custom_priorities=custom_priorities)
+
+    assert config.label_priorities == custom_priorities
+
+
+def test_env_and_custom_parameters_together():
+    """Test that environment and custom parameters work together."""
+    with patch.dict(
+        os.environ,
+        {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"env_label": "issue.env"}'},
+        clear=False,
+    ):
+        custom_mappings = {"custom": "issue.custom"}
+        config = AutomationConfig(env_override=True, custom_label_mappings=custom_mappings)
+
+        # Both env and custom mappings should be present
+        assert "env_label" in config.label_prompt_mappings
+        assert "custom" in config.label_prompt_mappings
+        assert config.label_prompt_mappings["env_label"] == "issue.env"
+        assert config.label_prompt_mappings["custom"] == "issue.custom"
+
+
+def test_validate_label_config_valid():
+    """Test that validate_label_config passes with valid configuration."""
+    config = AutomationConfig(env_override=False)
+    # Should not raise
+    config.validate_label_config()
+
+
+def test_validate_label_config_empty_priorities():
+    """Test that validate_label_config raises error with empty priorities."""
+    config = AutomationConfig(env_override=False)
+    config.label_priorities = []
+    with pytest.raises(ValueError, match="label_priorities cannot be empty"):
+        config.validate_label_config()
+
+
+def test_validate_label_config_empty_mappings():
+    """Test that validate_label_config raises error with empty mappings."""
+    config = AutomationConfig(env_override=False)
+    config.label_prompt_mappings = {}
+    with pytest.raises(ValueError, match="label_prompt_mappings cannot be empty"):
+        config.validate_label_config()
+
+
+def test_validate_label_config_unreferenced_priority():
+    """Test that validate_label_config warns about unreferenced priorities."""
+    config = AutomationConfig(env_override=False)
+    # Add a priority without a mapping
+    config.label_priorities = ["bug", "feature", "nonexistent"]
+    # Should not raise, but may log a warning
+    config.validate_label_config()
+    # The warning is logged but doesn't raise an exception
+    assert "nonexistent" in config.label_priorities
+
+
+def test_backward_compatibility_without_init_params():
+    """Test backward compatibility when creating config without parameters."""
+    # This test ensures existing code that doesn't pass parameters still works
+    config = AutomationConfig()
+    assert config.label_priorities  # Should have defaults
+    assert config.label_prompt_mappings  # Should have defaults
