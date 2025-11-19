@@ -105,23 +105,9 @@ class GeminiClient(LLMClientBase):
             logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
             logger.info("=" * 60)
 
-            usage_markers = (
-                "rate limit",
-                "quota",
-                "429",
-                "resource_exhausted",
-                "too many requests",
-            )
-
-            def _on_stream(stream_name: str, chunk: str) -> None:
-                low_chunk = chunk.lower()
-                if any(m in low_chunk for m in usage_markers):
-                    raise AutoCoderUsageLimitError(chunk.strip())
-
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
-                on_stream=_on_stream,
             )
 
             logger.info("=" * 60)
@@ -135,8 +121,6 @@ class GeminiClient(LLMClientBase):
 
             usage_markers = (
                 "rate limit",
-                "quota",
-                "429",
                 "resource_exhausted",
                 "too many requests",
             )
