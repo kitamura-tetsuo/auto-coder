@@ -1,12 +1,12 @@
 # Auto-Coder
 
-A Python application that automates application development using an AI CLI backend (default: `codex`, configurable fallback order for `gemini` / `qwen` / `auggie` / `codex-mcp` via multiple `--backend` arguments). It retrieves issues and error-related PRs from GitHub to build and fix the application, and automatically creates feature-addition issues when necessary.
+A Python application that automates application development using an AI CLI backend. It retrieves issues and error-related PRs from GitHub to build and fix the application, and automatically creates feature-addition issues when necessary.
 
 ## Features
 
 ### 🔧 Core Features
 - **GitHub API Integration**: Automatic retrieval and management of issues and PRs
-- **AI Analysis (codex default / Gemini, Qwen, Auggie, codex-mcp configurable via multiple `--backend` arguments with fallback order)**: Automatic analysis of issue and PR content
+- **AI Analysis (multiple backends configurable via configuration file)**: Automatic analysis of issue and PR content
 - **Automated Processing**: Automatic actions based on analysis results
 - **Feature Proposals**: Automatic proposal of new features from repository analysis
 - **Report Generation**: Detailed reports of processing results
@@ -174,15 +174,33 @@ Behavior Specification:
 
 ### Configuration File (TOML)
 
-Auto-Coder now uses a TOML configuration file for backend settings instead of CLI parameters. The configuration file is located at `~/.auto-coder/llm_backend.toml` by default.
+Auto-Coder uses a TOML configuration file for backend settings. The configuration file is located at `~/.auto-coder/llm_config.toml` by default.
 
-To generate a default configuration file:
+To manage the configuration file, use the built-in config commands:
 ```bash
-# This will create the default config file
-python -c "from auto_coder import initialize_llm_backend_config; initialize_llm_backend_config()"
+# Show current configuration
+auto-coder config show
+
+# Edit configuration file
+auto-coder config edit
+
+# Validate configuration
+auto-coder config validate
+
+# Create backup of configuration
+auto-coder config backup
+
+# Interactive setup wizard
+auto-coder config setup
+
+# Show usage examples
+auto-coder config examples
+
+# Migrate from environment variables
+auto-coder config migrate
 ```
 
-Example configuration file (`~/.auto-coder/llm_backend.toml`):
+Example configuration file (`~/.auto-coder/llm_config.toml`):
 ```toml
 version = "1.0.0"
 created_at = "2023-01-01T00:00:00"
@@ -243,29 +261,31 @@ fallback_order = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
 
 ### Environment Variables
 
-Environment variables can still be used to override configuration file values:
+Environment variables can be used to override configuration file values or provide sensitive information like API keys:
 
 | Variable Name | Description | Default Value | Required |
 |--------------|-------------|---------------|----------|
 | `GITHUB_TOKEN` | GitHub API token (to override gh CLI authentication) | - | ❌ |
-| `GEMINI_API_KEY` | Gemini API key (overrides config file) | - | ❌ |
 | `GITHUB_API_URL` | GitHub API URL | `https://api.github.com` | ❌ |
 | `MAX_ISSUES_PER_RUN` | Maximum issues to process per run | `-1` | ❌ |
 | `MAX_PRS_PER_RUN` | Maximum PRs to process per run | `-1` | ❌ |
 | `LOG_LEVEL` | Log level | `INFO` | ❌ |
-| `AUTO_CODER_CODEX_API_KEY` | Override Codex API key | - | ❌ |
-| `AUTO_CODER_CODEX_MCP_API_KEY` | Override Codex-MCP API key | - | ❌ |
-| `QWEN_API_KEY` | Override Qwen API key | - | ❌ |
-| `CLAUDE_API_KEY` | Override Claude API key | - | ❌ |
-| `AUGGIE_API_KEY` | Override Auggie API key | - | ❌ |
-| `AUTO_CODER_CODEX_MODEL` | Override Codex model | - | ❌ |
-| `AUTO_CODER_CODEX_MCP_MODEL` | Override Codex-MCP model | - | ❌ |
-| `GEMINI_MODEL` | Override Gemini model | `gemini-pro` | ❌ |
-| `QWEN_MODEL` | Override Qwen model | `qwen3-coder-plus` | ❌ |
-| `CLAUDE_MODEL` | Override Claude model | `sonnet` | ❌ |
-| `AUGGIE_MODEL` | Override Auggie model | `GPT-5` | ❌ |
+| `AUTO_CODER_DEFAULT_BACKEND` | Set default backend (e.g., 'gemini', 'codex') | `codex` | ❌ |
+| `AUTO_CODER_<BACKEND>_API_KEY` | Set API key for specific backend | - | ❌ |
+| `AUTO_CODER_OPENAI_API_KEY` | Set OpenAI-compatible API key | - | ❌ |
+| `AUTO_CODER_OPENAI_BASE_URL` | Set OpenAI-compatible base URL | - | ❌ |
+
+**Backend-specific environment variables:**
+- `AUTO_CODER_CODEX_API_KEY`, `AUTO_CODER_GEMINI_API_KEY`, `AUTO_CODER_QWEN_API_KEY`, `AUTO_CODER_CLAUDE_API_KEY`, `AUTO_CODER_AUGGIE_API_KEY`
+- Model-specific variables: `AUTO_CODER_<BACKEND>_MODEL` (e.g., `AUTO_CODER_GEMINI_MODEL`)
 
 `MAX_ISSUES_PER_RUN` and `MAX_PRS_PER_RUN` are set to unlimited (`-1`) by default. Specify positive integers if you want to limit the number of items processed.
+
+**Migration from old environment variables:**
+If you were using the old environment variables (`GEMINI_API_KEY`, `OPENAI_API_KEY`, etc.), you can migrate them automatically:
+```bash
+auto-coder config migrate
+```
 
 ## GraphRAG Integration (Experimental Feature)
 

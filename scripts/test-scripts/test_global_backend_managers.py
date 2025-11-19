@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 
-def test_global_backend_managers():
+def test_global_backend_managers() -> bool:
     """Test all global backend manager functionality."""
     print("Testing Global Backend Managers...")
 
@@ -31,13 +31,13 @@ def test_global_backend_managers():
     try:
         # Create mock clients for testing
         class MockClient:
-            def _run_llm_cli(self, prompt):
+            def _run_llm_cli(self, prompt: str) -> str:
                 return f"Mock response to: {prompt}"
 
-            def switch_to_default_model(self):
+            def switch_to_default_model(self) -> None:
                 pass
 
-            def close(self):
+            def close(self) -> None:
                 pass
 
         mock_client = MockClient()
@@ -121,7 +121,7 @@ if __name__ == "__main__":
             print("\nAvailable features:")
             print("✅ LLMBackendManager.get_llm_instance() - General LLM operations")
             print("✅ Global convenience functions for easy access")
-            print("✅ --backend CLI option support")
+            print("✅ Configuration file-based backend management")
             print("✅ Thread-safe singleton implementation")
             print("\nSee GLOBAL_BACKEND_MANAGER_USAGE.md for detailed usage examples.")
         else:

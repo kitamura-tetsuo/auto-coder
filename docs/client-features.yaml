@@ -15,16 +15,6 @@ cli:
       options:
         - { name: --repo, type: string, default: auto-detect from current git repo, env: null }
         - { name: --github-token, type: string, env: GITHUB_TOKEN, default: null }
-
-        - { name: --gemini-api-key, env: GEMINI_API_KEY }
-        - { name: --openai-api-key, env: OPENAI_API_KEY }
-        - { name: --openai-base-url, env: OPENAI_BASE_URL }
-        - { name: --qwen-use-env-vars/--qwen-use-cli-options, default: false }
-        - { name: --qwen-preserve-env/--qwen-clear-env, default: false }
-        - { name: --model-gemini, type: string }
-        - { name: --model-qwen, type: string }
-        - { name: --model-auggie, type: string }
-        - { name: --model-claude, type: string }
         - { name: --jules-mode/--no-jules-mode, default: true }
         - { name: --disable-labels/--no-disable-labels, default: auto-detect (disabled in debugger) }
         - { name: --check-labels/--no-check-labels, default: true, help: "Enable checking for existing @auto-coder label before processing (default: enabled)" }
@@ -37,6 +27,7 @@ cli:
         - { name: --log-level, choices: [DEBUG, INFO, WARNING, ERROR, CRITICAL], default: INFO }
         - { name: --log-file, type: path }
         - { name: --verbose, flag: true }
+      note: "LLM backends and models are now configured via configuration file (~/.auto-coder/llm_config.toml) or environment variables (e.g., AUTO_CODER_DEFAULT_BACKEND, AUTO_CODER_GEMINI_API_KEY)"
       behavior:
             - Initializes GraphRAG when enabled (auto-setup + MCP config check)
             - Resumes work on current non-main branch by detecting an open PR/issue
@@ -52,20 +43,12 @@ cli:
         - { name: --repo, type: string, default: auto-detect }
         - { name: --github-token, env: GITHUB_TOKEN }
         - { name: --disable-labels/--no-disable-labels, default: false }
-        - { name: --gemini-api-key, env: GEMINI_API_KEY }
-        - { name: --openai-api-key, env: OPENAI_API_KEY }
-        - { name: --openai-base-url, env: OPENAI_BASE_URL }
-        - { name: --qwen-use-env-vars/--qwen-use-cli-options, default: true }
-        - { name: --qwen-preserve-env/--qwen-clear-env, default: false }
-        - { name: --model-gemini }
-        - { name: --model-qwen }
-        - { name: --model-auggie }
-        - { name: --model-claude }
         - { name: --enable-graphrag/--disable-graphrag, default: true }
         - { name: --force-reindex, flag: true, default: false }
         - { name: --log-level, default: INFO }
         - { name: --log-file }
         - { name: --verbose, flag: true }
+      note: "LLM backends and models are now configured via configuration file (~/.auto-coder/llm_config.toml) or environment variables"
       behavior:
         - Initializes GraphRAG (optional) and checks MCP configuration
         - Uses prompts to propose structured feature issues with labels/acceptance criteria
@@ -73,21 +56,13 @@ cli:
       purpose: Run local tests and iteratively apply LLM fixes until tests pass
       options:
         - { name: --disable-labels/--no-disable-labels, default: false }
-        - { name: --gemini-api-key, env: GEMINI_API_KEY }
-        - { name: --openai-api-key, env: OPENAI_API_KEY }
-        - { name: --openai-base-url, env: OPENAI_BASE_URL }
-        - { name: --qwen-use-env-vars/--qwen-use-cli-options, default: true }
-        - { name: --qwen-preserve-env/--qwen-clear-env, default: false }
-        - { name: --model-gemini }
-        - { name: --model-qwen }
-        - { name: --model-auggie }
-        - { name: --model-claude }
         - { name: --max-attempts, type: int, default: null (engine default applies) }
         - { name: --enable-graphrag/--disable-graphrag, default: true }
         - { name: --force-reindex, flag: true, default: false }
         - { name: --log-level, default: INFO }
         - { name: --log-file }
         - { name: --verbose, flag: true }
+      note: "LLM backends and models are now configured via configuration file (~/.auto-coder/llm_config.toml) or environment variables"
       behavior:
         - Executes scripts/test.sh (never calls pytest directly)
           - Prefers uv runner for consistent, reproducible environments
