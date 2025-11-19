@@ -167,11 +167,12 @@ class AutomationConfig:
     # Labels not in this list will be added after these (if space permits)
     PR_LABEL_PRIORITIES: List[str] = field(
         default_factory=lambda: [
-            "breaking-change",
             "urgent",
+            "breaking-change",
             "bug",
             "enhancement",
             "documentation",
+            "question",
         ]
     )
 
@@ -181,7 +182,10 @@ class AutomationConfig:
         default_factory=lambda: {
             "breaking-change": [
                 "breaking-change",
+                "breaking change",
+                "bc-breaking",
                 "breaking",
+                "incompatible",
                 "api-change",
                 "deprecation",
                 "version-major",
@@ -190,9 +194,11 @@ class AutomationConfig:
             "bug": [
                 "bug",
                 "bugfix",
-                "defect",
-                "error",
                 "fix",
+                "error",
+                "issue",
+                "defect",
+                "broken",
                 "hotfix",
                 "patch",
             ],
@@ -207,6 +213,8 @@ class AutomationConfig:
                 "enhancement",
                 "feature",
                 "improvement",
+                "feat",
+                "request",
                 "new-feature",
                 "refactor",
                 "optimization",
@@ -219,6 +227,12 @@ class AutomationConfig:
                 "asap",
                 "priority-high",
                 "blocker",
+            ],
+            "question": [
+                "question",
+                "help wanted",
+                "support",
+                "q&a",
             ],
         }
     )
