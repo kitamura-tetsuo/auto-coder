@@ -135,8 +135,21 @@ class AutomationEngine:
                 if not self.github.check_should_process_with_label_manager(repo_name, number, item_type="issue"):
                     continue
 
+                # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
                 if self.github.get_open_sub_issues(repo_name, number):
                     continue
+
+                # Check for elder sibling dependency: if this issue is a sub-issue,
+                # ensure no elder sibling (sub-issue with lower number) is still open
+                parent_issue = self.github.get_parent_issue(repo_name, number)
+                if parent_issue is not None:
+                    open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue)
+                    # Filter to only sibling sub-issues (exclude current issue)
+                    elder_siblings = [s for s in open_sub_issues if s < number]
+                    if elder_siblings:
+                        logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
+                        continue
+
                 if self.github.has_linked_pr(repo_name, number):
                     continue
 
