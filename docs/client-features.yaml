@@ -216,6 +216,36 @@ features:
     file: rotation 10 MB, retention 7 days, zip compression
   reports:
     path: "~/.auto-coder/{owner_repo}/automation_report_*.json"
+  label_based_prompts:
+    description: "Dynamic prompt selection based on GitHub issue and PR labels"
+    features:
+      - Intelligent prompt template selection based on issue labels
+      - Priority-based resolution for multiple applicable labels
+      - Breaking-change detection with special handling
+      - Seamless integration with existing workflow
+      - Fully configurable through environment variables and YAML
+    label_categories:
+      breaking_change: ["breaking-change", "breaking", "api-change", "deprecation", "version-major"]
+      priority: ["urgent", "high-priority", "critical", "blocker", "asap", "priority-high"]
+      issue_type: ["bug", "bugfix", "defect", "error", "fix", "hotfix", "patch", "enhancement", "feature", "improvement", "new-feature", "refactor", "optimization", "optimisation", "documentation", "docs", "doc", "readme", "guide"]
+    priority_resolution:
+      description: "Labels are resolved by configured priority order when multiple apply"
+      behavior: "Highest priority label's prompt template is selected"
+      special_case: "Breaking-change labels always have highest priority"
+    breaking_change_detection:
+      description: "Special handling for breaking-change issues"
+      behaviors:
+        - Delete failing tests that test removed features
+        - Provide version bump recommendations (major version bump)
+        - Generate migration guides
+        - Update CHANGELOG with breaking changes
+        - Ensure backward compatibility guidance
+    pr_label_copying:
+      description: "Automatic copying of semantic labels from issues to PRs"
+      enabled_by_default: true
+      max_labels: 3
+      categories: ["breaking-change", "urgent", "bug", "enhancement", "documentation"]
+      behavior: "Copies highest-priority semantic labels from issue to created PR"
 
 config:
   automation_config:
@@ -249,8 +279,25 @@ env:
   GRAPHRAG_MAX_SNAPSHOTS_PER_REPO: "Maximum number of GraphRAG index snapshots to keep per repository (default: 9)"
   GRAPHRAG_CLEANUP_ON_INIT: "Enable automatic GraphRAG snapshot cleanup during initialize_graphrag (default: 1)"
   GRAPHRAG_CLEANUP_ON_UPDATE: "Enable automatic GraphRAG snapshot cleanup after each index update (default: 1)"
+  AUTO_CODER_LABEL_PROMPT_MAPPINGS: "JSON mapping of GitHub labels to prompt template keys (e.g., '{\"bug\": \"issue.bugfix\", \"enhancement\": \"issue.enhancement\"}')"
+  AUTO_CODER_LABEL_PRIORITIES: "Comma-separated list of label priorities from highest to lowest (e.g., 'breaking-change,urgent,bug,enhancement,documentation')"
+  AUTO_CODER_PR_LABEL_COPYING_ENABLED: "Enable/disable semantic label copying from issues to PRs (default: 'true')"
+  AUTO_CODER_PR_MAX_LABELS: "Maximum number of semantic labels to copy to PRs (default: '3', range: 0-10)"
+  AUTO_CODER_PR_LABEL_MAPPINGS: "JSON mapping of semantic label categories to label aliases (e.g., '{\"bug\": [\"bug\", \"bugfix\", \"defect\"]}')"
+  AUTO_CODER_PR_LABEL_PRIORITIES: "Comma-separated list of PR label priorities (e.g., 'breaking-change,urgent,bug,enhancement,documentation')"
 
 changes:
+  - date: "2025-11-19"
+    version: "2025.11.19.2+ged4e001"
+    changes:
+      - "Comprehensive documentation update for Label-Based Prompt Handling System"
+      - "Added complete documentation suite in docs/label-based-prompts/ including index, configuration, usage examples, API reference, best practices, troubleshooting, and migration guide"
+      - "Added interactive tutorial at docs/tutorials/label-based-prompts-setup.md"
+      - "Updated main documentation index (docs/index.md) to reference all label-based prompt documentation"
+      - "Updated client-features.yaml technical specification with label-based prompt features and environment variables"
+      - "Documented all environment variables: AUTO_CODER_LABEL_PROMPT_MAPPINGS, AUTO_CODER_LABEL_PRIORITIES, AUTO_CODER_PR_LABEL_COPYING_ENABLED, AUTO_CODER_PR_MAX_LABELS, AUTO_CODER_PR_LABEL_MAPPINGS, AUTO_CODER_PR_LABEL_PRIORITIES"
+      - "Added label categories documentation for breaking-change, priority, and issue type labels"
+      - "Documented breaking-change detection behaviors and PR label copying functionality"
   - date: "2025-11-18"
     version: "2025.11.18+include-cancelled-checks-in-failures"
     changes:

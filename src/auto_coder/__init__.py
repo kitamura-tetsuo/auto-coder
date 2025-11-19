@@ -20,4 +20,5 @@ __all__ = [
     "LLMBackendConfiguration",
     "BackendConfig",
     "get_llm_config",
+    "llm_backend_config",
 ]

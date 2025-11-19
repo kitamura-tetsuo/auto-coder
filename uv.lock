@@ -61,6 +61,16 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+dev = [
+    { name = "black" },
+    { name = "flake8" },
+    { name = "isort" },
+    { name = "mypy" },
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "pytest-timeout" },
+    { name = "types-toml" },
+]
 test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -74,37 +84,33 @@ dev = [
     { name = "black" },
     { name = "flake8" },
     { name = "isort" },
-    { name = "mypy" },
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "types-toml" },
-]
-test = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "pytest-mock" },
-    { name = "pytest-timeout" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "black", marker = "extra == 'dev'", specifier = ">=24.0.0" },
     { name = "build", specifier = ">=1.3.0" },
     { name = "click", specifier = ">=8.1.0" },
+    { name = "flake8", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "gitpython", specifier = ">=3.1.0" },
+    { name = "isort", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "mcp-server", specifier = ">=0.1.4" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "neo4j", specifier = ">=5.14.0" },
     { name = "pathspec", specifier = ">=0.12.0" },
     { name = "playwright", specifier = ">=1.54.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.3.0" },
     { name = "pydantic", specifier = ">=2.0.0,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
     { name = "pygithub", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=9.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.21.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.0.0" },
     { name = "pytest-mock", marker = "extra == 'test'", specifier = ">=3.10.0" },
+    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.1.0" },
     { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.1.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -112,27 +118,17 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "sentence-transformers", specifier = ">=2.2.0" },
     { name = "toml", specifier = ">=0.10.0" },
+    { name = "types-toml", marker = "extra == 'dev'", specifier = ">=0.10.0" },
+    { name = "types-toml", marker = "extra == 'dev'", specifier = ">=0.10.8.20240310" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
-provides-extras = ["test"]
+provides-extras = ["test", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "black", specifier = ">=24.0.0" },
+    { name = "black", specifier = ">=25.9.0" },
     { name = "flake8", specifier = ">=6.0.0" },
     { name = "isort", specifier = ">=5.0.0" },
-    { name = "mypy", specifier = ">=1.0.0" },
-    { name = "pre-commit", specifier = ">=4.3.0" },
-    { name = "pytest", specifier = ">=9.0.0" },
-    { name = "types-toml", specifier = ">=0.10.0" },
-    { name = "types-toml", specifier = ">=0.10.8.20240310" },
-]
-test = [
-    { name = "pytest", specifier = ">=9.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "pytest-cov", specifier = ">=4.0.0" },
-    { name = "pytest-mock", specifier = ">=3.10.0" },
-    { name = "pytest-timeout", specifier = ">=2.1.0" },
 ]
 
 [[package]]

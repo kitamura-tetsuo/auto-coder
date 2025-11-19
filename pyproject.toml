@@ -40,7 +40,7 @@ dependencies = [
     "toml>=0.10.0",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 test = [
     "pytest>=9.0.0",
     "pytest-asyncio>=0.21.0",
@@ -56,16 +56,8 @@ dev = [
     "types-toml>=0.10.0",
     "pre-commit>=4.3.0",
     "pytest>=9.0.0",
-    "types-toml>=0.10.8.20240310",
-]
-
-[project.optional-dependencies]
-test = [
-    "pytest>=9.0.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.0.0",
-    "pytest-mock>=3.10.0",
     "pytest-timeout>=2.1.0",
+    "types-toml>=0.10.8.20240310",
 ]
 
 [tool.setuptools.packages.find]
@@ -200,3 +192,10 @@ module = [
     "graph_builder.*",
 ]
 ignore_errors = true
+
+[dependency-groups]
+dev = [
+    "black>=25.9.0",
+    "isort>=5.0.0",
+    "flake8>=6.0.0",
+]

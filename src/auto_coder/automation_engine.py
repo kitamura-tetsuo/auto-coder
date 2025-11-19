@@ -103,9 +103,22 @@ class AutomationEngine:
             candidates_count += 1
 
             # Calculate priority
+            # Base priority: 3 (mergeable + green), 2 (failing or not mergeable)
             pr_priority = 3 if (checks.success and mergeable) else 2
 
-            if "urgent" in labels:
+            # Check for breaking-change related labels (highest priority, maintain backward compatibility)
+            # Breaking-change gets boost to ensure it's processed before urgent
+            breaking_change_labels = [
+                "breaking-change",
+                "breaking",
+                "api-change",
+                "deprecation",
+                "version-major",
+            ]
+            if any(label in labels for label in breaking_change_labels):
+                # Breaking-change gets boost to priority 7 (above urgent's boost)
+                pr_priority = 7
+            elif "urgent" in labels:
                 pr_priority += 4
 
             candidates.append(
@@ -153,7 +166,24 @@ class AutomationEngine:
                 if self.github.has_linked_pr(repo_name, number):
                     continue
 
-                issue_priority = 1 if "urgent" in labels else 0
+                # Calculate priority
+                # Priority levels (maintain backward compatibility):
+                # - 2: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
+                # - 1: Urgent
+                # - 0: Regular issues
+                issue_priority = 0
+                if "urgent" in labels:
+                    issue_priority = 1
+                # Check for breaking-change related labels (highest priority)
+                breaking_change_labels = [
+                    "breaking-change",
+                    "breaking",
+                    "api-change",
+                    "deprecation",
+                    "version-major",
+                ]
+                if any(label in labels for label in breaking_change_labels):
+                    issue_priority = 2
 
                 candidates.append(
                     Candidate(
