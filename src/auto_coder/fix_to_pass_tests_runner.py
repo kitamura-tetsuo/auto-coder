@@ -152,10 +152,12 @@ def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
     getter = getattr(llm_client, "get_last_backend_and_model", None)
     if callable(getter):
         try:
-            backend, model = getter()
-            backend = backend or "unknown"
-            model = model or getattr(llm_client, "model_name", "unknown")
-            return backend, model
+            result = getter()
+            if isinstance(result, tuple) and len(result) == 2:
+                backend, model = result
+                backend = backend or "unknown"
+                model = model or getattr(llm_client, "model_name", "unknown")
+                return backend, model
         except Exception:
             pass
 

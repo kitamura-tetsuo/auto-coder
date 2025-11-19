@@ -172,6 +172,16 @@ def process_issues(
         cli_backends=selected_backends,
     )
 
+    # Initialize LLM backend manager singleton
+    from .backend_manager import LLMBackendManager
+
+    LLMBackendManager.get_llm_instance(
+        default_backend=manager._default_backend,
+        default_client=manager._clients[manager._default_backend],
+        factories=manager._factories,
+        order=manager._all_backends,
+    )
+
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
     primary_model = None
@@ -416,6 +426,16 @@ def create_feature_issues(
         cli_backends=selected_backends,
     )
 
+    # Initialize LLM backend manager singleton
+    from .backend_manager import LLMBackendManager
+
+    LLMBackendManager.get_llm_instance(
+        default_backend=manager._default_backend,
+        default_client=manager._clients[manager._default_backend],
+        factories=manager._factories,
+        order=manager._all_backends,
+    )
+
     selected_backends = manager._all_backends[:]
     primary_backend = manager._default_backend
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
@@ -534,6 +554,16 @@ def fix_to_pass_tests_command(
         enable_graphrag=enable_graphrag,
         cli_models=models,
         cli_backends=selected_backends,
+    )
+
+    # Initialize LLM backend manager singleton
+    from .backend_manager import LLMBackendManager
+
+    LLMBackendManager.get_llm_instance(
+        default_backend=manager._default_backend,
+        default_client=manager._clients[manager._default_backend],
+        factories=manager._factories,
+        order=manager._all_backends,
     )
 
     selected_backends = manager._all_backends[:]
