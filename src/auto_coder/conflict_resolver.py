@@ -97,7 +97,7 @@ def resolve_merge_conflicts_with_llm(
             prompt[:160].replace("\n", " "),
         )
 
-        logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data['number']}")
+        logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data}")
 
         # Call LLM to resolve conflicts
         response = run_llm_prompt(prompt)
@@ -119,16 +119,16 @@ def resolve_merge_conflicts_with_llm(
                 return actions
 
             # Commit via helper and push
-            commit_res = git_commit_with_retry(f"Resolve merge conflicts for PR #{pr_data['number']}")
+            commit_res = git_commit_with_retry(f"Resolve merge conflicts for PR #{pr_data}")
             if commit_res.success:
-                actions.append(f"Committed resolved merge for PR #{pr_data['number']}")
+                actions.append(f"Committed resolved merge for PR #{pr_data}")
             else:
                 actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
                 return actions
 
             push_res = git_push()
             if push_res.success:
-                actions.append(f"Pushed resolved merge for PR #{pr_data['number']}")
+                actions.append(f"Pushed resolved merge for PR #{pr_data}")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
                 actions.append(f"Failed to push resolved merge: {push_res.stderr}")
@@ -146,8 +146,8 @@ def _perform_base_branch_merge_and_conflict_resolution(
     pr_number: int,
     base_branch: str,
     config: AutomationConfig,
+    pr_data: Dict[str, Any],
     repo_name: Optional[str] = None,
-    pr_data: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Perform base branch merge and resolve conflicts using LLM.
 
@@ -239,9 +239,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             # Get conflict information
             conflict_info = "\n".join(scan_conflict_markers())
 
-            # Use LLM to resolve conflicts
-            if pr_data is None:
-                pr_data = {"number": pr_number, "base_branch": base_branch}
+            # Ensure pr_data has the base_branch
             pr_data = {**pr_data, "base_branch": base_branch}
 
             resolve_actions = resolve_merge_conflicts_with_llm(pr_data, "\n".join(conflict_info), config)
@@ -289,7 +287,7 @@ def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automatio
             base_branch = config.MAIN_BRANCH
 
         # Use the common subroutine
-        return _perform_base_branch_merge_and_conflict_resolution(pr_number, base_branch, config, repo_name, pr_data)
+        return _perform_base_branch_merge_and_conflict_resolution(pr_number, base_branch, config, pr_data, repo_name)
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts for PR #{pr_number}: {e}")
