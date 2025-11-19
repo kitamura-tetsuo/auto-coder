@@ -52,6 +52,34 @@ class AutomationConfig:
         }
     )
 
+    # PR-specific label prompt mappings for label-based PR processing
+    # Maps labels to PR prompt template keys
+    pr_label_prompt_mappings: Dict[str, str] = field(
+        default_factory=lambda: {
+            "breaking-change": "pr.breaking_change",
+            "breaking": "pr.breaking_change",
+            "api-change": "pr.breaking_change",
+            "deprecation": "pr.breaking_change",
+            "version-major": "pr.breaking_change",
+            "urgent": "pr.urgent",
+            "high-priority": "pr.urgent",
+            "critical": "pr.urgent",
+            "blocker": "pr.urgent",
+            "bug": "pr.bug",
+            "bugfix": "pr.bug",
+            "defect": "pr.bug",
+            "error": "pr.bug",
+            "fix": "pr.bug",
+            "enhancement": "pr.enhancement",
+            "feature": "pr.enhancement",
+            "improvement": "pr.enhancement",
+            "new-feature": "pr.enhancement",
+            "documentation": "pr.documentation",
+            "docs": "pr.documentation",
+            "doc": "pr.documentation",
+        }
+    )
+
     # Label priorities (highest priority first)
     # Breaking-change has highest priority, followed by urgent, bug, enhancement, documentation
     label_priorities: List[str] = field(
@@ -199,6 +227,7 @@ class AutomationConfig:
         )
 
         # Initialize label prompt mappings
+        # These map to both issue.* and pr.* templates for label-based prompt selection
         object.__setattr__(
             self,
             "label_prompt_mappings",

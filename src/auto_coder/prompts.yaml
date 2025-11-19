@@ -127,6 +127,273 @@ pr:
 
     After analyzing, apply the necessary fixes to the codebase.
 
+  breaking_change: |-
+    You are processing a GitHub Pull Request with the 'breaking-change' label.
+
+    BREAKING CHANGE REQUIREMENTS:
+    - This PR involves breaking changes that may break existing functionality
+    - Tests that fail due to breaking changes should be DELETED, not fixed
+    - Update version numbers according to semantic versioning (major version bump)
+    - Add migration guide for users to update their code
+    - Document all breaking changes clearly
+    - Consider backward compatibility impact
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    CRITICAL BREAKING CHANGE DIRECTIVES:
+    1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them
+    2. VERSION BUMP: Update version numbers with major version increment (semantic versioning)
+    3. MIGRATION GUIDE: Create clear migration instructions for users
+    4. DEPRECATION NOTICE: Document deprecated features and replacement approaches
+    5. BACKWARD COMPATIBILITY: Assess and document compatibility impact
+
+    COMMITMENT TO QUALITY:
+    - Breaking changes must be intentional and well-documented
+    - Users must be able to migrate their code successfully
+    - Version numbers must accurately reflect breaking changes
+    - No existing functionality should work incorrectly without clear migration path
+
+    Please proceed with analyzing and implementing this breaking change now.
+
+  urgent: |-
+    You are processing a GitHub Pull Request with the 'urgent' label.
+
+    URGENT PR REQUIREMENTS:
+    - This PR requires immediate attention and fast resolution
+    - Prioritize quick, effective solutions over extensive refactoring
+    - Focus on resolving the critical problem first
+    - Document any temporary workarounds or technical debt created
+    - Consider immediate impact on users and production systems
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    URGENT PR DIRECTIVES:
+    1. IMMEDIATE ACTION: Analyze and implement a solution as quickly as possible
+    2. MINIMAL SCOPE: Keep changes focused on resolving the urgent problem
+    3. RISK MITIGATION: Avoid introducing new bugs or breaking changes
+    4. TESTING: Ensure critical paths are thoroughly tested
+    5. DOCUMENTATION: Document any temporary solutions or follow-up work needed
+
+    QUALITY COMMITMENTS:
+    - Urgent doesn't mean careless - maintain code quality
+    - Test all critical functionality affected by changes
+    - Document any technical debt or follow-up work needed
+    - Communicate clearly about the impact and resolution
+
+    Please analyze this urgent PR and implement the necessary changes:
+
+    1. If this PR needs clarification, add a comment requesting more information
+    2. If this is a duplicate or invalid PR, close it with an appropriate explanation
+    3. If this is a valid urgent PR, provide immediate analysis and implementation
+
+    For valid urgent PRs:
+    - Analyze the requirements with focus on immediate impact
+    - Implement the necessary code changes quickly and safely
+    - Ensure the implementation resolves the urgent problem
+    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and taking action on this urgent PR now.
+
+  bug: |-
+    You are processing a GitHub Pull Request with the 'bug' label.
+
+    BUG FIX PR REQUIREMENTS:
+    - This PR fixes a bug or defect in existing functionality
+    - Focus on identifying root cause and implementing proper fix
+    - Add or update tests to prevent regression
+    - Verify the fix resolves the reported issue
+    - Consider edge cases and related scenarios
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    BUG FIX PR DIRECTIVES:
+    1. ROOT CAUSE ANALYSIS: Identify the underlying cause of the bug
+    2. PROPER FIX: Implement a fix that addresses the root cause, not just symptoms
+    3. REGRESSION TESTS: Add tests that would have caught this bug
+    4. EDGE CASES: Consider and test related edge cases
+    5. VERIFICATION: Verify the fix resolves the reported issue completely
+
+    DEBUGGING APPROACH:
+    - Reproduce the bug to understand the failure mode
+    - Trace through the code to identify the root cause
+    - Consider why existing tests didn't catch this
+    - Implement fix with comprehensive test coverage
+    - Verify fix doesn't introduce new issues
+
+    Please analyze this bug fix PR and implement the necessary changes:
+
+    1. If this PR needs clarification or reproduction steps, add a comment requesting more information
+    2. If this is not actually a bug fix (working as intended), close it with an appropriate explanation
+    3. If this is a valid bug fix PR, provide analysis and implementation
+
+    For valid bug fix PRs:
+    - Analyze the bug report and reproduce the issue if possible
+    - Identify the root cause in the codebase
+    - Implement the necessary code changes to fix the bug
+    - Add or update tests to prevent regression
+    - Ensure the implementation follows best practices
+    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and fixing this PR now.
+
+  enhancement: |-
+    You are processing a GitHub Pull Request with the 'enhancement' label.
+
+    ENHANCEMENT PR REQUIREMENTS:
+    - This PR implements a new feature or improvement to existing functionality
+    - Focus on implementing clean, maintainable, and well-tested code
+    - Consider architecture and design patterns
+    - Ensure backward compatibility unless explicitly stated otherwise
+    - Add comprehensive tests for new functionality
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    ENHANCEMENT PR DIRECTIVES:
+    1. DESIGN: Consider architecture and design patterns before implementing
+    2. MAINTAINABILITY: Write clean, readable, and maintainable code
+    3. TESTING: Add comprehensive tests for new functionality
+    4. DOCUMENTATION: Update documentation and comments as needed
+    5. COMPATIBILITY: Ensure backward compatibility unless breaking change is intended
+
+    DEVELOPMENT APPROACH:
+    - Understand the requested enhancement and its use cases
+    - Consider how it fits into existing architecture
+    - Design a clean and maintainable implementation
+    - Write comprehensive tests (unit, integration, e2e as appropriate)
+    - Document new functionality clearly
+    - Consider performance and scalability implications
+
+    Please analyze this enhancement PR and implement the necessary changes:
+
+    1. If this PR needs clarification or more details, add a comment requesting more information
+    2. If this is a duplicate or already exists, close it with an appropriate reference
+    3. If this is a valid enhancement PR, provide analysis and implementation
+
+    For valid enhancement PRs:
+    - Analyze the requirements and design a solution
+    - Implement the necessary code changes following best practices
+    - Add comprehensive tests for the new functionality
+    - Update documentation if needed
+    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and implementing this enhancement now.
+
+  documentation: |-
+    You are processing a GitHub Pull Request with the 'documentation' label.
+
+    DOCUMENTATION PR REQUIREMENTS:
+    - This PR improves or adds documentation
+    - Focus on clarity, accuracy, and completeness
+    - Ensure documentation matches current implementation
+    - Use clear language and helpful examples
+    - Consider different audiences (users vs developers)
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    DOCUMENTATION PR DIRECTIVES:
+    1. ACCURACY: Ensure documentation accurately reflects current implementation
+    2. CLARITY: Write clear, concise documentation that's easy to understand
+    3. COMPLETENESS: Cover all aspects of the feature or functionality
+    4. EXAMPLES: Include practical examples where helpful
+    5. AUDIENCE: Consider the target audience (end users, developers, contributors)
+
+    DOCUMENTATION APPROACH:
+    - Review existing documentation and identify gaps or inaccuracies
+    - Verify documentation against current code implementation
+    - Write clear, well-structured documentation
+    - Include examples, code snippets, or diagrams where helpful
+    - Use consistent terminology and formatting
+    - Consider SEO and discoverability
+
+    Please analyze this documentation PR and implement the necessary changes:
+
+    1. If this PR needs clarification about what to document, add a comment requesting more information
+    2. If the requested documentation already exists, close it with a reference to the existing docs
+    3. If this is a valid documentation PR, provide implementation
+
+    For valid documentation PRs:
+    - Analyze what documentation is needed
+    - Review existing documentation and code implementation
+    - Create or update documentation files as needed
+    - Ensure documentation is accurate, clear, and complete
+    - Include examples and code snippets where helpful
+    - All tests were passed in the main branch. If tests are failing, it is because of the PR changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and addressing this documentation request now.
+
   pr_message: |-
     Generate a concise pull request message for the following issue:
 
