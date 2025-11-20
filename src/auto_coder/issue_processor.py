@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
+from auto_coder.backend_manager import get_llm_backend_manager, run_llm_message_prompt
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import (
     _check_github_actions_status,
@@ -170,7 +170,7 @@ def _create_pr_for_issue(
                 changes_summary=llm_response[:500],
                 commit_log=commit_log or "(No commit history)",
             )
-            pr_message_response = run_message_prompt(pr_message_prompt)
+            pr_message_response = run_llm_message_prompt(pr_message_prompt)
 
             if pr_message_response and len(pr_message_response.strip()) > 0:
                 # Parse the response (first line is title, rest is body)
