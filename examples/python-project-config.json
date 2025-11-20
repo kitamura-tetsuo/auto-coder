@@ -1,0 +1,100 @@
+{
+  "description": "Label configuration for Python projects",
+  "version": "1.0.0",
+  "project_type": "Python",
+
+  "label_prompt_mappings": {
+    "bug": "issue.bug",
+    "defect": "issue.bug",
+    "error": "issue.bug",
+    "issue": "issue.bug",
+
+    "enhancement": "issue.enhancement",
+    "feature": "issue.enhancement",
+    "feature-request": "issue.enhancement",
+    "improvement": "issue.enhancement",
+
+    "critical": "issue.urgent",
+    "urgent": "issue.urgent",
+    "high-priority": "issue.urgent",
+
+    "breaking-change": "issue.breaking_change",
+    "compatibility": "issue.breaking_change",
+    "incompatible": "issue.breaking_change",
+
+    "documentation": "issue.documentation",
+    "docs": "issue.documentation",
+    "doc": "issue.documentation",
+
+    "refactoring": "issue.refactor",
+    "refactor": "issue.refactor",
+
+    "performance": "issue.optimization",
+    "optimization": "issue.optimization",
+    "optimisation": "issue.optimization",
+
+    "test": "issue.test",
+    "testing": "issue.test"
+  },
+
+  "label_priorities": [
+    "breaking-change",
+    "compatibility",
+    "incompatible",
+
+    "critical",
+    "urgent",
+    "high-priority",
+
+    "bug",
+    "defect",
+    "error",
+    "issue",
+
+    "refactoring",
+    "refactor",
+
+    "performance",
+    "optimization",
+    "optimisation",
+
+    "enhancement",
+    "feature",
+    "feature-request",
+    "improvement",
+
+    "test",
+    "testing",
+
+    "documentation",
+    "docs",
+    "doc"
+  ],
+
+  "pr_label_mappings": {
+    "breaking": ["breaking-change", "compatibility", "incompatible"],
+    "urgent": ["critical", "urgent", "high-priority"],
+    "bug": ["bug", "defect", "error", "issue"],
+    "enhancement": ["enhancement", "feature", "feature-request"],
+    "refactor": ["refactoring", "refactor"],
+    "optimization": ["performance", "optimization"],
+    "docs": ["documentation", "docs"],
+    "test": ["test", "testing"]
+  },
+
+  "pr_label_priorities": [
+    "urgent",
+    "breaking",
+    "bug",
+    "enhancement",
+    "refactor",
+    "optimization",
+    "test",
+    "docs"
+  ],
+
+  "pr_label_copying": {
+    "enabled": true,
+    "max_labels": 3
+  }
+}
