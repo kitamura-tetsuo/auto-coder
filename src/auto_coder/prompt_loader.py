@@ -84,9 +84,9 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
 
 def _resolve_label_priority(
     issue_labels: List[str],
-    label_prompt_mappings: Optional[Dict[str, str]],
-    label_priorities: Optional[List[str]],
-) -> Optional[str]:
+    label_prompt_mappings: Optional[Dict[Any, Any]],
+    label_priorities: Optional[List[Any]],
+) -> Optional[Any]:
     """Resolve highest priority label that has a prompt mapping.
 
     Args:
@@ -101,7 +101,7 @@ def _resolve_label_priority(
     if not isinstance(label_prompt_mappings, dict):
         # If it's a list, convert to dict where each element maps to itself
         if isinstance(label_prompt_mappings, list):
-            label_prompt_mappings = {str(item): str(item) for item in label_prompt_mappings}
+            label_prompt_mappings = {item: item for item in label_prompt_mappings}
         else:
             return None
 
@@ -135,27 +135,31 @@ def _resolve_label_priority(
     if not applicable_mapping_keys:
         return None
 
-    # Extract just the mapping keys for final return
-    # Ensure all mapping keys are strings to match return type
-    mapping_keys = [str(key) for key in applicable_mapping_keys]
-
     # For backward compatibility: if priorities is None, return first applicable mapping key
     # This allows old code to work with just mappings, without priority system
     if label_priorities is None:
-        return str(mapping_keys[0]) if mapping_keys else None
+        return applicable_mapping_keys[0] if applicable_mapping_keys else None
 
     # If priorities is empty list, fallback to first applicable mapping key
     if not label_priorities:
-        return str(mapping_keys[0]) if mapping_keys else None
+        return applicable_mapping_keys[0] if applicable_mapping_keys else None
 
     # Sort by priority and return highest priority mapping key
-    # Priorities are matched against the mapping keys (case-sensitive)
+    # Check if any applicable labels match the priorities
     for priority_label in label_priorities:
-        if str(priority_label) in mapping_keys:
-            return str(priority_label)
+        try:
+            priority_str = str(priority_label)
+        except (AttributeError, TypeError):
+            # Skip priorities that can't be converted to string
+            continue
+        # Check if this priority matches any of the applicable mapping keys
+        for mapping_key in applicable_mapping_keys:
+            mapping_key_str = str(mapping_key)
+            if priority_str == mapping_key_str:
+                return mapping_key
 
     # If no exact match found, fall back to first applicable label
-    return str(mapping_keys[0]) if mapping_keys else None
+    return applicable_mapping_keys[0] if applicable_mapping_keys else None
 
 
 def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
