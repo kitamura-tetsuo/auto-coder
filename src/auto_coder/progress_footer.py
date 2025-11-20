@@ -377,8 +377,8 @@ class ProgressContext:
         # Exit the current ProgressStage and enter a new one
         if self._progress_stage:
             self._progress_stage.__exit__(None, None, None)
-        self._progress_stage = ProgressStage(stage)
-        self._progress_stage.__enter__()
+        self._progress_stage = ProgressStage(stage)  # type: ignore[assignment]
+        self._progress_stage.__enter__()  # type: ignore[union-attr,attr-defined]
 
 
 class ProgressStage:

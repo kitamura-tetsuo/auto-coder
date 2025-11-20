@@ -215,7 +215,7 @@ def migrate_branches(
 
     # Perform the migration
     results = migrate_pr_branches(
-        config,
+        config,  # type: ignore[arg-type]
         delete_after_merge=not no_delete,
         force=force,
         execute=execute,

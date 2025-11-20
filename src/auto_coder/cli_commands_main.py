@@ -213,7 +213,7 @@ def process_issues(
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
 
     automation_engine = AutomationEngine(
-        github_client,
+        github_client,  # type: ignore[arg-type]
         config=engine_config,
     )
 
@@ -445,7 +445,7 @@ def create_feature_issues(
 
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    automation_engine = AutomationEngine(github_client)
+    automation_engine = AutomationEngine(github_client)  # type: ignore[arg-type]
 
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)
@@ -580,7 +580,7 @@ def fix_to_pass_tests_command(
     message_primary_backend = message_manager._default_backend
     logger.info(f"Message backends: {', '.join(message_backend_list)} (default: {message_primary_backend})")
     engine_config = AutomationConfig()
-    engine = AutomationEngine(github_client, config=engine_config)
+    engine = AutomationEngine(github_client, config=engine_config)  # type: ignore[arg-type]
 
     try:
         result = engine.fix_to_pass_tests(max_attempts=max_attempts, message_backend_manager=message_manager)

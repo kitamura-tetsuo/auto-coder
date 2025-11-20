@@ -10,7 +10,9 @@ from typing import Iterable, List, Optional
 try:  # Python 3.11+ ships with tomllib
     import tomllib  # type: ignore[attr-defined]
 except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreters
-    import tomli as tomllib  # type: ignore[import]
+    from tomli import tomllib as _tomllib  # type: ignore[import]
+
+    tomllib = _tomllib
 
 from .logger_config import get_logger
 

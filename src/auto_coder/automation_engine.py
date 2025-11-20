@@ -505,7 +505,7 @@ class AutomationEngine:
                                     item_type,
                                     item_number,
                                     self.config,
-                                    self.github,
+                                    self.github,  # type: ignore[arg-type]
                                     current_item=current_item,
                                 )
                 except Exception as e:

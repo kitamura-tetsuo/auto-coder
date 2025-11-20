@@ -153,12 +153,13 @@ class TestGetPromptForLabelsEdgeCases:
         assert result is None
 
     def test_none_priorities(self):
-        """Test with None priorities."""
+        """Test with None priorities (fallback to first applicable label)."""
         labels = ["bug"]
         mappings = {"bug": "issue.bug"}
 
         result = _get_prompt_for_labels(labels, mappings, None)
-        assert result is None
+        # None priorities should fall back to first applicable label
+        assert result == "issue.bug"
 
     def test_empty_labels_list(self):
         """Test with empty labels list."""
