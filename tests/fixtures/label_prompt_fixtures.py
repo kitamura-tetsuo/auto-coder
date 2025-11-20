@@ -165,8 +165,8 @@ TEST_PR_LABEL_MAPPINGS = {
 
 # PR label priorities
 TEST_PR_LABEL_PRIORITIES = [
-    "urgent",
     "breaking-change",
+    "urgent",
     "bug",
     "enhancement",
     "documentation",

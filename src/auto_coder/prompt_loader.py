@@ -75,7 +75,7 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
 
 def _resolve_label_priority(
     issue_labels: List[str],
-    label_prompt_mappings: Dict[str, str],
+    label_prompt_mappings: Optional[Dict[str, str]],
     label_priorities: Optional[List[str]],
 ) -> Optional[str]:
     """Resolve highest priority label that has a prompt mapping.
@@ -88,39 +88,74 @@ def _resolve_label_priority(
     Returns:
         The highest priority label that has a prompt mapping, or None if no applicable labels
     """
+    # Handle case where label_prompt_mappings is not a dict
+    if not isinstance(label_prompt_mappings, dict):
+        return None
+
     # Create case-insensitive mapping for matching
-    case_insensitive_mappings: Dict[str, str] = {}
-    label_key_mappings: Dict[str, str] = {}  # Maps normalized label to original label and prompt key
-    for label, prompt_key in label_prompt_mappings.items():
-        normalized_label = label.lower()
-        case_insensitive_mappings[normalized_label] = prompt_key
-        label_key_mappings[normalized_label] = label
+    # Normalized label (lowercase) -> original mapping key
+    case_insensitive_to_original: Dict[str, str] = {}
+    for mapping_key, prompt_key in label_prompt_mappings.items():
+        # Ensure label is a string for comparison
+        try:
+            normalized_mapping_key = str(mapping_key).lower()
+        except (AttributeError, TypeError):
+            # Skip labels that can't be converted to string
+            continue
+        case_insensitive_to_original[normalized_mapping_key] = mapping_key
 
     # Filter to labels with configured prompt mappings (case-insensitive)
-    applicable_labels = []
-    for label in issue_labels:
-        normalized_label = label.lower()
-        if normalized_label in case_insensitive_mappings:
-            # Use the original label from mappings to preserve case
-            applicable_labels.append(label_key_mappings[normalized_label])
+    # Store both issue label and mapping key to support both matching and return value
+    applicable_pairs = []  # List of (issue_label, mapping_key) tuples
+    for issue_label in issue_labels:
+        # Ensure label is a string for comparison
+        try:
+            normalized_issue_label = str(issue_label).lower()
+        except (AttributeError, TypeError):
+            # Skip labels that can't be converted to string
+            continue
+        if normalized_issue_label in case_insensitive_to_original:
+            # Store both the original issue label (for priority matching) and mapping key (for return)
+            original_mapping_key = case_insensitive_to_original[normalized_issue_label]
+            applicable_pairs.append((issue_label, original_mapping_key))
 
-    if not applicable_labels:
+    if not applicable_pairs:
         return None
+
+    # Extract just the issue labels for priority matching (preserves original case from issue)
+    applicable_issue_labels = [pair[0] for pair in applicable_pairs]
+    # Extract mapping keys for final return (ensures correct key for lookup)
+    mapping_keys = [pair[1] for pair in applicable_pairs]
 
     # If priorities is None, return None (no priority system configured)
     if label_priorities is None:
         return None
 
-    # If priorities is empty list, fallback to first applicable label
+    # If priorities is empty list, fallback to first applicable mapping key
     if not label_priorities:
-        return applicable_labels[0]
+        return mapping_keys[0]
 
-    # Sort by priority and return highest priority
+    # Sort by priority and return highest priority mapping key
+    # First, check for exact case-sensitive matches
     for priority_label in label_priorities:
-        if priority_label in applicable_labels:
-            return priority_label
+        if priority_label in applicable_issue_labels:
+            # Find the corresponding mapping key for the matched issue label
+            for issue_label, mapping_key in applicable_pairs:
+                if issue_label == priority_label:
+                    return mapping_key
 
-    return applicable_labels[0]  # Fallback to first applicable label
+    # Check if there are any case-insensitive matches that failed due to case sensitivity
+    # If so, this indicates a configuration issue (case mismatch) and we should return None
+    priorities_lower = {str(p).lower() for p in label_priorities if p is not None}
+    applicable_issue_labels_lower = {str(a).lower() for a in applicable_issue_labels if a is not None}
+
+    # If there are overlapping labels when ignoring case, it means there are case mismatches
+    if priorities_lower & applicable_issue_labels_lower:  # Set intersection - if not empty
+        return None
+
+    # If there are no conceptual overlaps between priorities and applicable labels,
+    # return the first applicable as a fallback
+    return mapping_keys[0]
 
 
 def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
@@ -144,7 +179,7 @@ def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
 
 def _get_prompt_for_labels(
     issue_labels: List[str],
-    label_prompt_mappings: Dict[str, str],
+    label_prompt_mappings: Optional[Dict[str, str]],
     label_priorities: Optional[List[str]],
 ) -> Optional[str]:
     """Get the appropriate prompt template key based on issue labels.
@@ -197,8 +232,8 @@ def get_prompt_template(key: str, path: Optional[str] = None) -> str:
 
 def get_label_specific_prompt(
     labels: List[str],
-    label_prompt_mappings: Dict[str, str],
-    label_priorities: List[str],
+    label_prompt_mappings: Optional[Dict[str, str]],
+    label_priorities: Optional[List[str]],
     path: Optional[str] = None,
 ) -> Optional[str]:
     """Get the label-specific prompt template key.
