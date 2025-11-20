@@ -311,6 +311,44 @@ def check_claude_cli_or_fail() -> None:
     raise click.ClickException("Claude CLI is required. Please install it from:\n" "https://claude.ai/download")
 
 
+def check_cli_tool(tool_name: str, install_url: str, version_flag: str = "--version", cmd_override_env: Optional[str] = None) -> None:
+    """Generic CLI tool checker.
+
+    Args:
+        tool_name: Name of the CLI tool to check
+        install_url: URL with installation instructions for the tool
+        version_flag: Flag to use for version check (default: "--version")
+        cmd_override_env: Optional environment variable name that, if set, contains
+                         an override command to use instead of the tool name
+
+    Raises:
+        click.ClickException: If the CLI tool is not available or not working
+    """
+    # Check if override env var is set
+    override = os.environ.get(cmd_override_env) if cmd_override_env else None
+    if override:
+        cmd = shlex.split(override)
+        try:
+            result = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                click.echo(f"Using {tool_name} CLI")
+                return
+        except Exception:
+            pass
+        raise click.ClickException(f"{tool_name} CLI override ({cmd_override_env}) is set but not working")
+
+    # Default: check the actual CLI tool
+    try:
+        result = subprocess.run([tool_name, version_flag], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            click.echo(f"Using {tool_name} CLI")
+            return
+    except Exception:
+        pass
+
+    raise click.ClickException(f"{tool_name} CLI is required. Please install it from:\n{install_url}")
+
+
 def build_models_map() -> Dict[str, str]:
     """Compute per-backend model map with sensible defaults.
 

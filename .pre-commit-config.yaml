@@ -35,6 +35,6 @@ repos:
     - id: mypy
       name: mypy
       language: system
-      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run mypy; else mypy; fi'
+      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run mypy src/auto_coder; else mypy src/auto_coder; fi'
       pass_filenames: false
       types: [python]
