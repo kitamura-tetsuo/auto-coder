@@ -84,9 +84,9 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
 
 def _resolve_label_priority(
     issue_labels: List[str],
-    label_prompt_mappings: Dict[str, str],
-    label_priorities: Optional[List[str]],
-) -> Optional[str]:
+    label_prompt_mappings: Optional[Dict[Any, Any]],
+    label_priorities: Optional[List[Any]],
+) -> Optional[Any]:
     """Resolve highest priority label that has a prompt mapping.
 
     Args:
@@ -97,29 +97,69 @@ def _resolve_label_priority(
     Returns:
         The highest priority label that has a prompt mapping, or None if no applicable labels
     """
-    # Filter to labels with configured prompt mappings
-    applicable_labels = []
-    for label in issue_labels:
+    # Handle case where label_prompt_mappings is not a dict
+    if not isinstance(label_prompt_mappings, dict):
+        # If it's a list, convert to dict where each element maps to itself
+        if isinstance(label_prompt_mappings, list):
+            label_prompt_mappings = {item: item for item in label_prompt_mappings}
+        else:
+            return None
+
+    # Build a mapping from string representation to original mapping key
+    # This allows matching non-string types (float, bool, etc.) with string comparisons
+    str_to_original_key: Dict[str, Any] = {}
+    for mapping_key, prompt_key in label_prompt_mappings.items():
         try:
-            if label in label_prompt_mappings:
-                applicable_labels.append(label)
-        except TypeError:
-            # Skip unhashable types (e.g., dict, list)
+            str_key = str(mapping_key)
+            str_to_original_key[str_key] = mapping_key
+        except (AttributeError, TypeError):
+            # Skip keys that can't be converted to string
             continue
 
-    if not applicable_labels:
+    # Filter to labels with configured prompt mappings (case-sensitive)
+    # We use the string representation for matching but store the original mapping key
+    applicable_mapping_keys = []  # List of original mapping keys that match
+    for issue_label in issue_labels:
+        # Ensure label is a string for comparison
+        try:
+            issue_label_str = str(issue_label)
+        except (AttributeError, TypeError):
+            # Skip labels that can't be converted to string
+            continue
+        # Case-sensitive matching: exact match required
+        if issue_label_str in str_to_original_key:
+            # Use the original mapping key from the mappings configuration
+            original_mapping_key = str_to_original_key[issue_label_str]
+            applicable_mapping_keys.append(original_mapping_key)
+
+    if not applicable_mapping_keys:
         return None
 
-    # If priorities is None or empty, fallback to first applicable label (backward compatibility)
+    # For backward compatibility: if priorities is None, return first applicable mapping key
+    # This allows old code to work with just mappings, without priority system
+    if label_priorities is None:
+        return applicable_mapping_keys[0] if applicable_mapping_keys else None
+
+    # If priorities is empty list, fallback to first applicable mapping key
     if not label_priorities:
-        return applicable_labels[0]
+        return applicable_mapping_keys[0] if applicable_mapping_keys else None
 
-    # Sort by priority and return highest priority
+    # Sort by priority and return highest priority mapping key
+    # Check if any applicable labels match the priorities
     for priority_label in label_priorities:
-        if priority_label in applicable_labels:
-            return priority_label
+        try:
+            priority_str = str(priority_label)
+        except (AttributeError, TypeError):
+            # Skip priorities that can't be converted to string
+            continue
+        # Check if this priority matches any of the applicable mapping keys
+        for mapping_key in applicable_mapping_keys:
+            mapping_key_str = str(mapping_key)
+            if priority_str == mapping_key_str:
+                return mapping_key
 
-    return applicable_labels[0]  # Fallback to first applicable label
+    # If no exact match found, fall back to first applicable label
+    return applicable_mapping_keys[0] if applicable_mapping_keys else None
 
 
 def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
@@ -143,7 +183,7 @@ def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
 
 def _get_prompt_for_labels(
     issue_labels: List[str],
-    label_prompt_mappings: Dict[str, str],
+    label_prompt_mappings: Optional[Dict[str, str]],
     label_priorities: Optional[List[str]],
 ) -> Optional[str]:
     """Get the appropriate prompt template key based on issue labels.
@@ -196,8 +236,8 @@ def get_prompt_template(key: str, path: Optional[str] = None) -> str:
 
 def get_label_specific_prompt(
     labels: List[str],
-    label_prompt_mappings: Dict[str, str],
-    label_priorities: List[str],
+    label_prompt_mappings: Optional[Dict[str, str]],
+    label_priorities: Optional[List[str]],
     path: Optional[str] = None,
 ) -> Optional[str]:
     """Get the label-specific prompt template key.
@@ -271,6 +311,7 @@ def render_prompt(
     if labels and label_prompt_mappings and label_priorities:
         label_specific_key = _get_prompt_for_labels(labels, label_prompt_mappings, label_priorities)
 
+        # Only use label-specific prompt if we found a valid mapping
         if label_specific_key:
             logger.debug(f"Using label-specific prompt '{label_specific_key}' for labels: {labels}")
             try:

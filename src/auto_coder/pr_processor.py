@@ -373,11 +373,14 @@ def _get_pr_diff(repo_name: str, pr_number: int, config: AutomationConfig) -> st
 
 
 def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff: str, config: AutomationConfig) -> str:
-    """Create a PR prompt that prioritizes direct code changes over comments."""
+    """Create a PR prompt that prioritizes direct code changes over comments with label-based selection."""
     # Get commit log since branch creation
     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
     body_text = (pr_data.get("body") or "")[: config.MAX_PROMPT_SIZE]
+    # Extract PR labels for label-based prompt selection
+    pr_labels_list = pr_data.get("labels", []) or []
+
     result: str = render_prompt(
         "pr.action",
         repo_name=repo_name,
@@ -391,6 +394,9 @@ def _create_pr_analysis_prompt(repo_name: str, pr_data: Dict[str, Any], pr_diff:
         diff_limit=config.MAX_PR_DIFF_SIZE,
         pr_diff=pr_diff,
         commit_log=commit_log or "(No commit history)",
+        labels=pr_labels_list,
+        label_prompt_mappings=config.pr_label_prompt_mappings,
+        label_priorities=config.label_priorities,
     )
     return result
 

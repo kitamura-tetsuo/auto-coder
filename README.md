@@ -348,6 +348,179 @@ If you were using the old environment variables (`GEMINI_API_KEY`, `OPENAI_API_K
 auto-coder config migrate
 ```
 
+## Label-Based Prompt Routing
+
+Auto-Coder includes an intelligent label-based prompt system that dynamically selects appropriate prompt templates based on GitHub issue and PR labels. This enables more targeted and effective AI-driven automation by using context-specific instructions.
+
+### Overview
+
+The label-based prompt system works by:
+
+1. **Analyzing Labels**: Examining labels on GitHub issues and PRs
+2. **Priority Resolution**: Selecting the highest priority applicable label when multiple labels exist
+3. **Prompt Selection**: Using the selected label to choose an appropriate prompt template
+4. **Special Handling**: Applying special behaviors for breaking-change and urgent issues
+
+### Default Label Categories
+
+**Breaking-Change Labels** (highest priority):
+- `breaking-change`, `breaking`, `api-change`, `deprecation`, `version-major`
+
+**Priority Labels**:
+- `urgent`, `high-priority`, `critical`, `blocker`, `asap`
+
+**Issue Type Labels**:
+- `bug`, `bugfix`, `defect`, `error`, `fix`, `hotfix`, `patch`
+- `enhancement`, `feature`, `improvement`, `new-feature`
+- `refactor`, `optimization`, `optimisation`
+- `documentation`, `docs`, `doc`, `readme`, `guide`
+
+### Configuration
+
+You can configure the label-based prompt system using environment variables:
+
+#### Basic Setup
+
+```bash
+# Configure label-to-prompt mappings
+export AUTO_CODER_LABEL_PROMPT_MAPPINGS='{
+  "bug": "issue.bug",
+  "enhancement": "issue.enhancement",
+  "urgent": "issue.urgent",
+  "breaking-change": "issue.breaking_change",
+  "documentation": "issue.documentation"
+}'
+
+# Set priority order (highest priority first)
+export AUTO_CODER_LABEL_PRIORITIES='[
+  "breaking-change",
+  "urgent",
+  "bug",
+  "enhancement",
+  "documentation"
+]'
+```
+
+#### PR Label Copying
+
+The system can automatically copy semantic labels from issues to their corresponding PRs:
+
+```bash
+# Enable/disable (default: true)
+export AUTO_CODER_PR_LABEL_COPYING_ENABLED='true'
+
+# Maximum labels to copy (default: 3, range: 0-10)
+export AUTO_CODER_PR_MAX_LABELS='3'
+
+# Configure PR label mappings
+export AUTO_CODER_PR_LABEL_MAPPINGS='{
+  "breaking-change": ["breaking-change", "breaking"],
+  "urgent": ["urgent", "critical"],
+  "bug": ["bug", "bugfix", "defect"],
+  "enhancement": ["enhancement", "feature"],
+  "documentation": ["documentation", "docs"]
+}'
+
+# Set PR label priorities
+export AUTO_CODER_PR_LABEL_PRIORITIES='[
+  "urgent",
+  "breaking-change",
+  "bug",
+  "enhancement",
+  "documentation"
+]'
+```
+
+### How It Works
+
+**Priority Resolution Example:**
+
+If an issue has labels: `["bug", "enhancement", "urgent"]`
+And priorities are: `["urgent", "bug", "enhancement"]`
+Then the system uses the `urgent` prompt (highest priority).
+
+**Breaking-Change Detection:**
+
+Labels in the breaking-change category trigger special handling:
+- Automatically deletes failing tests that test removed features
+- Provides version bump recommendations (major version bump)
+- Generates migration guides
+- Updates CHANGELOG with breaking changes
+- Ensures backward compatibility guidance
+
+### Complete Example Configuration
+
+Create a `.env` file:
+
+```bash
+# Label prompt mappings
+AUTO_CODER_LABEL_PROMPT_MAPPINGS='{
+  "bug": "issue.bug",
+  "bugfix": "issue.bug",
+  "enhancement": "issue.enhancement",
+  "feature": "issue.enhancement",
+  "urgent": "issue.urgent",
+  "critical": "issue.urgent",
+  "breaking-change": "issue.breaking_change",
+  "documentation": "issue.documentation"
+}'
+
+# Label priorities
+AUTO_CODER_LABEL_PRIORITIES='[
+  "breaking-change",
+  "urgent",
+  "bug",
+  "enhancement",
+  "documentation"
+]'
+
+# PR label mappings
+AUTO_CODER_PR_LABEL_MAPPINGS='{
+  "breaking-change": ["breaking-change"],
+  "urgent": ["urgent", "critical"],
+  "bug": ["bug", "bugfix"],
+  "enhancement": ["enhancement", "feature"],
+  "documentation": ["documentation"]
+}'
+
+# PR label priorities
+AUTO_CODER_PR_LABEL_PRIORITIES='[
+  "urgent",
+  "breaking-change",
+  "bug",
+  "enhancement",
+  "documentation"
+]'
+
+# PR label copying
+AUTO_CODER_PR_LABEL_COPYING_ENABLED='true'
+AUTO_CODER_PR_MAX_LABELS='3'
+```
+
+### Project-Specific Examples
+
+See the `examples/` directory for detailed configuration templates for different project types:
+- [TypeScript/JavaScript projects](examples/typescript-project-config.json)
+- [Python projects](examples/python-project-config.json)
+- [Comprehensive configuration](examples/label-config.json)
+- [Minimal setup](examples/minimal-config.env)
+
+### Testing Your Configuration
+
+```bash
+# Process a specific issue to test label-based prompts
+auto-coder process-issues --repo owner/repo --only 123
+
+# Check configuration
+auto-coder config show
+```
+
+### Documentation
+
+For complete documentation with all options and best practices, see:
+- [Label-Based Prompt Configurations](examples/label-based-prompt-configurations.md)
+- [client-features.yaml](docs/client-features.yaml) (technical specification)
+
 ## GraphRAG Integration (Experimental Feature)
 
 Auto-Coder supports GraphRAG (Graph Retrieval-Augmented Generation) integration using Neo4j and Qdrant.

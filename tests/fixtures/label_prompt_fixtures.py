@@ -81,8 +81,10 @@ TEST_LABEL_PROMPT_MAPPINGS = {
     "version-major": "issue.breaking_change",
     "urgent": "issue.urgent",
     "bug": "issue.bugfix",
-    "feature": "issue.feature",
+    "bugfix": "issue.bugfix",
+    "feature": "issue.enhancement",
     "enhancement": "issue.enhancement",
+    "improvement": "issue.enhancement",
     "documentation": "issue.documentation",
 }
 
@@ -106,7 +108,10 @@ TEST_LABEL_PRIORITIES = [
 TEST_PR_LABEL_MAPPINGS = {
     "breaking-change": [
         "breaking-change",
+        "breaking change",
+        "bc-breaking",
         "breaking",
+        "incompatible",
         "api-change",
         "deprecation",
         "version-major",
@@ -115,9 +120,11 @@ TEST_PR_LABEL_MAPPINGS = {
     "bug": [
         "bug",
         "bugfix",
-        "defect",
-        "error",
         "fix",
+        "error",
+        "issue",
+        "defect",
+        "broken",
         "hotfix",
         "patch",
     ],
@@ -132,6 +139,8 @@ TEST_PR_LABEL_MAPPINGS = {
         "enhancement",
         "feature",
         "improvement",
+        "feat",
+        "request",
         "new-feature",
         "refactor",
         "optimization",
@@ -145,6 +154,12 @@ TEST_PR_LABEL_MAPPINGS = {
         "priority-high",
         "blocker",
     ],
+    "question": [
+        "question",
+        "help wanted",
+        "support",
+        "q&a",
+    ],
 }
 
 
@@ -155,6 +170,7 @@ TEST_PR_LABEL_PRIORITIES = [
     "bug",
     "enhancement",
     "documentation",
+    "question",
 ]
 
 

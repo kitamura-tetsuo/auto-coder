@@ -1,0 +1,103 @@
+# Test prompt template for breaking-change issues
+# This template includes specialized instructions for handling breaking changes
+
+header: |
+  Read AGENTS.md before proceeding if you haven't read it yet.
+
+issue:
+  breaking_change: |
+    You are processing a GitHub issue with the 'breaking-change' label.
+
+    BREAKING CHANGE REQUIREMENTS:
+    - This issue involves breaking changes that may break existing functionality
+    - Tests that fail due to breaking changes should be DELETED, not fixed
+    - Update version numbers according to semantic versioning (major version bump)
+    - Add migration guide for users to update their code
+    - Document all breaking changes clearly
+    - Consider backward compatibility impact
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Breaking Change Detected: YES
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    CRITICAL BREAKING CHANGE DIRECTIVES:
+    1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them
+    2. VERSION BUMP: Update version numbers with major version increment (semantic versioning)
+    3. MIGRATION GUIDE: Create clear migration instructions for users
+    4. DEPRECATION NOTICE: Document deprecated features and replacement approaches
+    5. BACKWARD COMPATIBILITY: Assess and document compatibility impact
+
+    COMMITMENT TO QUALITY:
+    - Breaking changes must be intentional and well-documented
+    - Users must be able to migrate their code successfully
+    - Version numbers must accurately reflect breaking changes
+    - No existing functionality should work incorrectly without clear migration path
+
+    Please proceed with analyzing and implementing this breaking change now.
+
+pr:
+  breaking_change: |
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'breaking-change' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
+
+    BREAKING CHANGE REQUIREMENTS:
+    - This PR involves breaking changes that may break existing functionality
+    - Tests that fail due to breaking changes should be DELETED, not fixed
+    - Update version numbers according to semantic versioning (major version bump)
+    - Add migration guide for users to update their code
+    - Document all breaking changes clearly
+    - Consider backward compatibility impact
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    CRITICAL BREAKING CHANGE DIRECTIVES:
+    1. TEST FAILURES: If tests fail due to this breaking change, DELETE them instead of fixing them
+    2. VERSION BUMP: Update version numbers with major version increment (semantic versioning)
+    3. MIGRATION GUIDE: Create clear migration instructions for users
+    4. DEPRECATION NOTICE: Document deprecated features and replacement approaches
+    5. BACKWARD COMPATIBILITY: Assess and document compatibility impact
+
+    COMMITMENT TO QUALITY:
+    - Breaking changes must be intentional and well-documented
+    - Users must be able to migrate their code successfully
+    - Version numbers must accurately reflect breaking changes
+    - No existing functionality should work incorrectly without clear migration path
+
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
+
+    Please proceed with analyzing and implementing this breaking change now.

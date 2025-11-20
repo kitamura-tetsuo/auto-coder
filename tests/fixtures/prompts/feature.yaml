@@ -1,0 +1,125 @@
+# Test prompt template for feature/enhancement issues
+# This template includes specialized instructions for new features
+
+header: |
+  Read AGENTS.md before proceeding if you haven't read it yet.
+
+issue:
+  enhancement: |
+    You are processing a GitHub issue with the 'enhancement' label.
+
+    ENHANCEMENT REQUIREMENTS:
+    - This issue requests a new feature or improvement to existing functionality
+    - Focus on implementing clean, maintainable, and well-tested code
+    - Consider architecture and design patterns
+    - Ensure backward compatibility unless explicitly stated otherwise
+    - Add comprehensive tests for new functionality
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Issue Type: ENHANCEMENT
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if you proceed.
+
+    ENHANCEMENT DIRECTIVES:
+    1. DESIGN: Consider architecture and design patterns before implementing
+    2. MAINTAINABILITY: Write clean, readable, and maintainable code
+    3. TESTING: Add comprehensive tests for new functionality
+    4. DOCUMENTATION: Update documentation and comments as needed
+    5. COMPATIBILITY: Ensure backward compatibility unless breaking change is intended
+
+    DEVELOPMENT APPROACH:
+    - Understand the requested enhancement and its use cases
+    - Consider how it fits into existing architecture
+    - Design a clean and maintainable implementation
+    - Write comprehensive tests (unit, integration, e2e as appropriate)
+    - Document new functionality clearly
+    - Consider performance and scalability implications
+
+    Please analyze this enhancement request and determine the appropriate action:
+
+    1. If you need clarification or more details, add a comment requesting more information
+    2. If this is a duplicate or already exists, close it with an appropriate reference
+    3. If this is valid but needs more than about 30 file changes, break it down into multiple smaller sub issues via gh-sub-issue
+    4. If this is a valid enhancement that can be implemented, provide analysis and implementation
+
+    For valid enhancements:
+    - Analyze the requirements and design a solution
+    - Implement the necessary code changes following best practices
+    - Create or modify files as needed
+    - Add comprehensive tests for the new functionality
+    - Update documentation if needed
+    - Keep open the issue
+    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and implementing this enhancement now.
+
+pr:
+  enhancement: |
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'enhancement' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
+
+    ENHANCEMENT PR REQUIREMENTS:
+    - This PR implements a new feature or improvement to existing functionality
+    - Focus on implementing clean, maintainable, and well-tested code
+    - Consider architecture and design patterns
+    - Ensure backward compatibility unless explicitly stated otherwise
+    - Add comprehensive tests for new functionality
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    ENHANCEMENT PR DIRECTIVES:
+    1. DESIGN: Consider architecture and design patterns before implementing
+    2. MAINTAINABILITY: Write clean, readable, and maintainable code
+    3. TESTING: Add comprehensive tests for new functionality
+    4. DOCUMENTATION: Update documentation and comments as needed
+    5. COMPATIBILITY: Ensure backward compatibility unless breaking change is intended
+
+    DEVELOPMENT APPROACH:
+    - Understand the requested enhancement and its use cases
+    - Consider how it fits into existing architecture
+    - Design a clean and maintainable implementation
+    - Write comprehensive tests (unit, integration, e2e as appropriate)
+    - Document new functionality clearly
+    - Consider performance and scalability implications
+
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
+
+    Please proceed with analyzing and implementing this enhancement now.

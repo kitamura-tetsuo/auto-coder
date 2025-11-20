@@ -495,3 +495,227 @@ class TestPRLabelCopying:
 
             # Verify PR was still created successfully
             assert f"Successfully created PR for issue #{issue_number}" in result
+
+
+class TestLabelBasedIssueProcessing:
+    """Test label-based issue processing functionality."""
+
+    def test_breaking_change_issue_detection(self):
+        """Test detection and processing of breaking-change labeled issues."""
+        from src.auto_coder.prompt_loader import _is_breaking_change_issue
+
+        # Test breaking-change label detection
+        issue_labels = ["breaking-change", "bug"]
+        assert _is_breaking_change_issue(issue_labels) is True
+
+        # Test api-change label
+        issue_labels = ["api-change", "enhancement"]
+        assert _is_breaking_change_issue(issue_labels) is True
+
+        # Test deprecation label
+        issue_labels = ["deprecation", "documentation"]
+        assert _is_breaking_change_issue(issue_labels) is True
+
+        # Test version-major label
+        issue_labels = ["version-major", "feature"]
+        assert _is_breaking_change_issue(issue_labels) is True
+
+        # Test non-breaking labels
+        issue_labels = ["bug", "enhancement", "documentation"]
+        assert _is_breaking_change_issue(issue_labels) is False
+
+    def test_label_based_prompt_selection_in_issue_processing(self):
+        """Test label-based prompt selection in issue processing."""
+        from src.auto_coder.prompt_loader import get_label_specific_prompt
+
+        # Test urgent label priority
+        labels = ["urgent", "bug", "feature"]
+        mappings = {
+            "urgent": "issue.urgent",
+            "bug": "issue.bug",
+            "feature": "issue.feature",
+        }
+        priorities = ["urgent", "bug", "feature"]
+        result = get_label_specific_prompt(labels, mappings, priorities)
+        assert result == "issue.urgent"
+
+        # Test bug label handling
+        labels = ["bug", "feature"]
+        priorities = ["urgent", "bug", "feature"]
+        result = get_label_specific_prompt(labels, mappings, priorities)
+        assert result == "issue.bug"
+
+        # Test feature label handling
+        labels = ["feature", "documentation"]
+        priorities = ["urgent", "bug", "feature", "documentation"]
+        result = get_label_specific_prompt(labels, mappings, priorities)
+        assert result == "issue.feature"
+
+        # Test priority resolution with multiple labels
+        labels = ["urgent", "breaking-change"]
+        mappings["breaking-change"] = "issue.breaking_change"
+        priorities = ["breaking-change", "urgent", "bug", "feature"]
+        result = get_label_specific_prompt(labels, mappings, priorities)
+        assert result == "issue.breaking_change"
+
+    def test_issue_processing_with_different_label_types(self, tmp_path):
+        """Test issue processing with different label types."""
+        from src.auto_coder.prompt_loader import clear_prompt_cache, render_prompt
+
+        # Create test prompt file
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'issue:\n  action: "Default: $issue_number"\n' '  bug: "Bug fix: $issue_number"\n' '  feature: "Feature: $issue_number"\n' '  breaking_change: "Breaking: $issue_number"\n' '  urgent: "Urgent: $issue_number"\n' '  documentation: "Docs: $issue_number"\n',
+            encoding="utf-8",
+        )
+
+        # Test bug label
+        clear_prompt_cache()
+        labels = ["bug"]
+        mappings = {"bug": "issue.bug"}
+        priorities = ["bug"]
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            labels=labels,
+            label_prompt_mappings=mappings,
+            label_priorities=priorities,
+            issue_number="123",
+        )
+        assert "Bug fix: 123" in result
+
+        # Test feature label
+        clear_prompt_cache()
+        labels = ["feature"]
+        mappings = {"feature": "issue.feature"}
+        priorities = ["feature"]
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            labels=labels,
+            label_prompt_mappings=mappings,
+            label_priorities=priorities,
+            issue_number="456",
+        )
+        assert "Feature: 456" in result
+
+        # Test urgent label
+        clear_prompt_cache()
+        labels = ["urgent"]
+        mappings = {"urgent": "issue.urgent"}
+        priorities = ["urgent"]
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            labels=labels,
+            label_prompt_mappings=mappings,
+            label_priorities=priorities,
+            issue_number="789",
+        )
+        assert "Urgent: 789" in result
+
+        # Test breaking-change label
+        clear_prompt_cache()
+        labels = ["breaking-change"]
+        mappings = {"breaking-change": "issue.breaking_change"}
+        priorities = ["breaking-change"]
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            labels=labels,
+            label_prompt_mappings=mappings,
+            label_priorities=priorities,
+            issue_number="999",
+        )
+        assert "Breaking: 999" in result
+
+    def test_label_processing_error_handling(self):
+        """Test error handling in label-based processing."""
+        from src.auto_coder.prompt_loader import get_label_specific_prompt
+
+        # Test missing label-specific prompts
+        labels = ["custom-label"]
+        mappings = {"bug": "issue.bugfix"}
+        priorities = ["bug"]
+        result = get_label_specific_prompt(labels, mappings, priorities)
+        assert result is None
+
+        # Test invalid label configurations - should handle gracefully
+        labels = []
+        mappings = {"bug": "issue.bugfix"}
+        priorities = ["bug"]
+        result = get_label_specific_prompt(labels, mappings, priorities)
+        assert result is None
+
+        # Test None inputs
+        result = get_label_specific_prompt(None, None, None)
+        assert result is None
+
+    def test_issue_with_multiple_labels_uses_highest_priority(self, tmp_path):
+        """Test that issue with multiple labels uses the highest priority label."""
+        from src.auto_coder.prompt_loader import clear_prompt_cache, render_prompt
+
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'issue:\n  action: "Default"\n' '  bug: "Bug prompt"\n' '  feature: "Feature prompt"\n' '  urgent: "Urgent prompt"\n',
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+        labels = ["bug", "feature", "urgent"]
+        mappings = {
+            "bug": "issue.bug",
+            "feature": "issue.feature",
+            "urgent": "issue.urgent",
+        }
+        priorities = ["urgent", "bug", "feature"]
+
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            labels=labels,
+            label_prompt_mappings=mappings,
+            label_priorities=priorities,
+        )
+
+        # Urgent should be selected (highest priority)
+        assert "Urgent prompt" in result
+
+    def test_issue_without_labels_falls_back_to_default(self, tmp_path):
+        """Test that issue without labels falls back to default prompt."""
+        from src.auto_coder.prompt_loader import clear_prompt_cache, render_prompt
+
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'issue:\n  action: "Default prompt"\n',
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+        labels = []
+        mappings = {"bug": "issue.bug"}
+        priorities = ["bug"]
+
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            labels=labels,
+            label_prompt_mappings=mappings,
+            label_priorities=priorities,
+        )
+
+        # Should fall back to default
+        assert "Default prompt" in result
+
+    def test_case_insensitive_label_matching(self):
+        """Test that label matching is case-insensitive."""
+        from src.auto_coder.prompt_loader import _is_breaking_change_issue
+
+        # Test breaking-change detection with different cases
+        assert _is_breaking_change_issue(["BREAKING-CHANGE"]) is True
+        assert _is_breaking_change_issue(["Breaking-Change"]) is True
+        assert _is_breaking_change_issue(["breaking-change"]) is True
+
+        # Test that non-breaking labels are correctly identified
+        assert _is_breaking_change_issue(["bug"]) is False
+        assert _is_breaking_change_issue(["FEATURE"]) is False

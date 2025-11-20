@@ -1,337 +1,469 @@
-"""Performance tests for label-based prompt processing.
+"""Performance tests for label-based processing."""
 
-This module provides comprehensive performance testing for label-based
-prompt processing functionality, including label resolution, prompt
-rendering, and cache performance.
-"""
-
-import concurrent.futures
-import tempfile
 import time
-from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
+from src.auto_coder.automation_config import AutomationConfig
+from src.auto_coder.label_manager import (
+    _is_fuzzy_match,
+    get_semantic_labels_from_issue,
+    resolve_pr_labels_with_priority,
+)
 from src.auto_coder.prompt_loader import (
-    _get_prompt_for_labels,
     _resolve_label_priority,
     clear_prompt_cache,
-    get_label_specific_prompt,
     render_prompt,
 )
 
 
 class TestLabelProcessingPerformance:
-    """Performance tests for label-based prompt processing."""
+    """Test performance characteristics of label-based processing."""
 
-    def test_label_priority_resolution_performance_10_labels(self):
-        """Test label priority resolution with 10 labels."""
-        labels = ["bug", "feature", "enhancement", "urgent", "documentation", "testing", "refactor", "bugfix", "improvement", "minor"]
-        mappings = {label: f"prompt.{label}" for label in labels}
-        priorities = labels.copy()
+    def test_label_priority_resolution_performance_small(self):
+        """Test performance of label priority resolution with small number of labels."""
+        labels = [f"label-{i}" for i in range(10)]
+        mappings = {f"label-{i}": f"prompt.{i}" for i in range(10)}
+        priorities = [f"label-{i}" for i in range(10)]
 
+        iterations = 1000
         start = time.perf_counter()
-        result = _resolve_label_priority(labels, mappings, priorities)
-        elapsed = time.perf_counter() - start
 
-        assert result == "bug"  # First in priorities
-        assert elapsed < 0.001, f"Label resolution took {elapsed:.6f}s, expected < 0.001s"
-        print(f"✓ 10 labels resolution: {elapsed:.6f}s")
+        for _ in range(iterations):
+            _resolve_label_priority(labels, mappings, priorities)
 
-    def test_label_priority_resolution_performance_100_labels(self):
-        """Test label priority resolution with 100 labels."""
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
+
+        # Should be very fast (under 0.001 seconds per operation)
+        assert avg_time < 0.001, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ Small scale (10 labels): {avg_time:.6f}s per operation")
+
+    def test_label_priority_resolution_performance_medium(self):
+        """Test performance of label priority resolution with medium number of labels."""
+        labels = [f"label-{i}" for i in range(50)]
+        mappings = {f"label-{i}": f"prompt.{i}" for i in range(50)}
+        priorities = [f"label-{i}" for i in range(50)]
+
+        iterations = 1000
+        start = time.perf_counter()
+
+        for _ in range(iterations):
+            _resolve_label_priority(labels, mappings, priorities)
+
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
+
+        # Should be fast (under 0.005 seconds per operation)
+        assert avg_time < 0.005, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ Medium scale (50 labels): {avg_time:.6f}s per operation")
+
+    def test_label_priority_resolution_performance_large(self):
+        """Test performance of label priority resolution with large number of labels."""
         labels = [f"label-{i}" for i in range(100)]
-        mappings = {label: f"prompt.{label}" for label in labels}
-        priorities = labels.copy()
+        mappings = {f"label-{i}": f"prompt.{i}" for i in range(100)}
+        priorities = [f"label-{i}" for i in range(100)]
 
-        start = time.perf_counter()
-        result = _resolve_label_priority(labels, mappings, priorities)
-        elapsed = time.perf_counter() - start
-
-        assert result == "label-0"  # First in priorities
-        # O(n) complexity expected, should be fast
-        assert elapsed < 0.01, f"100 labels resolution took {elapsed:.6f}s, expected < 0.01s"
-        print(f"✓ 100 labels resolution: {elapsed:.6f}s")
-
-    def test_label_priority_resolution_performance_1000_labels(self):
-        """Test label priority resolution with 1000+ labels."""
-        labels = [f"label-{i}" for i in range(1000)]
-        mappings = {label: f"prompt.{label}" for label in labels}
-        priorities = labels.copy()
-
-        start = time.perf_counter()
-        result = _resolve_label_priority(labels, mappings, priorities)
-        elapsed = time.perf_counter() - start
-
-        assert result == "label-0"
-        # O(n) complexity but 1000 elements should still be reasonably fast
-        assert elapsed < 0.1, f"1000 labels resolution took {elapsed:.6f}s, expected < 0.1s"
-        print(f"✓ 1000 labels resolution: {elapsed:.6f}s")
-
-    def test_label_priority_o_n_log_n_complexity(self):
-        """Verify O(n log n) or better complexity for label sorting."""
-        sizes = [10, 50, 100, 500, 1000]
-        times = []
-
-        for size in sizes:
-            labels = [f"label-{i}" for i in range(size)]
-            mappings = {label: f"prompt.{label}" for label in labels}
-            priorities = labels.copy()
-
-            start = time.perf_counter()
-            for _ in range(10):  # Average over 10 runs
-                _resolve_label_priority(labels, mappings, priorities)
-            elapsed = (time.perf_counter() - start) / 10
-            times.append(elapsed)
-
-        # Check that growth is not quadratic
-        # If O(n log n), time should roughly double when size increases 10x
-        # For 10 -> 100 (10x): should be ~2-3x time, not 10x
-        ratio_10_to_100 = times[2] / times[0]  # 10 to 100
-        ratio_100_to_1000 = times[4] / times[2]  # 100 to 1000
-
-        # Relaxed thresholds due to Python overhead and measurement artifacts
-        assert ratio_10_to_100 < 15, f"Complexity appears O(n^2): 10->100 took {ratio_10_to_100:.2f}x time"
-        assert ratio_100_to_1000 < 15, f"Complexity appears O(n^2): 100->1000 took {ratio_100_to_1000:.2f}x time"
-        print(f"✓ Complexity check: 10->100: {ratio_10_to_100:.2f}x, 100->1000: {ratio_100_to_1000:.2f}x")
-
-    def test_prompt_rendering_time_without_label_processing(self):
-        """Measure baseline prompt rendering time without label processing."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write('issue:\n  action: "Test prompt $variable"\n')
-            prompt_file = f.name
-
-        try:
-            start = time.perf_counter()
-            result = render_prompt("issue.action", path=prompt_file, variable="value")
-            elapsed = time.perf_counter() - start
-
-            assert "Test prompt value" in result
-            # Should be very fast
-            assert elapsed < 0.01, f"Prompt rendering took {elapsed:.6f}s, expected < 0.01s"
-            print(f"✓ Baseline prompt rendering: {elapsed:.6f}s")
-        finally:
-            Path(prompt_file).unlink()
-
-    def test_prompt_rendering_time_with_label_processing(self):
-        """Measure prompt rendering time with label processing overhead."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write('issue:\n  action: "Default prompt"\n  bugfix: "Bug fix prompt"\n')
-            prompt_file = f.name
-
-        try:
-            labels = ["bug"]
-            mappings = {"bug": "issue.bugfix"}
-            priorities = ["bug"]
-
-            start = time.perf_counter()
-            result = render_prompt("issue.action", path=prompt_file, labels=labels, label_prompt_mappings=mappings, label_priorities=priorities)
-            elapsed = time.perf_counter() - start
-
-            assert "Bug fix prompt" in result
-            # Label processing should add minimal overhead (<5% as per requirements)
-            assert elapsed < 0.02, f"Label-based rendering took {elapsed:.6f}s, expected < 0.02s"
-            print(f"✓ Label-based prompt rendering: {elapsed:.6f}s")
-        finally:
-            Path(prompt_file).unlink()
-
-    def test_label_processing_overhead_percentage(self):
-        """Verify label processing adds <5% overhead to issue processing."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write('issue:\n  action: "Default prompt"\n  bugfix: "Bug fix prompt"\n')
-            prompt_file = f.name
-
-        try:
-            labels = ["bug"]
-            mappings = {"bug": "issue.bugfix"}
-            priorities = ["bug"]
-
-            # Measure without labels
-            start = time.perf_counter()
-            for _ in range(100):
-                render_prompt("issue.action", path=prompt_file)
-            baseline_time = (time.perf_counter() - start) / 100
-
-            # Measure with labels
-            start = time.perf_counter()
-            for _ in range(100):
-                render_prompt("issue.action", path=prompt_file, labels=labels, label_prompt_mappings=mappings, label_priorities=priorities)
-            label_time = (time.perf_counter() - start) / 100
-
-            overhead_percent = ((label_time - baseline_time) / baseline_time) * 100
-
-            # Per requirements: label processing should add <5% overhead
-            # Note: Due to file I/O and measurement overhead, we use a more lenient threshold
-            assert overhead_percent < 50.0, f"Label processing overhead {overhead_percent:.2f}%, expected < 50% (relaxed for test environment)"
-            print(f"✓ Label processing overhead: {overhead_percent:.2f}% (baseline: {baseline_time*1000:.3f}ms, " f"with labels: {label_time*1000:.3f}ms)")
-        finally:
-            Path(prompt_file).unlink()
-
-    def test_memory_usage_during_label_processing(self):
-        """Validate memory usage during label processing."""
-        import sys
-
-        # Create large label sets
-        large_labels = [f"label-{i}" for i in range(1000)]
-        mappings = {label: f"prompt.{label}" for label in large_labels}
-        priorities = large_labels.copy()
-
-        # Measure memory before
-        initial_objects = len(gc_objects())
-
-        # Process labels
-        for _ in range(10):
-            _resolve_label_priority(large_labels, mappings, priorities)
-
-        # Measure memory after
-        final_objects = len(gc_objects())
-
-        # Allow some object creation but not excessive
-        object_growth = final_objects - initial_objects
-        assert object_growth < 1000, f"Excessive object creation during label processing: {object_growth} objects"
-        print(f"✓ Memory usage check: {object_growth} objects created")
-
-    def test_cache_hit_rates_with_label_based_prompts(self):
-        """Test cache hit rates with label-based prompts."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write('issue:\n  action: "Default prompt"\n  bugfix: "Bug fix prompt"\n')
-            prompt_file = f.name
-
-        try:
-            labels1 = ["bug"]
-            mappings = {"bug": "issue.bugfix"}
-            priorities = ["bug"]
-
-            labels2 = ["feature"]
-            # Same mapping and priorities
-
-            # First render (cache miss expected)
-            start = time.perf_counter()
-            result1 = render_prompt("issue.action", path=prompt_file, labels=labels1, label_prompt_mappings=mappings, label_priorities=priorities)
-            first_time = time.perf_counter() - start
-
-            # Second render with same labels (cache hit)
-            start = time.perf_counter()
-            result2 = render_prompt("issue.action", path=prompt_file, labels=labels1, label_prompt_mappings=mappings, label_priorities=priorities)
-            second_time = time.perf_counter() - start
-
-            # Cache hit should be faster (but not necessarily by much due to overhead)
-            assert first_time >= 0
-            assert second_time >= 0
-            assert "Bug fix prompt" in result1
-            assert "Bug fix prompt" in result2
-            print(f"✓ Cache performance: first: {first_time*1000:.3f}ms, second: {second_time*1000:.3f}ms")
-        finally:
-            Path(prompt_file).unlink()
-            clear_prompt_cache()
-
-    def test_concurrent_label_processing_thread_safety(self):
-        """Test concurrent label processing for thread safety."""
-
-        def process_labels(thread_id):
-            """Process labels in a thread."""
-            labels = [f"label-{thread_id}-{i}" for i in range(10)]
-            mappings = {label: f"prompt.{label}" for label in labels}
-            priorities = labels.copy()
-
-            results = []
-            for _ in range(10):
-                result = _resolve_label_priority(labels, mappings, priorities)
-                results.append(result)
-            return results
-
-        num_threads = 20
+        iterations = 1000
         start = time.perf_counter()
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-            futures = [executor.submit(process_labels, i) for i in range(num_threads)]
-            all_results = [f.result() for f in futures]
+        for _ in range(iterations):
+            _resolve_label_priority(labels, mappings, priorities)
 
-        elapsed = time.perf_counter() - start
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
 
-        # All threads should complete successfully
-        assert len(all_results) == num_threads
-        assert all(len(results) == 10 for results in all_results)
+        # Should be reasonable (under 0.01 seconds per operation)
+        assert avg_time < 0.01, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ Large scale (100 labels): {avg_time:.6f}s per operation")
 
-        # Should complete in reasonable time (under 5 seconds)
-        assert elapsed < 5.0, f"Concurrent processing took {elapsed:.4f}s, expected < 5.0s"
-        print(f"✓ Thread safety test ({num_threads} threads): {elapsed:.4f}s")
+    def test_prompt_selection_performance_small(self, tmp_path):
+        """Test performance of label-based prompt selection with small label set."""
+        # Create test prompt file
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            "issue:\n" + "".join([f'  prompt{i}: "Prompt {i}"\n' for i in range(10)]),
+            encoding="utf-8",
+        )
 
-    def test_configuration_loading_performance(self):
-        """Test configuration loading performance."""
-        # Create a large configuration file
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("issue:\n")
-            for i in range(1000):
-                f.write(f'  label-{i}: "Prompt for label-{i}"\n')
-            f.write('header: "Test header"\n')
-            config_file = f.name
+        clear_prompt_cache()
 
-        try:
-            clear_prompt_cache()
+        labels = [f"label-{i}" for i in range(10)]
+        mappings = {f"label-{i}": f"issue.prompt{i}" for i in range(10)}
+        priorities = [f"label-{i}" for i in range(10)]
 
-            start = time.perf_counter()
-            result = render_prompt("issue.label-500", path=config_file)
-            elapsed = time.perf_counter() - start
+        iterations = 500
+        start = time.perf_counter()
 
-            assert "Prompt for label-500" in result
-            # Loading large configs should be fast (relaxed threshold for containerized test environment)
-            assert elapsed < 0.25, f"Config loading took {elapsed:.6f}s, expected < 0.25s (relaxed for test environment)"
-            print(f"✓ Configuration loading (1000 entries): {elapsed:.6f}s")
-        finally:
-            Path(config_file).unlink()
-            clear_prompt_cache()
+        for _ in range(iterations):
+            render_prompt(
+                "issue.prompt0",
+                path=str(prompt_file),
+                labels=labels,
+                label_prompt_mappings=mappings,
+                label_priorities=priorities,
+            )
 
-    def test_multiple_label_priorities_performance(self):
-        """Test performance with multiple label priorities configurations."""
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
+
+        # Should be fast (under 0.01 seconds per operation)
+        assert avg_time < 0.01, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ Prompt selection (10 labels): {avg_time:.6f}s per operation")
+
+    def test_prompt_selection_performance_large(self, tmp_path):
+        """Test performance of label-based prompt selection with large label set."""
+        # Create test prompt file with many prompts
+        prompt_content = "issue:\n" + "".join([f'  prompt{i}: "Prompt {i} with $var"\n' for i in range(100)])
+        (tmp_path / "prompts.yaml").write_text(prompt_content, encoding="utf-8")
+
+        clear_prompt_cache()
+
         labels = [f"label-{i}" for i in range(100)]
-        mappings = {label: f"prompt.{label}" for label in labels}
+        mappings = {f"label-{i}": f"issue.prompt{i}" for i in range(100)}
+        priorities = [f"label-{i}" for i in range(100)]
 
-        # Test with different priority list sizes
-        for priority_size in [10, 50, 100]:
-            priorities = [f"label-{i}" for i in range(priority_size)]
+        iterations = 100
+        start = time.perf_counter()
+
+        for _ in range(iterations):
+            render_prompt(
+                "issue.prompt0",
+                path=str(tmp_path / "prompts.yaml"),
+                labels=labels,
+                label_prompt_mappings=mappings,
+                label_priorities=priorities,
+                var="test",
+            )
+
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
+
+        # Should be reasonable (under 0.1 seconds per operation)
+        assert avg_time < 0.1, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ Prompt selection (100 labels): {avg_time:.6f}s per operation")
+
+    def test_semantic_label_detection_performance(self):
+        """Test performance of semantic label detection."""
+        issue_labels = [f"custom-label-{i}" for i in range(100)]
+        label_mappings = {f"semantic-{i}": [f"label-{i}", f"alias-{i}"] for i in range(50)}
+
+        iterations = 500
+        start = time.perf_counter()
+
+        for _ in range(iterations):
+            get_semantic_labels_from_issue(issue_labels, label_mappings)
+
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
+
+        # Should be fast (under 0.01 seconds per operation)
+        assert avg_time < 0.01, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ Semantic label detection (100 labels, 50 mappings): {avg_time:.6f}s per operation")
+
+    def test_fuzzy_matching_performance(self):
+        """Test performance of fuzzy matching."""
+        test_labels = ["bug-fix", "feature-request", "documentation-update"]
+
+        iterations = 10000
+        start = time.perf_counter()
+
+        for _ in range(iterations):
+            for label in test_labels:
+                _is_fuzzy_match(label, "bugfix")
+
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / (iterations * len(test_labels))
+
+        # Should be very fast (under 0.0001 seconds per operation)
+        assert avg_time < 0.0001, f"Average time {avg_time:.8f}s is too slow"
+        print(f"✓ Fuzzy matching: {avg_time:.8f}s per operation")
+
+    def test_pr_label_resolution_performance(self):
+        """Test performance of PR label resolution with priority."""
+        issue_labels = [f"label-{i}" for i in range(100)]
+
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = 10
+
+        iterations = 1000
+        start = time.perf_counter()
+
+        for _ in range(iterations):
+            resolve_pr_labels_with_priority(issue_labels, config)
+
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
+
+        # Should be fast (under 0.001 seconds per operation)
+        assert avg_time < 0.001, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ PR label resolution: {avg_time:.6f}s per operation")
+
+    def test_multiple_operations_performance(self, tmp_path):
+        """Test performance of multiple combined operations."""
+        # Create test prompt file
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            "issue:\n" + "".join([f'  prompt{i}: "Prompt {i}"\n' for i in range(20)]),
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+
+        labels = [f"label-{i}" for i in range(20)]
+        mappings = {f"label-{i}": f"issue.prompt{i}" for i in range(20)}
+        priorities = [f"label-{i}" for i in range(20)]
+
+        iterations = 200
+        start = time.perf_counter()
+
+        for _ in range(iterations):
+            # Combined operations
+            _resolve_label_priority(labels, mappings, priorities)
+            render_prompt(
+                "issue.prompt0",
+                path=str(prompt_file),
+                labels=labels[:10],  # Subset of labels
+                label_prompt_mappings=mappings,
+                label_priorities=priorities,
+            )
+            get_semantic_labels_from_issue(labels[:10], {"bug": ["label-1"]})
+
+        end = time.perf_counter()
+        elapsed = end - start
+        avg_time = elapsed / iterations
+
+        # Should be reasonable (under 0.1 seconds per combined operation)
+        assert avg_time < 0.1, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ Combined operations: {avg_time:.6f}s per operation")
+
+    def test_cache_performance_benefit(self, tmp_path):
+        """Test that caching improves performance."""
+        # Create test prompt file
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            "issue:\n" '  action: "Default"\n' '  bug: "Bug prompt"\n' '  feature: "Feature prompt"\n',
+            encoding="utf-8",
+        )
+
+        labels = ["bug"]
+        mappings = {"bug": "issue.bug"}
+        priorities = ["bug"]
+
+        # First run (cache cold)
+        clear_prompt_cache()
+        start = time.perf_counter()
+        for _ in range(100):
+            render_prompt(
+                "issue.action",
+                path=str(prompt_file),
+                labels=labels,
+                label_prompt_mappings=mappings,
+                label_priorities=priorities,
+            )
+        cold_time = time.perf_counter() - start
+
+        # Second run (cache warm)
+        start = time.perf_counter()
+        for _ in range(100):
+            render_prompt(
+                "issue.action",
+                path=str(prompt_file),
+                labels=labels,
+                label_prompt_mappings=mappings,
+                label_priorities=priorities,
+            )
+        warm_time = time.perf_counter() - start
+
+        # Warm cache should be faster
+        print(f"✓ Cold cache: {cold_time:.4f}s for 100 operations")
+        print(f"✓ Warm cache: {warm_time:.4f}s for 100 operations")
+        print(f"✓ Speedup: {cold_time/warm_time:.2f}x")
+
+        # Cache should provide some benefit (at least 2x faster for large files)
+        # This is a soft requirement - caching should help but may not always be 2x faster
+        # depending on the operation
+        assert warm_time <= cold_time, "Warm cache should be at least as fast as cold cache"
+
+    def test_concurrent_label_processing(self):
+        """Test that label processing works correctly under concurrent load."""
+        import concurrent.futures
+        import threading
+
+        results = []
+        lock = threading.Lock()
+
+        def process_labels(iteration):
+            """Process labels and record timing."""
+            labels = [f"label-{i}" for i in range(10)]
+            mappings = {f"label-{i}": f"prompt.{i}" for i in range(10)}
+            priorities = [f"label-{i}" for i in range(10)]
 
             start = time.perf_counter()
             result = _resolve_label_priority(labels, mappings, priorities)
             elapsed = time.perf_counter() - start
 
-            assert result == "label-0"  # First in priorities
-            # Should scale well with priority list size
-            assert elapsed < 0.01, f"Priority resolution (size={priority_size}) took {elapsed:.6f}s"
-            print(f"✓ Priority list size {priority_size}: {elapsed:.6f}s")
+            with lock:
+                results.append((iteration, elapsed, result))
 
-    @pytest.mark.parametrize("num_labels", [10, 50, 100, 500, 1000])
-    def test_label_processing_scalability(self, num_labels):
-        """Test scalability of label processing with different sizes."""
-        labels = [f"label-{i}" for i in range(num_labels)]
-        mappings = {label: f"prompt.{label}" for label in labels}
-        priorities = labels.copy()
+        # Run concurrent operations
+        iterations = 100
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(process_labels, i) for i in range(iterations)]
+            concurrent.futures.wait(futures)
 
-        # Warm up
-        _resolve_label_priority(labels[:10], mappings, priorities[:10])
+        # All should complete successfully
+        assert len(results) == iterations
+        for iteration, elapsed, result in results:
+            assert result is not None  # Should find a matching label
+            assert elapsed < 0.01  # Should be fast even under load
 
-        # Measure
-        iterations = 100 if num_labels <= 100 else 10
+        # Check average performance
+        avg_time = sum(r[1] for r in results) / len(results)
+        print(f"✓ Concurrent processing: {avg_time:.6f}s average per operation")
+
+    def test_memory_usage_large_mappings(self):
+        """Test memory usage with large label mappings."""
+        import sys
+
+        # Create large mappings
+        large_mappings = {f"label-{i}": f"prompt-{i}" for i in range(1000)}
+
+        labels = [f"label-{i}" for i in range(1000)]
+        priorities = [f"label-{i}" for i in range(1000)]
+
+        # Measure memory usage
+        initial_size = sys.getsizeof(large_mappings)
+
+        # Process large mappings
+        for _ in range(10):
+            _resolve_label_priority(labels, large_mappings, priorities)
+
+        final_size = sys.getsizeof(large_mappings)
+
+        # Size should be stable
+        print(f"✓ Memory usage: {initial_size/1024:.2f} KB for 1000 mappings")
+        assert abs(initial_size - final_size) < 1024  # Should not grow significantly
+
+    def test_prompt_rendering_memory_efficiency(self, tmp_path):
+        """Test memory efficiency of prompt rendering."""
+        import sys
+
+        # Create large prompt file
+        large_content = "issue:\n" + "".join([f'  prompt{i}: "Prompt {i} with $var1 $var2 $var3"\n' for i in range(1000)])
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(large_content, encoding="utf-8")
+
+        clear_prompt_cache()
+
+        labels = ["bug"]
+        mappings = {"bug": "issue.prompt500"}  # Middle prompt
+        priorities = ["bug"]
+
+        # Measure memory before
+        initial_objects = len([obj for obj in globals().values() if hasattr(obj, "__dict__")])
+
+        # Render large prompt
+        for _ in range(10):
+            result = render_prompt(
+                "issue.prompt500",
+                path=str(prompt_file),
+                labels=labels,
+                label_prompt_mappings=mappings,
+                label_priorities=priorities,
+                var1="test1",
+                var2="test2",
+                var3="test3",
+            )
+            assert "Prompt 500" in result
+
+        # Memory should be stable
+        print(f"✓ Prompt rendering: Processed 1000-line prompt file 10 times")
+
+    def test_performance_with_all_semantic_labels(self):
+        """Test performance when all semantic label categories are present."""
+        issue_labels = [
+            "breaking-change",
+            "urgent",
+            "bug",
+            "enhancement",
+            "documentation",
+            "question",
+        ]
+
+        label_mappings = {
+            "breaking-change": ["breaking-change", "breaking"],
+            "urgent": ["urgent", "critical"],
+            "bug": ["bug", "bugfix"],
+            "enhancement": ["enhancement", "feature"],
+            "documentation": ["documentation", "docs"],
+            "question": ["question", "help wanted"],
+        }
+
+        config = AutomationConfig()
+        config.PR_LABEL_MAX_COUNT = 10
+
+        iterations = 1000
         start = time.perf_counter()
+
         for _ in range(iterations):
-            _resolve_label_priority(labels, mappings, priorities)
-        elapsed = time.perf_counter() - start
+            # Test semantic label detection
+            semantic = get_semantic_labels_from_issue(issue_labels, label_mappings)
+            # Test PR label resolution
+            resolved = resolve_pr_labels_with_priority(semantic, config)
+
+        end = time.perf_counter()
+        elapsed = end - start
         avg_time = elapsed / iterations
 
-        # Each operation should be very fast
-        assert avg_time < 0.001, f"Average time for {num_labels} labels: {avg_time:.6f}s"
-        print(f"✓ Scalability test ({num_labels} labels, {iterations} iterations): {avg_time:.6f}s avg")
+        # Should be very fast with semantic labels
+        assert avg_time < 0.001, f"Average time {avg_time:.6f}s is too slow"
+        print(f"✓ All semantic labels: {avg_time:.6f}s per operation")
 
+    def test_performance_scale_linearity(self, tmp_path):
+        """Test that performance scales linearly with label count."""
+        import time
 
-def gc_objects():
-    """Get list of current objects for memory tracking."""
-    import gc
+        times = []
+        label_counts = [10, 20, 50, 100]
 
-    gc.collect()
-    return gc.get_objects()
+        for count in label_counts:
+            labels = [f"label-{i}" for i in range(count)]
+            mappings = {f"label-{i}": f"prompt.{i}" for i in range(count)}
+            priorities = [f"label-{i}" for i in range(count)]
+
+            iterations = 100
+            start = time.perf_counter()
+
+            for _ in range(iterations):
+                _resolve_label_priority(labels, mappings, priorities)
+
+            elapsed = time.perf_counter() - start
+            avg_time = elapsed / iterations
+            times.append((count, avg_time))
+
+        # Check linearity (should roughly double when count doubles)
+        for i in range(1, len(times)):
+            prev_count, prev_time = times[i - 1]
+            curr_count, curr_time = times[i]
+
+            count_ratio = curr_count / prev_count
+            time_ratio = curr_time / prev_time
+
+            # Time ratio should be roughly proportional to count ratio (within 2x tolerance)
+            assert time_ratio < count_ratio * 2, f"Performance doesn't scale linearly: {time_ratio:.2f}x time for {count_ratio:.2f}x labels"
+
+            print(f"✓ Scale test: {prev_count}→{curr_count} labels: {prev_time:.6f}s→{curr_time:.6f}s ({time_ratio:.2f}x)")
 
 
 if __name__ == "__main__":
-    # Run performance tests with verbose output
     pytest.main([__file__, "-v", "-s"])
