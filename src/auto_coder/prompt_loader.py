@@ -76,7 +76,7 @@ def _traverse(prompts: Dict[str, Any], key: str) -> Any:
 def _resolve_label_priority(
     issue_labels: List[str],
     label_prompt_mappings: Dict[str, str],
-    label_priorities: List[str],
+    label_priorities: Optional[List[str]],
 ) -> Optional[str]:
     """Resolve highest priority label that has a prompt mapping.
 
@@ -106,6 +106,14 @@ def _resolve_label_priority(
 
     if not applicable_labels:
         return None
+
+    # If priorities is None, return None (no priority system configured)
+    if label_priorities is None:
+        return None
+
+    # If priorities is empty list, fallback to first applicable label
+    if not label_priorities:
+        return applicable_labels[0]
 
     # Sort by priority and return highest priority
     for priority_label in label_priorities:
@@ -137,7 +145,7 @@ def _is_breaking_change_issue(issue_labels: List[str]) -> bool:
 def _get_prompt_for_labels(
     issue_labels: List[str],
     label_prompt_mappings: Dict[str, str],
-    label_priorities: List[str],
+    label_priorities: Optional[List[str]],
 ) -> Optional[str]:
     """Get the appropriate prompt template key based on issue labels.
 
@@ -150,14 +158,21 @@ def _get_prompt_for_labels(
         The prompt template key for the highest priority applicable label,
         or None if no label-specific prompt mapping exists
     """
-    if not issue_labels or not label_prompt_mappings or not label_priorities:
+    if not issue_labels:
+        return None
+
+    if not label_prompt_mappings:
         return None
 
     # Resolve to the highest priority applicable label
     resolved_label = _resolve_label_priority(issue_labels, label_prompt_mappings, label_priorities)
 
     if resolved_label:
-        return label_prompt_mappings.get(resolved_label)
+        try:
+            return label_prompt_mappings.get(resolved_label)
+        except AttributeError:
+            # Handle case where label_prompt_mappings is not a dict
+            return None
 
     return None
 
@@ -272,8 +287,11 @@ def render_prompt(
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
+            except SystemExit:
+                # Handle SystemExit (e.g., when template doesn't exist) and fall back to original key
+                logger.warning(f"Label-specific prompt '{label_specific_key}' caused SystemExit, " f"falling back to '{key}'")
             except Exception:
-                # Log warning and fall back to original key
+                # Log warning and fall back to original key for other exceptions
                 logger.warning(f"Failed to render label-specific prompt '{label_specific_key}', " f"falling back to '{key}'")
 
     # Fall back to original key-based rendering

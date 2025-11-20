@@ -184,7 +184,7 @@ class TestLabelProcessingPerformance:
         avg_time = elapsed / (iterations * len(test_labels))
 
         # Should be very fast (under 0.0001 seconds per operation)
-        assert avg_time < 0.0001, f"Average time {avg_time:.6f}s is too slow"
+        assert avg_time < 0.0001, f"Average time {avg_time:.8f}s is too slow"
         print(f"✓ Fuzzy matching: {avg_time:.8f}s per operation")
 
     def test_pr_label_resolution_performance(self):
