@@ -88,8 +88,21 @@ def _resolve_label_priority(
     Returns:
         The highest priority label that has a prompt mapping, or None if no applicable labels
     """
-    # Filter to labels with configured prompt mappings
-    applicable_labels = [label for label in issue_labels if label in label_prompt_mappings]
+    # Create case-insensitive mapping for matching
+    case_insensitive_mappings: Dict[str, str] = {}
+    label_key_mappings: Dict[str, str] = {}  # Maps normalized label to original label and prompt key
+    for label, prompt_key in label_prompt_mappings.items():
+        normalized_label = label.lower()
+        case_insensitive_mappings[normalized_label] = prompt_key
+        label_key_mappings[normalized_label] = label
+
+    # Filter to labels with configured prompt mappings (case-insensitive)
+    applicable_labels = []
+    for label in issue_labels:
+        normalized_label = label.lower()
+        if normalized_label in case_insensitive_mappings:
+            # Use the original label from mappings to preserve case
+            applicable_labels.append(label_key_mappings[normalized_label])
 
     if not applicable_labels:
         return None
@@ -209,7 +222,7 @@ def get_label_specific_prompt(
     return prompt_key
 
 
-@log_calls  # type: ignore[misc]
+@log_calls
 def render_prompt(
     key: str,
     *,
