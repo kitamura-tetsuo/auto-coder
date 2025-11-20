@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _create_pr_analysis_prompt
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.pr_processor import _create_pr_analysis_prompt
 
 
 def test_create_pr_analysis_prompt_with_bug_label():

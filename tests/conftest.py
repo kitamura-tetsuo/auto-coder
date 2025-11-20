@@ -16,10 +16,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
-from src.auto_coder.gemini_client import GeminiClient
-from src.auto_coder.github_client import GitHubClient
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
+from auto_coder.gemini_client import GeminiClient
+from auto_coder.github_client import GitHubClient
 
 
 # Test stabilization: eliminate external environment variables and user HOME influence (to ensure consistent CLI behavior)
@@ -593,7 +593,7 @@ def isolated_graphrag_session(mock_graphrag_integration):
     """Create isolated session for testing."""
     from pathlib import Path
 
-    from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
+    from auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
     graphrag_integration = GraphRAGMCPIntegration()
     session_id = graphrag_integration.create_session(str(Path.cwd().resolve()))
@@ -718,7 +718,7 @@ def graph_rag_index_manager(tmp_path):
     Returns:
         GraphRAGIndexManager instance
     """
-    from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
+    from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
     # Create a temporary state file
     state_file = tmp_path / "test_state.json"
@@ -735,7 +735,7 @@ def graph_rag_index_manager_with_override(graph_builder_structure):
     Returns:
         GraphRAGIndexManager instance with override set
     """
-    from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
+    from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
     manager = GraphRAGIndexManager()
     manager.set_graph_builder_path_for_testing(graph_builder_structure)

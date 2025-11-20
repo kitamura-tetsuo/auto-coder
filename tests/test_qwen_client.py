@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.auto_coder.qwen_client import QwenClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.qwen_client import QwenClient
+from auto_coder.utils import CommandResult
 
 
 class TestQwenClient:

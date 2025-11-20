@@ -3,7 +3,7 @@
 import os
 from unittest.mock import patch
 
-from src.auto_coder.config import Settings
+from auto_coder.config import Settings
 
 
 class TestSettings:

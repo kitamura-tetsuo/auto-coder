@@ -8,9 +8,10 @@ from unittest.mock import patch
 import pytest
 import toml
 
-from src.auto_coder.llm_backend_config import (
+from auto_coder.llm_backend_config import (
     BackendConfig,
     LLMBackendConfiguration,
+    ProviderConfig,
     get_llm_config,
     reset_llm_config,
 )
@@ -32,6 +33,7 @@ class TestBackendConfig:
         assert config.max_retries is None
         assert config.openai_api_key is None
         assert config.openai_base_url is None
+        assert config.providers == []
         assert config.extra_args == {}
 
     def test_backend_config_with_custom_values(self):
@@ -47,6 +49,7 @@ class TestBackendConfig:
             max_retries=3,
             openai_api_key="openai_key",
             openai_base_url="https://openai.example.com",
+            providers=["provider1", "provider2"],
             extra_args={"arg1": "value1"},
         )
         assert config.name == "gemini"
@@ -59,6 +62,7 @@ class TestBackendConfig:
         assert config.max_retries == 3
         assert config.openai_api_key == "openai_key"
         assert config.openai_base_url == "https://openai.example.com"
+        assert config.providers == ["provider1", "provider2"]
         assert config.extra_args == {"arg1": "value1"}
 
     def test_backend_config_extra_args_default(self):
@@ -533,3 +537,163 @@ class TestConfigErrorHandling:
 
         active = config.get_active_backends()
         assert len(active) == 0
+
+
+class TestProviderConfig:
+    """Test cases for ProviderConfig class."""
+
+    def test_provider_config_creation(self):
+        """Test creating a ProviderConfig with default values."""
+        provider = ProviderConfig(name="test-provider")
+        assert provider.name == "test-provider"
+        assert provider.command is None
+        assert provider.description is None
+        assert provider.settings == {}
+
+    def test_provider_config_with_custom_values(self):
+        """Test creating a ProviderConfig with custom values."""
+        provider = ProviderConfig(
+            name="qwen-open-router",
+            command="uvx",
+            description="Qwen via OpenRouter",
+            settings={"API_BASE": "https://openrouter.ai/api/v1", "TIMEOUT": "30"},
+        )
+        assert provider.name == "qwen-open-router"
+        assert provider.command == "uvx"
+        assert provider.description == "Qwen via OpenRouter"
+        assert provider.settings["API_BASE"] == "https://openrouter.ai/api/v1"
+        assert provider.settings["TIMEOUT"] == "30"
+
+    def test_provider_config_settings_default(self):
+        """Test that settings has a proper default factory."""
+        provider1 = ProviderConfig(name="test1")
+        provider2 = ProviderConfig(name="test2")
+
+        # Modifying one shouldn't affect the other
+        provider1.settings["TEST"] = "value"
+        assert "TEST" not in provider2.settings
+
+
+class TestProviderConfiguration:
+    """Test cases for provider configuration in LLMBackendConfiguration."""
+
+    def test_default_configuration_no_providers(self):
+        """Test that default configuration has no providers."""
+        config = LLMBackendConfiguration()
+        assert config.providers == {}
+
+    def test_save_and_load_providers(self):
+        """Test saving and loading providers from TOML file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_config.toml"
+
+            # Create configuration with providers
+            config = LLMBackendConfiguration()
+            config.providers["provider1"] = ProviderConfig(name="provider1", command="uvx", description="Provider 1")
+            config.providers["provider2"] = ProviderConfig(name="provider2", command="python", description="Provider 2")
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify providers were saved and loaded
+            assert len(loaded_config.providers) == 2
+            assert "provider1" in loaded_config.providers
+            assert "provider2" in loaded_config.providers
+            assert loaded_config.providers["provider1"].command == "uvx"
+            assert loaded_config.providers["provider1"].description == "Provider 1"
+            assert loaded_config.providers["provider2"].command == "python"
+            assert loaded_config.providers["provider2"].description == "Provider 2"
+
+    def test_save_and_load_backend_with_providers(self):
+        """Test saving and loading backends with provider lists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_config.toml"
+
+            # Create configuration with backend using providers
+            config = LLMBackendConfiguration()
+            config.providers["provider1"] = ProviderConfig(name="provider1", command="uvx")
+            config.providers["provider2"] = ProviderConfig(name="provider2", command="python")
+
+            # Configure backend to use providers
+            backend_config = config.get_backend_config("qwen")
+            backend_config.providers = ["provider1", "provider2"]
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify backend provider list was saved and loaded
+            loaded_backend = loaded_config.get_backend_config("qwen")
+            assert loaded_backend is not None
+            assert loaded_backend.providers == ["provider1", "provider2"]
+
+    def test_load_providers_with_settings(self):
+        """Test loading providers with settings."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_config.toml"
+
+            # Create TOML content with provider settings
+            toml_content = """
+[providers.test-provider]
+command = "uvx"
+description = "Test Provider"
+settings = { API_BASE = "https://test.com", TIMEOUT = "30", MAX_RETRIES = "5" }
+"""
+            with open(config_file, "w") as f:
+                f.write(toml_content)
+
+            # Load configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify provider was loaded with settings
+            assert "test-provider" in config.providers
+            provider = config.providers["test-provider"]
+            assert provider.command == "uvx"
+            assert provider.description == "Test Provider"
+            assert provider.settings["API_BASE"] == "https://test.com"
+            assert provider.settings["TIMEOUT"] == "30"
+            assert provider.settings["MAX_RETRIES"] == "5"
+
+    def test_load_toml_without_providers_section(self):
+        """Test loading TOML file without providers section."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_config.toml"
+
+            # Create TOML content without providers
+            toml_content = """
+[backend]
+default = "qwen"
+
+[backends.qwen]
+enabled = true
+model = "qwen3-coder-plus"
+"""
+            with open(config_file, "w") as f:
+                f.write(toml_content)
+
+            # Load configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify providers is empty (graceful degradation)
+            assert config.providers == {}
+
+    def test_get_provider_config(self):
+        """Test getting provider configuration."""
+        config = LLMBackendConfiguration()
+        config.providers["test-provider"] = ProviderConfig(name="test-provider", command="uvx", description="Test")
+
+        provider = config.get_provider_config("test-provider")
+        assert provider is not None
+        assert provider.name == "test-provider"
+        assert provider.command == "uvx"
+
+    def test_get_provider_config_nonexistent(self):
+        """Test getting provider that doesn't exist."""
+        config = LLMBackendConfiguration()
+        provider = config.get_provider_config("nonexistent")
+        assert provider is None

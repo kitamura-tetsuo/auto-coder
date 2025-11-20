@@ -1,8 +1,8 @@
 from unittest.mock import patch
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.backend_manager import BackendManager
-from src.auto_coder.fix_to_pass_tests_runner import apply_workspace_test_fix
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.backend_manager import BackendManager
+from auto_coder.fix_to_pass_tests_runner import apply_workspace_test_fix
 
 
 class DummyClient:

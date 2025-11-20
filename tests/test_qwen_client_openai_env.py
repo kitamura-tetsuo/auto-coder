@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
-from src.auto_coder.qwen_client import QwenClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.qwen_client import QwenClient
+from auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")

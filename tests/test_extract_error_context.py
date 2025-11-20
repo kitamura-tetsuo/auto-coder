@@ -4,7 +4,7 @@ _extract_error_context function test
 
 import pytest
 
-from src.auto_coder.util.github_action import _extract_error_context
+from auto_coder.util.github_action import _extract_error_context
 
 
 def test_extract_error_context_with_playwright_error():

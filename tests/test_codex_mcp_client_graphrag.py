@@ -5,8 +5,8 @@ from unittest import mock
 
 import pytest
 
-from src.auto_coder.codex_mcp_client import CodexMCPClient
-from src.auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
+from auto_coder.codex_mcp_client import CodexMCPClient
+from auto_coder.graphrag_mcp_integration import GraphRAGMCPIntegration
 
 
 @pytest.fixture

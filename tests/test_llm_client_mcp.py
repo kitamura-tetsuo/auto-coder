@@ -6,12 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.auto_coder.auggie_client import AuggieClient
-from src.auto_coder.backend_manager import BackendManager
-from src.auto_coder.codex_client import CodexClient
-from src.auto_coder.codex_mcp_client import CodexMCPClient
-from src.auto_coder.gemini_client import GeminiClient
-from src.auto_coder.qwen_client import QwenClient
+from auto_coder.auggie_client import AuggieClient
+from auto_coder.backend_manager import BackendManager
+from auto_coder.codex_client import CodexClient
+from auto_coder.codex_mcp_client import CodexMCPClient
+from auto_coder.gemini_client import GeminiClient
+from auto_coder.qwen_client import QwenClient
 
 
 class TestGeminiClientMCP(unittest.TestCase):
@@ -549,7 +549,7 @@ class TestClaudeClientMCP(unittest.TestCase):
         mock_run.side_effect = side_effect
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
+            from auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
             result = client.check_mcp_server_configured("graphrag")
@@ -575,7 +575,7 @@ class TestClaudeClientMCP(unittest.TestCase):
         mock_run.side_effect = side_effect
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
+            from auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
             self.assertTrue(client.check_mcp_server_configured("graphrag"))
@@ -587,7 +587,7 @@ class TestClaudeClientMCP(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=0, stdout="1.0.0")
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
+            from auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
             ok = client.add_mcp_server_config("mcp-pdb", "uv", ["run", "mcp-pdb"])
@@ -622,7 +622,7 @@ class TestClaudeClientMCP(unittest.TestCase):
         mock_run.side_effect = side_effect
 
         with patch("pathlib.Path.home", return_value=Path(self.temp_dir)):
-            from src.auto_coder.claude_client import ClaudeClient
+            from auto_coder.claude_client import ClaudeClient
 
             client = ClaudeClient()
             ok = client.ensure_mcp_server_configured("graphrag", "uv", ["run", "main.py"])

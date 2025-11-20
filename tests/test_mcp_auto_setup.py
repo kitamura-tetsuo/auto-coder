@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.mcp_checker import ensure_graphrag_mcp_configured
+from auto_coder.mcp_checker import ensure_graphrag_mcp_configured
 
 
 @pytest.fixture
@@ -141,7 +141,7 @@ def test_auto_setup_failure_handling(temp_home, mock_setup_mcp):
 
 def test_add_mcp_config_checks_directory_existence(temp_home):
     """Test that _add_*_mcp_config functions check for MCP directory existence."""
-    from src.auto_coder.mcp_checker import _add_auggie_mcp_config, _add_codex_mcp_config, _add_gemini_mcp_config, _add_qwen_mcp_config
+    from auto_coder.mcp_checker import _add_auggie_mcp_config, _add_codex_mcp_config, _add_gemini_mcp_config, _add_qwen_mcp_config
 
     # Ensure MCP directory doesn't exist
     mcp_dir = temp_home / "graphrag_mcp"
@@ -166,7 +166,7 @@ def test_add_mcp_config_checks_directory_existence(temp_home):
 
 def test_suggest_graphrag_mcp_setup_mentions_auto_setup():
     """Test that setup suggestions mention automatic setup."""
-    from src.auto_coder.mcp_checker import suggest_graphrag_mcp_setup
+    from auto_coder.mcp_checker import suggest_graphrag_mcp_setup
 
     backends = ["codex", "gemini", "qwen", "auggie"]
 

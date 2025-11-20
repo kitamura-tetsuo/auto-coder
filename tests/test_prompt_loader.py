@@ -2,8 +2,7 @@
 
 import pytest
 
-from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
+from auto_coder.prompt_loader import (
     DEFAULT_PROMPTS_PATH,
     _get_prompt_for_labels,
     _is_breaking_change_issue,
@@ -13,6 +12,7 @@ from src.auto_coder.prompt_loader import (
     get_prompt_template,
     render_prompt,
 )
+from src.auto_coder import prompt_loader
 
 
 class TestLabelBasedPromptLoader:

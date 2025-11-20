@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.mcp_manager import MCPServerConfig, MCPServerManager, get_mcp_manager
+from auto_coder.mcp_manager import MCPServerConfig, MCPServerManager, get_mcp_manager
 
 
 class TestMCPServerConfig:

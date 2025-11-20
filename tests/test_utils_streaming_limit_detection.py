@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.auto_coder.exceptions import AutoCoderUsageLimitError
-from src.auto_coder.gemini_client import GeminiClient
+from auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.gemini_client import GeminiClient
 
 
 class _FakeStream:

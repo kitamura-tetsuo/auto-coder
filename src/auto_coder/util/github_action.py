@@ -16,14 +16,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.gh_logger import get_gh_logger
+from auto_coder.git_utils import branch_context
+from auto_coder.github_client import GitHubClient
+from auto_coder.logger_config import get_logger
 from auto_coder.progress_decorators import progress_stage
-
-from ..automation_config import AutomationConfig
-from ..gh_logger import get_gh_logger
-from ..git_utils import branch_context
-from ..github_client import GitHubClient
-from ..logger_config import get_logger
-from ..utils import CommandExecutor, log_action
+from auto_coder.utils import CommandExecutor, log_action
 
 cmd = CommandExecutor()
 

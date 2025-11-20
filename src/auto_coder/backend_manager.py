@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .backend_provider_manager import BackendProviderManager
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
@@ -40,6 +41,7 @@ class BackendManager(LLMBackendManagerBase):
         default_client: Any,
         factories: Dict[str, Callable[[], Any]],
         order: Optional[List[str]] = None,
+        provider_manager: Optional[BackendProviderManager] = None,
     ) -> None:
         # Backend order (circular)
         self._all_backends = order[:] if order else list(factories.keys())
@@ -55,6 +57,13 @@ class BackendManager(LLMBackendManagerBase):
         self._clients[default_backend] = default_client
         self._current_idx = 0
         self._default_backend = default_backend
+
+        # Provider manager for accessing provider metadata
+        # TODO: Future issues should implement provider rotation logic here:
+        # - Check provider availability before creating clients
+        # - Rotate through providers for each backend
+        # - Implement health checking and failover
+        self._provider_manager = provider_manager
 
         # Track recent prompt/model/backend for apply_workspace_test_fix
         self._last_prompt: Optional[str] = None
@@ -87,6 +96,14 @@ class BackendManager(LLMBackendManagerBase):
         fac = self._factories.get(name)
         if fac is None:
             raise RuntimeError(f"No factory for backend: {name}")
+
+        # TODO: Future issues should check provider availability here before creating client
+        # Example: Check if any provider is available for this backend
+        # if self._provider_manager:
+        #     providers = self._provider_manager.get_providers_for_backend(name)
+        #     if providers and not any(self._provider_manager.is_provider_usable(p.name) for p in providers):
+        #         raise RuntimeError(f"No usable provider available for backend '{name}'")
+
         try:
             cli = fac()
             self._clients[name] = cli

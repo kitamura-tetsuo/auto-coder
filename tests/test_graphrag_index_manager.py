@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
+from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
 
 @pytest.fixture

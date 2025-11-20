@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from src.auto_coder.cli import main
-from src.auto_coder.llm_backend_config import LLMBackendConfiguration
+from auto_coder.cli import main
+from auto_coder.llm_backend_config import LLMBackendConfiguration
 
 
 def test_config_group_help():

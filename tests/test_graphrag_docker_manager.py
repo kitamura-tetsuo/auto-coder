@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from src.auto_coder.graphrag_docker_manager import GraphRAGDockerManager
+from auto_coder.graphrag_docker_manager import GraphRAGDockerManager
 
 
 @pytest.fixture

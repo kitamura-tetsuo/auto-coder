@@ -12,6 +12,24 @@ import toml
 
 
 @dataclass
+class ProviderConfig:
+    """Configuration for a provider.
+
+    A provider represents a specific deployment or endpoint of a backend.
+    Providers can be used for rotation, failover, or geographic distribution.
+    """
+
+    name: str
+    # Command to invoke the provider (e.g., "uvx", "python", path to binary)
+    command: Optional[str] = None
+    # Human-readable description of the provider
+    description: Optional[str] = None
+    # Arbitrary uppercase settings for provider-specific configuration
+    # These will be converted to environment variables or passed as config
+    settings: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
 class BackendConfig:
     """Configuration for a single backend."""
 
@@ -29,6 +47,8 @@ class BackendConfig:
     # For OpenAI-compatible backends
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
+    # List of provider names for this backend
+    providers: List[str] = field(default_factory=list)
     # For custom configurations
     extra_args: Dict[str, str] = field(default_factory=dict)
 
@@ -42,6 +62,8 @@ class LLMBackendConfiguration:
     default_backend: str = "codex"
     # Individual backend configurations
     backends: Dict[str, BackendConfig] = field(default_factory=dict)
+    # Provider configurations (by provider name)
+    providers: Dict[str, ProviderConfig] = field(default_factory=dict)
     # Message backend configuration (separate from general LLM operations)
     message_backend_order: List[str] = field(default_factory=list)
     message_default_backend: Optional[str] = None
@@ -95,15 +117,28 @@ class LLMBackendConfiguration:
                     max_retries=config_data.get("max_retries"),
                     openai_api_key=config_data.get("openai_api_key"),
                     openai_base_url=config_data.get("openai_base_url"),
+                    providers=config_data.get("providers", []),
                     extra_args=config_data.get("extra_args", {}),
                 )
                 backends[name] = backend_config
+
+            # Parse providers
+            providers_data = data.get("providers", {})
+            providers = {}
+            for name, config_data in providers_data.items():
+                provider_config = ProviderConfig(
+                    name=name,
+                    command=config_data.get("command"),
+                    description=config_data.get("description"),
+                    settings=config_data.get("settings", {}),
+                )
+                providers[name] = provider_config
 
             # Parse message backend settings
             message_backend_order = data.get("message_backend", {}).get("order", [])
             message_default_backend = data.get("message_backend", {}).get("default")
 
-            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, message_backend_order=message_backend_order, message_default_backend=message_default_backend, config_file_path=config_path)
+            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, providers=providers, message_backend_order=message_backend_order, message_default_backend=message_default_backend, config_file_path=config_path)
 
             return config
         except Exception as e:
@@ -131,10 +166,20 @@ class LLMBackendConfiguration:
                 "max_retries": config.max_retries,
                 "openai_api_key": config.openai_api_key,
                 "openai_base_url": config.openai_base_url,
+                "providers": config.providers,
                 "extra_args": config.extra_args,
             }
 
-        data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}
+        # Prepare provider data for TOML
+        provider_data = {}
+        for name, provider_config in self.providers.items():
+            provider_data[name] = {
+                "command": provider_config.command,
+                "description": provider_config.description,
+                "settings": provider_config.settings,
+            }
+
+        data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data, "providers": provider_data}
 
         # Write TOML file
         with open(config_path, "w") as f:
@@ -143,6 +188,10 @@ class LLMBackendConfiguration:
     def get_backend_config(self, backend_name: str) -> Optional[BackendConfig]:
         """Get configuration for a specific backend."""
         return self.backends.get(backend_name)
+
+    def get_provider_config(self, provider_name: str) -> Optional[ProviderConfig]:
+        """Get configuration for a specific provider."""
+        return self.providers.get(provider_name)
 
     def get_active_backends(self) -> List[str]:
         """Get list of enabled backends in the configured order."""

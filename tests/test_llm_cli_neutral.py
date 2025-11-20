@@ -1,9 +1,9 @@
 from unittest.mock import patch
 
-from src.auto_coder.codex_client import CodexClient
-from src.auto_coder.gemini_client import GeminiClient
-from src.auto_coder.qwen_client import QwenClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.codex_client import CodexClient
+from auto_coder.gemini_client import GeminiClient
+from auto_coder.qwen_client import QwenClient
+from auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")

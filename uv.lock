@@ -44,6 +44,7 @@ dependencies = [
     { name = "gitpython" },
     { name = "loguru" },
     { name = "mcp-server" },
+    { name = "mypy" },
     { name = "neo4j" },
     { name = "pathspec" },
     { name = "playwright" },
@@ -57,6 +58,7 @@ dependencies = [
     { name = "requests" },
     { name = "sentence-transformers" },
     { name = "toml" },
+    { name = "types-toml" },
     { name = "watchdog" },
 ]
 
@@ -96,6 +98,7 @@ requires-dist = [
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },
     { name = "mcp-server", specifier = ">=0.1.4" },
+    { name = "mypy", specifier = ">=1.18.2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "neo4j", specifier = ">=5.14.0" },
     { name = "pathspec", specifier = ">=0.12.0" },
@@ -118,6 +121,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.31.0" },
     { name = "sentence-transformers", specifier = ">=2.2.0" },
     { name = "toml", specifier = ">=0.10.0" },
+    { name = "types-toml", specifier = ">=0.10.8.20240310" },
     { name = "types-toml", marker = "extra == 'dev'", specifier = ">=0.10.0" },
     { name = "types-toml", marker = "extra == 'dev'", specifier = ">=0.10.8.20240310" },
     { name = "watchdog", specifier = ">=6.0.0" },

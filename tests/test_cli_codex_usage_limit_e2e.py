@@ -42,8 +42,8 @@ def test_codex_cli_usage_limit_detection_e2e(tmp_path, monkeypatch):
     python_code = textwrap.dedent(
         """
         import os
-        from src.auto_coder.codex_client import CodexClient
-        from src.auto_coder.exceptions import AutoCoderUsageLimitError
+        from auto_coder.codex_client import CodexClient
+        from auto_coder.exceptions import AutoCoderUsageLimitError
 
 
         def main() -> int:

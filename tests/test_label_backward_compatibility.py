@@ -18,8 +18,7 @@ from unittest.mock import Mock, patch
 import pytest
 import yaml
 
-from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
+from auto_coder.prompt_loader import (
     _get_prompt_for_labels,
     _resolve_label_priority,
     clear_prompt_cache,
@@ -27,6 +26,7 @@ from src.auto_coder.prompt_loader import (
     load_prompts,
     render_prompt,
 )
+from src.auto_coder import prompt_loader
 
 
 class TestExistingPromptCalls:

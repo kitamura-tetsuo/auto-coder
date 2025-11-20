@@ -6,7 +6,7 @@ label detection functionality across all alias variations and edge cases.
 
 import pytest
 
-from src.auto_coder.prompt_loader import _is_breaking_change_issue, _resolve_label_priority
+from auto_coder.prompt_loader import _is_breaking_change_issue, _resolve_label_priority
 
 
 class TestBreakingChangeAliases:

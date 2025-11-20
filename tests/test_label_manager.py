@@ -5,9 +5,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.github_client import GitHubClient
+from auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
 
 
 class TestLabelManager:
@@ -498,7 +498,7 @@ class TestFuzzyMatching:
 
     def test_fuzzy_match_normalization(self):
         """Test label normalization for fuzzy matching."""
-        from src.auto_coder.label_manager import _normalize_label
+        from auto_coder.label_manager import _normalize_label
 
         # Test basic normalization
         assert _normalize_label("BUG-FIX") == "bug-fix"
@@ -521,7 +521,7 @@ class TestFuzzyMatching:
 
     def test_fuzzy_match_exact(self):
         """Test exact matching with fuzzy matching enabled."""
-        from src.auto_coder.label_manager import _is_fuzzy_match
+        from auto_coder.label_manager import _is_fuzzy_match
 
         # Exact matches should work
         assert _is_fuzzy_match("bug", "bug") is True
@@ -530,7 +530,7 @@ class TestFuzzyMatching:
 
     def test_fuzzy_match_hyphen_variations(self):
         """Test fuzzy matching with hyphen/underscore/space variations."""
-        from src.auto_coder.label_manager import _is_fuzzy_match
+        from auto_coder.label_manager import _is_fuzzy_match
 
         # Different separators should match
         assert _is_fuzzy_match("bug-fix", "bugfix") is True
@@ -540,7 +540,7 @@ class TestFuzzyMatching:
 
     def test_fuzzy_match_partial(self):
         """Test fuzzy matching with partial string matches."""
-        from src.auto_coder.label_manager import _is_fuzzy_match
+        from auto_coder.label_manager import _is_fuzzy_match
 
         # Partial matches should work for meaningful strings
         assert _is_fuzzy_match("bc-breaking", "breaking-change") is True
@@ -548,7 +548,7 @@ class TestFuzzyMatching:
 
     def test_fuzzy_match_levenshtein_distance(self):
         """Test fuzzy matching with Levenshtein distance (typos)."""
-        from src.auto_coder.label_manager import _is_fuzzy_match
+        from auto_coder.label_manager import _is_fuzzy_match
 
         # One character difference
         assert _is_fuzzy_match("bug", "bugs") is True
@@ -562,7 +562,7 @@ class TestFuzzyMatching:
 
     def test_fuzzy_match_case_variations(self):
         """Test fuzzy matching with different case variations."""
-        from src.auto_coder.label_manager import _is_fuzzy_match
+        from auto_coder.label_manager import _is_fuzzy_match
 
         assert _is_fuzzy_match("BUG", "bug") is True
         assert _is_fuzzy_match("BuG-FiX", "bugfix") is True
@@ -570,7 +570,7 @@ class TestFuzzyMatching:
 
     def test_fuzzy_match_false_positives(self):
         """Test that fuzzy matching doesn't create false positives."""
-        from src.auto_coder.label_manager import _is_fuzzy_match
+        from auto_coder.label_manager import _is_fuzzy_match
 
         # Too short strings should not match
         assert _is_fuzzy_match("b", "bug") is False
