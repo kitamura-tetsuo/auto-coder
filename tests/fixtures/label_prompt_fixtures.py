@@ -81,8 +81,10 @@ TEST_LABEL_PROMPT_MAPPINGS = {
     "version-major": "issue.breaking_change",
     "urgent": "issue.urgent",
     "bug": "issue.bugfix",
-    "feature": "issue.feature",
+    "bugfix": "issue.bugfix",
+    "feature": "issue.enhancement",
     "enhancement": "issue.enhancement",
+    "improvement": "issue.enhancement",
     "documentation": "issue.documentation",
 }
 

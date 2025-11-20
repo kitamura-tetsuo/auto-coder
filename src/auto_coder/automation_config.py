@@ -118,6 +118,7 @@ class AutomationConfig:
         env_override: bool = True,
         custom_label_mappings: Optional[Dict[str, str]] = None,
         custom_priorities: Optional[List[str]] = None,
+        replace_mappings: bool = False,
     ):
         """Initialize AutomationConfig with optional environment variable overrides.
 
@@ -125,11 +126,14 @@ class AutomationConfig:
             env_override: If True, read from environment variables
             custom_label_mappings: Optional custom label prompt mappings
             custom_priorities: Optional custom label priorities
+            replace_mappings: If True, custom_label_mappings will replace defaults entirely.
+                If False (default), custom_label_mappings will merge with defaults.
         """
         # Store init parameters for later use
         self._env_override = env_override
         self._custom_label_mappings = custom_label_mappings
         self._custom_priorities = custom_priorities
+        self._replace_mappings = replace_mappings
 
         # Set default values
         object.__setattr__(self, "REPORTS_DIR", "reports")
@@ -314,16 +318,21 @@ class AutomationConfig:
             ],
         )
 
-        # Apply environment variable overrides if enabled
-        if env_override:
-            self._apply_env_overrides()
-
         # Apply custom overrides if provided
         if custom_label_mappings:
-            self._merge_label_mappings(custom_label_mappings)
+            if replace_mappings:
+                # Replace all defaults with custom mappings
+                object.__setattr__(self, "label_prompt_mappings", custom_label_mappings)
+            else:
+                # Merge custom mappings with defaults
+                self._merge_label_mappings(custom_label_mappings)
 
         if custom_priorities:
             object.__setattr__(self, "label_priorities", custom_priorities)
+
+        # Apply environment variable overrides if enabled (can override both defaults and custom)
+        if env_override:
+            self._apply_env_overrides()
 
     def _apply_env_overrides(self) -> None:
         """Apply environment variable overrides for label configurations."""
@@ -352,6 +361,35 @@ class AutomationConfig:
                     logger.warning("AUTO_CODER_LABEL_PRIORITIES must be a JSON array (list)")
             except json.JSONDecodeError as exc:
                 logger.error(f"Failed to parse AUTO_CODER_LABEL_PRIORITIES: {exc}")
+
+        # Read PR label mappings from environment variable
+        pr_mappings_json = os.environ.get("AUTO_CODER_PR_LABEL_MAPPINGS")
+        if pr_mappings_json:
+            try:
+                env_pr_mappings = json.loads(pr_mappings_json)
+                if isinstance(env_pr_mappings, dict):
+                    # Merge with existing PR label mappings
+                    current_pr_mappings = dict(self.PR_LABEL_MAPPINGS)
+                    current_pr_mappings.update(env_pr_mappings)
+                    object.__setattr__(self, "PR_LABEL_MAPPINGS", current_pr_mappings)
+                    logger.info(f"Loaded {len(env_pr_mappings)} PR label mappings from environment")
+                else:
+                    logger.warning("AUTO_CODER_PR_LABEL_MAPPINGS must be a JSON object (dict)")
+            except json.JSONDecodeError as exc:
+                logger.error(f"Failed to parse AUTO_CODER_PR_LABEL_MAPPINGS: {exc}")
+
+        # Read PR label priorities from environment variable
+        pr_priorities_json = os.environ.get("AUTO_CODER_PR_LABEL_PRIORITIES")
+        if pr_priorities_json:
+            try:
+                env_pr_priorities = json.loads(pr_priorities_json)
+                if isinstance(env_pr_priorities, list):
+                    object.__setattr__(self, "PR_LABEL_PRIORITIES", env_pr_priorities)
+                    logger.info(f"Loaded {len(env_pr_priorities)} PR label priorities from environment")
+                else:
+                    logger.warning("AUTO_CODER_PR_LABEL_PRIORITIES must be a JSON array (list)")
+            except json.JSONDecodeError as exc:
+                logger.error(f"Failed to parse AUTO_CODER_PR_LABEL_PRIORITIES: {exc}")
 
     def _merge_label_mappings(self, new_mappings: Dict[str, str]) -> None:
         """Merge new label mappings with existing ones.

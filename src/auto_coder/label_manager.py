@@ -9,6 +9,7 @@ import re
 import threading
 import time
 from contextlib import contextmanager
+from functools import lru_cache
 from typing import Any, Dict, Generator, List, Optional, Union
 
 from github.GithubException import GithubException
@@ -49,6 +50,7 @@ def _calculate_levenshtein_distance(s1: str, s2: str) -> int:
     return previous_row[-1]
 
 
+@lru_cache(maxsize=10000)
 def _normalize_label(label: str) -> str:
     """Normalize a label for fuzzy matching.
 
@@ -69,8 +71,9 @@ def _normalize_label(label: str) -> str:
     # Remove special characters except hyphens
     normalized = re.sub(r"[^\w-]", "", normalized)
 
-    # Remove duplicate hyphens
-    normalized = re.sub(r"-+", "-", normalized)
+    # Remove duplicate hyphens - use a more efficient pattern
+    # Replace 2 or more hyphens with a single hyphen
+    normalized = re.sub(r"-{2,}", "-", normalized)
 
     # Strip hyphens from start and end
     normalized = normalized.strip("-")
@@ -78,6 +81,7 @@ def _normalize_label(label: str) -> str:
     return normalized
 
 
+@lru_cache(maxsize=5000)
 def _is_fuzzy_match(candidate: str, target: str, max_distance: int = 1) -> bool:
     """Check if a candidate label fuzzy matches a target label.
 
@@ -170,27 +174,47 @@ def get_semantic_labels_from_issue(
     """
     detected_labels = []
 
+    # Pre-normalize all issue labels once for efficiency
+    if use_fuzzy_matching:
+        normalized_issue_labels = [_normalize_label(label) for label in issue_labels]
+        # Create a set for O(1) lookups
+        normalized_issue_set = set(normalized_issue_labels)
+        # Also create a set of starting characters for quick filtering
+        issue_start_chars = set(nl[0] for nl in normalized_issue_labels if nl)
+    else:
+        normalized_issue_labels = [label.lower() for label in issue_labels]
+        normalized_issue_set = set(normalized_issue_labels)
+        issue_start_chars = set(nl[0] for nl in normalized_issue_labels if nl)
+
+    # Pre-normalize all aliases for efficiency
+    normalized_mappings = {}
     for primary_label, aliases in label_mappings.items():
+        normalized_mappings[primary_label] = [_normalize_label(alias) for alias in aliases]
+
+    for primary_label, normalized_aliases in normalized_mappings.items():
         # Check if any alias matches (case-insensitive or fuzzy)
         matched = False
-        for alias in aliases:
-            if use_fuzzy_matching:
-                # Try exact match first (case-insensitive)
-                for issue_label in issue_labels:
-                    if _is_fuzzy_match(issue_label, alias):
-                        detected_labels.append(primary_label)
-                        matched = True
-                        break
-            else:
-                # Fallback to simple case-insensitive matching
-                issue_labels_lower = [label.lower() for label in issue_labels]
-                if alias.lower() in issue_labels_lower:
-                    detected_labels.append(primary_label)
-                    matched = True
-                    break
 
-            if matched:
-                break
+        # Quick exact match first using set lookup
+        if any(alias in normalized_issue_set for alias in normalized_aliases):
+            detected_labels.append(primary_label)
+            matched = True
+            continue  # Skip fuzzy matching if exact match found
+
+        # Only do fuzzy matching if exact match fails
+        if not matched and use_fuzzy_matching:
+            for alias in normalized_aliases:
+                # Quick filter: skip if starting character is completely different
+                if len(alias) >= 3 and alias[0] in issue_start_chars:
+                    # Try fuzzy matching using cached function
+                    for issue_label in issue_labels:
+                        if _is_fuzzy_match(issue_label, alias):
+                            detected_labels.append(primary_label)
+                            matched = True
+                            break
+
+                if matched:
+                    break
 
     # Remove duplicates while preserving order
     return list(dict.fromkeys(detected_labels))

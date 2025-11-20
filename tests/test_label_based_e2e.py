@@ -57,7 +57,7 @@ class TestLabelBasedIssueProcessingE2E:
         # Create test prompt file with bug-specific prompts
         prompt_file = tmp_path / "prompts.yaml"
         prompt_file.write_text(
-            'header: "Global Header"\n' "issue:\n" '  action: "Default: $issue_number"\n' '  bug: "BUG FIX REQUIRED - Root cause analysis for issue $issue_number"\n' '  feature: "Feature for $issue_number"\n',
+            'header: "Global Header"\n' "issue:\n" '  action: "Default: $issue_number"\n' '  bugfix: "BUG FIX REQUIRED - Root cause analysis for issue $issue_number"\n' '  enhancement: "Enhancement for $issue_number"\n',
             encoding="utf-8",
         )
 
@@ -89,7 +89,7 @@ class TestLabelBasedIssueProcessingE2E:
         # Create test prompt file with feature-specific prompts
         prompt_file = tmp_path / "prompts.yaml"
         prompt_file.write_text(
-            "issue:\n" '  action: "Default: $issue_number"\n' '  enhancement: "FEATURE IMPLEMENTATION - Design patterns for $issue_number"\n' '  bug: "Bug fix for $issue_number"\n',
+            "issue:\n" '  action: "Default: $issue_number"\n' '  enhancement: "FEATURE IMPLEMENTATION - Design patterns for $issue_number"\n' '  bugfix: "Bug fix for $issue_number"\n',
             encoding="utf-8",
         )
 
@@ -349,7 +349,7 @@ class TestLabelBasedIssueProcessingE2E:
         # Create test prompt file
         prompt_file = tmp_path / "prompts.yaml"
         prompt_file.write_text(
-            "issue:\n" '  action: "Default"\n' '  bug: "Bug prompt"\n',
+            "issue:\n" '  action: "Default"\n' '  urgent: "Urgent prompt"\n',
             encoding="utf-8",
         )
 
@@ -375,7 +375,7 @@ class TestLabelBasedIssueProcessingE2E:
         # Create test prompt file
         prompt_file = tmp_path / "prompts.yaml"
         prompt_file.write_text(
-            "issue:\n" '  action: "Default: $issue_number in $repo_name"\n' '  bug: "Bug fix: $issue_number - $repo_name"\n',
+            "issue:\n" '  action: "Default: $issue_number in $repo_name"\n' '  bugfix: "Bug fix: $issue_number - $repo_name"\n',
             encoding="utf-8",
         )
 
@@ -405,7 +405,7 @@ class TestLabelBasedIssueProcessingE2E:
         # Create test prompt file with header
         prompt_file = tmp_path / "prompts.yaml"
         prompt_file.write_text(
-            'header: "=== SYSTEM PROMPT ==="\n' "issue:\n" '  action: "Default"\n' '  bug: "Bug fix prompt"\n',
+            'header: "=== SYSTEM PROMPT ==="\n' "issue:\n" '  action: "Default"\n' '  bugfix: "Bug fix prompt"\n',
             encoding="utf-8",
         )
 
@@ -463,7 +463,7 @@ class TestLabelBasedPRProcessingE2E:
         # Create PR prompt file
         prompt_file = tmp_path / "prompts.yaml"
         prompt_file.write_text(
-            'header: "PR Analysis"\n' "pr:\n" '  action: "Default PR"\n' '  bug: "BUG FIX PR - Test requirements for PR $pr_number"\n',
+            'header: "PR Analysis"\n' "pr:\n" '  action: "Default PR"\n' '  bug: "BUG FIX PR - Test requirements for PR #$pr_number"\n',
             encoding="utf-8",
         )
 

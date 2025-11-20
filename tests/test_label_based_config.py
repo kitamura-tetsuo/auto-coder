@@ -72,9 +72,10 @@ class TestLabelBasedConfig:
         config = AutomationConfig(
             env_override=False,
             custom_label_mappings=custom_mappings,
+            replace_mappings=True,
         )
 
-        # Verify custom mappings are used
+        # Verify custom mappings replace defaults
         assert config.label_prompt_mappings == custom_mappings
 
     def test_label_priorities_config_with_custom_values(self):
@@ -147,8 +148,15 @@ class TestLabelEnvironmentConfig:
         with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": json.dumps(test_mappings)}):
             config = AutomationConfig(env_override=True)
 
-            # Verify mappings were loaded from environment
-            assert config.label_prompt_mappings == test_mappings
+            # Verify mappings were loaded from environment (merged with defaults)
+            # Environment variables should override/add to defaults, not replace them
+            assert config.label_prompt_mappings["bug"] == "issue.bugfix"
+            assert config.label_prompt_mappings["feature"] == "issue.feature"
+            assert config.label_prompt_mappings["urgent"] == "issue.urgent"
+            # Other default mappings should still exist
+            assert "breaking-change" in config.label_prompt_mappings
+            assert "enhancement" in config.label_prompt_mappings
+            assert "documentation" in config.label_prompt_mappings
 
     def test_auto_coder_label_priorities_env_var(self):
         """Test LABEL_PRIORITIES environment variable."""
@@ -170,8 +178,14 @@ class TestLabelEnvironmentConfig:
         with patch.dict(os.environ, {"AUTO_CODER_PR_LABEL_MAPPINGS": json.dumps(test_mappings)}):
             config = AutomationConfig(env_override=True)
 
-            # Verify PR mappings were loaded from environment
-            assert config.PR_LABEL_MAPPINGS == test_mappings
+            # Verify PR mappings were loaded from environment (merged with defaults)
+            # Environment variables should override/add to defaults, not replace them
+            assert config.PR_LABEL_MAPPINGS["bug"] == ["bug", "bugfix"]
+            assert config.PR_LABEL_MAPPINGS["feature"] == ["feature", "enhancement"]
+            # Other default mappings should still exist
+            assert "urgent" in config.PR_LABEL_MAPPINGS
+            assert "breaking-change" in config.PR_LABEL_MAPPINGS
+            assert "documentation" in config.PR_LABEL_MAPPINGS
 
     def test_auto_coder_pr_label_priorities_env_var(self):
         """Test PR_LABEL_PRIORITIES environment variable."""
@@ -195,8 +209,11 @@ class TestLabelEnvironmentConfig:
         """Test handling of empty JSON in environment variables."""
         with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": "{}"}):
             config = AutomationConfig(env_override=True)
-            # Should use empty dict
-            assert config.label_prompt_mappings == {}
+            # Empty env var should merge with defaults (no changes)
+            # All default mappings should still exist
+            assert len(config.label_prompt_mappings) > 0
+            assert "bug" in config.label_prompt_mappings
+            assert "breaking-change" in config.label_prompt_mappings
 
     def test_env_var_missing_variables(self):
         """Test that missing environment variables use defaults."""
@@ -222,8 +239,12 @@ class TestLabelEnvironmentConfig:
                 custom_label_mappings=custom_mappings,
             )
 
-            # Environment should override custom
-            assert config.label_prompt_mappings == test_mappings
+            # Environment should override custom mappings (merged)
+            assert config.label_prompt_mappings["bug"] == "issue.bugfix"
+            assert config.label_prompt_mappings["custom"] == "issue.custom"
+            # Other default mappings should still exist
+            assert "breaking-change" in config.label_prompt_mappings
+            assert "urgent" in config.label_prompt_mappings
 
     def test_env_var_empty_string(self):
         """Test handling of empty string in environment variables."""
@@ -241,10 +262,15 @@ class TestLabelEnvironmentConfig:
 
         with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": json.dumps(test_mappings)}):
             config = AutomationConfig(env_override=True)
-            assert config.label_prompt_mappings == test_mappings
+            # Special character labels should be added to defaults
+            assert config.label_prompt_mappings["bug-fix"] == "issue.bugfix"
+            assert config.label_prompt_mappings["type:feature"] == "issue.feature"
+            # Default mappings should still exist
+            assert "bug" in config.label_prompt_mappings
+            assert "breaking-change" in config.label_prompt_mappings
 
     def test_env_var_with_nested_structures(self):
-        """Test that nested structures are preserved."""
+        """Test that nested structures are preserved and merged with defaults."""
         test_mappings = {
             "bug": {
                 "prompt": "issue.bugfix",
@@ -254,7 +280,12 @@ class TestLabelEnvironmentConfig:
 
         with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": json.dumps(test_mappings)}):
             config = AutomationConfig(env_override=True)
-            assert config.label_prompt_mappings == test_mappings
+            # Nested structure should be preserved for "bug"
+            assert config.label_prompt_mappings["bug"] == {"prompt": "issue.bugfix", "priority": 1}
+            # Default mappings should still exist
+            assert "breaking-change" in config.label_prompt_mappings
+            assert "urgent" in config.label_prompt_mappings
+            assert "enhancement" in config.label_prompt_mappings
 
     def test_env_var_priority_preserves_order(self):
         """Test that priority order is preserved from environment."""
@@ -266,7 +297,7 @@ class TestLabelEnvironmentConfig:
             assert config.label_priorities == test_priorities
 
     def test_env_var_multiple_variables_together(self):
-        """Test that multiple environment variables work together."""
+        """Test that multiple environment variables work together and merge with defaults."""
         test_mappings = {"bug": "issue.bugfix"}
         test_priorities = ["bug", "feature"]
         test_pr_mappings = {"bug": ["bug", "bugfix"]}
@@ -282,9 +313,16 @@ class TestLabelEnvironmentConfig:
         with patch.dict(os.environ, env_vars):
             config = AutomationConfig(env_override=True)
 
-            assert config.label_prompt_mappings == test_mappings
+            # Label prompt mappings should be merged
+            assert config.label_prompt_mappings["bug"] == "issue.bugfix"
+            assert "breaking-change" in config.label_prompt_mappings
+            assert "urgent" in config.label_prompt_mappings
+            # Priorities should be replaced (as they're lists, not merged)
             assert config.label_priorities == test_priorities
-            assert config.PR_LABEL_MAPPINGS == test_pr_mappings
+            # PR label mappings should be merged
+            assert config.PR_LABEL_MAPPINGS["bug"] == ["bug", "bugfix"]
+            assert "urgent" in config.PR_LABEL_MAPPINGS
+            # PR priorities should be replaced
             assert config.PR_LABEL_PRIORITIES == test_pr_priorities
 
     def test_env_var_disabled_with_env_override_false(self):
@@ -391,8 +429,10 @@ class TestLabelEnvironmentConfig:
         config = AutomationConfig(
             env_override=False,
             custom_label_mappings=custom,
+            replace_mappings=True,
         )
 
+        # Custom mappings should replace defaults
         assert config.label_prompt_mappings == custom
         assert "my-custom-label" in config.label_prompt_mappings
 
