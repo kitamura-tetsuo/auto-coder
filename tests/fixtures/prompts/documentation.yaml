@@ -1,0 +1,124 @@
+# Test prompt template for documentation issues
+# This template includes specialized instructions for documentation updates
+
+header: |
+  Read AGENTS.md before proceeding if you haven't read it yet.
+
+issue:
+  documentation: |
+    You are processing a GitHub issue with the 'documentation' label.
+
+    DOCUMENTATION REQUIREMENTS:
+    - This issue requests improvements or additions to documentation
+    - Focus on clarity, accuracy, and completeness
+    - Ensure documentation matches current implementation
+    - Use clear language and helpful examples
+    - Consider different audiences (users vs developers)
+
+    Issue Context:
+    Repository: $repo_name
+    Issue #$issue_number: $issue_title
+    Labels: $issue_labels
+    Issue Type: DOCUMENTATION
+
+    Issue Description:
+    $issue_body...
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system and any attempt to create pr-xx branches will fail.
+
+    DEPENDENCY HANDLING: If this issue mentions "Depends on: #123" or similar dependency references in its body, ensure that any related issues are properly linked. If this issue is a dependency for other issues, update those issues' bodies to reference this one if you proceed.
+
+    DOCUMENTATION DIRECTIVES:
+    1. ACCURACY: Ensure documentation accurately reflects current implementation
+    2. CLARITY: Write clear, concise documentation that's easy to understand
+    3. COMPLETENESS: Cover all aspects of the feature or functionality
+    4. EXAMPLES: Include practical examples where helpful
+    5. AUDIENCE: Consider the target audience (end users, developers, contributors)
+
+    DOCUMENTATION APPROACH:
+    - Review existing documentation and identify gaps or inaccuracies
+    - Verify documentation against current code implementation
+    - Write clear, well-structured documentation
+    - Include examples, code snippets, or diagrams where helpful
+    - Use consistent terminology and formatting
+    - Consider SEO and discoverability
+
+    Please analyze this documentation request and determine the appropriate action:
+
+    1. If you need clarification about what to document, add a comment requesting more information
+    2. If the requested documentation already exists, close it with a reference to the existing docs
+    3. If this is a valid documentation request, provide implementation
+
+    For valid documentation requests:
+    - Analyze what documentation is needed
+    - Review existing documentation and code implementation
+    - Create or update documentation files as needed
+    - Ensure documentation is accurate, clear, and complete
+    - Include examples and code snippets where helpful
+    - Keep open the issue
+    - All tests were passed in the main branch. If tests are failing, it is because of the changes.
+
+    After taking action, respond with a summary of what you did.
+
+    Please proceed with analyzing and addressing this documentation request now.
+
+pr:
+  documentation: |
+    You are operating directly in the repository workspace with write access and the git and gh CLIs available.
+
+    Task: For the following GitHub Pull Request with the 'documentation' label, apply safe code changes directly to make it mergeable and passing. Never post PR comments.
+
+    STRICT DIRECTIVES (follow exactly):
+    - All tests were passed in the main branch before the PR was created. If the PR is failing tests, it is because of the PR changes. Fix the PR changes.
+    - Do NOT post any comments to the PR, reviews, or issues.
+    - Do NOT write narrative explanations as output; take actions in the workspace instead.
+    - Prefer targeted edits that make CI pass while preserving intent.
+    - After edits, run quick local checks if available (linters/fast unit tests) to sanity-verify.
+    - Do NOT run git commit/push; the system will handle committing.
+    - If you cannot deterministically fix the PR, stop without posting comments and print only: CANNOT_FIX
+
+    DOCUMENTATION PR REQUIREMENTS:
+    - This PR improves or adds documentation
+    - Focus on clarity, accuracy, and completeness
+    - Ensure documentation matches current implementation
+    - Use clear language and helpful examples
+    - Consider different audiences (users vs developers)
+
+    PR Context:
+    Repository: $repo_name
+    PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    PR Changes:
+    $pr_diff
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER use branches with 'pr-<number>' pattern. This convention is enforced by the system.
+
+    DOCUMENTATION PR DIRECTIVES:
+    1. ACCURACY: Ensure documentation accurately reflects current implementation
+    2. CLARITY: Write clear, concise documentation that's easy to understand
+    3. COMPLETENESS: Cover all aspects of the feature or functionality
+    4. EXAMPLES: Include practical examples where helpful
+    5. AUDIENCE: Consider the target audience (end users, developers, contributors)
+
+    DOCUMENTATION APPROACH:
+    - Review existing documentation and identify gaps or inaccuracies
+    - Verify documentation against current code implementation
+    - Write clear, well-structured documentation
+    - Include examples, code snippets, or diagrams where helpful
+    - Use consistent terminology and formatting
+    - Consider SEO and discoverability
+
+    Return format:
+    - Print a single line starting with: ACTION_SUMMARY: <brief summary of files changed and whether merged>
+    - No greetings, no multi-paragraph analysis.
+
+    Please proceed with analyzing and addressing this documentation request now.
