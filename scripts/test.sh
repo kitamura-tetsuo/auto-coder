@@ -172,6 +172,61 @@ else
   printf "       Ensure Python 3.11 is active and dependencies are installed.\n" >&2
 fi
 
+# -----------------------------------------------------------------------------
+# Code quality checks (matching .pre-commit-config.yaml)
+# -----------------------------------------------------------------------------
+echo ""
+echo "Installing code quality tools..."
+
+# Install code quality tools
+if [ "$USE_UV" -eq 1 ]; then
+  uv pip install black isort flake8 mypy types-toml
+else
+  pip install black isort flake8 mypy types-toml
+fi
+
+echo ""
+echo "Running code quality checks..."
+
+# Run black check
+echo "[CHECK] Running black..."
+if [ "$USE_UV" -eq 1 ]; then
+  uv run black --check src/ tests/
+else
+  black --check src/ tests/
+fi
+
+# Run isort check
+echo "[CHECK] Running isort..."
+if [ "$USE_UV" -eq 1 ]; then
+  uv run isort --check-only src/ tests/
+else
+  isort --check-only src/ tests/
+fi
+
+# Run flake8
+echo "[CHECK] Running flake8..."
+if [ "$USE_UV" -eq 1 ]; then
+  uv run flake8 src/ tests/
+else
+  flake8 src/ tests/
+fi
+
+# Run mypy
+echo "[CHECK] Running mypy..."
+if [ "$USE_UV" -eq 1 ]; then
+  (cd src && uv run mypy auto_coder/)
+  # Tests have ignore_errors=true in pyproject.toml, so don't fail on test errors
+  (cd tests && uv run mypy .) || true
+else
+  (cd src && mypy auto_coder/)
+  # Tests have ignore_errors=true in pyproject.toml, so don't fail on test errors
+  (cd tests && mypy .) || true
+fi
+
+echo "[OK] All code quality checks passed!"
+echo ""
+
 
 # Check if a specific test file is provided as an argument
 if [ $# -ge 1 ]; then
