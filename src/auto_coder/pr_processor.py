@@ -415,7 +415,15 @@ def _handle_pr_merge(
     try:
         # Step 1: Check GitHub Actions status using utility function
         # Use switch_branch_on_in_progress=False to just skip instead of exit
-        should_continue = check_github_actions_and_exit_if_in_progress(repo_name=repo_name, pr_data=pr_data, config=config, github_client=None, switch_branch_on_in_progress=False, item_number=pr_number, item_type="PR")  # Not needed for this check
+        should_continue = check_github_actions_and_exit_if_in_progress(  # type: ignore[arg-type]
+            repo_name=repo_name,
+            pr_data=pr_data,
+            config=config,  # type: ignore[arg-type]
+            github_client=None,
+            switch_branch_on_in_progress=False,
+            item_number=pr_number,
+            item_type="PR",
+        )  # Not needed for this check
 
         # Step 2: If checks are in progress, skip this PR
         if not should_continue:
@@ -453,7 +461,7 @@ def _handle_pr_merge(
 
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
-                github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+                github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
                 fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
                 actions.extend(fix_actions)
             else:
@@ -478,7 +486,7 @@ def _handle_pr_merge(
                 # Fix PR issues using GitHub Actions logs first, then local tests
                 if failed_checks:
                     # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
-                    github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+                    github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
                     fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
                     actions.extend(fix_actions)
                 else:

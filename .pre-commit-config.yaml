@@ -35,7 +35,6 @@ repos:
     - id: mypy
       name: mypy
       language: system
-      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run mypy "$@"; else mypy "$@"; fi'
-      pass_filenames: true
+      entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run mypy; else mypy; fi'
+      pass_filenames: false
       types: [python]
-      exclude: ^(tests/.*|.*\.py\.backup|build/.*|dist/.*|\.eggs/.*|\.mypy_cache/.*|\.tox/.*|\.venv/.*|\.git/.*)$

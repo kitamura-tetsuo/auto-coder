@@ -6,7 +6,7 @@ from pathlib import Path
 from string import Template
 from typing import Any, Dict, List, Optional
 
-import yaml  # type: ignore[import-untyped]
+import yaml
 
 from .logger_config import get_logger, log_calls
 
@@ -62,7 +62,16 @@ def clear_prompt_cache() -> None:
 
 
 def _traverse(prompts: Dict[str, Any], key: str) -> Any:
-    """Traverse nested dictionaries using dot-separated keys."""
+    """Traverse nested dictionaries using dot-separated keys.
+
+    Supports both flat keys with dots (e.g., "issue.action" as a single key)
+    and nested keys (e.g., issue -> action). Flat keys are checked first.
+    """
+    # First, check if the full key exists as-is (flat key with dots)
+    if key in prompts:
+        return prompts[key]
+
+    # Otherwise, traverse nested dictionaries using dot-separated path
     current: Any = prompts
     for segment in key.split("."):
         if not isinstance(current, dict):
@@ -257,9 +266,9 @@ def get_label_specific_prompt(
         logger.debug("No label-to-prompt mappings provided")
         return None
 
-    if not label_priorities:
-        logger.debug("No label priorities provided")
-        return None
+    # For backward compatibility: if label_priorities is None, we can still
+    # return a prompt based on mappings (will use first applicable label)
+    # No longer require label_priorities to be non-empty
 
     # Get the prompt template key for the labels
     prompt_key = _get_prompt_for_labels(labels, label_prompt_mappings, label_priorities)

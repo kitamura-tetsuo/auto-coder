@@ -149,8 +149,9 @@ class TestMissingPriorityListHandling:
         mappings = {"bug": "issue.bugfix"}
         priorities = None
 
+        # Backward compatibility: None priorities should use first applicable label
         result = _get_prompt_for_labels(labels, mappings, priorities)
-        assert result is None
+        assert result == "issue.bugfix"
 
     def test_empty_priorities_list(self):
         """Test with empty priorities list."""

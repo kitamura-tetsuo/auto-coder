@@ -628,12 +628,13 @@ def test_get_label_specific_prompt_no_mappings():
 
 
 def test_get_label_specific_prompt_no_priorities():
-    """Test that None is returned when no priorities provided."""
+    """Test that first applicable label is returned when priorities is empty list."""
     labels = ["bug"]
     mappings = {"bug": "issue.bugfix"}
 
     result = get_label_specific_prompt(labels, mappings, [])
-    assert result is None
+    # Empty priorities list should fall back to first applicable label
+    assert result == "issue.bugfix"
 
 
 def test_get_label_specific_prompt_none_inputs():
