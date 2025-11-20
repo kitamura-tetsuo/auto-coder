@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from src.auto_coder.qwen_provider_config import load_qwen_provider_configs
+from auto_coder.qwen_provider_config import load_qwen_provider_configs
 from tests.support.env import patch_environment
 
 

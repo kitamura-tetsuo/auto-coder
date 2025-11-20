@@ -5,8 +5,8 @@ Tests for Gemini client functionality.
 import json
 from unittest.mock import Mock, patch
 
-from src.auto_coder.gemini_client import GeminiClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.gemini_client import GeminiClient
+from auto_coder.utils import CommandResult
 
 
 class TestGeminiClient:

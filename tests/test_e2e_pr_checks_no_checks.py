@@ -3,11 +3,11 @@ from unittest.mock import patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.util.github_action import _check_github_actions_status
-from src.auto_coder.utils import CommandResult
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.github_client import GitHubClient
+from auto_coder.util.github_action import _check_github_actions_status
+from auto_coder.utils import CommandResult
 
 
 @pytest.mark.e2e

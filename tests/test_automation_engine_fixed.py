@@ -2,10 +2,10 @@ import json
 import os
 from unittest.mock import Mock, patch
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.util.github_action import GitHubActionsStatusResult
-from src.auto_coder.utils import CommandExecutor
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.utils import CommandExecutor
 
 
 def test_create_pr_prompt_is_action_oriented_no_comments(mock_github_client, mock_gemini_client, sample_pr_data, test_repo_name):

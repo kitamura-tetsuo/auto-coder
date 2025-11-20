@@ -10,8 +10,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.label_manager import LabelManager
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.label_manager import LabelManager
 
 
 class TestLabelManagerPerformance:

@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.github_client import GitHubClient
+from auto_coder.github_client import GitHubClient
 
 
 class TestGitHubClientParentIssue:

@@ -4,7 +4,7 @@ Tests for mcp-pdb CLI helper commands.
 
 from click.testing import CliRunner
 
-from src.auto_coder.cli import main
+from auto_coder.cli import main
 
 
 class TestMCPPDBCLI:

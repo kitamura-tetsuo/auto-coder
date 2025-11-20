@@ -4,8 +4,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _close_linked_issues, _extract_linked_issues_from_pr_body, _merge_pr
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.pr_processor import _close_linked_issues, _extract_linked_issues_from_pr_body, _merge_pr
 
 
 class TestExtractLinkedIssues:

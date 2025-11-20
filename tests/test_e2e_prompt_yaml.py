@@ -4,9 +4,9 @@ from textwrap import dedent
 
 import pytest
 
-from src.auto_coder import prompt_loader
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _create_pr_analysis_prompt
+from auto_coder import prompt_loader
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.pr_processor import _create_pr_analysis_prompt
 
 
 @pytest.fixture

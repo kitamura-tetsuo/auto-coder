@@ -1,8 +1,8 @@
 from unittest.mock import MagicMock, patch
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
-from src.auto_coder.utils import CommandResult
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
+from auto_coder.utils import CommandResult
 
 
 def test_perform_base_merge_uses_fq_remote_ref():

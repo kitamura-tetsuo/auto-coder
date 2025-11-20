@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from src.auto_coder.codex_client import CodexClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.codex_client import CodexClient
+from auto_coder.utils import CommandResult
 
 
 class TestCodexClient:

@@ -9,8 +9,8 @@ def _build_python_snippet() -> str:
         """
         import os
         import sys
-        from src.auto_coder.logger_config import setup_logger
-        from src.auto_coder.utils import CommandExecutor
+        from auto_coder.logger_config import setup_logger
+        from auto_coder.utils import CommandExecutor
 
 
         def main() -> int:

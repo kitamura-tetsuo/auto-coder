@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.auto_coder import update_manager
+from auto_coder import update_manager
 
 
 @pytest.fixture(autouse=True)

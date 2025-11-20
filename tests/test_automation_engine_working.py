@@ -2,10 +2,10 @@ import json
 import os
 from unittest.mock import Mock, patch
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.util.github_action import GitHubActionsStatusResult
-from src.auto_coder.utils import CommandExecutor
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.utils import CommandExecutor
 
 
 class TestAutomationEngine:
@@ -27,7 +27,7 @@ class TestAutomationEngine:
     ):
         """Test successful automation run."""
         # Setup - Mock backend manager
-        from src.auto_coder.backend_manager import get_llm_backend_manager
+        from auto_coder.backend_manager import get_llm_backend_manager
 
         mock_backend_manager = Mock()
         mock_backend_manager.get_last_backend_and_model.return_value = (
@@ -70,7 +70,7 @@ class TestAutomationEngine:
     ):
         """Test successful run with jules mode."""
         # Setup - Mock backend manager
-        from src.auto_coder.backend_manager import get_llm_backend_manager
+        from auto_coder.backend_manager import get_llm_backend_manager
 
         mock_backend_manager = Mock()
         mock_backend_manager.get_last_backend_and_model.return_value = (
@@ -114,7 +114,7 @@ class TestAutomationEngine:
     ):
         """Test automation run with error (candidate processing failure)."""
         # Setup - Mock backend manager
-        from src.auto_coder.backend_manager import get_llm_backend_manager
+        from auto_coder.backend_manager import get_llm_backend_manager
 
         mock_backend_manager = Mock()
         mock_backend_manager.get_last_backend_and_model.return_value = (

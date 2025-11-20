@@ -15,9 +15,9 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.issue_processor import _create_pr_for_issue
-from src.auto_coder.label_manager import get_semantic_labels_from_issue, resolve_pr_labels_with_priority
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.issue_processor import _create_pr_for_issue
+from auto_coder.label_manager import get_semantic_labels_from_issue, resolve_pr_labels_with_priority
 from tests.fixtures.label_prompt_fixtures import (
     TEST_ISSUE_DATA,
     TEST_PR_LABEL_MAPPINGS,

@@ -4,7 +4,7 @@ Tests for main CLI commands and help functionality.
 
 from click.testing import CliRunner
 
-from src.auto_coder.cli import create_feature_issues, main, process_issues
+from auto_coder.cli import create_feature_issues, main, process_issues
 
 
 class TestCLIMain:

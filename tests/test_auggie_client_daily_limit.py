@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.auto_coder.auggie_client import AuggieClient
-from src.auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.auggie_client import AuggieClient
+from auto_coder.exceptions import AutoCoderUsageLimitError
 
 
 def _patch_subprocess(monkeypatch, popen_class):

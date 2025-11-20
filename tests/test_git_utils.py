@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.git_utils import (
+from auto_coder.git_utils import (
     branch_context,
     extract_number_from_branch,
     get_all_branches,
@@ -26,7 +26,7 @@ from src.auto_coder.git_utils import (
     save_commit_failure_history,
     validate_branch_name,
 )
-from src.auto_coder.utils import CommandResult
+from auto_coder.utils import CommandResult
 
 
 class TestGitCommitWithRetry:
@@ -1781,7 +1781,7 @@ class TestMigratePrBranches:
                 returncode=0,
             )
 
-            from src.auto_coder.automation_config import AutomationConfig
+            from auto_coder.automation_config import AutomationConfig
 
             config = AutomationConfig()
             results = migrate_pr_branches(config, delete_after_merge=True)
@@ -1798,7 +1798,7 @@ class TestMigratePrBranches:
         """Test migration with multiple pr-<number> branches."""
         from types import SimpleNamespace
 
-        from src.auto_coder.utils import CommandResult
+        from auto_coder.utils import CommandResult
 
         call_count = [0]  # Use list to make it mutable in closure
 
@@ -1914,7 +1914,7 @@ class TestMigratePrBranches:
                 )
 
         with patch("src.auto_coder.utils.CommandExecutor.run_command", side_effect=fake_run_command):
-            from src.auto_coder.automation_config import AutomationConfig
+            from auto_coder.automation_config import AutomationConfig
 
             config = AutomationConfig()
             results = migrate_pr_branches(config)
@@ -1940,7 +1940,7 @@ class TestMigratePrBranches:
                 returncode=0,
             )
 
-            from src.auto_coder.automation_config import AutomationConfig
+            from auto_coder.automation_config import AutomationConfig
 
             config = AutomationConfig()
             results = migrate_pr_branches(config)
@@ -1954,7 +1954,7 @@ class TestMigratePrBranches:
 
     def test_migrate_pr_branches_with_cwd(self, _use_custom_subprocess_mock):
         """Test migration with custom working directory."""
-        from src.auto_coder.utils import CommandResult
+        from auto_coder.utils import CommandResult
 
         call_count = [0]  # Use list to make it mutable in closure
 
@@ -2051,7 +2051,7 @@ class TestMigratePrBranches:
                 )
 
         with patch("src.auto_coder.utils.CommandExecutor.run_command", side_effect=fake_run):
-            from src.auto_coder.automation_config import AutomationConfig
+            from auto_coder.automation_config import AutomationConfig
 
             config = AutomationConfig()
             results = migrate_pr_branches(config, cwd="/custom/path")

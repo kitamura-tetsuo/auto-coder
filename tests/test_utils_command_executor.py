@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.auto_coder import utils
+from auto_coder import utils
 
 
 def test_run_command_respects_stream_flag(monkeypatch):

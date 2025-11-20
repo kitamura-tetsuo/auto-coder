@@ -3,8 +3,8 @@ from unittest import mock
 
 import pytest
 
-from src.auto_coder import __version__ as AUTO_CODER_VERSION
-from src.auto_coder.codex_mcp_client import CodexMCPClient
+from auto_coder import __version__ as AUTO_CODER_VERSION
+from auto_coder.codex_mcp_client import CodexMCPClient
 
 
 def _make_fake_popen(stdout=None, stderr=None):

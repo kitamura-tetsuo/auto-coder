@@ -4,10 +4,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.util.github_action import GitHubActionsStatusResult
-from src.auto_coder.utils import CommandExecutor
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.utils import CommandExecutor
 
 """Tests for automation engine functionality."""
 
@@ -499,7 +499,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_all_passed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when all checks pass."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup - mock cmd.run_command to return successful checks
         mock_run_command.return_value = Mock(returncode=0, stdout="✓ test-check\n✓ another-check", stderr="")
@@ -517,7 +517,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_some_failed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when some checks fail."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup
         mock_run_command.return_value = Mock(returncode=0, stdout="✓ passing-check\n✗ failing-check\n- pending-check", stderr="")
@@ -535,7 +535,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_tab_format_with_failures(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and failures."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup - simulating the actual output format from gh CLI
         mock_run_command.return_value = Mock(
@@ -557,7 +557,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_tab_format_all_pass(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and all passing."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup
         mock_run_command.return_value = Mock(
@@ -579,7 +579,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_no_checks_reported(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Handle gh CLI message when no checks are reported."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Mock multiple cmd.run_command calls for the historical fallback
         def mock_side_effect(cmd_list, **kwargs):
@@ -611,7 +611,7 @@ class TestAutomationEngine:
         # Setup
         mock_gh_subprocess.return_value = Mock(success=True, stdout="Switched to branch", stderr="", returncode=0)
 
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         pr_data = {"number": 123}
 
@@ -629,7 +629,7 @@ class TestAutomationEngine:
     def test_checkout_pr_branch_failure(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout failure."""
         # Setup
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         pr_data = {"number": 123}
 
@@ -771,7 +771,7 @@ class TestAutomationEngineExtended:
         github_logs = "Test failed: assertion error"
 
         # Mock successful test after initial fix
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         with (
             patch.object(pr_processor, "_apply_github_actions_fix") as mock_github_fix,
@@ -785,7 +785,7 @@ class TestAutomationEngineExtended:
             }
 
             # Execute
-            from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+            from auto_coder.pr_processor import _fix_pr_issues_with_testing
 
             result = _fix_pr_issues_with_testing(
                 "test/repo",
@@ -809,7 +809,7 @@ class TestAutomationEngineExtended:
         github_logs = "Test failed: assertion error"
 
         # Mock test failure then success
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         with (
             patch.object(pr_processor, "_apply_github_actions_fix") as mock_github_fix,
@@ -825,7 +825,7 @@ class TestAutomationEngineExtended:
             mock_local_fix.return_value = ["Applied local test fix"]
 
             # Execute
-            from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+            from auto_coder.pr_processor import _fix_pr_issues_with_testing
 
             result = _fix_pr_issues_with_testing(
                 "test/repo",
@@ -844,7 +844,7 @@ class TestAutomationEngineExtended:
     def test_checkout_pr_branch_force_cleanup(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout with force cleanup enabled."""
         # Setup
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         config = AutomationConfig()
         # Enable force clean before checkout
@@ -884,7 +884,7 @@ class TestAutomationEngineExtended:
     def test_checkout_pr_branch_without_force_clean(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout without force clean (default behavior)."""
         # Setup
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         config = AutomationConfig()
         # Explicitly set to False (default)
@@ -2396,7 +2396,7 @@ class TestUrgentLabelPropagation:
     def test_create_pr_for_issue_propagates_urgent_label(self, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that urgent label is propagated from issue to PR."""
         # Setup
-        from src.auto_coder.issue_processor import _create_pr_for_issue
+        from auto_coder.issue_processor import _create_pr_for_issue
 
         issue_data = {
             "number": 123,
@@ -2460,7 +2460,7 @@ class TestUrgentLabelPropagation:
     def test_create_pr_for_issue_without_urgent_label(self, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that no urgent label is propagated when issue doesn't have it."""
         # Setup
-        from src.auto_coder.issue_processor import _create_pr_for_issue
+        from auto_coder.issue_processor import _create_pr_for_issue
 
         issue_data = {
             "number": 123,

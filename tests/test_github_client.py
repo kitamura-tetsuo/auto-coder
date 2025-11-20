@@ -9,7 +9,7 @@ import pytest
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
-from src.auto_coder.github_client import GitHubClient
+from auto_coder.github_client import GitHubClient
 
 
 class TestGitHubClient:
@@ -1553,7 +1553,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             # Set custom log directory
             logger = GHCommandLogger(log_dir=Path(tmpdir))
@@ -1601,7 +1601,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1649,7 +1649,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1696,7 +1696,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1739,8 +1739,8 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder import auth_utils
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder import auth_utils
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1781,8 +1781,8 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder import auth_utils
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder import auth_utils
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)

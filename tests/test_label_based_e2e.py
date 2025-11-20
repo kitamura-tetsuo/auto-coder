@@ -7,8 +7,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.prompt_loader import clear_prompt_cache, render_prompt
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.prompt_loader import clear_prompt_cache, render_prompt
 from tests.fixtures.label_prompt_fixtures import (
     TEST_ISSUE_DATA,
     TEST_LABEL_PRIORITIES,
@@ -473,7 +473,7 @@ class TestLabelBasedPRProcessingE2E:
         pr_labels = ["bug"]
 
         # Simulate render_prompt for PR
-        from src.auto_coder.prompt_loader import render_prompt
+        from auto_coder.prompt_loader import render_prompt
 
         result = render_prompt(
             "pr.action",

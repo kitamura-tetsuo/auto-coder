@@ -9,9 +9,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig, Candidate
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.automation_config import AutomationConfig, Candidate
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 class TestUnmergeablePRPriority:

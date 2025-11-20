@@ -1,4 +1,4 @@
-from src.auto_coder.utils import change_fraction
+from auto_coder.utils import change_fraction
 
 
 def test_change_fraction_ignores_large_prefix_when_last_20_lines_identical():

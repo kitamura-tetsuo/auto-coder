@@ -7,8 +7,8 @@ from unittest.mock import Mock, patch
 import click
 from click.testing import CliRunner
 
-from src.auto_coder.backend_manager import BackendManager
-from src.auto_coder.cli import create_feature_issues
+from auto_coder.backend_manager import BackendManager
+from auto_coder.cli import create_feature_issues
 
 
 class TestCLICreateFeatureIssues:
