@@ -99,72 +99,63 @@ def _resolve_label_priority(
     """
     # Handle case where label_prompt_mappings is not a dict
     if not isinstance(label_prompt_mappings, dict):
-        return None
+        # If it's a list, convert to dict where each element maps to itself
+        if isinstance(label_prompt_mappings, list):
+            label_prompt_mappings = {str(item): str(item) for item in label_prompt_mappings}
+        else:
+            return None
 
-    # Create case-insensitive mapping for matching
-    # Normalized label (lowercase) -> original mapping key
-    case_insensitive_to_original: Dict[str, str] = {}
+    # Build a mapping from string representation to original mapping key
+    # This allows matching non-string types (float, bool, etc.) with string comparisons
+    str_to_original_key: Dict[str, Any] = {}
     for mapping_key, prompt_key in label_prompt_mappings.items():
-        # Ensure label is a string for comparison
         try:
-            normalized_mapping_key = str(mapping_key).lower()
+            str_key = str(mapping_key)
+            str_to_original_key[str_key] = mapping_key
         except (AttributeError, TypeError):
-            # Skip labels that can't be converted to string
+            # Skip keys that can't be converted to string
             continue
-        case_insensitive_to_original[normalized_mapping_key] = mapping_key
 
-    # Filter to labels with configured prompt mappings (case-insensitive)
-    # Store both issue label and mapping key to support both matching and return value
-    applicable_pairs = []  # List of (issue_label, mapping_key) tuples
+    # Filter to labels with configured prompt mappings (case-sensitive)
+    # We use the string representation for matching but store the original mapping key
+    applicable_mapping_keys = []  # List of original mapping keys that match
     for issue_label in issue_labels:
         # Ensure label is a string for comparison
         try:
-            normalized_issue_label = str(issue_label).lower()
+            issue_label_str = str(issue_label)
         except (AttributeError, TypeError):
             # Skip labels that can't be converted to string
             continue
-        if normalized_issue_label in case_insensitive_to_original:
-            # Store both the original issue label (for priority matching) and mapping key (for return)
-            original_mapping_key = case_insensitive_to_original[normalized_issue_label]
-            applicable_pairs.append((issue_label, original_mapping_key))
+        # Case-sensitive matching: exact match required
+        if issue_label_str in str_to_original_key:
+            # Use the original mapping key from the mappings configuration
+            original_mapping_key = str_to_original_key[issue_label_str]
+            applicable_mapping_keys.append(original_mapping_key)
 
-    if not applicable_pairs:
+    if not applicable_mapping_keys:
         return None
 
-    # Extract just the issue labels for priority matching (preserves original case from issue)
-    applicable_issue_labels = [pair[0] for pair in applicable_pairs]
-    # Extract mapping keys for final return (ensures correct key for lookup)
-    mapping_keys = [pair[1] for pair in applicable_pairs]
+    # Extract just the mapping keys for final return
+    # Ensure all mapping keys are strings to match return type
+    mapping_keys = [str(key) for key in applicable_mapping_keys]
 
-    # If priorities is None, return None (no priority system configured)
+    # For backward compatibility: if priorities is None, return first applicable mapping key
+    # This allows old code to work with just mappings, without priority system
     if label_priorities is None:
-        return None
+        return str(mapping_keys[0]) if mapping_keys else None
 
     # If priorities is empty list, fallback to first applicable mapping key
     if not label_priorities:
-        return mapping_keys[0]
+        return str(mapping_keys[0]) if mapping_keys else None
 
     # Sort by priority and return highest priority mapping key
-    # First, check for exact case-sensitive matches
+    # Priorities are matched against the mapping keys (case-sensitive)
     for priority_label in label_priorities:
-        if priority_label in applicable_issue_labels:
-            # Find the corresponding mapping key for the matched issue label
-            for issue_label, mapping_key in applicable_pairs:
-                if issue_label == priority_label:
-                    return mapping_key
+        if str(priority_label) in mapping_keys:
+            return str(priority_label)
 
-    # Check if there are any case-insensitive matches that failed due to case sensitivity
-    # If so, this indicates a configuration issue (case mismatch) and we should return None
-    priorities_lower = {str(p).lower() for p in label_priorities if p is not None}
-    applicable_issue_labels_lower = {str(a).lower() for a in applicable_issue_labels if a is not None}
-
-    # If there are overlapping labels when ignoring case, it means there are case mismatches
-    if priorities_lower & applicable_issue_labels_lower:  # Set intersection - if not empty
-        return None
-
-    # If there are no conceptual overlaps between priorities and applicable labels,
-    # return the first applicable as a fallback
-    return mapping_keys[0]
+    # If no exact match found, fall back to first applicable label
+    return str(mapping_keys[0]) if mapping_keys else None
 
 
 def _is_breaking_change_issue(issue_labels: List[str]) -> bool:

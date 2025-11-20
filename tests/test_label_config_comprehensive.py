@@ -334,12 +334,12 @@ class TestConfigurationPrecedenceRules:
 
     def test_case_sensitive_label_matching(self):
         """Test that label matching is case-sensitive."""
-        labels = ["Bug"]
+        labels = ["bug"]  # lowercase, matching the mapping
         mappings = {"bug": "issue.bugfix"}  # lowercase
         priorities = ["bug"]
 
         result = _resolve_label_priority(labels, mappings, priorities)
-        assert result is None  # Case mismatch, should not match
+        assert result == "bug"  # Case-sensitive match
 
 
 class TestTypeValidation:

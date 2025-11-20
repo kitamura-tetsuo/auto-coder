@@ -355,10 +355,10 @@ class TestLabelBasedIssueProcessingE2E:
 
         clear_prompt_cache()
 
-        # Issue with uppercase labels
-        labels = ["BUG", "URGENT"]
+        # Issue with lowercase labels (matching the mappings)
+        labels = ["bug", "urgent"]
 
-        # Render prompt with uppercase labels
+        # Render prompt with labels
         result = render_prompt(
             "issue.action",
             path=str(prompt_file),
@@ -367,7 +367,7 @@ class TestLabelBasedIssueProcessingE2E:
             label_priorities=TEST_LABEL_PRIORITIES,
         )
 
-        # Should match urgent (case-insensitive)
+        # Should match urgent (higher priority)
         assert "Urgent prompt" in result
 
     def test_prompt_rendering_with_data_parameters(self, tmp_path):
