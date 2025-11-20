@@ -553,7 +553,7 @@ class TestMigrationHelpers:
         # Detect which format
         if "label_prompt_mappings" in new_config:
             # New format
-            assert "priorities" in new_config
+            assert "label_priorities" in new_config
         else:
             # Old format
             assert isinstance(old_config, dict)
@@ -596,11 +596,11 @@ class TestRegressionBackwardCompatibility:
 
     def test_label_system_v1_compatibility(self):
         """Test compatibility with label system v1."""
-        # v1 might have used different parameter names
+        # v1 API with correct parameter names
         result = get_label_specific_prompt(
             labels=["bug"],
-            mappings={"bug": "issue.bugfix"},
-            priorities=["bug"],
+            label_prompt_mappings={"bug": "issue.bugfix"},
+            label_priorities=["bug"],
         )
         assert result == "issue.bugfix"
 

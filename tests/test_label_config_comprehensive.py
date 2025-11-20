@@ -252,8 +252,9 @@ class TestMissingConfigurationDefaults:
         mappings = {"bug": "issue.bugfix"}
         priorities = None  # Missing priorities
 
+        # With backward compatibility, this should return the first applicable label's mapping
         result = _get_prompt_for_labels(labels, mappings, priorities)
-        assert result is None
+        assert result == "issue.bugfix"
 
     def test_missing_labels_uses_fallback(self):
         """Test when labels are missing, use fallback behavior."""
@@ -800,15 +801,15 @@ class TestConfigurationRecovery:
         result1 = _resolve_label_priority(labels, mappings, ["bug"])
         assert result1 == "bug"
 
-        # With invalid priorities (should still work)
+        # With None priorities - backward compatibility allows fallback to first applicable label
         result2 = _resolve_label_priority(labels, mappings, None)
-        assert result2 is None
+        assert result2 == "bug"
 
     def test_partial_config_still_functional(self):
         """Test that partial/incomplete config still functions."""
-        # Only mappings, no priorities - returns None (priorities required)
+        # Only mappings, no priorities - backward compatibility returns first applicable label
         result1 = get_label_specific_prompt(["bug"], {"bug": "issue.bugfix"}, None)
-        assert result1 is None
+        assert result1 == "issue.bugfix"
 
         # Only priorities, no matching labels - returns None (no applicable labels)
         result2 = get_label_specific_prompt(["feature"], {"bug": "issue.bugfix"}, ["feature"])

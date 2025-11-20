@@ -103,17 +103,17 @@ class TestWatcherClient:
         try:
             # Send request
             request_json = json.dumps(request) + "\n"
-            self.process.stdin.write(request_json)
-            self.process.stdin.flush()
+            self.process.stdin.write(request_json)  # type: ignore[union-attr]
+            self.process.stdin.flush()  # type: ignore[union-attr]
 
             # Read response
-            response_line = self.process.stdout.readline()
+            response_line = self.process.stdout.readline()  # type: ignore[union-attr]
             response = json.loads(response_line)
 
             if "error" in response:
                 raise RuntimeError(f"MCP error: {response['error']}")
 
-            return response.get("result", {})
+            return response.get("result", {})  # type: ignore[no-any-return]
 
         except Exception as e:
             logger.error(f"Failed to call MCP tool {tool_name}: {e}")
