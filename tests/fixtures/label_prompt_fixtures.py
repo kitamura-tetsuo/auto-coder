@@ -11,7 +11,19 @@ Test Data Structure:
 
 from typing import Any, Dict, List
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None
+
+
+# Helper to create fixtures
+def _fixture(func):
+    """Create a pytest fixture, or return the function if pytest is not available."""
+    if pytest is not None:
+        return pytest.fixture(func)
+    return func
+
 
 # Comprehensive test data for issues with different label configurations
 TEST_ISSUE_DATA = {
@@ -216,49 +228,49 @@ PERFORMANCE_TEST_SCENARIOS = {
 
 
 # Test configurations
-@pytest.fixture
+@_fixture
 def test_issue_data():
     """Return comprehensive test issue data."""
     return TEST_ISSUE_DATA
 
 
-@pytest.fixture
+@_fixture
 def label_prompt_mappings():
     """Return label-to-prompt mappings for testing."""
     return TEST_LABEL_PROMPT_MAPPINGS
 
 
-@pytest.fixture
+@_fixture
 def label_priorities():
     """Return label priorities for testing."""
     return TEST_LABEL_PRIORITIES
 
 
-@pytest.fixture
+@_fixture
 def pr_label_mappings():
     """Return PR label mappings (aliases) for testing."""
     return TEST_PR_LABEL_MAPPINGS
 
 
-@pytest.fixture
+@_fixture
 def pr_label_priorities():
     """Return PR label priorities for testing."""
     return TEST_PR_LABEL_PRIORITIES
 
 
-@pytest.fixture
+@_fixture
 def invalid_configs():
     """Return invalid configurations for error testing."""
     return INVALID_CONFIGS
 
 
-@pytest.fixture
+@_fixture
 def performance_scenarios():
     """Return performance test scenarios."""
     return PERFORMANCE_TEST_SCENARIOS
 
 
-@pytest.fixture
+@_fixture
 def mock_github_client():
     """Create a mock GitHub client for testing."""
     from unittest.mock import Mock
@@ -273,7 +285,7 @@ def mock_github_client():
     return client
 
 
-@pytest.fixture
+@_fixture
 def temp_prompt_file(tmp_path):
     """Create a temporary prompt file for testing."""
     path = tmp_path / "prompts.yaml"
@@ -284,7 +296,7 @@ def temp_prompt_file(tmp_path):
     return path
 
 
-@pytest.fixture
+@_fixture
 def complex_prompt_file(tmp_path):
     """Create a complex prompt file with all label-specific prompts."""
     path = tmp_path / "prompts.yaml"
@@ -303,7 +315,7 @@ def complex_prompt_file(tmp_path):
     return path
 
 
-@pytest.fixture
+@_fixture
 def empty_prompt_file(tmp_path):
     """Create an empty prompt file for testing."""
     path = tmp_path / "empty.yaml"
@@ -311,7 +323,7 @@ def empty_prompt_file(tmp_path):
     return path
 
 
-@pytest.fixture
+@_fixture
 def invalid_yaml_file(tmp_path):
     """Create an invalid YAML file for testing."""
     path = tmp_path / "invalid.yaml"
@@ -319,13 +331,13 @@ def invalid_yaml_file(tmp_path):
     return path
 
 
-@pytest.fixture
+@_fixture
 def missing_prompt_file(tmp_path):
     """Path to a non-existent prompt file for testing."""
     return tmp_path / "nonexistent.yaml"
 
 
-@pytest.fixture
+@_fixture
 def large_label_set():
     """Generate a large set of labels for performance testing."""
     labels = []
@@ -334,14 +346,14 @@ def large_label_set():
     return labels
 
 
-@pytest.fixture
+@_fixture
 def large_priority_list():
     """Generate a large priority list for performance testing."""
     priorities = [f"label-{i}" for i in range(1000)]
     return priorities
 
 
-@pytest.fixture
+@_fixture
 def large_mappings_dict():
     """Generate a large mappings dictionary for performance testing."""
     mappings = {f"label-{i}": f"prompt.{i}" for i in range(1000)}
@@ -425,25 +437,25 @@ BACKWARD_COMPAT_TEST_CASES = [
 ]
 
 
-@pytest.fixture
+@_fixture
 def breaking_change_test_cases():
     """Parametrized test cases for breaking-change detection."""
     return BREAKING_CHANGE_TEST_CASES
 
 
-@pytest.fixture
+@_fixture
 def label_priority_test_cases():
     """Parametrized test cases for label priority resolution."""
     return LABEL_PRIORITY_TEST_CASES
 
 
-@pytest.fixture
+@_fixture
 def render_prompt_test_cases():
     """Parametrized test cases for render_prompt with labels."""
     return RENDER_PROMPT_TEST_CASES
 
 
-@pytest.fixture
+@_fixture
 def backward_compat_test_cases():
     """Parametrized test cases for backward compatibility."""
     return BACKWARD_COMPAT_TEST_CASES
@@ -474,7 +486,7 @@ ENV_VAR_TEST_CASES = [
 ]
 
 
-@pytest.fixture
+@_fixture
 def env_var_test_cases():
     """Environment variable test cases for configuration testing."""
     return ENV_VAR_TEST_CASES
