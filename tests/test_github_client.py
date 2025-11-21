@@ -9,7 +9,7 @@ import pytest
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
-from src.auto_coder.github_client import GitHubClient
+from auto_coder.github_client import GitHubClient
 
 
 class TestGitHubClient:
@@ -21,7 +21,7 @@ class TestGitHubClient:
         assert client.token == mock_github_token
         assert isinstance(client.github, Github)
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_repository_success(self, mock_github_class, mock_github_token):
         """Test successful repository retrieval."""
         # Setup
@@ -39,7 +39,7 @@ class TestGitHubClient:
         assert result == mock_repo
         mock_github.get_repo.assert_called_once_with("test/repo")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_repository_failure(self, mock_github_class, mock_github_token):
         """Test repository retrieval failure."""
         # Setup
@@ -53,7 +53,7 @@ class TestGitHubClient:
         with pytest.raises(GithubException):
             client.get_repository("test/nonexistent")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_open_issues_success(self, mock_github_class, mock_github_token):
         """Test successful open issues retrieval."""
         # Setup
@@ -82,7 +82,7 @@ class TestGitHubClient:
         assert mock_pr not in result
         mock_repo.get_issues.assert_called_once_with(state="open", sort="created", direction="asc")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_open_pull_requests_success(self, mock_github_class, mock_github_token):
         """Test successful open pull requests retrieval."""
         # Setup
@@ -108,7 +108,7 @@ class TestGitHubClient:
     def test_get_open_issues_sorted_oldest_first(self, mock_github_token):
         """Test that issues are sorted by creation date (oldest first)."""
         # Setup
-        with patch("src.auto_coder.github_client.Github") as mock_github_class:
+        with patch("auto_coder.github_client.Github") as mock_github_class:
             mock_github = Mock()
             mock_repo = Mock(spec=Repository.Repository)
 
@@ -146,7 +146,7 @@ class TestGitHubClient:
         creation date (oldest first).
         """
         # Setup
-        with patch("src.auto_coder.github_client.Github") as mock_github_class:
+        with patch("auto_coder.github_client.Github") as mock_github_class:
             mock_github = Mock()
             mock_repo = Mock(spec=Repository.Repository)
 
@@ -175,7 +175,7 @@ class TestGitHubClient:
             assert result[1] == mock_pr2
             mock_repo.get_pulls.assert_called_once_with(state="open", sort="created", direction="asc")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_find_pr_by_head_branch_found(self, mock_github_class, mock_github_token):
         """Test finding PR by head branch when PR exists."""
         # Setup
@@ -212,7 +212,7 @@ class TestGitHubClient:
             assert result["number"] == 123
             mock_get_details.assert_called_once_with(mock_pr1)
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_find_pr_by_head_branch_not_found(self, mock_github_class, mock_github_token):
         """Test finding PR by head branch when PR does not exist."""
         # Setup
@@ -234,7 +234,7 @@ class TestGitHubClient:
         # Assert
         assert result is None
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_find_pr_by_head_branch_error(self, mock_github_class, mock_github_token):
         """Test finding PR by head branch when error occurs."""
         # Setup
@@ -354,7 +354,7 @@ class TestGitHubClient:
         }
         assert result == expected
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_pr_details_by_number_success(self, mock_github_class, mock_github_token):
         """Test successful PR details retrieval by number."""
         # Setup
@@ -400,7 +400,7 @@ class TestGitHubClient:
         assert result["title"] == "Test PR"
         assert result["body"] == "Test PR body"
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_details_by_number_success(self, mock_github_class, mock_github_token):
         """Test successful Issue details retrieval by number."""
         # Setup
@@ -441,7 +441,7 @@ class TestGitHubClient:
         assert result["labels"] == ["bug"]
         assert result["url"] == "https://github.com/test/repo/issues/456"
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_create_issue_success(self, mock_github_class, mock_github_token):
         """Test successful issue creation."""
         # Setup
@@ -464,7 +464,7 @@ class TestGitHubClient:
         assert result == mock_issue
         mock_repo.create_issue.assert_called_once_with(title="New Issue", body="Issue body", labels=["bug"])
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_add_comment_to_issue_success(self, mock_github_class, mock_github_token):
         """Test successful comment addition to issue."""
         # Setup
@@ -485,7 +485,7 @@ class TestGitHubClient:
         mock_repo.get_issue.assert_called_once_with(123)
         mock_issue.create_comment.assert_called_once_with("Test comment")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_close_issue_success(self, mock_github_class, mock_github_token):
         """Test successful issue closure."""
         # Setup
@@ -507,7 +507,7 @@ class TestGitHubClient:
         mock_issue.create_comment.assert_called_once_with("Closing comment")
         mock_issue.edit.assert_called_once_with(state="closed")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_add_labels_to_issue_success(self, mock_github_class, mock_github_token):
         """Test successful label addition to issue."""
         # Setup
@@ -541,7 +541,7 @@ class TestGitHubClient:
         expected_labels = {"bug", "high-priority", "jules", "enhancement"}
         assert set(actual_labels) == expected_labels
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_add_labels_to_issue_no_duplicates(self, mock_github_class, mock_github_token):
         """Test that duplicate labels are not added."""
         # Setup
@@ -574,7 +574,7 @@ class TestGitHubClient:
         expected_labels = {"bug", "jules", "enhancement"}
         assert set(actual_labels) == expected_labels
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_add_labels_to_pr_success(self, mock_github_class, mock_github_token):
         """Test successful label addition to PR."""
         # Setup
@@ -608,7 +608,7 @@ class TestGitHubClient:
         expected_labels = {"jules", "enhancement"}
         assert called_labels == expected_labels
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_add_labels_to_pr_no_duplicates(self, mock_github_class, mock_github_token):
         """Test that duplicate labels are not added to PR."""
         # Setup
@@ -660,7 +660,7 @@ class TestGitHubClient:
             assert result is True
             mock_has.assert_called_once_with("test/repo", 789, "x", item_type="pr")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_has_linked_pr_with_linked_pr(self, mock_github_class, mock_github_token):
         """Test has_linked_pr returns True when PR references the issue."""
         # Setup
@@ -686,7 +686,7 @@ class TestGitHubClient:
         assert result is True
         mock_repo.get_pulls.assert_called_once_with(state="open")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_has_linked_pr_with_no_linked_pr(self, mock_github_class, mock_github_token):
         """Test has_linked_pr returns False when no PR references the issue."""
         # Setup
@@ -712,7 +712,7 @@ class TestGitHubClient:
         assert result is False
         mock_repo.get_pulls.assert_called_once_with(state="open")
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_has_linked_pr_with_multiple_patterns(self, mock_github_class, mock_github_token):
         """Test has_linked_pr detects various reference patterns."""
         # Setup
@@ -744,7 +744,7 @@ class TestGitHubClient:
             # Assert
             assert result is True, f"Failed for title='{title}', body='{body}'"
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_has_linked_pr_handles_exception(self, mock_github_class, mock_github_token):
         """Test has_linked_pr handles exceptions gracefully."""
         # Setup
@@ -841,7 +841,7 @@ class TestGitHubClient:
         assert result == []
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_has_linked_pr_uses_graphql_first(self, mock_github_class, mock_run, mock_github_token):
         """Test has_linked_pr uses GraphQL API first."""
         # Setup GraphQL to return a linked PR
@@ -867,7 +867,7 @@ class TestGitHubClient:
         mock_github.get_repo.assert_not_called()
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_pr_closing_issues_success(self, mock_github_class, mock_run, mock_github_token):
         """Test successful retrieval of closing issues for a PR."""
         # Setup
@@ -911,7 +911,7 @@ class TestGitHubClient:
         mock_run.assert_called_once()
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_pr_closing_issues_empty(self, mock_github_class, mock_run, mock_github_token):
         """Test PR with no closing issues."""
         # Setup
@@ -945,7 +945,7 @@ class TestGitHubClient:
         assert result == []
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_pr_closing_issues_error(self, mock_github_class, mock_run, mock_github_token):
         """Test error handling when GraphQL query fails."""
         # Setup
@@ -1037,7 +1037,7 @@ class TestGitHubClient:
         result = client.get_issue_dependencies(body)
         assert result == [100, 200]
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_check_issue_dependencies_resolved_all_closed(self, mock_github_class, mock_github_token):
         """Test checking dependencies when all are resolved (closed)."""
         # Setup
@@ -1058,7 +1058,7 @@ class TestGitHubClient:
             assert result == []
             assert mock_get_details.call_count == 2
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_check_issue_dependencies_resolved_some_open(self, mock_github_class, mock_github_token):
         """Test checking dependencies when some are unresolved (open)."""
         # Setup
@@ -1080,7 +1080,7 @@ class TestGitHubClient:
             assert result == [200]
             assert mock_get_details.call_count == 3
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_check_issue_dependencies_resolved_all_open(self, mock_github_class, mock_github_token):
         """Test checking dependencies when all are unresolved (open)."""
         # Setup
@@ -1101,7 +1101,7 @@ class TestGitHubClient:
             assert result == [100, 200]
             assert mock_get_details.call_count == 2
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_check_issue_dependencies_resolved_empty_list(self, mock_github_class, mock_github_token):
         """Test checking dependencies with empty list."""
         # Setup
@@ -1114,7 +1114,7 @@ class TestGitHubClient:
         # Assert
         assert result == []
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_check_issue_dependencies_resolved_error_handling(self, mock_github_class, mock_github_token):
         """Test error handling when checking dependencies."""
         # Setup
@@ -1132,7 +1132,7 @@ class TestGitHubClient:
             assert result == [99999]
             assert mock_get_details.call_count == 1
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_search_issues_by_title_exact_match(self, mock_github_class, mock_github_token):
         """Test _search_issues_by_title finds exact match (case-insensitive)."""
         # Setup
@@ -1162,7 +1162,7 @@ class TestGitHubClient:
         # Assert
         assert result == 123
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_search_issues_by_title_partial_match(self, mock_github_class, mock_github_token):
         """Test _search_issues_by_title finds partial match."""
         # Setup
@@ -1187,7 +1187,7 @@ class TestGitHubClient:
         # Assert
         assert result == 123
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_search_issues_by_title_no_match(self, mock_github_class, mock_github_token):
         """Test _search_issues_by_title returns None when no match found."""
         # Setup
@@ -1215,7 +1215,7 @@ class TestGitHubClient:
     @pytest.mark.skip(reason="Test needs refactoring - mock not working correctly, but functionality is tested by other passing tests")
     def test_get_issue_dependencies_with_title_based(self, mock_github_token):
         """Test extracting dependencies with title-based pattern."""
-        with patch("src.auto_coder.github_client.Github") as mock_github_class:
+        with patch("auto_coder.github_client.Github") as mock_github_class:
             client = GitHubClient.get_instance(mock_github_token)
             mock_github = Mock()
             mock_repo = Mock(spec=Repository.Repository)
@@ -1238,7 +1238,7 @@ class TestGitHubClient:
             # Assert
             assert result == [123]
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_dependencies_mixed_number_and_title(self, mock_github_class, mock_github_token):
         """Test extracting both number-based and title-based dependencies."""
         # Setup
@@ -1263,7 +1263,7 @@ class TestGitHubClient:
             assert 456 in result
             assert len(result) == 2
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_dependencies_title_with_parentheses(self, mock_github_class, mock_github_token):
         """Test extracting dependencies with title containing parentheses."""
         # Setup
@@ -1286,7 +1286,7 @@ class TestGitHubClient:
             # Assert
             assert result == [789]
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_dependencies_title_case_insensitive(self, mock_github_class, mock_github_token):
         """Test that title-based dependencies are case-insensitive."""
         # Setup
@@ -1331,7 +1331,7 @@ class TestGitHubClient:
         # Assert - should still find number-based dependencies
         assert result == [123]
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_dependencies_skips_short_titles(self, mock_github_class, mock_github_token):
         """Test that very short titles are skipped to avoid false matches."""
         # Setup
@@ -1354,7 +1354,7 @@ class TestGitHubClient:
             # Assert - should not match very short title
             assert result == []
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_dependencies_title_no_number_prefix(self, mock_github_class, mock_github_token):
         """Test that text starting with # is treated as number-based, not title-based."""
         # Setup
@@ -1426,7 +1426,7 @@ Some other text that's not indented
         assert 789 in result
         assert 100 not in result
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_dependencies_multiline_with_titles(self, mock_github_class, mock_github_token):
         """Test extracting multi-line dependencies with title-based references."""
         # Setup
@@ -1459,7 +1459,7 @@ Some other text that's not indented
             assert 456 in result
             assert len(result) == 2
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     def test_get_issue_dependencies_multiline_mixed_numbers_and_titles(self, mock_github_class, mock_github_token):
         """Test extracting multi-line dependencies with mixed number and title references."""
         # Setup
@@ -1533,7 +1533,7 @@ Some other text that's not indented
 class TestGitHubClientLogging:
     """Test cases for GitHub client logging functionality."""
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     @patch("subprocess.run")
     def test_get_linked_prs_via_graphql_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
         """Test that get_linked_prs_via_graphql logs the gh command."""
@@ -1553,7 +1553,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             # Set custom log directory
             logger = GHCommandLogger(log_dir=Path(tmpdir))
@@ -1581,7 +1581,7 @@ class TestGitHubClientLogging:
                 assert "graphql" in rows[0]["args"]
                 assert rows[0]["repo"] == "test/repo"
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     @patch("subprocess.run")
     def test_get_open_sub_issues_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
         """Test that get_open_sub_issues logs the gh command."""
@@ -1601,7 +1601,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1629,7 +1629,7 @@ class TestGitHubClientLogging:
                 assert "sub_issues" in rows[0]["args"]
                 assert rows[0]["repo"] == "test/repo"
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     @patch("subprocess.run")
     def test_get_pr_closing_issues_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
         """Test that get_pr_closing_issues logs the gh command."""
@@ -1649,7 +1649,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1676,7 +1676,7 @@ class TestGitHubClientLogging:
                 assert "graphql" in rows[0]["args"]
                 assert rows[0]["repo"] == "test/repo"
 
-    @patch("src.auto_coder.github_client.Github")
+    @patch("auto_coder.github_client.Github")
     @patch("subprocess.run")
     def test_get_parent_issue_logs_command(self, mock_subprocess, mock_github_class, mock_github_token):
         """Test that get_parent_issue logs the gh command."""
@@ -1696,7 +1696,7 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1724,7 +1724,7 @@ class TestGitHubClientLogging:
                 assert "sub_issues" in rows[0]["args"]
                 assert rows[0]["repo"] == "test/repo"
 
-    @patch("src.auto_coder.auth_utils.subprocess.run")
+    @patch("auto_coder.auth_utils.subprocess.run")
     def test_auth_utils_get_github_token_logs_command(self, mock_subprocess):
         """Test that get_github_token logs the gh auth token command."""
         # Mock subprocess.run
@@ -1739,8 +1739,8 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder import auth_utils
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder import auth_utils
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)
@@ -1766,7 +1766,7 @@ class TestGitHubClientLogging:
                 assert "auth" in rows[0]["args"]
                 assert "token" in rows[0]["args"]
 
-    @patch("src.auto_coder.auth_utils.subprocess.run")
+    @patch("auto_coder.auth_utils.subprocess.run")
     def test_auth_utils_check_gh_auth_logs_command(self, mock_subprocess):
         """Test that check_gh_auth logs the gh auth status command."""
         # Mock subprocess.run
@@ -1781,8 +1781,8 @@ class TestGitHubClientLogging:
         with tempfile.TemporaryDirectory() as tmpdir:
             from pathlib import Path
 
-            from src.auto_coder import auth_utils
-            from src.auto_coder.gh_logger import GHCommandLogger, set_gh_logger
+            from auto_coder import auth_utils
+            from auto_coder.gh_logger import GHCommandLogger, set_gh_logger
 
             logger = GHCommandLogger(log_dir=Path(tmpdir))
             set_gh_logger(logger)

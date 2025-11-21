@@ -14,7 +14,7 @@ def test_get_actions_logs_cli(_use_real_home):
         [
             sys.executable,
             "-m",
-            "src.auto_coder.cli",
+            "auto_coder.cli",
             "get-actions-logs",
             "--url",
             url,

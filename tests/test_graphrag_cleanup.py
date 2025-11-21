@@ -8,8 +8,8 @@ from typing import List
 import pytest
 from click.testing import CliRunner
 
-from src.auto_coder.cli_commands_graphrag import graphrag_group
-from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
+from auto_coder.cli_commands_graphrag import graphrag_group
+from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
 
 def _make_index_manager(tmp_path: Path) -> GraphRAGIndexManager:
@@ -31,7 +31,7 @@ def test_build_repo_key_uses_remote_and_strips_credentials(tmp_path, monkeypatch
 
         return Result()
 
-    monkeypatch.setattr("src.auto_coder.graphrag_index_manager.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.graphrag_index_manager.subprocess.run", fake_run)
 
     key = manager._build_repo_key()
     assert repo_str in key

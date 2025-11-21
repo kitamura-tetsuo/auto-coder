@@ -5,18 +5,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.auto_coder.auggie_client import AuggieClient
-from src.auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.auggie_client import AuggieClient
+from auto_coder.exceptions import AutoCoderUsageLimitError
 
 
 def _patch_subprocess(monkeypatch, popen_class):
     """Patch subprocess interactions used by AuggieClient for tests."""
 
     monkeypatch.setattr(
-        "src.auto_coder.auggie_client.subprocess.run",
+        "auto_coder.auggie_client.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    monkeypatch.setattr("src.auto_coder.auggie_client.subprocess.Popen", popen_class)
+    monkeypatch.setattr("auto_coder.auggie_client.subprocess.Popen", popen_class)
 
 
 class RecordingPopen:

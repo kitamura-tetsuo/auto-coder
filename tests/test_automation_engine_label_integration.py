@@ -16,11 +16,11 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.issue_processor import _process_issue_jules_mode
-from src.auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
-from src.auto_coder.prompt_loader import render_prompt
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.issue_processor import _process_issue_jules_mode
+from auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
+from auto_coder.prompt_loader import render_prompt
 from tests.fixtures.label_prompt_fixtures import (
     TEST_ISSUE_DATA,
     TEST_LABEL_PRIORITIES,
@@ -255,7 +255,7 @@ class TestAutomationEngineLabelIntegration:
                 backend_switches.append(self.name)
                 return "Test response"
 
-        with patch("src.auto_coder.automation_engine.get_llm_backend_manager", return_value=TrackingBackend("codex")):
+        with patch("auto_coder.automation_engine.get_llm_backend_manager", return_value=TrackingBackend("codex")):
             # Test that backend integration works
             # Verify the backend manager is set up correctly
             assert engine is not None
@@ -309,7 +309,7 @@ class TestAutomationEngineLabelIntegration:
         non_jules_issue = TEST_ISSUE_DATA["enhancement"].copy()
 
         # Test jules mode processing
-        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        with patch("auto_coder.issue_processor.cmd") as mock_cmd:
             mock_cmd.run_command.return_value = _cmd_result(success=True)
 
             config = AutomationConfig()

@@ -4,14 +4,14 @@ from unittest.mock import patch
 
 import pytest
 
-from src.auto_coder.exceptions import AutoCoderUsageLimitError
-from src.auto_coder.qwen_client import QwenClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.qwen_client import QwenClient
+from auto_coder.utils import CommandResult
 from tests.support.env import patch_environment
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
@@ -60,7 +60,7 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
@@ -111,7 +111,7 @@ def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"
@@ -164,7 +164,7 @@ def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_ru
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_all_limits_raise(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
     config_path = tmp_path / "qwen-providers.toml"

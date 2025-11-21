@@ -10,10 +10,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-import requests
+import requests  # type: ignore[import-untyped]
 import yaml
 
-from src.auto_coder.prompt_loader import (
+from auto_coder.prompt_loader import (
     _get_prompt_for_labels,
     _resolve_label_priority,
     clear_prompt_cache,
@@ -36,8 +36,8 @@ class TestGitHubAPIRateLimiting:
 
         # The LabelManager should handle rate limits gracefully
         # This is a conceptual test - actual rate limiting would be in GitHub client
-        from src.auto_coder.automation_config import AutomationConfig
-        from src.auto_coder.label_manager import LabelManager
+        from auto_coder.automation_config import AutomationConfig
+        from auto_coder.label_manager import LabelManager
 
         config = AutomationConfig()
 
@@ -53,8 +53,8 @@ class TestGitHubAPIRateLimiting:
         mock_client.has_label.side_effect = requests.exceptions.Timeout("API timeout")
         mock_client.try_add_labels_to_issue.return_value = False
 
-        from src.auto_coder.automation_config import AutomationConfig
-        from src.auto_coder.label_manager import LabelManager
+        from auto_coder.automation_config import AutomationConfig
+        from auto_coder.label_manager import LabelManager
 
         config = AutomationConfig()
 
@@ -176,7 +176,7 @@ class TestInvalidYAMLConfiguration:
 class TestNetworkFailures:
     """Test handling of network failures during configuration loading."""
 
-    @patch("src.auto_coder.prompt_loader.yaml.safe_load")
+    @patch("auto_coder.prompt_loader.yaml.safe_load")
     def test_network_error_during_yaml_loading(self, mock_yaml_load):
         """Test handling of network-related errors during YAML loading."""
         mock_yaml_load.side_effect = requests.exceptions.ConnectionError("Network error")
@@ -270,7 +270,7 @@ class TestConcurrentAccessConflicts:
 class TestDiskSpaceIssues:
     """Test handling of disk space issues with log files."""
 
-    @patch("src.auto_coder.prompt_loader.logger")
+    @patch("auto_coder.prompt_loader.logger")
     def test_log_write_failure_handling(self, mock_logger):
         """Test handling when log writing fails."""
         # Simulate logger failure
@@ -351,7 +351,7 @@ class TestCorruptedCacheState:
 
     def test_cache_with_invalid_data(self):
         """Test handling when cache contains invalid data."""
-        from src.auto_coder.prompt_loader import _PROMPTS_CACHE
+        from auto_coder.prompt_loader import _PROMPTS_CACHE
 
         # Corrupt the cache
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
@@ -380,7 +380,7 @@ class TestCorruptedCacheState:
 
     def test_cache_clearing_with_corruption(self):
         """Test that clear_prompt_cache handles corrupted cache."""
-        from src.auto_coder.prompt_loader import _PROMPTS_CACHE
+        from auto_coder.prompt_loader import _PROMPTS_CACHE
 
         # Populate cache with mixed valid and invalid data
         _PROMPTS_CACHE["invalid_key"] = None

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 import toml
 
-from src.auto_coder.llm_backend_config import (
+from auto_coder.llm_backend_config import (
     BackendConfig,
     LLMBackendConfiguration,
     get_llm_config,

@@ -4,10 +4,10 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.util.github_action import GitHubActionsStatusResult
-from src.auto_coder.utils import CommandExecutor
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.util.github_action import GitHubActionsStatusResult
+from auto_coder.utils import CommandExecutor
 
 """Tests for automation engine functionality."""
 
@@ -27,7 +27,7 @@ class TestAutomationEngine:
     # as those functions are no longer supported. The modern API uses process_single
     # and LabelManager context manager for issue processing.
 
-    @patch("src.auto_coder.automation_engine.create_feature_issues")
+    @patch("auto_coder.automation_engine.create_feature_issues")
     def test_create_feature_issues_success(
         self,
         mock_create_feature_issues,
@@ -91,8 +91,8 @@ class TestAutomationEngine:
 
         # Mock successful processing - simulate that the PR was processed without errors
         with (
-            patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
-            patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
+            patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
+            patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
             mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
             mock_take_actions.return_value = ["Merged PR successfully", "Applied fixes"]
@@ -128,8 +128,8 @@ class TestAutomationEngine:
 
         # Mock failed processing
         with (
-            patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
-            patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
+            patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
+            patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
             mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
             mock_take_actions.side_effect = Exception("Processing failed")
@@ -165,8 +165,8 @@ class TestAutomationEngine:
 
         # Mock that GitHub Actions are failing due to conflicts
         with (
-            patch("src.auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
-            patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
+            patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
+            patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
             mock_check_actions.return_value = GitHubActionsStatusResult(success=False, ids=[123])
             mock_take_actions.return_value = ["Resolved merge conflicts successfully"]
@@ -197,7 +197,7 @@ class TestAutomationEngine:
         }
 
         # Mock the underlying function to return expected results
-        with patch("src.auto_coder.issue_processor._apply_issue_actions_directly") as mock_apply:
+        with patch("auto_coder.issue_processor._apply_issue_actions_directly") as mock_apply:
             mock_apply.return_value = [
                 "Gemini CLI analyzed and took action on issue: Analyzed the issue and added implementation...",
                 "Added analysis comment to issue #123",
@@ -499,7 +499,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_all_passed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when all checks pass."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup - mock cmd.run_command to return successful checks
         mock_run_command.return_value = Mock(returncode=0, stdout="✓ test-check\n✓ another-check", stderr="")
@@ -517,7 +517,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_some_failed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when some checks fail."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup
         mock_run_command.return_value = Mock(returncode=0, stdout="✓ passing-check\n✗ failing-check\n- pending-check", stderr="")
@@ -535,7 +535,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_tab_format_with_failures(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and failures."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup - simulating the actual output format from gh CLI
         mock_run_command.return_value = Mock(
@@ -557,7 +557,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_tab_format_all_pass(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and all passing."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup
         mock_run_command.return_value = Mock(
@@ -579,7 +579,7 @@ class TestAutomationEngine:
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_no_checks_reported(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Handle gh CLI message when no checks are reported."""
-        from src.auto_coder.util.github_action import _check_github_actions_status
+        from auto_coder.util.github_action import _check_github_actions_status
 
         # Mock multiple cmd.run_command calls for the historical fallback
         def mock_side_effect(cmd_list, **kwargs):
@@ -611,7 +611,7 @@ class TestAutomationEngine:
         # Setup
         mock_gh_subprocess.return_value = Mock(success=True, stdout="Switched to branch", stderr="", returncode=0)
 
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         pr_data = {"number": 123}
 
@@ -629,7 +629,7 @@ class TestAutomationEngine:
     def test_checkout_pr_branch_failure(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout failure."""
         # Setup
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         pr_data = {"number": 123}
 
@@ -771,7 +771,7 @@ class TestAutomationEngineExtended:
         github_logs = "Test failed: assertion error"
 
         # Mock successful test after initial fix
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         with (
             patch.object(pr_processor, "_apply_github_actions_fix") as mock_github_fix,
@@ -785,7 +785,7 @@ class TestAutomationEngineExtended:
             }
 
             # Execute
-            from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+            from auto_coder.pr_processor import _fix_pr_issues_with_testing
 
             result = _fix_pr_issues_with_testing(
                 "test/repo",
@@ -809,7 +809,7 @@ class TestAutomationEngineExtended:
         github_logs = "Test failed: assertion error"
 
         # Mock test failure then success
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         with (
             patch.object(pr_processor, "_apply_github_actions_fix") as mock_github_fix,
@@ -825,7 +825,7 @@ class TestAutomationEngineExtended:
             mock_local_fix.return_value = ["Applied local test fix"]
 
             # Execute
-            from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+            from auto_coder.pr_processor import _fix_pr_issues_with_testing
 
             result = _fix_pr_issues_with_testing(
                 "test/repo",
@@ -844,7 +844,7 @@ class TestAutomationEngineExtended:
     def test_checkout_pr_branch_force_cleanup(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout with force cleanup enabled."""
         # Setup
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         config = AutomationConfig()
         # Enable force clean before checkout
@@ -884,7 +884,7 @@ class TestAutomationEngineExtended:
     def test_checkout_pr_branch_without_force_clean(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout without force clean (default behavior)."""
         # Setup
-        from src.auto_coder import pr_processor
+        from auto_coder import pr_processor
 
         config = AutomationConfig()
         # Explicitly set to False (default)
@@ -1148,8 +1148,8 @@ class TestAutomationEngineExtended:
 class TestGetCandidates:
     """Test cases for _get_candidates method with priority-based selection."""
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_urgent_issue_highest_priority(
         self,
         mock_extract_issues,
@@ -1221,8 +1221,8 @@ class TestGetCandidates:
 
         mock_extract_issues.assert_not_called()  # No PRs
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_priority_order_prs_and_issues(
         self,
         mock_extract_issues,
@@ -1335,8 +1335,8 @@ class TestGetCandidates:
         assert candidates[4].priority == 0
         assert candidates[4].data["number"] == 10  # Regular issue
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_unmergeable_prs_higher_priority_than_failing_mergeable_prs(
         self,
         mock_extract_issues,
@@ -1422,8 +1422,8 @@ class TestGetCandidates:
         assert candidates[2].priority == 1
         assert candidates[2].data["number"] == 2
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_urgent_unmergeable_prs_highest_priority(
         self,
         mock_extract_issues,
@@ -1523,8 +1523,8 @@ class TestGetCandidates:
         assert candidates[3].priority == 2
         assert candidates[3].data["number"] == 4  # Regular mergeable PR with passing checks
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_includes_green_dependency_bot_pr_when_ignored(
         self,
         mock_extract_issues,
@@ -1594,8 +1594,8 @@ class TestGetCandidates:
         assert candidates[0].priority == 2  # Mergeable with successful checks
         assert candidates[0].data["author"] == "dependabot[bot]"
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_treats_dependency_bot_prs_like_normal_when_ignore_disabled(
         self,
         mock_extract_issues,
@@ -1666,8 +1666,8 @@ class TestGetCandidates:
         assert priorities[1] == 2  # Mergeable with successful checks
         assert priorities[2] == 2  # Unmergeable (needs conflict resolution)
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_items_with_auto_coder_label(
         self,
         mock_extract_issues,
@@ -1730,8 +1730,8 @@ class TestGetCandidates:
         assert 1 not in candidate_numbers  # PR with @auto-coder label
         assert 11 not in candidate_numbers  # Issue with @auto-coder label
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_issues_with_sub_issues_or_linked_prs(
         self,
         mock_extract_issues,
@@ -1773,8 +1773,8 @@ class TestGetCandidates:
         assert candidates[0].data["number"] == 10
         assert candidates[0].type == "issue"
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_extracts_related_issues_from_pr_body(
         self,
         mock_extract_issues,
@@ -1820,8 +1820,8 @@ class TestGetCandidates:
 
         mock_extract_issues.assert_called_once_with("This PR fixes #10 and #20")
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_issues_with_elder_sibling_dependencies(
         self,
         mock_extract_issues,
@@ -1886,8 +1886,8 @@ class TestGetCandidates:
         assert 11 not in candidate_numbers  # Has elder sibling #10 - should be skipped
         assert 12 not in candidate_numbers  # Has elder siblings #10, #11 - should be skipped
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_includes_issues_when_elder_siblings_are_closed(
         self,
         mock_extract_issues,
@@ -1941,8 +1941,8 @@ class TestGetCandidates:
 class TestElderSiblingDependencyLogic:
     """Test cases for elder sibling dependency logic in _get_candidates."""
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_no_parent_issue_processed_normally(
         self,
         mock_extract_issues,
@@ -1982,8 +1982,8 @@ class TestElderSiblingDependencyLogic:
         # Verify get_parent_issue was called but no need to check open sub-issues for parent
         mock_github_client.get_parent_issue.assert_called_once_with(test_repo_name, 10)
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_parent_with_single_child_processed(
         self,
         mock_extract_issues,
@@ -2033,8 +2033,8 @@ class TestElderSiblingDependencyLogic:
         # get_parent_issue should be called
         mock_github_client.get_parent_issue.assert_called_once_with(test_repo_name, 20)
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_multiple_children_all_closed_except_current_processed(
         self,
         mock_extract_issues,
@@ -2082,8 +2082,8 @@ class TestElderSiblingDependencyLogic:
         assert len(candidates) == 1
         assert candidates[0].data["number"] == 30
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_multiple_children_elder_sibling_open_skipped(
         self,
         mock_extract_issues,
@@ -2139,8 +2139,8 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].data["number"] == 10
         assert candidates[0].issue_number == 10
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_complex_parent_child_hierarchy(
         self,
         mock_extract_issues,
@@ -2221,8 +2221,8 @@ class TestElderSiblingDependencyLogic:
         assert sorted(candidate_numbers) == [1, 10, 50]
         assert len(candidates) == 3
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_elder_siblings_mixed_with_closed(
         self,
         mock_extract_issues,
@@ -2287,8 +2287,8 @@ class TestElderSiblingDependencyLogic:
         assert len(candidates) == 1
         assert candidates[0].data["number"] == 10
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_error_in_parent_check_continues(
         self,
         mock_extract_issues,
@@ -2327,8 +2327,8 @@ class TestElderSiblingDependencyLogic:
         assert len(candidates) == 1
         assert candidates[0].data["number"] == 40
 
-    @patch("src.auto_coder.util.github_action._check_github_actions_status")
-    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_multiple_issues_with_and_without_parents(
         self,
         mock_extract_issues,
@@ -2396,7 +2396,7 @@ class TestUrgentLabelPropagation:
     def test_create_pr_for_issue_propagates_urgent_label(self, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that urgent label is propagated from issue to PR."""
         # Setup
-        from src.auto_coder.issue_processor import _create_pr_for_issue
+        from auto_coder.issue_processor import _create_pr_for_issue
 
         issue_data = {
             "number": 123,
@@ -2460,7 +2460,7 @@ class TestUrgentLabelPropagation:
     def test_create_pr_for_issue_without_urgent_label(self, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that no urgent label is propagated when issue doesn't have it."""
         # Setup
-        from src.auto_coder.issue_processor import _create_pr_for_issue
+        from auto_coder.issue_processor import _create_pr_for_issue
 
         issue_data = {
             "number": 123,

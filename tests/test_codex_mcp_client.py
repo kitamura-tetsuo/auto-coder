@@ -3,8 +3,8 @@ from unittest import mock
 
 import pytest
 
-from src.auto_coder import __version__ as AUTO_CODER_VERSION
-from src.auto_coder.codex_mcp_client import CodexMCPClient
+from auto_coder import __version__ as AUTO_CODER_VERSION
+from auto_coder.codex_mcp_client import CodexMCPClient
 
 
 def _make_fake_popen(stdout=None, stderr=None):
@@ -19,11 +19,11 @@ def _make_fake_popen(stdout=None, stderr=None):
 
 def test_handshake_timeout_uses_configured_limit(monkeypatch):
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
     fake_proc = _make_fake_popen()
     mock_popen = mock.MagicMock(return_value=fake_proc)
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")) as mock_rpc:
         client = CodexMCPClient()

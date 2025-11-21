@@ -1,11 +1,11 @@
 from unittest.mock import patch
 
-from src.auto_coder.qwen_client import QwenClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.qwen_client import QwenClient
+from auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
     """Test that codex CLI is used when API key and base URL are provided."""
     # Pretend codex --version works
@@ -40,7 +40,7 @@ def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_preserve_env_mode(mock_run_command, mock_run):
     """Test that codex CLI is used with environment variables when API key is provided."""
     # Pretend codex --version works
@@ -73,7 +73,7 @@ def test_qwen_client_preserve_env_mode(mock_run_command, mock_run):
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_default_env_mode(mock_run_command, mock_run):
     """Test default behavior with codex CLI when API key is provided."""
     # Pretend codex --version works

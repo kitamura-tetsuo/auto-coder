@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from src.auto_coder.mcp_checker import add_graphrag_mcp_config, check_graphrag_mcp_for_backend, ensure_graphrag_mcp_configured, suggest_graphrag_mcp_setup
+from auto_coder.mcp_checker import add_graphrag_mcp_config, check_graphrag_mcp_for_backend, ensure_graphrag_mcp_configured, suggest_graphrag_mcp_setup
 
 
 class TestMCPChecker:

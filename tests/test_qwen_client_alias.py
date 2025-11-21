@@ -1,11 +1,11 @@
 from unittest.mock import patch
 
-from src.auto_coder.qwen_client import QwenClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.qwen_client import QwenClient
+from auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_run_qwen_cli_alias_delegates_and_returns_output(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "alias line 1\nalias line 2\n", "", 0)

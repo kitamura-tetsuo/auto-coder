@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.test_watcher_integration import TestWatcherIntegration
+from auto_coder.test_watcher_integration import TestWatcherIntegration
 
 
 class TestTestWatcherIntegration:
