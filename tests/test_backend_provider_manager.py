@@ -261,6 +261,42 @@ class TestBackendProviderManager:
             # Backend without providers
             assert manager.has_providers("nonexistent") is False
 
+    def test_provider_count_and_env_context(self):
+        """Ensure provider counts and env contexts are derived from metadata."""
+        manager = BackendProviderManager()
+        manager._provider_cache["codex"] = BackendProviderMetadata(
+            backend_name="codex",
+            providers=[
+                ProviderMetadata(name="codex-primary", command="uvx", uppercase_settings={"TOKEN": "alpha"}),
+                ProviderMetadata(name="codex-secondary", command="uvx", uppercase_settings={"TOKEN": "beta"}),
+            ],
+        )
+
+        assert manager.get_provider_count("codex") == 2
+        env_vars = manager.create_env_context("codex")
+        assert env_vars == {"TOKEN": "alpha"}
+        assert manager.get_current_provider_name("codex") == "codex-primary"
+
+    def test_provider_rotation_and_tracking(self):
+        """Providers rotate in a circular manner and track last used provider."""
+        manager = BackendProviderManager()
+        manager._provider_cache["gemini"] = BackendProviderMetadata(
+            backend_name="gemini",
+            providers=[
+                ProviderMetadata(name="gemini-direct", command="uvx"),
+                ProviderMetadata(name="gemini-proxy", command="uvx"),
+            ],
+        )
+
+        assert manager.get_current_provider_name("gemini") == "gemini-direct"
+        assert manager.advance_to_next_provider("gemini") is True
+        assert manager.get_current_provider_name("gemini") == "gemini-proxy"
+        assert manager.advance_to_next_provider("gemini") is True
+        assert manager.get_current_provider_name("gemini") == "gemini-direct"
+
+        manager.mark_provider_used("gemini", "gemini-proxy")
+        assert manager.get_last_used_provider_name("gemini") == "gemini-proxy"
+
     def test_clear_cache(self):
         """Test clearing the provider metadata cache."""
         with tempfile.TemporaryDirectory() as tmpdir:
