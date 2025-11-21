@@ -6,8 +6,6 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
-from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import (
     _check_github_actions_status,
     check_and_handle_closed_state,
@@ -16,8 +14,10 @@ from auto_coder.util.github_action import (
 )
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
+from .backend_manager import get_llm_backend_manager, run_message_prompt
 from .gh_logger import get_gh_logger
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
+from .github_client import GitHubClient
 from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item

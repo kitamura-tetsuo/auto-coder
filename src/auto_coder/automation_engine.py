@@ -7,23 +7,22 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union, cast
 
-from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
-from auto_coder.github_client import GitHubClient
-from auto_coder.prompt_loader import render_prompt
-from auto_coder.util.github_action import get_github_actions_logs_from_url
-
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
+from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .gh_logger import get_gh_logger
 from .git_utils import git_commit_with_retry, git_push
+from .github_client import GitHubClient
 from .issue_processor import create_feature_issues
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import process_pull_request
 from .progress_footer import ProgressStage
+from .prompt_loader import render_prompt
 from .test_result import TestResult
+from .util.github_action import get_github_actions_logs_from_url
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)

@@ -25,11 +25,23 @@ enabled = true
 model = "gemini-2.5-pro"
 api_key = "your-gemini-api-key"  # Optional: can be set via GEMINI_API_KEY env var
 
+# Provider list for this backend (optional)
+# Providers are different implementations/connections for the same backend
+# Example: ["gemini-direct", "gemini-via-proxy"]
+# providers = []
+
 [backends.qwen]
 enabled = true
 model = "qwen3-coder-plus"
 openai_api_key = "your-openai-api-key"  # Optional: can be set via OPENAI_API_KEY env var
 openai_base_url = "https://api.openai.com/v1"  # Optional: can be set via OPENAI_BASE_URL env var
+
+# Provider list for this backend
+# Example providers:
+#   - "qwen-open-router": Qwen via OpenRouter API
+#   - "qwen-azure": Qwen via Azure OpenAI
+#   - "qwen-direct": Direct Qwen API access
+providers = ["qwen-open-router", "qwen-azure"]
 
 [backends.auggie]
 enabled = true
@@ -46,3 +58,38 @@ model = "codex"
 [backends.codex-mcp]
 enabled = true
 model = "codex-mcp"
+
+# Provider Metadata Configuration
+# ===============================
+# Provider metadata is stored in a separate file: ~/.auto-coder/provider_metadata.toml
+# This file contains detailed information about each provider including:
+# - command: The command to execute the provider (e.g., "uvx")
+# - args: Arguments to pass to the command (e.g., ["qwen-openai-proxy"])
+# - description: Human-readable description of the provider
+# - Uppercase settings: Provider-specific configuration (e.g., AZURE_ENDPOINT, API_KEY)
+#
+# Example provider_metadata.toml:
+# -------------------------------
+# [qwen.qwen-open-router]
+# command = "uvx"
+# args = ["qwen-openai-proxy"]
+# description = "Qwen via OpenRouter API"
+# OPENROUTER_API_KEY = "your-openrouter-key"
+#
+# [qwen.qwen-azure]
+# command = "uvx"
+# args = ["qwen-azure-proxy"]
+# description = "Qwen via Azure OpenAI"
+# AZURE_ENDPOINT = "https://your-endpoint.openai.azure.com"
+# AZURE_API_VERSION = "2024-02-15-preview"
+#
+# [qwen.qwen-direct]
+# command = "uvx"
+# args = ["qwen-direct"]
+# description = "Direct Qwen API access"
+# QWEN_API_KEY = "your-qwen-api-key"
+#
+# Notes:
+# - Provider metadata is optional and the system degrades gracefully if no providers are configured
+# - Future versions will use this provider information for automatic provider rotation
+# - Currently, provider metadata is loaded but not actively used in runtime behavior
