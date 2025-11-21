@@ -177,7 +177,48 @@ features:
     rotation:
       description: "BackendManager rotates across configured backends; switches after 3 consecutive runs on same test file"
     message_backend:
-      description: Separate backends can be used for message generation
+      description: "Separate backends can be used for message generation"
+    provider_management:
+      description: "Provider-aware backend management with automatic provider rotation and environment variable handling"
+      configuration_file: "~/.auto-coder/provider_metadata.toml"
+      env_var_handling: "Uppercase settings from provider metadata are exported as environment variables during command execution and automatically cleared when the command completes"
+      provider_rotation: "Automatic failover to next provider when usage limits are hit; rotates through configured providers before switching backends"
+      status_reporting: "Provider information is tracked and exposed via telemetry fields (llm_provider) for debugging and monitoring"
+      syntax:
+        backend_config: "[backends.<model>] section in llm_config.toml supports provider declaration"
+        provider_declaration: "providers = [\"provider-name-1\", \"provider-name-2\"]"
+        provider_metadata: "[<backend>.<provider-name>] sections define provider details in provider_metadata.toml"
+      example:
+        llm_config_toml: |
+          [backends.qwen]
+          enabled = true
+          model = "qwen3-coder-plus"
+          providers = ["qwen-open-router", "qwen-azure", "qwen-direct"]
+        provider_metadata_toml: |
+          [qwen.qwen-open-router]
+          command = "uvx"
+          args = ["qwen-openai-proxy"]
+          description = "Qwen via OpenRouter API"
+          OPENROUTER_API_KEY = "your-api-key"
+
+          [qwen.qwen-azure]
+          command = "uvx"
+          args = ["qwen-azure-proxy"]
+          description = "Qwen via Azure OpenAI"
+          AZURE_ENDPOINT = "https://your-endpoint.openai.azure.com"
+          AZURE_API_VERSION = "2024-02-15-preview"
+
+          [qwen.qwen-direct]
+          command = "uvx"
+          args = ["qwen-direct"]
+          description = "Direct Qwen API access"
+          QWEN_API_KEY = "your-api-key"
+    nested_managers:
+      description: "Multiple backend manager instances can exist with different configurations"
+      llm_backend: "Singleton instance for general LLM operations (PR processing, test fixes, code generation)"
+      message_backend: "Separate singleton instance for message generation (commit messages, PR messages)"
+      usage: "Access via get_llm_backend_manager() and get_message_backend_manager() for different use cases"
+      provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
   graphrag_integration:
     auto_setup: true
     mcp_config_check: true
