@@ -10,7 +10,8 @@ from auto_coder.backend_manager import run_llm_prompt
 
 from .automation_config import AutomationConfig
 from .gh_logger import get_gh_logger
-from .git_utils import get_commit_log, git_commit_with_retry, git_push
+from .git_info import get_commit_log
+from .git_utils import git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor, CommandResult
