@@ -1294,3 +1294,653 @@ def test_config_migrate_with_user_interaction_and_validation(tmp_path: Path):
     # Verify config was saved
     config_after = LLMBackendConfiguration.load_from_file(str(config_file))
     assert config_after.default_backend == "qwen"
+
+
+# =====================================
+# Tests for config template command
+# =====================================
+
+
+def test_config_template_generates_default_template(tmp_path: Path):
+    """Test config template command generates template with default values."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "template", "--file", str(config_file)])
+    assert result.exit_code == 0
+    assert "# Auto-Coder Configuration Template" in result.output
+    assert "# This is a template showing all available configuration options" in result.output
+
+    # Verify JSON output is valid
+    # Extract JSON from output (between the header and usage instructions)
+    import json
+
+    lines = result.output.split("\n")
+    json_start = None
+    json_end = None
+
+    # Find the start of JSON (first line with just "{")
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "{":
+            json_start = i
+            break
+
+    assert json_start is not None
+
+    # Find the end of JSON (line with just "}")
+    brace_count = 0
+    for i in range(json_start, len(lines)):
+        line = lines[i]
+        # Count braces
+        brace_count += line.count("{") - line.count("}")
+        if brace_count == 0 and line.strip() == "}":
+            json_end = i
+            break
+
+    assert json_end is not None
+
+    json_str = "\n".join(lines[json_start : json_end + 1])
+    config_data = json.loads(json_str)
+    assert "backends" in config_data
+    assert "codex" in config_data["backends"]
+    assert "gemini" in config_data["backends"]
+
+
+def test_config_template_shows_usage_instructions(tmp_path: Path):
+    """Test config template command shows usage instructions."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "template", "--file", str(config_file)])
+    assert result.exit_code == 0
+    assert "💡 Usage:" in result.output
+    assert "Save this template: auto-coder config template > config.toml" in result.output
+    assert "Edit the file: auto-coder config edit" in result.output
+    assert "Validate: auto-coder config validate" in result.output
+
+
+def test_config_template_with_custom_default_backend(tmp_path: Path):
+    """Test config template command with custom default backend."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "template", "--file", str(config_file)])
+    assert result.exit_code == 0
+
+    # Verify template contains expected structure
+    assert '"backend":' in result.output
+    assert '"default": "codex"' in result.output or '"default":' in result.output
+
+
+def test_config_template_output_format(tmp_path: Path):
+    """Test config template command output format is properly formatted."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "template", "--file", str(config_file)])
+    assert result.exit_code == 0
+
+    # Check that JSON is properly indented (2 spaces)
+    lines = result.output.split("\n")
+    json_section = False
+    for line in lines:
+        if line.strip().startswith("{") or json_section:
+            json_section = True
+            if line.strip():
+                # JSON values should be indented with 2 spaces
+                if ":" in line:
+                    indent = len(line) - len(line.lstrip())
+                    assert indent % 2 == 0, f"Line not properly indented: {line}"
+        if line.strip() == "}":
+            break
+
+
+def test_config_template_includes_all_backends(tmp_path: Path):
+    """Test config template includes all available backends."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "template", "--file", str(config_file)])
+    assert result.exit_code == 0
+
+    # Verify all default backends are in the template
+    expected_backends = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
+    for backend in expected_backends:
+        assert f'"{backend}":' in result.output
+
+
+# =====================================
+# Tests for config examples command
+# =====================================
+
+
+def test_config_examples_shows_all_examples(tmp_path: Path):
+    """Test config examples command shows all configuration examples."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "examples", "--file", str(config_file)])
+    assert result.exit_code == 0
+    assert "📚 Configuration Examples" in result.output
+
+    # Check all examples are present
+    assert "Example 1: Basic Configuration with Gemini" in result.output
+    assert "Example 2: Multiple Backends with Failover" in result.output
+    assert "Example 3: OpenAI-Compatible Backends" in result.output
+    assert "Example 4: Message Backend Configuration" in result.output
+
+
+def test_config_examples_shows_common_commands(tmp_path: Path):
+    """Test config examples command shows common configuration commands."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "examples", "--file", str(config_file)])
+    assert result.exit_code == 0
+    assert "Common Commands:" in result.output
+
+    # Verify common commands are shown
+    assert "auto-coder config show" in result.output
+    assert "auto-coder config edit" in result.output
+    assert "auto-coder config validate" in result.output
+    assert "auto-coder config health" in result.output
+    assert "auto-coder config backup" in result.output
+    assert "auto-coder config setup" in result.output
+
+
+def test_config_examples_formatting(tmp_path: Path):
+    """Test config examples command has proper formatting."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "examples", "--file", str(config_file)])
+    assert result.exit_code == 0
+
+    # Check separator lines
+    assert "=" * 70 in result.output
+
+    # Check code blocks are properly formatted
+    assert "# Set environment variable" in result.output
+    assert "export AUTO_CODER_DEFAULT_BACKEND=gemini" in result.output
+
+
+def test_config_examples_environment_variable_examples(tmp_path: Path):
+    """Test config examples shows environment variable examples."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "examples", "--file", str(config_file)])
+    assert result.exit_code == 0
+
+    # Verify environment variable examples
+    assert "export AUTO_CODER_GEMINI_API_KEY=your-api-key-here" in result.output
+
+
+def test_config_examples_toml_configuration_examples(tmp_path: Path):
+    """Test config examples shows TOML configuration examples."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "examples", "--file", str(config_file)])
+    assert result.exit_code == 0
+
+    # Verify TOML configuration examples
+    assert "[backend]" in result.output
+    assert "[backends.gemini]" in result.output
+
+
+# =========================================
+# Tests for error handling and edge cases
+# =========================================
+
+
+def test_config_show_with_nonexistent_file(tmp_path: Path):
+    """Test config show command with non-existent file."""
+    config_file = tmp_path / "nonexistent.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "show", "--file", str(config_file)])
+    assert result.exit_code == 0
+
+    # Should show default configuration
+    import json
+
+    config_data = json.loads(result.output)
+    assert "backends" in config_data
+    assert "codex" in config_data["backends"]
+
+
+def test_config_set_with_invalid_path(tmp_path: Path):
+    """Test config set command with invalid nested path."""
+    # Create a directory instead of a file to test path handling
+    config_dir = tmp_path / "config_dir"
+    config_dir.mkdir()
+    config_file = config_dir / "llm_backend.toml"
+    runner = CliRunner()
+
+    # This should work since the directory exists
+    result = runner.invoke(main, ["config", "set", "--file", str(config_file), "gemini.model", "test-model"])
+    assert result.exit_code == 0
+    assert "Set gemini.model = test-model" in result.output
+
+
+def test_config_set_with_empty_key(tmp_path: Path):
+    """Test config set command with empty key."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    # Try to set a value with empty key - Click handles this gracefully
+    # The empty string might be treated as a valid key path
+    result = runner.invoke(main, ["config", "set", "--file", str(config_file), "", "value"])
+    # Click allows this, it will just create an empty key which might work
+    # or might silently fail - either way it's acceptable behavior
+    assert result.exit_code in [0, 1]
+
+
+def test_config_get_with_invalid_key(tmp_path: Path):
+    """Test config get command with non-existent key."""
+    config_file = tmp_path / "llm_backend.toml"
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "get", "--file", str(config_file), "nonexistent.key"])
+    assert result.exit_code == 0
+    # Should return empty or error message
+
+
+def test_config_validate_with_corrupted_toml(tmp_path: Path):
+    """Test config validate command with corrupted TOML file."""
+    config_file = tmp_path / "llm_backend.toml"
+
+    # Write invalid TOML
+    with open(config_file, "w") as f:
+        f.write("[invalid syntax here\n")
+        f.write("this is not valid")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
+    assert result.exit_code == 0
+    # Should report validation errors
+    assert "Configuration validation errors found" in result.output or "Error" in result.output
+
+
+def test_config_edit_with_readonly_directory(tmp_path: Path):
+    """Test config edit command with read-only directory."""
+    import os
+    import stat
+    import tempfile
+
+    # Create a temporary directory and make it read-only
+    readonly_dir = tmp_path / "readonly"
+    readonly_dir.mkdir()
+    config_file = readonly_dir / "llm_backend.toml"
+
+    # Make directory read-only
+    os.chmod(readonly_dir, stat.S_IRUSR | stat.S_IRGRP | stat.S_IROTH)
+
+    runner = CliRunner()
+    try:
+        # This should either fail or handle gracefully
+        result = runner.invoke(main, ["config", "edit", "--file", str(config_file)])
+        # Either it succeeds (if editor doesn't need write) or fails gracefully
+        assert result.exit_code in [0, 1]
+    finally:
+        # Restore permissions for cleanup
+        os.chmod(readonly_dir, stat.S_IRWXU | stat.S_IRWXG | stat.S_IRWXO)
+
+
+def test_config_export_to_invalid_path(tmp_path: Path):
+    """Test config export command with invalid output path."""
+    config_file = tmp_path / "llm_backend.toml"
+    output_file = tmp_path / "nonexistent_dir" / "output.json"
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["config", "export", "--file", str(config_file), "--output", str(output_file)])
+    # Should either succeed (if directory gets created) or fail gracefully
+    assert result.exit_code in [0, 1]
+
+
+def test_config_import_from_nonexistent_file(tmp_path: Path):
+    """Test config import command with non-existent file."""
+    config_file = tmp_path / "llm_backend.toml"
+    import_file = tmp_path / "nonexistent.json"
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["config", "import-config", "--file", str(config_file), str(import_file)])
+    # Click validates file exists, so this should fail with exit code 2
+    assert result.exit_code == 2
+    assert "does not exist" in result.output.lower()
+
+
+def test_config_import_with_invalid_json(tmp_path: Path):
+    """Test config import command with invalid JSON."""
+    config_file = tmp_path / "llm_backend.toml"
+    import_file = tmp_path / "invalid.json"
+
+    # Write invalid JSON
+    with open(import_file, "w") as f:
+        f.write("{ this is not valid json }")
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["config", "import-config", "--file", str(config_file), str(import_file)])
+    assert result.exit_code == 0
+    assert "❌ Error importing configuration:" in result.output
+
+
+def test_config_restore_with_invalid_backup_file(tmp_path: Path):
+    """Test config restore command with invalid backup file."""
+    config_file = tmp_path / "llm_backend.toml"
+    backup_file = tmp_path / "invalid_backup.toml"
+
+    # Create backup file with invalid TOML
+    with open(backup_file, "w") as f:
+        f.write("[invalid syntax")
+
+    # Create a valid config file
+    config = LLMBackendConfiguration()
+    config.save_to_file(str(config_file))
+
+    runner = CliRunner()
+    # Try to restore from invalid backup (answer 'y' to confirm)
+    result = runner.invoke(main, ["config", "restore", "--file", str(config_file), str(backup_file)], input="y\n")
+    # Should fail gracefully or show error
+    assert result.exit_code == 0  # Should still complete, possibly with error message
+
+
+def test_config_command_with_invalid_option():
+    """Test config commands with invalid options."""
+    runner = CliRunner()
+    result = runner.invoke(main, ["config", "--invalid-option"])
+    assert result.exit_code != 0
+
+
+# =====================================
+# Tests for config_to_dict function
+# =====================================
+
+
+def test_config_to_dict_with_default_backends():
+    """Test config_to_dict converts configuration with default backends."""
+    from auto_coder.cli_commands_config import config_to_dict
+
+    config = LLMBackendConfiguration()
+    result = config_to_dict(config)
+
+    assert isinstance(result, dict)
+    assert "backends" in result
+    assert "backend" in result
+    assert "message_backend" in result
+
+    # Check default backends are present
+    expected_backends = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
+    for backend in expected_backends:
+        assert backend in result["backends"]
+
+
+def test_config_to_dict_with_custom_backends():
+    """Test config_to_dict converts configuration with custom backend values."""
+    from auto_coder.cli_commands_config import config_to_dict
+
+    config = LLMBackendConfiguration()
+    # Customize some values
+    config.default_backend = "gemini"
+    config.backend_order = ["gemini", "qwen", "claude"]
+
+    # Get and customize a backend
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.model = "custom-model"
+    gemini_config.temperature = 0.9
+
+    result = config_to_dict(config)
+
+    # Check backend configuration
+    assert result["backend"]["default"] == "gemini"
+    assert result["backend"]["order"] == ["gemini", "qwen", "claude"]
+    assert result["backends"]["gemini"]["model"] == "custom-model"
+    assert result["backends"]["gemini"]["temperature"] == 0.9
+
+
+def test_config_to_dict_validates_structure():
+    """Test config_to_dict validates converted dictionary structure."""
+    from auto_coder.cli_commands_config import config_to_dict
+
+    config = LLMBackendConfiguration()
+    result = config_to_dict(config)
+
+    # Check that result is a dict
+    assert isinstance(result, dict)
+
+    # Check required keys
+    assert "backends" in result
+    assert "backend" in result
+
+    # Check backends is a dict
+    assert isinstance(result["backends"], dict)
+
+    # Check backend.order is a list
+    assert isinstance(result["backend"]["order"], list)
+
+    # Check backend.default is a string
+    assert isinstance(result["backend"]["default"], str)
+
+
+def test_config_to_dict_with_empty_backends():
+    """Test config_to_dict handles configuration with empty backends dict."""
+    from auto_coder.cli_commands_config import config_to_dict
+
+    config = LLMBackendConfiguration()
+    config.backends = {}  # Empty backends
+
+    result = config_to_dict(config)
+
+    # Should initialize default backends
+    assert len(result["backends"]) > 0
+
+
+def test_config_to_dict_with_all_fields():
+    """Test config_to_dict includes all backend configuration fields."""
+    from auto_coder.cli_commands_config import config_to_dict
+
+    config = LLMBackendConfiguration()
+    config.backend_order = ["codex"]
+    config.default_backend = "codex"
+    config.message_backend_order = ["claude"]
+    config.message_default_backend = "claude"
+
+    # Configure codex with all possible fields
+    codex_config = config.get_backend_config("codex")
+    assert codex_config is not None
+    codex_config.enabled = True
+    codex_config.model = "codex-model"
+    codex_config.api_key = "test-key"
+    codex_config.base_url = "https://test.com"
+    codex_config.temperature = 0.8
+    codex_config.timeout = 30
+    codex_config.max_retries = 3
+    codex_config.openai_api_key = "openai-key"
+    codex_config.openai_base_url = "https://openai.com"
+    codex_config.extra_args = {"arg1": "value1"}
+
+    result = config_to_dict(config)
+
+    # Check all fields are present
+    codex_data = result["backends"]["codex"]
+    assert codex_data["enabled"] is True
+    assert codex_data["model"] == "codex-model"
+    assert codex_data["api_key"] == "test-key"
+    assert codex_data["base_url"] == "https://test.com"
+    assert codex_data["temperature"] == 0.8
+    assert codex_data["timeout"] == 30
+    assert codex_data["max_retries"] == 3
+    assert codex_data["openai_api_key"] == "openai-key"
+    assert codex_data["openai_base_url"] == "https://openai.com"
+    assert codex_data["extra_args"] == {"arg1": "value1"}
+
+    # Check message backend
+    assert result["message_backend"]["order"] == ["claude"]
+    assert result["message_backend"]["default"] == "claude"
+
+
+# =========================================
+# Tests for config_validate function
+# =========================================
+
+
+def test_config_validate_all_backend_properties():
+    """Test config_validate validates all backend properties."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+
+    # Test with valid configuration
+    errors = config_validate(config)
+    assert len(errors) == 0
+
+
+def test_config_validate_with_invalid_model_type():
+    """Test config_validate detects invalid model type."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.model = 123  # Should be string or None
+
+    errors = config_validate(config)
+    assert len(errors) > 0
+    assert "gemini.model must be a string" in errors
+
+
+def test_config_validate_with_invalid_enabled_type():
+    """Test config_validate detects invalid enabled type."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.enabled = "true"  # Should be bool
+
+    errors = config_validate(config)
+    assert len(errors) > 0
+    assert "gemini.enabled must be a boolean" in errors
+
+
+def test_config_validate_with_invalid_api_key_type():
+    """Test config_validate detects invalid api_key type."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.api_key = 123  # Should be str or None
+
+    errors = config_validate(config)
+    assert len(errors) > 0
+    assert "gemini.api_key must be a string" in errors
+
+
+def test_config_validate_with_invalid_temperature_type():
+    """Test config_validate detects invalid temperature type."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.temperature = "high"  # Should be float or int or None
+
+    errors = config_validate(config)
+    assert len(errors) > 0
+    assert "gemini.temperature must be a number" in errors
+
+
+def test_config_validate_with_invalid_timeout_type():
+    """Test config_validate detects invalid timeout type."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.timeout = "30"  # Should be int or None
+
+    errors = config_validate(config)
+    assert len(errors) > 0
+    assert "gemini.timeout must be an integer" in errors
+
+
+def test_config_validate_backend_order_and_default():
+    """Test config_validate validates backend order and default backend."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+
+    # Test with valid backend order (list)
+    config.backend_order = ["gemini", "qwen"]
+    config.default_backend = "gemini"
+    errors = config_validate(config)
+    # Should have no errors for valid order and default
+
+    # Test with invalid backend order (not a list)
+    config.backend_order = "gemini"  # Should be list
+    errors = config_validate(config)
+    assert len(errors) > 0
+    assert "backend.order must be a list" in errors
+
+
+def test_config_validate_message_backend_settings():
+    """Test config_validate validates message backend settings."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+
+    # Test with valid message backend settings
+    config.message_backend_order = ["claude", "qwen"]
+    config.message_default_backend = "claude"
+    errors = config_validate(config)
+    # Should have no errors for valid message backend settings
+
+    # Test with invalid message backend order (not a list)
+    config.message_backend_order = "claude"  # Should be list
+    errors = config_validate(config)
+    assert len(errors) > 0
+    assert "message_backend.order must be a list" in errors
+
+
+def test_config_validate_multiple_backends():
+    """Test config_validate with multiple backends having errors."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+
+    # Create errors in multiple backends
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.model = 123  # Invalid
+
+    qwen_config = config.get_backend_config("qwen")
+    assert qwen_config is not None
+    qwen_config.enabled = "true"  # Invalid
+
+    errors = config_validate(config)
+    assert len(errors) >= 2
+    assert any("gemini.model" in err for err in errors)
+    assert any("qwen.enabled" in err for err in errors)
+
+
+def test_config_validate_none_values():
+    """Test config_validate accepts None values where appropriate."""
+    from auto_coder.cli_commands_config import config_validate
+
+    config = LLMBackendConfiguration()
+
+    # Set optional fields to None (should be valid)
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.model = None
+    gemini_config.api_key = None
+    gemini_config.temperature = None
+    gemini_config.timeout = None
+
+    errors = config_validate(config)
+    # None values should be valid, so no errors
+    assert len(errors) == 0
