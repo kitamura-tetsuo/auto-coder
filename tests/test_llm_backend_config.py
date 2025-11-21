@@ -149,6 +149,35 @@ class TestLLMBackendConfiguration:
             assert loaded_config.get_backend_config("gemini").temperature == 0.8
             assert loaded_config.get_backend_config("qwen").providers == ["qwen-open-router", "qwen-azure"]
 
+    def test_load_from_file_parses_provider_lists_and_uppercase_fields(self):
+        """Provider lists and uppercase env-style fields should be preserved from the TOML file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router", "qwen-azure"],
+                        "extra_args": {
+                            "AZURE_ENDPOINT": "https://llm.example.net",
+                            "QWEN_API_KEY": "example-key",
+                        },
+                    }
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            qwen_config = config.get_backend_config("qwen")
+
+            assert qwen_config is not None
+            assert qwen_config.providers == ["qwen-open-router", "qwen-azure"]
+            assert qwen_config.extra_args["AZURE_ENDPOINT"] == "https://llm.example.net"
+            assert qwen_config.extra_args["QWEN_API_KEY"] == "example-key"
+
     def test_load_from_nonexistent_file_creates_default(self):
         """Test that loading a nonexistent file creates a default configuration."""
         with tempfile.TemporaryDirectory() as tmpdir:
