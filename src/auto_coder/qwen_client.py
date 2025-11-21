@@ -17,18 +17,16 @@ from typing import Any, Dict, List, Optional
 from .backend_provider_manager import BackendProviderManager, ProviderMetadata, ProviderOutcome
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
-from .llm_client_base import LLMClientBase
+from .llm_client_base import ProviderAwareLLMClient
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .provider_constants import DEFAULT_CODEX_ARGS, DEFAULT_QWEN_ARGS
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
-_DEFAULT_CODEX_ARGS = ("exec", "-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox")
-_DEFAULT_QWEN_ARGS = ("-y",)
 
-
-class QwenClient(LLMClientBase):
+class QwenClient(ProviderAwareLLMClient):
     """Qwen Code CLI client."""
 
     def __init__(
@@ -41,6 +39,7 @@ class QwenClient(LLMClientBase):
         provider_manager: Optional[BackendProviderManager] = None,
     ) -> None:
         """Initialize QwenClient."""
+        super().__init__(backend_name="qwen", provider_manager=provider_manager)
         config = get_llm_config()
         config_backend = config.get_backend_config("qwen")
 
@@ -52,12 +51,15 @@ class QwenClient(LLMClientBase):
         self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url) or os.environ.get("OPENAI_BASE_URL")
         self.use_env_vars = use_env_vars
         self.preserve_existing_env = preserve_existing_env
-        self.backend_name = "qwen"
-        self._provider_manager = provider_manager or BackendProviderManager.get_default_manager()
-        self._fallback_providers = self._build_fallback_providers()
         self._last_used_model: Optional[str] = self.model_name
+        self.provider_manager.register_runtime_provider_settings(
+            self.backend_name,
+            openai_api_key=self.openai_api_key,
+            openai_base_url=self.openai_base_url,
+            model=self.model_name,
+        )
 
-        available_providers = self._provider_manager.get_provider_chain(self.backend_name, self._fallback_providers)
+        available_providers = self.provider_manager.get_provider_chain(self.backend_name)
         if not available_providers:
             raise RuntimeError("No Qwen providers are configured")
 
@@ -93,7 +95,7 @@ class QwenClient(LLMClientBase):
     # ----- Core execution -----
     def _run_qwen_cli(self, prompt: str) -> str:
         escaped_prompt = self._escape_prompt(prompt)
-        choices = self._provider_manager.iterate_provider_choices(self.backend_name, self._fallback_providers)
+        choices = self.iter_provider_choices()
         if not choices:
             raise RuntimeError("No Qwen providers are configured")
 
@@ -104,14 +106,14 @@ class QwenClient(LLMClientBase):
             display_name = self._provider_display_name(provider)
             try:
                 output = self._execute_with_provider(provider, escaped_prompt, prompt)
-                self._provider_manager.report_provider_result(self.backend_name, choice, ProviderOutcome.SUCCESS)
+                self.report_provider_result(choice, ProviderOutcome.SUCCESS)
                 return output
             except AutoCoderUsageLimitError as exc:
                 usage_errors.append(f"{display_name}: {str(exc).strip()}")
                 logger.warning("Qwen provider '%s' hit usage limit. Trying next provider.", display_name)
-                self._provider_manager.report_provider_result(self.backend_name, choice, ProviderOutcome.USAGE_LIMIT)
+                self.report_provider_result(choice, ProviderOutcome.USAGE_LIMIT)
             except Exception:
-                self._provider_manager.report_provider_result(self.backend_name, choice, ProviderOutcome.FAILURE)
+                self.report_provider_result(choice, ProviderOutcome.FAILURE)
                 raise
 
         if usage_errors:
@@ -188,34 +190,6 @@ class QwenClient(LLMClientBase):
             return True
         return False
 
-    def _build_fallback_providers(self) -> List[ProviderMetadata]:
-        providers: List[ProviderMetadata] = []
-        if self.openai_api_key and self.openai_base_url:
-            providers.append(
-                ProviderMetadata(
-                    name="custom-openai",
-                    command="codex",
-                    args=list(_DEFAULT_CODEX_ARGS),
-                    description="Custom OpenAI-compatible",
-                    uppercase_settings={
-                        "OPENAI_API_KEY": self.openai_api_key,
-                        "OPENAI_BASE_URL": self.openai_base_url,
-                        "OPENAI_MODEL": self.model_name,
-                    },
-                )
-            )
-
-        providers.append(
-            ProviderMetadata(
-                name="qwen-oauth",
-                command="qwen",
-                args=list(_DEFAULT_QWEN_ARGS),
-                description="Qwen OAuth",
-                uppercase_settings={},
-            )
-        )
-        return providers
-
     def _build_env(self, provider: ProviderMetadata) -> Dict[str, str]:
         env = os.environ.copy()
         if not self.preserve_existing_env:
@@ -262,7 +236,7 @@ class QwenClient(LLMClientBase):
         escaped_prompt: str,
         env: Dict[str, str],
     ) -> tuple[List[str], str]:
-        base_args = list(provider.args) if provider.args else list(_DEFAULT_CODEX_ARGS)
+        base_args = list(provider.args) if provider.args else list(DEFAULT_CODEX_ARGS)
         cmd = [self._resolve_command_name(provider, "codex"), *base_args]
         model_provider = self._resolve_model_provider(provider)
 
@@ -288,7 +262,7 @@ class QwenClient(LLMClientBase):
         escaped_prompt: str,
         env: Dict[str, str],
     ) -> tuple[List[str], str]:
-        base_args = list(provider.args) if provider.args else list(_DEFAULT_QWEN_ARGS)
+        base_args = list(provider.args) if provider.args else list(DEFAULT_QWEN_ARGS)
         cmd = [self._resolve_command_name(provider, "qwen"), *base_args]
         credentials = self._collect_credentials(provider)
 

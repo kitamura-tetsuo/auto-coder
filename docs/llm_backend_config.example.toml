@@ -91,5 +91,6 @@ model = "codex-mcp"
 #
 # Notes:
 # - Provider metadata is optional and the system degrades gracefully if no providers are configured
-# - Future versions will use this provider information for automatic provider rotation
-# - Currently, provider metadata is loaded but not actively used in runtime behavior
+# - BackendProviderManager automatically injects sensible fallbacks (e.g., qwen-oauth)
+#   so Qwen remains usable even before custom providers are defined
+# - Provider metadata is consumed at runtime for automatic provider rotation

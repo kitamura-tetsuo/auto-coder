@@ -33,6 +33,7 @@ QWEN_API_KEY = "your-api-key"
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -41,6 +42,7 @@ from typing import Dict, List, Optional, Sequence
 import toml
 
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
+from .provider_constants import DEFAULT_CODEX_ARGS, DEFAULT_QWEN_ARGS
 
 
 @dataclass
@@ -145,6 +147,7 @@ class BackendProviderManager:
         self._rotation_state: Dict[str, ProviderRotationState] = {}
         self._last_used_provider: Dict[str, Optional[str]] = {}
         self._llm_config: Optional[LLMBackendConfiguration] = llm_config
+        self._runtime_provider_settings: Dict[str, Dict[str, Optional[str]]] = {}
 
     def load_provider_metadata(self) -> None:
         """Load provider metadata from file.
@@ -271,6 +274,11 @@ class BackendProviderManager:
             for provider in fallback_providers:
                 _append(provider)
 
+        default_fallback = self._build_default_providers(backend_name)
+        if default_fallback:
+            for provider in default_fallback:
+                _append(provider)
+
         return ordered
 
     def iterate_provider_choices(
@@ -347,6 +355,23 @@ class BackendProviderManager:
         self._provider_cache.clear()
         self._metadata_cache = None
 
+    def register_runtime_provider_settings(
+        self,
+        backend_name: str,
+        *,
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
+        model: Optional[str] = None,
+    ) -> None:
+        """Register runtime provider settings supplied by a client."""
+        runtime = self._runtime_provider_settings.setdefault(backend_name, {})
+        if openai_api_key is not None:
+            runtime["openai_api_key"] = openai_api_key
+        if openai_base_url is not None:
+            runtime["openai_base_url"] = openai_base_url
+        if model is not None:
+            runtime["model"] = model
+
     @staticmethod
     def get_default_manager() -> BackendProviderManager:
         """
@@ -358,6 +383,55 @@ class BackendProviderManager:
         return BackendProviderManager()
 
     # ----- Internal helpers -----
+    def _build_default_providers(self, backend_name: str) -> List[ProviderMetadata]:
+        """Build built-in fallback providers for a backend."""
+        builder_name = f"_build_default_{backend_name}_providers"
+        builder = getattr(self, builder_name, None)
+        if callable(builder):
+            try:
+                providers = builder()
+                return [provider for provider in providers if provider]
+            except Exception:
+                return []
+        return []
+
+    def _build_default_qwen_providers(self) -> List[ProviderMetadata]:
+        """Default provider chain for Qwen backend when no metadata is configured."""
+        providers: List[ProviderMetadata] = []
+        config = self._get_config()
+        backend = config.get_backend_config("qwen") if config else None
+        runtime = self._runtime_provider_settings.get("qwen", {})
+
+        openai_api_key = runtime.get("openai_api_key") or (backend.openai_api_key if backend else None) or os.environ.get("OPENAI_API_KEY")
+        openai_base_url = runtime.get("openai_base_url") or (backend.openai_base_url if backend else None) or os.environ.get("OPENAI_BASE_URL")
+        model_name = runtime.get("model") or (backend.model if backend and backend.model else None) or "qwen3-coder-plus"
+
+        if openai_api_key and openai_base_url:
+            providers.append(
+                ProviderMetadata(
+                    name="custom-openai",
+                    command="codex",
+                    args=list(DEFAULT_CODEX_ARGS),
+                    description="Custom OpenAI-compatible provider",
+                    uppercase_settings={
+                        "OPENAI_API_KEY": openai_api_key,
+                        "OPENAI_BASE_URL": openai_base_url,
+                        "OPENAI_MODEL": model_name,
+                    },
+                )
+            )
+
+        providers.append(
+            ProviderMetadata(
+                name="qwen-oauth",
+                command="qwen",
+                args=list(DEFAULT_QWEN_ARGS),
+                description="Qwen OAuth",
+                uppercase_settings={},
+            )
+        )
+        return providers
+
     def _get_config(self) -> LLMBackendConfiguration:
         if self._llm_config is None:
             self._llm_config = get_llm_config()

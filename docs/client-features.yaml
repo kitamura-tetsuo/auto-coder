@@ -178,6 +178,8 @@ features:
       description: "BackendManager rotates across configured backends; switches after 3 consecutive runs on same test file"
     message_backend:
       description: Separate backends can be used for message generation
+    provider_manager:
+      description: "BackendProviderManager owns provider metadata/rotation; QwenClient consumes it directly and reports provider usage for accurate last-used-provider tracking"
   graphrag_integration:
     auto_setup: true
     mcp_config_check: true

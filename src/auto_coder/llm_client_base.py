@@ -1,9 +1,11 @@
 """
-Base class for LLM clients.
+Base classes for LLM clients and provider-aware helpers.
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Sequence
+
+from .backend_provider_manager import BackendProviderManager, ProviderChoice, ProviderOutcome
 
 
 class LLMClientBase(ABC):
@@ -110,6 +112,32 @@ class LLMBackendManagerBase(LLMClientBase):
             The LLM's response as a string
         """
         pass
+
+
+class ProviderAwareLLMClient(LLMClientBase):
+    """Base implementation for clients that depend on provider metadata."""
+
+    def __init__(self, backend_name: str, provider_manager: Optional[BackendProviderManager] = None) -> None:
+        self._backend_name = backend_name
+        self._provider_manager: BackendProviderManager = provider_manager or BackendProviderManager.get_default_manager()
+
+    @property
+    def backend_name(self) -> str:
+        """Return the backend name tied to this client."""
+        return self._backend_name
+
+    @property
+    def provider_manager(self) -> BackendProviderManager:
+        """Expose the shared provider manager instance."""
+        return self._provider_manager
+
+    def iter_provider_choices(self) -> Sequence[ProviderChoice]:
+        """Retrieve ordered provider choices for this backend."""
+        return self._provider_manager.iterate_provider_choices(self._backend_name)
+
+    def report_provider_result(self, choice: ProviderChoice, outcome: ProviderOutcome) -> None:
+        """Report provider invocation results back to the manager."""
+        self._provider_manager.report_provider_result(self._backend_name, choice, outcome)
 
     def close(self) -> None:
         """Close the backend manager and clean up resources.

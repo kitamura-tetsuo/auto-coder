@@ -13,7 +13,7 @@ from src.auto_coder.backend_provider_manager import (
     ProviderMetadata,
     ProviderOutcome,
 )
-from src.auto_coder.llm_backend_config import LLMBackendConfiguration
+from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
 
 class TestProviderMetadata:
@@ -181,6 +181,53 @@ class TestBackendProviderManager:
             assert provider2.description == "Qwen via Azure OpenAI"
             assert provider2.uppercase_settings["AZURE_ENDPOINT"] == "https://example.openai.azure.com"
             assert provider2.uppercase_settings["AZURE_API_VERSION"] == "2024-02-15-preview"
+
+    def test_qwen_default_provider_chain(self, tmp_path):
+        """Ensure Qwen fallback providers are injected when no metadata file exists."""
+        metadata_file = tmp_path / "missing.toml"
+        manager = BackendProviderManager(str(metadata_file))
+
+        chain = manager.get_provider_chain("qwen")
+        names = [provider.name for provider in chain]
+        assert "qwen-oauth" in names
+
+    def test_qwen_default_provider_uses_openai_settings(self, tmp_path):
+        """Ensure custom OpenAI provider is included when credentials are available."""
+        metadata_file = tmp_path / "missing.toml"
+        config = LLMBackendConfiguration(
+            backends={
+                "qwen": BackendConfig(
+                    name="qwen",
+                    openai_api_key="test-key",
+                    openai_base_url="https://example-base",
+                    model="test-model",
+                )
+            }
+        )
+        manager = BackendProviderManager(str(metadata_file), llm_config=config)
+        chain = manager.get_provider_chain("qwen")
+
+        custom = next((p for p in chain if p.name == "custom-openai"), None)
+        assert custom is not None
+        assert custom.uppercase_settings["OPENAI_API_KEY"] == "test-key"
+        assert custom.uppercase_settings["OPENAI_BASE_URL"] == "https://example-base"
+
+    def test_runtime_provider_settings_override(self, tmp_path):
+        """Runtime registrations should seed fallback providers."""
+        metadata_file = tmp_path / "missing.toml"
+        manager = BackendProviderManager(str(metadata_file))
+        manager.register_runtime_provider_settings(
+            "qwen",
+            openai_api_key="runtime-key",
+            openai_base_url="https://runtime-base",
+            model="runtime-model",
+        )
+
+        chain = manager.get_provider_chain("qwen")
+        custom = next((p for p in chain if p.name == "custom-openai"), None)
+        assert custom is not None
+        assert custom.uppercase_settings["OPENAI_API_KEY"] == "runtime-key"
+        assert custom.uppercase_settings["OPENAI_BASE_URL"] == "https://runtime-base"
 
     def test_lazy_loading(self):
         """Test that metadata is loaded lazily on first access."""
@@ -421,7 +468,9 @@ class TestBackendProviderManager:
             manager = BackendProviderManager(str(metadata_file), llm_config=config)
 
             chain = manager.get_provider_chain("qwen")
-            assert [provider.name for provider in chain] == ["second", "first"]
+            names = [provider.name for provider in chain]
+            assert names[:2] == ["second", "first"]
+            assert names[-1] == "qwen-oauth"
 
     def test_iterate_provider_choices_rotates_on_usage_limit(self):
         """Rotation should advance when usage limits are reported."""
@@ -475,4 +524,6 @@ class TestBackendProviderManager:
             ProviderMetadata(name="fallback", command="qwen", description="Fallback"),
         ]
         chain = manager.get_provider_chain("qwen", fallback)
-        assert [provider.name for provider in chain] == ["fallback"]
+        names = [provider.name for provider in chain]
+        assert names[0] == "fallback"
+        assert names[-1] == "qwen-oauth"
