@@ -104,9 +104,10 @@ class BackendManager(LLMBackendManagerBase):
         Returns:
             BackendProviderManager: The provider manager instance
 
-        Note: This is used by future issues to implement provider rotation logic.
-        The provider manager allows access to provider metadata without changing
-        current runtime behavior.
+        Note: The provider manager implements provider rotation logic, including
+        automatic failover when AutoCoderUsageLimitError occurs, environment
+        variable handling for provider-specific configuration, and tracking of
+        last used providers for debugging and telemetry.
         """
         return self._provider_manager
 
@@ -294,8 +295,14 @@ class BackendManager(LLMBackendManagerBase):
                 # Backend has changed, reset counter (this is the 1st time)
                 self._same_test_file_count = 1
 
-        # Execute
-        with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
+        # Execute with provider-aware telemetry so logs show which provider is being used.
+        active_backend = self._current_backend_name()
+        provider_for_stage = self._get_current_provider_name(active_backend)
+        stage_label = f"Running LLM: {active_backend}"
+        if provider_for_stage:
+            stage_label += f" (provider: {provider_for_stage})"
+
+        with ProgressStage(stage_label):
             out: str = self._run_llm_cli(prompt)
 
         # Update state

@@ -293,6 +293,7 @@ changes:
       - "Backend manager now rotates across configured providers before switching backends, surfacing backend/provider/model context for telemetry."
       - "Provider metadata uppercase settings are exported via transient env overrides so CLI calls only see provider-specific secrets for the lifetime of a command."
       - "CommandExecutor gained env override support and logs now include backend plus provider names for easier debugging of LLM calls."
+      - "Automation engine exposes an llm_provider telemetry field and fix-to-pass logging artifacts capture provider information for each attempt."
   - date: "2025-11-19"
     version: "2025.11.19.2+ged4e001"
     changes:

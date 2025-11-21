@@ -1,8 +1,8 @@
 """
-Backend Provider Manager: Manages provider metadata for LLM backends.
+Backend Provider Manager: Manages provider metadata and rotation for LLM backends.
 
-This module provides the foundational provider-management layer that allows the
-backend manager to understand provider lists without changing runtime behavior yet.
+This module provides the provider-management layer that enables automatic provider
+rotation within backends, environment variable handling, and usage tracking.
 
 Schema Example:
 --------------
@@ -29,6 +29,13 @@ command = "uvx"
 args = ["qwen-direct"]
 description = "Direct Qwen API access"
 QWEN_API_KEY = "your-api-key"
+
+Features:
+---------
+- Provider rotation with automatic failover on usage limits
+- Environment variable export for provider-specific configuration
+- Tracking of last used providers for debugging and telemetry
+- Graceful degradation when no providers are configured
 """
 
 from __future__ import annotations
@@ -49,8 +56,8 @@ class ProviderMetadata:
     provider definition files and provides a way to configure different
     provider implementations for a backend.
 
-    Note: Environment variable handling is not yet implemented. This is
-    intentionally deferred to a future issue that will focus on rotation logic.
+    Uppercase settings are automatically exported as environment variables
+    during provider execution via the create_env_context() method.
     """
 
     name: str
@@ -100,13 +107,13 @@ class BackendProviderManager:
     """
     Manager for backend provider metadata.
 
-    This class provides a lightweight manager that loads and exposes provider
-    metadata to the backend manager. It supports loading provider definitions
-    from configuration files and gracefully degrades when no providers are
-    declared.
+    This class provides a manager that loads and exposes provider metadata to the
+    backend manager. It supports loading provider definitions from configuration
+    files and gracefully degrades when no providers are declared.
 
-    The manager does not perform any runtime behavior changes - it merely
-    provides metadata access for future provider rotation logic.
+    The manager implements provider rotation logic, environment variable handling,
+    and tracks last used providers for telemetry. Uppercase settings from provider
+    metadata are exported as environment variables during execution.
     """
 
     def __init__(self, provider_metadata_path: Optional[str] = None):
