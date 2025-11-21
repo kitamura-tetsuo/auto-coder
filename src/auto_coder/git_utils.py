@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 from urllib.parse import urlparse
 
-from auto_coder.automation_config import AutomationConfig
-from auto_coder.backend_manager import get_message_backend_manager, run_message_prompt  # type: ignore
+from .automation_config import AutomationConfig
+from .backend_manager import get_message_backend_manager, run_message_prompt
 
 try:
     from git import InvalidGitRepositoryError, Repo

@@ -1,4 +1,5 @@
 from src.auto_coder.backend_manager import BackendManager, LLMBackendManager
+from src.auto_coder.backend_provider_manager import BackendProviderManager
 from src.auto_coder.exceptions import AutoCoderUsageLimitError
 
 
@@ -472,3 +473,52 @@ def test_llm_backend_manager_singleton_works_with_existing_functionality():
 
     # Clean up
     LLMBackendManager.reset_singleton()
+
+
+def test_backend_manager_with_provider_manager():
+    """Test that BackendManager correctly accepts and exposes provider_manager."""
+    calls = []
+
+    a_client = DummyClient("a", "m1", "ok", calls)
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", calls)
+
+    # Create a custom provider manager
+    custom_provider_manager = BackendProviderManager()
+
+    # Initialize BackendManager with provider_manager parameter
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a},
+        order=["a"],
+        provider_manager=custom_provider_manager,
+    )
+
+    # Verify provider_manager property is accessible
+    assert mgr.provider_manager is not None
+    assert isinstance(mgr.provider_manager, BackendProviderManager)
+    assert mgr.provider_manager is custom_provider_manager
+
+
+def test_backend_manager_without_provider_manager_uses_default():
+    """Test that BackendManager uses default provider manager when none provided."""
+    calls = []
+
+    a_client = DummyClient("a", "m1", "ok", calls)
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", calls)
+
+    # Initialize BackendManager without provider_manager parameter
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a},
+        order=["a"],
+    )
+
+    # Verify provider_manager property is accessible and returns default manager
+    assert mgr.provider_manager is not None
+    assert isinstance(mgr.provider_manager, BackendProviderManager)
