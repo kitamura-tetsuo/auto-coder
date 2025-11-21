@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
+from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt  # type: ignore
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import (
     _check_github_actions_status,

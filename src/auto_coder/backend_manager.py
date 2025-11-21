@@ -8,6 +8,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .backend_provider_manager import BackendProviderManager
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
@@ -21,6 +22,18 @@ _llm_instance: Optional[BackendManager] = None
 _message_instance: Optional[BackendManager] = None
 _instance_lock = threading.Lock()
 _initialization_lock = threading.Lock()
+
+# Explicit exports for mypy
+__all__ = [
+    "BackendManager",
+    "get_llm_backend_manager",
+    "run_message_prompt",
+    "run_llm_prompt",
+    "get_llm_backend_and_model",
+    "LLMBackendManager",
+    "get_message_backend_manager",
+    "get_message_backend_and_model",
+]
 
 
 class BackendManager(LLMBackendManagerBase):
@@ -40,6 +53,7 @@ class BackendManager(LLMBackendManagerBase):
         default_client: Any,
         factories: Dict[str, Callable[[], Any]],
         order: Optional[List[str]] = None,
+        provider_manager: Optional[BackendProviderManager] = None,
     ) -> None:
         # Backend order (circular)
         self._all_backends = order[:] if order else list(factories.keys())
@@ -74,6 +88,26 @@ class BackendManager(LLMBackendManagerBase):
         # Track current_test_file (switch if same file continues 3 times)
         self._last_test_file: Optional[str] = None
         self._same_test_file_count: int = 0
+
+        # Provider manager for backend provider metadata
+        # TODO: Future issue will implement provider rotation logic using this manager
+        # Provider rotation will allow switching between different provider implementations
+        # for the same backend (e.g., qwen-open-router vs qwen-azure vs qwen-direct)
+        self._provider_manager: BackendProviderManager = provider_manager or BackendProviderManager.get_default_manager()
+
+    @property
+    def provider_manager(self) -> BackendProviderManager:
+        """
+        Get the provider manager for this backend manager.
+
+        Returns:
+            BackendProviderManager: The provider manager instance
+
+        Note: This is used by future issues to implement provider rotation logic.
+        The provider manager allows access to provider metadata without changing
+        current runtime behavior.
+        """
+        return self._provider_manager
 
     # ---------- Basic Operations ----------
     def _current_backend_name(self) -> str:

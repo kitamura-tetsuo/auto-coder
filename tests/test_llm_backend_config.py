@@ -33,6 +33,7 @@ class TestBackendConfig:
         assert config.openai_api_key is None
         assert config.openai_base_url is None
         assert config.extra_args == {}
+        assert config.providers == []
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -48,6 +49,7 @@ class TestBackendConfig:
             openai_api_key="openai_key",
             openai_base_url="https://openai.example.com",
             extra_args={"arg1": "value1"},
+            providers=["provider1", "provider2"],
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -60,6 +62,7 @@ class TestBackendConfig:
         assert config.openai_api_key == "openai_key"
         assert config.openai_base_url == "https://openai.example.com"
         assert config.extra_args == {"arg1": "value1"}
+        assert config.providers == ["provider1", "provider2"]
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -125,6 +128,7 @@ class TestLLMBackendConfiguration:
             config.get_backend_config("gemini").model = "gemini-pro-custom"
             config.get_backend_config("gemini").api_key = "test_key_123"
             config.get_backend_config("gemini").temperature = 0.8
+            config.get_backend_config("qwen").providers = ["qwen-open-router", "qwen-azure"]
             config.default_backend = "gemini"
             config.backend_order = ["gemini", "codex", "qwen"]
 
@@ -143,6 +147,7 @@ class TestLLMBackendConfiguration:
             assert loaded_config.get_backend_config("gemini").model == "gemini-pro-custom"
             assert loaded_config.get_backend_config("gemini").api_key == "test_key_123"
             assert loaded_config.get_backend_config("gemini").temperature == 0.8
+            assert loaded_config.get_backend_config("qwen").providers == ["qwen-open-router", "qwen-azure"]
 
     def test_load_from_nonexistent_file_creates_default(self):
         """Test that loading a nonexistent file creates a default configuration."""
@@ -380,6 +385,7 @@ class TestLLMBackendConfiguration:
             config.backend_order = ["gemini", "codex"]
             config.get_backend_config("gemini").model = "custom-model"
             config.get_backend_config("gemini").temperature = 0.9
+            config.get_backend_config("qwen").providers = ["qwen-open-router", "qwen-azure"]
             config.save_to_file(str(config_file))
 
             # Read and parse TOML directly
@@ -393,6 +399,7 @@ class TestLLMBackendConfiguration:
             assert data["backend"]["order"] == ["gemini", "codex"]
             assert data["backends"]["gemini"]["model"] == "custom-model"
             assert data["backends"]["gemini"]["temperature"] == 0.9
+            assert data["backends"]["qwen"]["providers"] == ["qwen-open-router", "qwen-azure"]
 
     def test_configuration_persistence_across_instances(self):
         """Test that configuration persists correctly across multiple instances."""

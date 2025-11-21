@@ -13,7 +13,7 @@ from typing import Any, Dict, Generator, List, Optional
 from urllib.parse import urlparse
 
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.backend_manager import get_message_backend_manager, run_message_prompt
+from auto_coder.backend_manager import get_message_backend_manager, run_message_prompt  # type: ignore
 
 try:
     from git import InvalidGitRepositoryError, Repo
