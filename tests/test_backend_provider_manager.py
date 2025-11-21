@@ -347,12 +347,15 @@ class TestBackendProviderManager:
 
     def test_get_default_manager(self):
         """Test getting a default manager instance."""
+        BackendProviderManager.reset_default_manager()
         manager1 = BackendProviderManager.get_default_manager()
         manager2 = BackendProviderManager.get_default_manager()
 
         # Should return a valid manager
         assert isinstance(manager1, BackendProviderManager)
         assert isinstance(manager2, BackendProviderManager)
+        assert manager1 is manager2
+        BackendProviderManager.reset_default_manager()
 
     def test_cache_persistence(self):
         """Test that provider metadata is cached correctly."""

@@ -37,7 +37,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import ClassVar, Dict, List, Optional, Sequence
 
 import toml
 
@@ -121,6 +121,8 @@ class BackendProviderManager:
     The manager does not perform any runtime behavior changes - it merely
     provides metadata access for future provider rotation logic.
     """
+
+    _default_manager_instance: ClassVar[Optional["BackendProviderManager"]] = None
 
     def __init__(
         self,
@@ -372,15 +374,22 @@ class BackendProviderManager:
         if model is not None:
             runtime["model"] = model
 
-    @staticmethod
-    def get_default_manager() -> BackendProviderManager:
+    @classmethod
+    def get_default_manager(cls) -> BackendProviderManager:
         """
-        Get a default provider manager instance.
+        Get a singleton provider manager instance.
 
         Returns:
             BackendProviderManager with default configuration
         """
-        return BackendProviderManager()
+        if cls._default_manager_instance is None:
+            cls._default_manager_instance = cls()
+        return cls._default_manager_instance
+
+    @classmethod
+    def reset_default_manager(cls) -> None:
+        """Reset the cached default manager (useful for tests)."""
+        cls._default_manager_instance = None
 
     # ----- Internal helpers -----
     def _build_default_providers(self, backend_name: str) -> List[ProviderMetadata]:
