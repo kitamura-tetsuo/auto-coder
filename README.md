@@ -136,25 +136,29 @@ Basically, just run `gh auth login`. When using the Gemini backend, running `gem
   - Running the `/auth` command midway will switch to Qwen OAuth.
   - Reference: Qwen Code official repository (Authorization section): https://github.com/QwenLM/qwen-code
 - Automatic fallback when limits are reached:
-  - Auto-Coder prioritizes configured OpenAI-compatible endpoints and only returns to Qwen OAuth when all API keys are exhausted.
-  - Configuration file location: `~/.auto-coder/qwen-providers.toml` (path can be overridden with `AUTO_CODER_QWEN_CONFIG`, directory can be specified with `AUTO_CODER_CONFIG_DIR`).
-  - TOML example:
+  - Auto-Coder prioritizes providers defined in `~/.auto-coder/provider_metadata.toml` and only returns to Qwen OAuth when all API-backed providers are exhausted.
+  - Example snippet:
 
     ```toml
-    [[qwen.providers]]
-    # Option 1: Alibaba Cloud ModelStudio
-    name = "modelstudio"
-    api_key = "dashscope-..."  # Set the obtained API key
-    # base_url and model can be omitted to use defaults (dashscope-compatible / qwen3-coder-plus)
+    [qwen.modelstudio]
+    command = "codex"
+    args = ["exec", "-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox"]
+    description = "ModelStudio"
+    OPENAI_API_KEY = "dashscope-..."
+    OPENAI_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    OPENAI_MODEL = "qwen3-coder-plus"
 
-    [[qwen.providers]]
-    # Option 2: OpenRouter Free Tier
-    name = "openrouter"
-    api_key = "openrouter-..."
-    model = "qwen/qwen3-coder:free"  # Uses default when omitted
+    [qwen.openrouter]
+    command = "codex"
+    args = ["exec", "-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox"]
+    description = "OpenRouter"
+    OPENAI_API_KEY = "openrouter-..."
+    OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+    OPENAI_MODEL = "qwen/qwen3-coder:free"
     ```
 
-  - Fallback occurs in the order written (API key → OAuth). If only API keys are filled in, default URL/model is applied, and `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` are automatically injected at runtime.
+  - Providers are considered in file order. Each provider can define its exact command/args/env, allowing wrappers (e.g., `uvx qwen-openai-proxy ...`).
+  - Legacy `~/.auto-coder/qwen-providers.toml` files are still supported for tooling via the `AUTO_CODER_QWEN_CONFIG` / `AUTO_CODER_CONFIG_DIR` overrides; `auto_coder.qwen_provider_config` can convert that format into the provider metadata shown above, but runtime selection no longer reads the legacy file directly.
 - OpenAI-compatible mode:
   - Available by setting the following environment variables.
     - `OPENAI_API_KEY` (required)

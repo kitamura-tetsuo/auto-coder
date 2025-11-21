@@ -274,8 +274,8 @@ env:
   GEMINI_API_KEY: API key for Gemini when using gemini backend
   OPENAI_API_KEY: OpenAI-compatible API key for qwen backend
   OPENAI_BASE_URL: OpenAI-compatible base URL for qwen backend
-  AUTO_CODER_QWEN_CONFIG: Override path to qwen-providers.toml
-  AUTO_CODER_CONFIG_DIR: Directory that contains qwen-providers.toml
+  AUTO_CODER_QWEN_CONFIG: Legacy qwen-providers.toml location used by conversion tooling
+  AUTO_CODER_CONFIG_DIR: Directory containing legacy qwen-providers.toml (conversion tooling)
   AC_DISABLE_PLAYWRIGHT: "If set to 1, TestWatcherTool skips Playwright execution and returns a synthetic report (useful in CI)"
   GRAPHRAG_RETENTION_DAYS: "Number of days to retain GraphRAG index snapshots before cleanup (default: 7)"
   GRAPHRAG_MAX_SNAPSHOTS_PER_REPO: "Maximum number of GraphRAG index snapshots to keep per repository (default: 9)"
@@ -331,8 +331,13 @@ external_dependencies:
     specialized_for: "TypeScript/JavaScript code analysis"
     tools: [find_symbol, get_call_graph, get_dependencies, impact_analysis, semantic_code_search]
     notes: "Bundled fork replaces generic documentation search with code analysis tools."
+  provider_metadata:
+    file: "~/.auto-coder/provider_metadata.toml"
+    consumed_by: "BackendProviderManager"
+    description: "Runtime provider definitions (command/args/env) for provider-aware backends"
   qwen_providers_config:
     file: "~/.auto-coder/qwen-providers.toml"
+    usage: "Legacy format converted into provider_metadata via qwen_provider_config helper"
     defaults:
       modelstudio: { base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", model: "qwen3-coder-plus" }
       openrouter: { base_url: "https://openrouter.ai/api/v1", model: "qwen/qwen3-coder:free" }

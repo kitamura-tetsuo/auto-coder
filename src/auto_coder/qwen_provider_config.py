@@ -7,9 +7,12 @@ Runtime provider rotation now uses BackendProviderManager instead of this module
 from __future__ import annotations
 
 import os
+import re
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
+from typing import OrderedDict as OrderedDictType
 
 try:  # Python 3.11+ ships with tomllib
     import tomllib  # type: ignore[attr-defined]
@@ -19,6 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for older interpreter
     tomllib = _tomllib
 
 from .logger_config import get_logger
+from .provider_constants import DEFAULT_CODEX_ARGS
 
 logger = get_logger(__name__)
 
@@ -139,3 +143,62 @@ def load_qwen_provider_configs() -> List[QwenProviderConfig]:
         return []
 
     return list(_iter_provider_entries(providers))
+
+
+def _slugify_provider_name(name: str) -> str:
+    """Return a filesystem-friendly provider slug."""
+
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower())
+    slug = slug.strip("-")
+    return slug or "provider"
+
+
+def build_provider_metadata_entries(
+    providers: Iterable[QwenProviderConfig],
+    *,
+    prefix: str = "legacy",
+) -> OrderedDictType[str, Dict[str, object]]:
+    """Convert legacy provider configs into provider_metadata entries.
+
+    Args:
+        providers: Provider configs from ``load_qwen_provider_configs``
+        prefix: Optional prefix for generated provider names (default: ``legacy``)
+
+    Returns:
+        Ordered mapping suitable for writing under the ``[qwen]`` table in
+        ``provider_metadata.toml``.
+    """
+
+    entries: OrderedDictType[str, Dict[str, object]] = OrderedDict()
+    for provider in providers:
+        base = _slugify_provider_name(provider.name)
+        base_candidate = f"{prefix}-{base}" if prefix else base
+        candidate = base_candidate
+        suffix = 2
+        while candidate in entries:
+            candidate = f"{base_candidate}-{suffix}"
+            suffix += 1
+
+        entry: Dict[str, object] = {
+            "command": "codex",
+            "args": list(DEFAULT_CODEX_ARGS),
+            "description": provider.description,
+            "OPENAI_API_KEY": provider.api_key,
+        }
+        if provider.base_url:
+            entry["OPENAI_BASE_URL"] = provider.base_url
+        if provider.model:
+            entry["OPENAI_MODEL"] = provider.model
+
+        entries[candidate] = entry
+
+    return entries
+
+
+def load_legacy_provider_metadata(*, prefix: str = "legacy") -> Dict[str, OrderedDictType[str, Dict[str, object]]]:
+    """Load legacy configs and convert them to provider_metadata layout."""
+
+    providers = load_qwen_provider_configs()
+    if not providers:
+        return {}
+    return {"qwen": build_provider_metadata_entries(providers, prefix=prefix)}
