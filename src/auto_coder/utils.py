@@ -21,6 +21,53 @@ logger = get_logger(__name__)
 VERBOSE_ENV_FLAG = "AUTOCODER_VERBOSE"
 
 
+class TemporaryEnvironment:
+    """
+    Context manager for temporarily setting environment variables.
+
+    This context manager allows you to set environment variables for the duration
+    of a block of code and automatically restore them to their previous state
+    (or remove them if they didn't exist before).
+
+    Example:
+        with TemporaryEnvironment({"MY_VAR": "value"}):
+            # MY_VAR is set in os.environ
+            subprocess.run(["my_command"])
+        # MY_VAR is restored or removed
+
+    Note: This modifies os.environ directly and ensures cleanup even on exceptions.
+    """
+
+    def __init__(self, env_vars: Optional[Dict[str, str]] = None):
+        """
+        Initialize the temporary environment context manager.
+
+        Args:
+            env_vars: Dictionary of environment variables to set temporarily.
+                      If None, no environment variables are modified.
+        """
+        self.env_vars = env_vars or {}
+        self._previous_values: Dict[str, Optional[str]] = {}
+
+    def __enter__(self) -> None:
+        """Set the temporary environment variables."""
+        # Save current values and set new ones
+        for key, value in self.env_vars.items():
+            self._previous_values[key] = os.environ.get(key)
+            os.environ[key] = value
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Restore the previous environment variable values."""
+        for key, previous_value in self._previous_values.items():
+            if previous_value is None:
+                # Variable didn't exist before, remove it
+                if key in os.environ:
+                    del os.environ[key]
+            else:
+                # Variable existed before, restore it
+                os.environ[key] = previous_value
+
+
 def is_running_in_container() -> bool:
     """Robustly detect if running inside a container.
 
@@ -358,6 +405,7 @@ class CommandExecutor:
         cwd: Optional[str] = None,
         stream_output: Optional[bool] = None,
         env: Optional[Dict[str, str]] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
         on_stream: Optional[Callable[[str, str], None]] = None,
     ) -> CommandResult:
         """Run a command with consistent error handling."""
@@ -381,9 +429,16 @@ class CommandExecutor:
         else:
             logger.debug(log_message)
 
+        # Merge override-only environments with provided env (or os.environ when absent).
+        effective_env = env
+        if env_overrides:
+            base_env = env.copy() if env is not None else os.environ.copy()
+            base_env.update(env_overrides)
+            effective_env = base_env
+
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, env, on_stream)
+                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, effective_env, on_stream)
             else:
                 result = subprocess.run(
                     cmd,
@@ -391,7 +446,7 @@ class CommandExecutor:
                     text=True,
                     timeout=timeout,
                     cwd=cwd,
-                    env=env,
+                    env=effective_env,
                 )
                 return_code = result.returncode
                 stdout = result.stdout

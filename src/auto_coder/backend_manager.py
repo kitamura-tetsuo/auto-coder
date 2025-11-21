@@ -5,6 +5,7 @@ automatic switching when the same current_test_file appears 3 consecutive times 
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -30,6 +31,7 @@ __all__ = [
     "run_message_prompt",
     "run_llm_prompt",
     "get_llm_backend_and_model",
+    "get_llm_backend_provider_and_model",
     "LLMBackendManager",
     "get_message_backend_manager",
     "get_message_backend_and_model",
@@ -90,8 +92,7 @@ class BackendManager(LLMBackendManagerBase):
         self._same_test_file_count: int = 0
 
         # Provider manager for backend provider metadata
-        # TODO: Future issue will implement provider rotation logic using this manager
-        # Provider rotation will allow switching between different provider implementations
+        # Implements provider rotation logic for switching between different provider implementations
         # for the same backend (e.g., qwen-open-router vs qwen-azure vs qwen-direct)
         self._provider_manager: BackendProviderManager = provider_manager or BackendProviderManager.get_default_manager()
 
@@ -103,9 +104,10 @@ class BackendManager(LLMBackendManagerBase):
         Returns:
             BackendProviderManager: The provider manager instance
 
-        Note: This is used by future issues to implement provider rotation logic.
-        The provider manager allows access to provider metadata without changing
-        current runtime behavior.
+        Note: The provider manager implements provider rotation logic, including
+        automatic failover when AutoCoderUsageLimitError occurs, environment
+        variable handling for provider-specific configuration, and tracking of
+        last used providers for debugging and telemetry.
         """
         return self._provider_manager
 
@@ -154,41 +156,116 @@ class BackendManager(LLMBackendManagerBase):
         self._switch_to_index(idx)
         logger.info(f"BackendManager: switched back to default backend -> {self._current_backend_name()}")
 
+    def _get_current_provider_name(self, backend_name: str) -> Optional[str]:
+        """
+        Get the current provider name for a backend.
+
+        Args:
+            backend_name: Name of the backend
+
+        Returns:
+            Current provider name, or None if no providers configured
+        """
+        return self._provider_manager.get_current_provider_name(backend_name)
+
     # ---------- Direct Compatibility Methods ----------
     @log_calls  # type: ignore[misc]
     def _run_llm_cli(self, prompt: str) -> str:
-        """Normal execution (circular retry on usage limit)."""
+        """Normal execution (circular retry on usage limit with provider rotation)."""
+        from .utils import TemporaryEnvironment
+
         attempts = 0
         tried: set[int] = set()
         last_error: Optional[Exception] = None
+
         while attempts < len(self._all_backends):
-            name = self._current_backend_name()
-            with ProgressStage(f"Running LLM: {name}, attempt {attempts + 1}"):
-                if self._current_idx in tried:
-                    self.switch_to_next_backend()
-                    attempts += 1
-                    continue
-                tried.add(self._current_idx)
-                try:
-                    cli = self._get_or_create_client(name)
-                    out: str = cli._run_llm_cli(prompt)
-                    # Only update recently used backend/model on successful execution
-                    self._last_backend = name
-                    self._last_model = getattr(cli, "model_name", None)
-                    return out
-                except AutoCoderUsageLimitError as e:
-                    logger.warning(f"Backend '{name}' hit usage limit: {e}. Rotating to next backend.")
-                    last_error = e
-                    self.switch_to_next_backend()
-                    attempts += 1
-                    continue
-                except Exception as e:
-                    # Other failures propagate (immediate error except usage limit)
-                    last_error = e
-                    break
+            if self._current_idx in tried:
+                self.switch_to_next_backend()
+                continue
+
+            tried.add(self._current_idx)
+            backend_name = self._current_backend_name()
+
+            try:
+                cli = self._get_or_create_client(backend_name)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                last_error = exc
+                logger.error(f"Failed to initialize backend '{backend_name}': {exc}")
+                self.switch_to_next_backend()
+                attempts += 1
+                continue
+
+            try:
+                return self._execute_backend_with_providers(
+                    backend_name=backend_name,
+                    cli=cli,
+                    prompt=prompt,
+                    backend_attempt_number=attempts + 1,
+                    temp_env_cls=TemporaryEnvironment,
+                )
+            except AutoCoderUsageLimitError as exc:
+                last_error = exc
+                logger.warning(f"Backend '{backend_name}' exhausted providers due to usage limits: {exc}")
+                self.switch_to_next_backend()
+                attempts += 1
+                continue
+            except Exception as exc:
+                last_error = exc
+                logger.error(f"Execution failed on backend '{backend_name}': {exc}")
+                break
+
         if last_error:
             raise last_error
         raise RuntimeError("No backend available to run prompt")
+
+    def _execute_backend_with_providers(
+        self,
+        backend_name: str,
+        cli: Any,
+        prompt: str,
+        backend_attempt_number: int,
+        temp_env_cls: Callable[[Dict[str, str]], Any],
+    ) -> str:
+        """
+        Execute a backend client while honoring provider rotation rules.
+
+        Args:
+            backend_name: Name of the backend being executed
+            cli: Backend client instance
+            prompt: Prompt to execute
+            backend_attempt_number: 1-based attempt number for logging context
+            temp_env_cls: Context manager factory (injected for easier testing)
+        """
+        backend_has_providers = self._provider_manager.has_providers(backend_name)
+        provider_count = self._provider_manager.get_provider_count(backend_name)
+        provider_attempts = 0
+
+        while True:
+            provider_name = self._get_current_provider_name(backend_name)
+            env_vars = self._provider_manager.create_env_context(backend_name) if backend_has_providers else {}
+            provider_context = f"{backend_name}"
+            if provider_name:
+                provider_context += f" (provider: {provider_name})"
+            message = f"Running LLM: {provider_context}, attempt {backend_attempt_number}"
+
+            env_context = temp_env_cls(env_vars) if env_vars else contextlib.nullcontext()
+
+            with ProgressStage(message), env_context:
+                try:
+                    out: str = cli._run_llm_cli(prompt)
+                    self._last_backend = backend_name
+                    self._last_model = getattr(cli, "model_name", None)
+                    self._provider_manager.mark_provider_used(backend_name, provider_name)
+                    logger.info(f"Successfully executed on backend '{backend_name}' " f"(provider: '{provider_name or 'default'}')")
+                    return out
+                except AutoCoderUsageLimitError as exc:
+                    logger.warning(f"Provider usage limit reached for backend '{backend_name}' " f"(provider: '{provider_name or 'default'}'): {exc}")
+                    if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
+                        rotated = self._provider_manager.advance_to_next_provider(backend_name)
+                        if rotated:
+                            provider_attempts += 1
+                            continue
+                    raise
 
     # ---------- For apply_workspace_test_fix ----------
     @log_calls  # type: ignore[misc]
@@ -218,8 +295,14 @@ class BackendManager(LLMBackendManagerBase):
                 # Backend has changed, reset counter (this is the 1st time)
                 self._same_test_file_count = 1
 
-        # Execute
-        with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
+        # Execute with provider-aware telemetry so logs show which provider is being used.
+        active_backend = self._current_backend_name()
+        provider_for_stage = self._get_current_provider_name(active_backend)
+        stage_label = f"Running LLM: {active_backend}"
+        if provider_for_stage:
+            stage_label += f" (provider: {provider_for_stage})"
+
+        with ProgressStage(stage_label):
             out: str = self._run_llm_cli(prompt)
 
         # Update state
@@ -245,6 +328,19 @@ class BackendManager(LLMBackendManagerBase):
             except Exception:
                 model = None
         return backend, model
+
+    def get_last_backend_provider_and_model(self) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Return the backend/provider/model used for the most recent execution.
+
+        Returns:
+            Tuple of (backend_name, provider_name, model_name).
+            Provider name may be None if no provider was used or no provider configured.
+        """
+        backend, model = self.get_last_backend_and_model()
+        provider = self._provider_manager.get_last_used_provider_name(backend) if backend else None
+
+        return backend, provider, model
 
     # ---------- Compatibility Helpers ----------
     def switch_to_conflict_model(self) -> None:
@@ -684,3 +780,17 @@ def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     if manager is None:
         return None, None  # type: ignore[unreachable]
     return manager.get_last_backend_and_model()
+
+
+def get_llm_backend_provider_and_model() -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Get the backend, provider, and model used for the most recent general LLM execution.
+
+    Returns:
+        Tuple[Optional[str], Optional[str], Optional[str]]: (backend_name, provider_name, model_name)
+        or (None, None, None) if not available. Provider name may be None if no provider was used.
+    """
+    manager = LLMBackendManager.get_llm_instance()
+    if manager is None:
+        return None, None, None  # type: ignore[unreachable]
+    return manager.get_last_backend_provider_and_model()

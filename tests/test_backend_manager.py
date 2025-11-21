@@ -1,5 +1,9 @@
+import os
+
+import pytest
+
 from src.auto_coder.backend_manager import BackendManager, LLMBackendManager
-from src.auto_coder.backend_provider_manager import BackendProviderManager
+from src.auto_coder.backend_provider_manager import BackendProviderManager, BackendProviderMetadata, ProviderMetadata
 from src.auto_coder.exceptions import AutoCoderUsageLimitError
 
 
@@ -20,6 +24,50 @@ class DummyClient:
 
     def switch_to_default_model(self) -> None:
         pass
+
+
+class ProviderAwareClient:
+    def __init__(self, behavior_map: dict[str, str], calls: list[str | None]):
+        self.behavior_map = behavior_map
+        self.calls = calls
+        self.model_name = "model-provider"
+
+    def _run_llm_cli(self, prompt: str) -> str:
+        token = os.environ.get("PROVIDER_TOKEN")
+        self.calls.append(token)
+        lookup_key = token or ""
+        outcome = self.behavior_map.get(lookup_key, "ok")
+        if outcome == "limit":
+            raise AutoCoderUsageLimitError("limit hit")
+        return f"{token}:{prompt}"
+
+    def switch_to_default_model(self) -> None:
+        pass
+
+
+def _build_provider_manager() -> BackendProviderManager:
+    manager = BackendProviderManager()
+    manager._provider_cache["codex"] = BackendProviderMetadata(
+        backend_name="codex",
+        providers=[
+            ProviderMetadata(name="codex-primary", command="uvx", uppercase_settings={"PROVIDER_TOKEN": "token-a"}),
+            ProviderMetadata(name="codex-secondary", command="uvx", uppercase_settings={"PROVIDER_TOKEN": "token-b"}),
+        ],
+    )
+    manager._metadata_cache = {}
+    return manager
+
+
+def _build_single_provider_manager() -> BackendProviderManager:
+    manager = BackendProviderManager()
+    manager._provider_cache["codex"] = BackendProviderMetadata(
+        backend_name="codex",
+        providers=[
+            ProviderMetadata(name="codex-primary", command="uvx", uppercase_settings={"PROVIDER_TOKEN": "token-a"}),
+        ],
+    )
+    manager._metadata_cache = {}
+    return manager
 
 
 def test_manager_switches_on_usage_limit():
@@ -198,17 +246,51 @@ def test_get_last_backend_and_model_reflects_actual_client_usage():
     assert backend == "codex"
     assert model == "m1"
 
-    mgr.run_test_fix_prompt("PROMPT", current_test_file="test_a.py")
-    backend, model = mgr.get_last_backend_and_model()
-    assert backend == "codex"
-    assert model == "m1"
 
-    # Trigger rotation to the secondary backend and confirm reporting updates
-    mgr.run_test_fix_prompt("PROMPT", current_test_file="test_a.py")
-    mgr.run_test_fix_prompt("PROMPT", current_test_file="test_a.py")
-    backend, model = mgr.get_last_backend_and_model()
-    assert backend == "gemini"
-    assert model == "m2"
+def test_provider_rotation_before_backend_switch():
+    calls: list[str | None] = []
+
+    provider_manager = _build_provider_manager()
+    client = ProviderAwareClient({"token-a": "limit", "token-b": "ok"}, calls)
+
+    mgr = BackendManager(
+        default_backend="codex",
+        default_client=client,
+        factories={"codex": lambda: client},
+        order=["codex"],
+        provider_manager=provider_manager,
+    )
+
+    out = mgr._run_llm_cli("PROMPT")
+    assert out == "token-b:PROMPT"
+    assert calls == ["token-a", "token-b"]
+
+    backend, provider, model = mgr.get_last_backend_provider_and_model()
+    assert backend == "codex"
+    assert provider == "codex-secondary"
+    assert model == "model-provider"
+    assert os.environ.get("PROVIDER_TOKEN") is None
+
+
+def test_provider_env_cleared_on_failure():
+    calls: list[str | None] = []
+
+    provider_manager = _build_single_provider_manager()
+    client = ProviderAwareClient({"token-a": "limit"}, calls)
+
+    mgr = BackendManager(
+        default_backend="codex",
+        default_client=client,
+        factories={"codex": lambda: client},
+        order=["codex"],
+        provider_manager=provider_manager,
+    )
+
+    with pytest.raises(AutoCoderUsageLimitError):
+        mgr._run_llm_cli("PROMPT")
+
+    assert calls == ["token-a"]
+    assert os.environ.get("PROVIDER_TOKEN") is None
 
 
 def test_llm_backend_manager_singleton_initialization():

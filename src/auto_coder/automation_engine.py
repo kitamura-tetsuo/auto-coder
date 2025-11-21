@@ -334,6 +334,7 @@ class AutomationEngine:
             "timestamp": datetime.now().isoformat(),
             "jules_mode": jules_mode,
             "llm_backend": llm_backend_info["backend"],
+            "llm_provider": llm_backend_info["provider"],
             "llm_model": llm_backend_info["model"],
             "issues_processed": [],
             "prs_processed": [],
@@ -557,38 +558,50 @@ class AutomationEngine:
         return fix_to_pass_tests(self.config, max_attempts)
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
-        """Get LLM backend and model information.
+        """Get LLM backend, provider, and model information for telemetry."""
 
-        Returns:
-            Dictionary with 'backend' and 'model' keys.
-        """
-        try:
-            # Try to get the manager using get_llm_backend_manager() to ensure proper initialization
-            try:
-                manager = get_llm_backend_manager()
-                if manager is not None:
-                    backend, model = manager.get_last_backend_and_model()
-                    return {"backend": backend, "model": model}
-            except (RuntimeError, AttributeError):
-                # get_llm_backend_manager() fails if not initialized, fall back to direct access
+        info: Dict[str, Optional[str]] = {"backend": None, "provider": None, "model": None}
+
+        def _extract_from_manager(manager: Optional[Any]) -> Optional[Dict[str, Optional[str]]]:
+            if manager is None:
+                return None
+
+            getter = getattr(manager, "get_last_backend_provider_and_model", None)
+            if callable(getter):
                 try:
-                    manager = LLMBackendManager.get_llm_instance()
-                    if manager is not None:
-                        backend, model = manager.get_last_backend_and_model()
-                        return {"backend": backend, "model": model}
-                except (RuntimeError, AttributeError):
-                    # Also try direct instance access
-                    llm_instance: Optional[Any] = LLMBackendManager._instance
-                    if llm_instance is not None:
-                        backend, model = llm_instance.get_last_backend_and_model()
-                        return {"backend": backend, "model": model}
+                    backend, provider, model = getter()
+                    return {"backend": backend, "provider": provider, "model": model}
+                except Exception:
+                    pass
 
-            # Manager not initialized
-            return {"backend": None, "model": None}
+            getter = getattr(manager, "get_last_backend_and_model", None)
+            if callable(getter):
+                try:
+                    backend, model = getter()
+                    return {"backend": backend, "provider": None, "model": model}
+                except Exception:
+                    pass
+            return None
+
+        try:
+            sources = (
+                lambda: get_llm_backend_manager(),
+                lambda: LLMBackendManager.get_llm_instance(),
+                lambda: LLMBackendManager._instance,
+            )
+
+            for source in sources:
+                try:
+                    details = _extract_from_manager(source())
+                except (RuntimeError, AttributeError):
+                    continue
+                if details:
+                    info.update(details)
+                    return info
         except Exception as e:
-            # Any other exceptions
             logger.debug(f"Error getting LLM backend info: {e}")
-            return {"backend": None, "model": None}
+
+        return info
 
     def _save_report(self, data: Dict[str, Any], filename: str, repo_name: Optional[str] = None) -> None:
         """Save report to file.
