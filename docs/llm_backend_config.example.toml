@@ -27,8 +27,11 @@ api_key = "your-gemini-api-key"  # Optional: can be set via GEMINI_API_KEY env v
 
 # Provider list for this backend (optional)
 # Providers are different implementations/connections for the same backend
-# Example: ["gemini-direct", "gemini-via-proxy"]
-# providers = []
+# Configure multiple providers to enable automatic provider rotation
+# Format: providers = ["provider-name-1", "provider-name-2", "provider-name-3"]
+# Example: ["gemini-direct", "gemini-via-proxy", "gemini-backup"]
+# Note: Provider definitions are stored separately in ~/.auto-coder/provider_metadata.toml
+providers = []
 
 [backends.qwen]
 enabled = true
@@ -37,11 +40,13 @@ openai_api_key = "your-openai-api-key"  # Optional: can be set via OPENAI_API_KE
 openai_base_url = "https://api.openai.com/v1"  # Optional: can be set via OPENAI_BASE_URL env var
 
 # Provider list for this backend
+# Configure multiple providers for automatic failover and rotation
 # Example providers:
-#   - "qwen-open-router": Qwen via OpenRouter API
-#   - "qwen-azure": Qwen via Azure OpenAI
-#   - "qwen-direct": Direct Qwen API access
-providers = ["qwen-open-router", "qwen-azure"]
+#   - "qwen-open-router": Qwen via OpenRouter API (good for free tier)
+#   - "qwen-azure": Qwen via Azure OpenAI (enterprise-grade)
+#   - "qwen-direct": Direct Qwen API access (fastest)
+# Rotation order follows the list order: first → second → third → first...
+providers = ["qwen-open-router", "qwen-azure", "qwen-direct"]
 
 [backends.auggie]
 enabled = true
@@ -66,7 +71,13 @@ model = "codex-mcp"
 # - command: The command to execute the provider (e.g., "uvx")
 # - args: Arguments to pass to the command (e.g., ["qwen-openai-proxy"])
 # - description: Human-readable description of the provider
-# - Uppercase settings: Provider-specific configuration (e.g., AZURE_ENDPOINT, API_KEY)
+# - Uppercase settings: Provider-specific configuration exported as environment variables
+#
+# Environment Variable Handling:
+# ------------------------------
+# Uppercase settings from provider metadata are automatically exported during command
+# execution and cleared when the command completes. This provides secure, scoped
+# access to provider-specific configuration without modifying your system environment.
 #
 # Example provider_metadata.toml:
 # -------------------------------
@@ -82,6 +93,7 @@ model = "codex-mcp"
 # description = "Qwen via Azure OpenAI"
 # AZURE_ENDPOINT = "https://your-endpoint.openai.azure.com"
 # AZURE_API_VERSION = "2024-02-15-preview"
+# AZURE_API_KEY = "your-azure-key"
 #
 # [qwen.qwen-direct]
 # command = "uvx"
@@ -89,7 +101,16 @@ model = "codex-mcp"
 # description = "Direct Qwen API access"
 # QWEN_API_KEY = "your-qwen-api-key"
 #
+# [gemini.gemini-direct]
+# command = "uvx"
+# args = ["gemini-direct"]
+# description = "Direct Gemini API access"
+# GEMINI_API_KEY = "your-gemini-key"
+#
 # Notes:
 # - Provider metadata is optional and the system degrades gracefully if no providers are configured
-# - Future versions will use this provider information for automatic provider rotation
-# - Currently, provider metadata is loaded but not actively used in runtime behavior
+# - Provider rotation is automatic when usage limits are hit (AutoCoderUsageLimitError)
+# - The BackendProviderManager tracks provider state and enables rotation
+# - Works across all backends (Qwen, Gemini, Claude, etc.) via the shared provider system
+# - Provider metadata file uses section format: [<backend>.<provider-name>]
+#   (e.g., [qwen.qwen-open-router], [gemini.gemini-direct])
