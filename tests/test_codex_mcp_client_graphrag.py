@@ -18,7 +18,7 @@ def mock_graphrag_integration():
 def test_codex_mcp_client_graphrag_disabled(monkeypatch):
     """Test CodexMCPClient with GraphRAG disabled."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
     fake_proc = mock.MagicMock()
     fake_proc.pid = 123
@@ -28,7 +28,7 @@ def test_codex_mcp_client_graphrag_disabled(monkeypatch):
     fake_proc.stderr = None
 
     mock_popen = mock.MagicMock(return_value=fake_proc)
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=False)
@@ -40,7 +40,7 @@ def test_codex_mcp_client_graphrag_disabled(monkeypatch):
 def test_codex_mcp_client_graphrag_enabled(monkeypatch):
     """Test CodexMCPClient with GraphRAG enabled."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
     fake_proc = mock.MagicMock()
     fake_proc.pid = 123
@@ -50,7 +50,7 @@ def test_codex_mcp_client_graphrag_enabled(monkeypatch):
     fake_proc.stderr = None
 
     mock_popen = mock.MagicMock(return_value=fake_proc)
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
@@ -62,7 +62,7 @@ def test_codex_mcp_client_graphrag_enabled(monkeypatch):
 def test_run_llm_cli_graphrag_ensure_ready_success(monkeypatch):
     """Test _run_llm_cli with GraphRAG ensure_ready success."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
     fake_proc = mock.MagicMock()
     fake_proc.pid = 123
@@ -72,7 +72,7 @@ def test_run_llm_cli_graphrag_ensure_ready_success(monkeypatch):
     fake_proc.stderr = None
 
     mock_popen = mock.MagicMock(return_value=fake_proc)
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
@@ -98,7 +98,7 @@ def test_run_llm_cli_graphrag_ensure_ready_success(monkeypatch):
 def test_run_llm_cli_graphrag_ensure_ready_failure(monkeypatch):
     """Test _run_llm_cli with GraphRAG ensure_ready failure."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
     fake_proc = mock.MagicMock()
     fake_proc.pid = 123
@@ -108,7 +108,7 @@ def test_run_llm_cli_graphrag_ensure_ready_failure(monkeypatch):
     fake_proc.stderr = None
 
     mock_popen = mock.MagicMock(return_value=fake_proc)
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
@@ -134,7 +134,7 @@ def test_run_llm_cli_graphrag_ensure_ready_failure(monkeypatch):
 def test_run_llm_cli_graphrag_ensure_ready_exception(monkeypatch):
     """Test _run_llm_cli with GraphRAG ensure_ready exception."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
     fake_proc = mock.MagicMock()
     fake_proc.pid = 123
@@ -144,7 +144,7 @@ def test_run_llm_cli_graphrag_ensure_ready_exception(monkeypatch):
     fake_proc.stderr = None
 
     mock_popen = mock.MagicMock(return_value=fake_proc)
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=True)
@@ -170,7 +170,7 @@ def test_run_llm_cli_graphrag_ensure_ready_exception(monkeypatch):
 def test_run_llm_cli_no_graphrag(monkeypatch):
     """Test _run_llm_cli without GraphRAG integration."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
     fake_proc = mock.MagicMock()
     fake_proc.pid = 123
@@ -180,7 +180,7 @@ def test_run_llm_cli_no_graphrag(monkeypatch):
     fake_proc.stderr = None
 
     mock_popen = mock.MagicMock(return_value=fake_proc)
-    monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
+    monkeypatch.setattr("auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")):
         client = CodexMCPClient(enable_graphrag=False)

@@ -28,7 +28,7 @@ def test_create_pr_analysis_prompt_with_bug_label():
     pr_diff = "diff --git a/test.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -54,7 +54,7 @@ def test_create_pr_analysis_prompt_with_enhancement_label():
     pr_diff = "diff --git a/feature.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -80,7 +80,7 @@ def test_create_pr_analysis_prompt_with_documentation_label():
     pr_diff = "diff --git a/README.md"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -106,7 +106,7 @@ def test_create_pr_analysis_prompt_with_urgent_label():
     pr_diff = "diff --git a/security.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -132,7 +132,7 @@ def test_create_pr_analysis_prompt_with_breaking_change_label():
     pr_diff = "diff --git a/api.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -158,7 +158,7 @@ def test_create_pr_analysis_prompt_priority_breaking_over_urgent():
     pr_diff = "diff --git a/api.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -183,7 +183,7 @@ def test_create_pr_analysis_prompt_priority_urgent_over_bug():
     pr_diff = "diff --git a/bug.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -208,7 +208,7 @@ def test_create_pr_analysis_prompt_fallback_no_specific_label():
     pr_diff = "diff --git a/misc.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -233,7 +233,7 @@ def test_create_pr_analysis_prompt_includes_all_required_data():
     pr_diff = "diff --git a/test.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "Test commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -261,7 +261,7 @@ def test_create_pr_analysis_prompt_empty_labels():
     pr_diff = "diff --git a/test.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 
@@ -286,7 +286,7 @@ def test_create_pr_analysis_prompt_with_multiple_labels_uses_highest_priority():
     pr_diff = "diff --git a/test.py"
     config = AutomationConfig()
 
-    with patch("src.auto_coder.pr_processor.get_commit_log") as mock_commit_log:
+    with patch("auto_coder.pr_processor.get_commit_log") as mock_commit_log:
         mock_commit_log.return_value = "commit log"
         prompt = _create_pr_analysis_prompt(repo_name, pr_data, pr_diff, config)
 

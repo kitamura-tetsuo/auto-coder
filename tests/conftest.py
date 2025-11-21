@@ -553,7 +553,7 @@ def _apply_graphrag_mock_to_compatibility_tests(request, monkeypatch):
         mock_integration_class.return_value = mock_instance
 
         # Patch the GraphRAGMCPIntegration in the module where it's imported
-        import src.auto_coder.graphrag_mcp_integration as grag_module
+        import auto_coder.graphrag_mcp_integration as grag_module
 
         monkeypatch.setattr(grag_module, "GraphRAGMCPIntegration", mock_integration_class)
 
@@ -581,7 +581,7 @@ def mock_graphrag_integration(monkeypatch):
     mock_integration_class.return_value = mock_instance
 
     # Patch the GraphRAGMCPIntegration in the module where it's imported
-    import src.auto_coder.graphrag_mcp_integration as grag_module
+    import auto_coder.graphrag_mcp_integration as grag_module
 
     monkeypatch.setattr(grag_module, "GraphRAGMCPIntegration", mock_integration_class)
 

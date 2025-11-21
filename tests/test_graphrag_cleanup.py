@@ -31,7 +31,7 @@ def test_build_repo_key_uses_remote_and_strips_credentials(tmp_path, monkeypatch
 
         return Result()
 
-    monkeypatch.setattr("src.auto_coder.graphrag_index_manager.subprocess.run", fake_run)
+    monkeypatch.setattr("auto_coder.graphrag_index_manager.subprocess.run", fake_run)
 
     key = manager._build_repo_key()
     assert repo_str in key

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-import requests
+import requests  # type: ignore[import-untyped]
 import yaml
 
 from auto_coder.prompt_loader import (
@@ -176,7 +176,7 @@ class TestInvalidYAMLConfiguration:
 class TestNetworkFailures:
     """Test handling of network failures during configuration loading."""
 
-    @patch("src.auto_coder.prompt_loader.yaml.safe_load")
+    @patch("auto_coder.prompt_loader.yaml.safe_load")
     def test_network_error_during_yaml_loading(self, mock_yaml_load):
         """Test handling of network-related errors during YAML loading."""
         mock_yaml_load.side_effect = requests.exceptions.ConnectionError("Network error")
@@ -270,7 +270,7 @@ class TestConcurrentAccessConflicts:
 class TestDiskSpaceIssues:
     """Test handling of disk space issues with log files."""
 
-    @patch("src.auto_coder.prompt_loader.logger")
+    @patch("auto_coder.prompt_loader.logger")
     def test_log_write_failure_handling(self, mock_logger):
         """Test handling when log writing fails."""
         # Simulate logger failure

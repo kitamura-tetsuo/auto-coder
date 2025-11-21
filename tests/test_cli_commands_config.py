@@ -41,8 +41,10 @@ def test_config_show(tmp_path: Path):
 
     # Test with an existing file
     config = LLMBackendConfiguration()
-    config.get_backend_config("gemini").model = "gemini-pro-test"
-    config.save_to_file(config_file)
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.model = "gemini-pro-test"
+    config.save_to_file(str(config_file))
 
     result = runner.invoke(main, ["config", "show", "--file", str(config_file)])
     assert result.exit_code == 0
@@ -127,7 +129,7 @@ def test_config_validate(tmp_path: Path):
 
     # Test with a valid file
     config = LLMBackendConfiguration()
-    config.save_to_file(config_file)
+    config.save_to_file(str(config_file))
     result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
     assert result.exit_code == 0
     assert "Configuration is valid" in result.output
@@ -149,7 +151,7 @@ def test_config_migrate_no_env_vars(tmp_path: Path):
 
     # Create a basic config file
     config = LLMBackendConfiguration()
-    config.save_to_file(config_file)
+    config.save_to_file(str(config_file))
 
     # Run migrate with no environment variables
     result = runner.invoke(main, ["config", "migrate", "--file", str(config_file)], input="n\n")
@@ -203,8 +205,12 @@ def test_config_migrate_with_backend_api_key_env_vars(tmp_path: Path):
 
     # Verify the values were saved
     config = LLMBackendConfiguration.load_from_file(str(config_file))
-    assert config.get_backend_config("gemini").api_key == "test-gemini-key"
-    assert config.get_backend_config("qwen").api_key == "test-qwen-key"
+    gemini_config = config.get_backend_config("gemini")
+    qwen_config = config.get_backend_config("qwen")
+    assert gemini_config is not None
+    assert qwen_config is not None
+    assert gemini_config.api_key == "test-gemini-key"
+    assert qwen_config.api_key == "test-qwen-key"
 
 
 def test_config_migrate_with_openai_api_key_env_var(tmp_path: Path):
@@ -226,9 +232,15 @@ def test_config_migrate_with_openai_api_key_env_var(tmp_path: Path):
 
     # Verify the value was saved (should apply to backends that support OpenAI)
     config = LLMBackendConfiguration.load_from_file(str(config_file))
-    assert config.get_backend_config("codex").openai_api_key == "test-openai-key"
-    assert config.get_backend_config("claude").openai_api_key == "test-openai-key"
-    assert config.get_backend_config("qwen").openai_api_key == "test-openai-key"
+    codex_config = config.get_backend_config("codex")
+    claude_config = config.get_backend_config("claude")
+    qwen_config = config.get_backend_config("qwen")
+    assert codex_config is not None
+    assert claude_config is not None
+    assert qwen_config is not None
+    assert codex_config.openai_api_key == "test-openai-key"
+    assert claude_config.openai_api_key == "test-openai-key"
+    assert qwen_config.openai_api_key == "test-openai-key"
 
 
 def test_config_migrate_with_openai_base_url_env_var(tmp_path: Path):
@@ -250,8 +262,12 @@ def test_config_migrate_with_openai_base_url_env_var(tmp_path: Path):
 
     # Verify the value was saved
     config = LLMBackendConfiguration.load_from_file(str(config_file))
-    assert config.get_backend_config("codex").openai_base_url == "https://custom.openai.com"
-    assert config.get_backend_config("claude").openai_base_url == "https://custom.openai.com"
+    codex_config = config.get_backend_config("codex")
+    claude_config = config.get_backend_config("claude")
+    assert codex_config is not None
+    assert claude_config is not None
+    assert codex_config.openai_base_url == "https://custom.openai.com"
+    assert claude_config.openai_base_url == "https://custom.openai.com"
 
 
 def test_config_migrate_creates_backup(tmp_path: Path):
@@ -261,8 +277,10 @@ def test_config_migrate_creates_backup(tmp_path: Path):
 
     # Create an existing config file
     config = LLMBackendConfiguration()
-    config.get_backend_config("gemini").model = "original-model"
-    config.save_to_file(config_file)
+    gemini_config = config.get_backend_config("gemini")
+    assert gemini_config is not None
+    gemini_config.model = "original-model"
+    config.save_to_file(str(config_file))
 
     # Run migrate
     result = runner.invoke(

@@ -255,7 +255,7 @@ class TestAutomationEngineLabelIntegration:
                 backend_switches.append(self.name)
                 return "Test response"
 
-        with patch("src.auto_coder.automation_engine.get_llm_backend_manager", return_value=TrackingBackend("codex")):
+        with patch("auto_coder.automation_engine.get_llm_backend_manager", return_value=TrackingBackend("codex")):
             # Test that backend integration works
             # Verify the backend manager is set up correctly
             assert engine is not None
@@ -309,7 +309,7 @@ class TestAutomationEngineLabelIntegration:
         non_jules_issue = TEST_ISSUE_DATA["enhancement"].copy()
 
         # Test jules mode processing
-        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        with patch("auto_coder.issue_processor.cmd") as mock_cmd:
             mock_cmd.run_command.return_value = _cmd_result(success=True)
 
             config = AutomationConfig()

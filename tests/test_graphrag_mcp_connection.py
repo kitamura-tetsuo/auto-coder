@@ -167,10 +167,12 @@ def send_jsonrpc_message(process: subprocess.Popen, message: dict) -> dict:
     # Send message
     message_str = json.dumps(message) + "\n"
     logger.debug(f"Sending: {message_str.strip()}")
+    assert process.stdin is not None
     process.stdin.write(message_str.encode())
     process.stdin.flush()
 
     # Read response
+    assert process.stdout is not None
     response_line = process.stdout.readline().decode().strip()
     logger.debug(f"Received: {response_line}")
 

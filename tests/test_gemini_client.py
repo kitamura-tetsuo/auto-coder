@@ -10,9 +10,9 @@ from auto_coder.utils import CommandResult
 
 
 class TestGeminiClient:
-    @patch("src.auto_coder.gemini_client.logger")
+    @patch("auto_coder.gemini_client.logger")
     @patch("subprocess.run")
-    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    @patch("auto_coder.gemini_client.CommandExecutor.run_command")
     def test_llm_invocation_warn_log(self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key):
         """Verify that LLM invocation emits a warning log before running CLI."""
         mock_run.return_value.returncode = 0
@@ -25,7 +25,7 @@ class TestGeminiClient:
 
     """Test cases for GeminiClient class."""
 
-    @patch("src.auto_coder.gemini_client.genai")
+    @patch("auto_coder.gemini_client.genai")
     def test_init(self, mock_genai, mock_gemini_api_key):
         """Test GeminiClient initialization."""
         mock_model = Mock()
@@ -38,19 +38,19 @@ class TestGeminiClient:
         mock_genai.configure.assert_called_once_with(api_key=mock_gemini_api_key)
         mock_genai.GenerativeModel.assert_called_once_with("test-model")
 
-    @patch("src.auto_coder.gemini_client.genai")
+    @patch("auto_coder.gemini_client.genai")
     def test_analyze_issue_removed(self, mock_genai, mock_gemini_api_key):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
         assert not hasattr(client, "analyze_issue")
 
-    @patch("src.auto_coder.gemini_client.genai")
+    @patch("auto_coder.gemini_client.genai")
     def test_analyze_pull_request_removed(self, mock_genai, mock_gemini_api_key, sample_pr_data):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)
         assert not hasattr(client, "analyze_pull_request")
 
-    @patch("src.auto_coder.gemini_client.genai")
+    @patch("auto_coder.gemini_client.genai")
     def test_suggest_features_success(self, mock_genai, mock_gemini_api_key):
         """Test successful feature suggestions."""
         # Setup
@@ -86,7 +86,7 @@ class TestGeminiClient:
         assert "security" in result[0]["labels"]
         mock_model.generate_content.assert_called_once()
 
-    @patch("src.auto_coder.gemini_client.genai")
+    @patch("auto_coder.gemini_client.genai")
     def test_generate_solution_removed(self, mock_genai, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
         """Ensure generation helper is removed per LLM execution policy."""
         client = GeminiClient(mock_gemini_api_key)

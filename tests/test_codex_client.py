@@ -21,7 +21,7 @@ class TestCodexClient:
         assert client.model_name == "codex"
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("auto_coder.codex_client.CommandExecutor.run_command")
     def test_llm_invocation_warn_log(self, mock_run_command, mock_run):
         """Verify warning is logged when invoking codex CLI."""
         mock_run.return_value.returncode = 0
@@ -33,7 +33,7 @@ class TestCodexClient:
         # The warn path is at least executed without error.
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_exec_success(self, mock_run_command, mock_run):
         """codex exec should stream and aggregate output successfully."""
         mock_run.return_value.returncode = 0
@@ -44,7 +44,7 @@ class TestCodexClient:
         assert "line1" in output and "line2" in output
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_exec_failure(self, mock_run_command, mock_run):
         """When codex exec returns non-zero, raise RuntimeError."""
         mock_run.return_value.returncode = 0

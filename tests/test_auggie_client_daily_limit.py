@@ -13,10 +13,10 @@ def _patch_subprocess(monkeypatch, popen_class):
     """Patch subprocess interactions used by AuggieClient for tests."""
 
     monkeypatch.setattr(
-        "src.auto_coder.auggie_client.subprocess.run",
+        "auto_coder.auggie_client.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
-    monkeypatch.setattr("src.auto_coder.auggie_client.subprocess.Popen", popen_class)
+    monkeypatch.setattr("auto_coder.auggie_client.subprocess.Popen", popen_class)
 
 
 class RecordingPopen:

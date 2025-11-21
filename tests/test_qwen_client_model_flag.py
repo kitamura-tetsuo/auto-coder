@@ -5,7 +5,7 @@ from auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_run_prompt_includes_model_flag_when_model_set(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "", "", 0)

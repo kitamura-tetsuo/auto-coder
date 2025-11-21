@@ -22,7 +22,7 @@ def temp_home(tmp_path, monkeypatch):
 @pytest.fixture
 def mock_setup_mcp():
     """Mock the setup-mcp command."""
-    with patch("src.auto_coder.cli_commands_graphrag.run_graphrag_setup_mcp_programmatically") as mock:
+    with patch("auto_coder.cli_commands_graphrag.run_graphrag_setup_mcp_programmatically") as mock:
         mock.return_value = True
         yield mock
 
@@ -34,7 +34,7 @@ def test_auto_setup_when_mcp_dir_missing(temp_home, mock_setup_mcp):
     assert not mcp_dir.exists()
 
     # Mock check_graphrag_mcp_for_backend to return False initially, then True after setup
-    with patch("src.auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
+    with patch("auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
         mock_check.return_value = False
 
         # Call ensure_graphrag_mcp_configured with auto_setup=True
@@ -54,11 +54,11 @@ def test_no_auto_setup_when_disabled(temp_home, mock_setup_mcp):
     assert not mcp_dir.exists()
 
     # Mock check_graphrag_mcp_for_backend to return False
-    with patch("src.auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
+    with patch("auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
         mock_check.return_value = False
 
         # Mock add_graphrag_mcp_config to return False
-        with patch("src.auto_coder.mcp_checker.add_graphrag_mcp_config") as mock_add:
+        with patch("auto_coder.mcp_checker.add_graphrag_mcp_config") as mock_add:
             mock_add.return_value = False
 
             # Call ensure_graphrag_mcp_configured with auto_setup=False
@@ -78,7 +78,7 @@ def test_skip_auto_setup_when_mcp_dir_exists(temp_home, mock_setup_mcp):
     mcp_dir.mkdir()
 
     # Mock check_graphrag_mcp_for_backend to return True
-    with patch("src.auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
+    with patch("auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
         mock_check.return_value = True
 
         # Call ensure_graphrag_mcp_configured
@@ -105,7 +105,7 @@ def test_auto_setup_for_different_backends(temp_home, mock_setup_mcp):
             shutil.rmtree(mcp_dir)
 
         # Mock check_graphrag_mcp_for_backend to return False
-        with patch("src.auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
+        with patch("auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
             mock_check.return_value = False
 
             # Call ensure_graphrag_mcp_configured
@@ -126,7 +126,7 @@ def test_auto_setup_failure_handling(temp_home, mock_setup_mcp):
     assert not mcp_dir.exists()
 
     # Mock check_graphrag_mcp_for_backend to return False
-    with patch("src.auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
+    with patch("auto_coder.mcp_checker.check_graphrag_mcp_for_backend") as mock_check:
         mock_check.return_value = False
 
         # Call ensure_graphrag_mcp_configured

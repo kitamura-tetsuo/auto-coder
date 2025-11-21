@@ -18,7 +18,7 @@ class TestQwenClient:
         assert client.model_name.startswith("qwen")
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    @patch("auto_coder.qwen_client.CommandExecutor.run_command")
     def test_run_prompt_success(self, mock_run_command, mock_run):
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "ok line 1\nok line 2\n", "", 0)
@@ -32,7 +32,7 @@ class TestQwenClient:
         assert args[0] == "qwen"
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    @patch("auto_coder.qwen_client.CommandExecutor.run_command")
     def test_run_prompt_failure_nonzero(self, mock_run_command, mock_run):
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(False, "", "error", 2)

@@ -18,7 +18,7 @@ def mock_executor():
 def docker_manager(mock_executor):
     """Create a GraphRAGDockerManager instance for testing."""
     with mock.patch(
-        "src.auto_coder.graphrag_docker_manager.CommandExecutor",
+        "auto_coder.graphrag_docker_manager.CommandExecutor",
         return_value=mock_executor,
     ):
         with mock.patch.object(
@@ -41,7 +41,7 @@ def mock_subprocess_health():
 
 def test_init_default_compose_file():
     """Test initialization with default compose file."""
-    with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+    with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
         with mock.patch.object(
             GraphRAGDockerManager,
             "_detect_docker_compose_command",
@@ -54,7 +54,7 @@ def test_init_default_compose_file():
 def test_init_custom_compose_file():
     """Test initialization with custom compose file."""
     custom_path = "/custom/path/docker-compose.yml"
-    with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+    with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
         with mock.patch.object(
             GraphRAGDockerManager,
             "_detect_docker_compose_command",
@@ -262,7 +262,7 @@ def test_detect_docker_compose_command_docker_compose():
         # Mock successful 'docker compose version'
         mock_run.return_value = mock.MagicMock(returncode=0)
 
-        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+        with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
             manager = GraphRAGDockerManager()
             assert manager._docker_compose_cmd == ["docker", "compose"]
 
@@ -273,7 +273,7 @@ def test_detect_docker_compose_command_docker_compose_legacy():
         # Both docker compose and docker-compose fail
         mock_run.return_value = mock.MagicMock(returncode=1)
 
-        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+        with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
                 match="Neither 'docker compose' nor 'docker-compose' is available",
@@ -287,7 +287,7 @@ def test_detect_docker_compose_command_not_found():
         # docker compose command fails
         mock_run.return_value = mock.MagicMock(returncode=1)
 
-        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+        with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
                 match="Neither 'docker compose' nor 'docker-compose' is available",
@@ -301,7 +301,7 @@ def test_detect_docker_compose_command_timeout():
         # Simulate timeout
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="docker compose version", timeout=5)
 
-        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+        with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
                 match="Neither 'docker compose' nor 'docker-compose' is available",
@@ -315,7 +315,7 @@ def test_detect_docker_compose_command_exception():
         # Simulate command not found
         mock_run.side_effect = FileNotFoundError("docker: command not found")
 
-        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+        with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
             with pytest.raises(
                 RuntimeError,
                 match="Neither 'docker compose' nor 'docker-compose' is available",
@@ -405,7 +405,7 @@ def test_run_docker_compose_no_retry_when_disabled(docker_manager, mock_executor
 
 def test_get_current_container_id_in_container(docker_manager):
     """Test getting container ID when running in container."""
-    with mock.patch("src.auto_coder.graphrag_docker_manager.is_running_in_container", return_value=True):
+    with mock.patch("auto_coder.graphrag_docker_manager.is_running_in_container", return_value=True):
         with mock.patch("builtins.open", mock.mock_open(read_data="abc123def456\n")):
             container_id = docker_manager._get_current_container_id()
 
@@ -414,7 +414,7 @@ def test_get_current_container_id_in_container(docker_manager):
 
 def test_get_current_container_id_not_in_container(docker_manager):
     """Test getting container ID when not running in container."""
-    with mock.patch("src.auto_coder.graphrag_docker_manager.is_running_in_container", return_value=False):
+    with mock.patch("auto_coder.graphrag_docker_manager.is_running_in_container", return_value=False):
         container_id = docker_manager._get_current_container_id()
 
     assert container_id is None
@@ -574,7 +574,7 @@ def test_get_compose_file_from_package_uses_home_directory(monkeypatch):
     expected_path = str(fake_home / ".auto-coder" / "graphrag" / "docker-compose.graphrag.yml")
 
     with mock.patch.object(GraphRAGDockerManager, "_get_compose_file_from_package", return_value=expected_path):
-        with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
+        with mock.patch("auto_coder.graphrag_docker_manager.CommandExecutor"):
             with mock.patch.object(
                 GraphRAGDockerManager,
                 "_detect_docker_compose_command",

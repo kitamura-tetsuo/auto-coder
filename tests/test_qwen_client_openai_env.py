@@ -5,7 +5,7 @@ from auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_env_injection_for_openai(mock_run_command, mock_run):
     # Pretend codex --version works
     mock_run.return_value.returncode = 0

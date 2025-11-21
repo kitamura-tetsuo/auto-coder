@@ -113,10 +113,10 @@ class TestIssueProcessorLabelIntegration:
         issue_data = {"number": 123, "title": "Test Issue", "labels": ["bug"], "body": ""}
 
         # Test that LabelManager is called during issue processing
-        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        with patch("auto_coder.issue_processor.cmd") as mock_cmd:
             mock_cmd.run_command.return_value = _cmd_result(success=True)
 
-            with patch("src.auto_coder.issue_processor.LabelManager") as MockLabelManager:
+            with patch("auto_coder.issue_processor.LabelManager") as MockLabelManager:
                 mock_label_manager_instance = Mock()
                 mock_label_manager_instance.__enter__ = Mock(return_value=True)
                 mock_label_manager_instance.__exit__ = Mock(return_value=None)
@@ -298,12 +298,12 @@ class TestIssueProcessorLabelIntegration:
         issue_number = 123
         issue_data = {"number": issue_number, "title": "Test", "labels": ["bug"], "body": ""}
 
-        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        with patch("auto_coder.issue_processor.cmd") as mock_cmd:
             mock_cmd.run_command.return_value = _cmd_result(success=True)
 
-            with patch("src.auto_coder.issue_processor.get_llm_backend_manager"):
+            with patch("auto_coder.issue_processor.get_llm_backend_manager"):
                 # Test with LabelManager context manager
-                with patch("src.auto_coder.issue_processor.LabelManager") as MockLabelManager:
+                with patch("auto_coder.issue_processor.LabelManager") as MockLabelManager:
                     mock_label_manager_instance = Mock()
                     mock_label_manager_instance.__enter__ = Mock(return_value=True)
                     mock_label_manager_instance.__exit__ = Mock(return_value=None)
@@ -412,7 +412,7 @@ class TestIssueProcessorLabelIntegration:
         repo_name = "owner/repo"
         issue_data = {"number": 123, "title": "Test Issue", "labels": ["bug", "jules"], "body": ""}
 
-        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        with patch("auto_coder.issue_processor.cmd") as mock_cmd:
             mock_cmd.run_command.return_value = _cmd_result(success=True)
 
             config = AutomationConfig()
@@ -435,7 +435,7 @@ class TestIssueProcessorLabelIntegration:
         # Make GitHub client raise an exception
         mock_github_client_with_labels.get_open_sub_issues.side_effect = Exception("GitHub API error")
 
-        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+        with patch("auto_coder.issue_processor.cmd") as mock_cmd:
             mock_cmd.run_command.return_value = _cmd_result(success=True)
 
             config = AutomationConfig()

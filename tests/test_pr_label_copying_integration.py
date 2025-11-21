@@ -211,12 +211,12 @@ class TestPRLabelCopyingIntegration:
         mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
 
         # Track label operations by patching at call site
-        with patch("src.auto_coder.issue_processor.resolve_pr_labels_with_priority") as mock_resolve:
+        with patch("auto_coder.issue_processor.resolve_pr_labels_with_priority") as mock_resolve:
             # Return semantic labels to be copied
             mock_resolve.return_value = ["urgent"]
 
             # Mock gh pr create
-            with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+            with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
                 mock_gh_logger_instance = Mock()
                 mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
                 mock_gh_logger.return_value = mock_gh_logger_instance
@@ -272,7 +272,7 @@ class TestPRLabelCopyingIntegration:
         mock_github_client_for_pr.add_labels = track_labels
 
         # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -312,7 +312,7 @@ class TestPRLabelCopyingIntegration:
         mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -353,7 +353,7 @@ class TestPRLabelCopyingIntegration:
         mock_github_client_for_pr.add_labels.side_effect = Exception("GitHub API error")
 
         # Mock gh pr create
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -460,11 +460,11 @@ class TestPRLabelCopyingIntegration:
         mock_github_client_for_pr.get_pr_closing_issues.return_value = [issue_number]
 
         # Track label resolution
-        with patch("src.auto_coder.issue_processor.resolve_pr_labels_with_priority") as mock_resolve:
+        with patch("auto_coder.issue_processor.resolve_pr_labels_with_priority") as mock_resolve:
             mock_resolve.return_value = ["urgent"]  # Simulate label resolution
 
             # Mock gh pr create
-            with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+            with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
                 mock_gh_logger_instance = Mock()
                 mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
                 mock_gh_logger.return_value = mock_gh_logger_instance
