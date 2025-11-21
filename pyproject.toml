@@ -48,6 +48,7 @@ test = [
     "pytest-cov>=4.0.0",
     "pytest-mock>=3.10.0",
     "pytest-timeout>=2.1.0",
+    "types-requests>=2.32.0.20241016",
 ]
 dev = [
     "black>=24.0.0",
@@ -59,6 +60,7 @@ dev = [
     "pytest>=9.0.0",
     "pytest-timeout>=2.1.0",
     "types-toml>=0.10.8.20240310",
+    "types-requests>=2.32.0.20241016",
 ]
 
 [tool.setuptools.packages.find]

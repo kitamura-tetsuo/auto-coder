@@ -1,16 +1,18 @@
 from unittest.mock import patch
 
+from src.auto_coder.backend_provider_manager import BackendProviderManager
 from src.auto_coder.qwen_client import QwenClient
 from src.auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_run_qwen_cli_alias_delegates_and_returns_output(mock_run_command, mock_run):
+def test_run_qwen_cli_alias_delegates_and_returns_output(mock_run_command, mock_run, tmp_path):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "alias line 1\nalias line 2\n", "", 0)
 
-    client = QwenClient(model_name="qwen3-coder-plus")
+    manager = BackendProviderManager(str(tmp_path / "provider_metadata.toml"))
+    client = QwenClient(model_name="qwen3-coder-plus", provider_manager=manager)
     out = client._run_qwen_cli("probe")
 
     assert "alias line 1" in out and "alias line 2" in out

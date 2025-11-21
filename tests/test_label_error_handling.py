@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
-import requests
+import requests  # type: ignore[import-untyped]
 import yaml
 
 from src.auto_coder.prompt_loader import (

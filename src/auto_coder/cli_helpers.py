@@ -12,6 +12,7 @@ import toml
 from .auggie_client import AuggieClient
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager
+from .backend_provider_manager import BackendProviderManager
 from .claude_client import ClaudeClient
 from .codex_client import CodexClient
 from .codex_mcp_client import CodexMCPClient
@@ -382,6 +383,7 @@ def build_backend_manager(
     enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True).
     """
     config = get_llm_config()
+    provider_manager = BackendProviderManager(llm_config=config)
 
     # Get API keys and base URLs from configuration
     gemini_config = config.get_backend_config("gemini")
@@ -413,6 +415,7 @@ def build_backend_manager(
             openai_base_url=effective_openai_base_url,
             use_env_vars=True,
             preserve_existing_env=False,
+            provider_manager=provider_manager,
         ),
         "auggie": lambda: AuggieClient(model_name=_am()),
         "claude": lambda: ClaudeClient(model_name=_cm()),
@@ -430,6 +433,7 @@ def build_backend_manager(
         default_client=default_client,
         factories=selected_factories,
         order=selected_backends,
+        provider_manager=provider_manager,
     )
 
 

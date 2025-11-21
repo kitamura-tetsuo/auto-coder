@@ -4,37 +4,43 @@ from unittest.mock import patch
 
 import pytest
 
+from src.auto_coder.backend_provider_manager import BackendProviderManager
 from src.auto_coder.exceptions import AutoCoderUsageLimitError
 from src.auto_coder.qwen_client import QwenClient
 from src.auto_coder.utils import CommandResult
-from tests.support.env import patch_environment
+
+
+def make_provider_manager(tmp_path, body: str) -> BackendProviderManager:
+    metadata_path = tmp_path / "provider_metadata.toml"
+    metadata_path.write_text(body.strip() + "\n", encoding="utf-8")
+    return BackendProviderManager(str(metadata_path))
 
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
-    config_path = tmp_path / "qwen-providers.toml"
-    config_path.write_text(
+    manager = make_provider_manager(
+        tmp_path,
         """
-        [[qwen.providers]]
-        name = "modelstudio"
-        api_key = "dashscope-xyz"
+        [qwen.modelstudio]
+        command = "codex"
+        description = "ModelStudio"
+        OPENAI_API_KEY = "dashscope-xyz"
+        OPENAI_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-        [[qwen.providers]]
-        name = "openrouter"
-        api_key = "openrouter-123"
-        """.strip()
-        + "\n",
-        encoding="utf-8",
+        [qwen.openrouter]
+        command = "codex"
+        description = "OpenRouter"
+        OPENAI_API_KEY = "openrouter-123"
+        OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+        """,
     )
 
-    env = {"AUTO_CODER_QWEN_CONFIG": str(config_path)}
-    with patch_environment(env):
-        mock_run_command.return_value = CommandResult(True, "ModelStudio OK", "", 0)
+    mock_run_command.return_value = CommandResult(True, "ModelStudio OK", "", 0)
 
-        client = QwenClient(model_name="qwen3-coder-plus")
-        output = client._run_qwen_cli("hello")
+    client = QwenClient(model_name="qwen3-coder-plus", provider_manager=manager)
+    output = client._run_qwen_cli("hello")
 
     assert output == "ModelStudio OK"
     assert mock_run_command.call_count == 1
@@ -54,8 +60,7 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
     assert first_env["OPENAI_API_KEY"] == "dashscope-xyz"
     assert first_env["OPENAI_BASE_URL"] == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-    # After a successful call the active provider index should remain at zero.
-    assert client._active_provider_index == 0
+    assert manager.get_last_used_provider_name("qwen") == "modelstudio"
     assert client.model_name == "qwen3-coder-plus"
 
 
@@ -63,31 +68,31 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
-    config_path = tmp_path / "qwen-providers.toml"
-    config_path.write_text(
+    manager = make_provider_manager(
+        tmp_path,
         """
-        [[qwen.providers]]
-        name = "modelstudio"
-        api_key = "dashscope-xyz"
+        [qwen.modelstudio]
+        command = "codex"
+        description = "ModelStudio"
+        OPENAI_API_KEY = "dashscope-xyz"
+        OPENAI_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-        [[qwen.providers]]
-        name = "openrouter"
-        api_key = "openrouter-123"
-        model = "qwen/qwen3-coder:free"
-        """.strip()
-        + "\n",
-        encoding="utf-8",
+        [qwen.openrouter]
+        command = "codex"
+        description = "OpenRouter"
+        OPENAI_API_KEY = "openrouter-123"
+        OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+        OPENAI_MODEL = "qwen/qwen3-coder:free"
+        """,
     )
 
-    env = {"AUTO_CODER_QWEN_CONFIG": str(config_path)}
-    with patch_environment(env):
-        mock_run_command.side_effect = [
-            CommandResult(False, "Rate limit", "", 1),
-            CommandResult(True, "OpenRouter OK", "", 0),
-        ]
+    mock_run_command.side_effect = [
+        CommandResult(False, "Rate limit", "", 1),
+        CommandResult(True, "OpenRouter OK", "", 0),
+    ]
 
-        client = QwenClient(model_name="qwen3-coder-plus")
-        output = client._run_qwen_cli("hello")
+    client = QwenClient(model_name="qwen3-coder-plus", provider_manager=manager)
+    output = client._run_qwen_cli("hello")
 
     assert output == "OpenRouter OK"
     assert mock_run_command.call_count == 2
@@ -108,37 +113,38 @@ def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path
     assert second_env["OPENAI_BASE_URL"] == "https://openrouter.ai/api/v1"
 
     assert client.model_name == "qwen/qwen3-coder:free"
+    assert manager.get_last_used_provider_name("qwen") == "openrouter"
 
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
-    config_path = tmp_path / "qwen-providers.toml"
-    config_path.write_text(
+    manager = make_provider_manager(
+        tmp_path,
         """
-        [[qwen.providers]]
-        name = "modelstudio"
-        api_key = "dashscope-xyz"
+        [qwen.modelstudio]
+        command = "codex"
+        description = "ModelStudio"
+        OPENAI_API_KEY = "dashscope-xyz"
+        OPENAI_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-        [[qwen.providers]]
-        name = "openrouter"
-        api_key = "openrouter-123"
-        """.strip()
-        + "\n",
-        encoding="utf-8",
+        [qwen.openrouter]
+        command = "codex"
+        description = "OpenRouter"
+        OPENAI_API_KEY = "openrouter-123"
+        OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+        """,
     )
 
-    env = {"AUTO_CODER_QWEN_CONFIG": str(config_path)}
-    with patch_environment(env):
-        mock_run_command.side_effect = [
-            CommandResult(False, "Rate limit", "", 1),
-            CommandResult(False, "Rate limit", "", 1),
-            CommandResult(True, "OAuth OK", "", 0),
-        ]
+    mock_run_command.side_effect = [
+        CommandResult(False, "Rate limit", "", 1),
+        CommandResult(False, "Rate limit", "", 1),
+        CommandResult(True, "OAuth OK", "", 0),
+    ]
 
-        client = QwenClient(model_name="qwen3-coder-plus")
-        output = client._run_qwen_cli("hello")
+    client = QwenClient(model_name="qwen3-coder-plus", provider_manager=manager)
+    output = client._run_qwen_cli("hello")
 
     assert output == "OAuth OK"
     assert mock_run_command.call_count == 3
@@ -160,39 +166,39 @@ def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_ru
     assert first_env["OPENAI_API_KEY"] == "dashscope-xyz"
     assert second_env["OPENAI_API_KEY"] == "openrouter-123"
     assert "OPENAI_API_KEY" not in third_env
-    assert client._active_provider_index == 2
+    assert manager.get_last_used_provider_name("qwen") == "qwen-oauth"
 
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_all_limits_raise(mock_run_command, mock_run, tmp_path) -> None:
     mock_run.return_value.returncode = 0
-    config_path = tmp_path / "qwen-providers.toml"
-    config_path.write_text(
+    manager = make_provider_manager(
+        tmp_path,
         """
-        [[qwen.providers]]
-        name = "modelstudio"
-        api_key = "dashscope-xyz"
+        [qwen.modelstudio]
+        command = "codex"
+        description = "ModelStudio"
+        OPENAI_API_KEY = "dashscope-xyz"
+        OPENAI_BASE_URL = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
 
-        [[qwen.providers]]
-        name = "openrouter"
-        api_key = "openrouter-123"
-        """.strip()
-        + "\n",
-        encoding="utf-8",
+        [qwen.openrouter]
+        command = "codex"
+        description = "OpenRouter"
+        OPENAI_API_KEY = "openrouter-123"
+        OPENAI_BASE_URL = "https://openrouter.ai/api/v1"
+        """,
     )
 
-    env = {"AUTO_CODER_QWEN_CONFIG": str(config_path)}
-    with patch_environment(env):
-        mock_run_command.side_effect = [
-            CommandResult(False, "Rate limit", "", 1),
-            CommandResult(False, "Rate limit", "", 1),
-            CommandResult(False, "Rate limit", "", 1),
-        ]
+    mock_run_command.side_effect = [
+        CommandResult(False, "Rate limit", "", 1),
+        CommandResult(False, "Rate limit", "", 1),
+        CommandResult(False, "Rate limit", "", 1),
+    ]
 
-        client = QwenClient(model_name="qwen3-coder-plus")
-        with pytest.raises(AutoCoderUsageLimitError):
-            client._run_qwen_cli("hello")
+    client = QwenClient(model_name="qwen3-coder-plus", provider_manager=manager)
+    with pytest.raises(AutoCoderUsageLimitError):
+        client._run_qwen_cli("hello")
 
     # Final call should come from OAuth with no API key present.
     final_env = mock_run_command.call_args_list[-1].kwargs["env"]

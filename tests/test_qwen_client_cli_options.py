@@ -1,22 +1,25 @@
 from unittest.mock import patch
 
+from src.auto_coder.backend_provider_manager import BackendProviderManager
 from src.auto_coder.qwen_client import QwenClient
 from src.auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
+def test_qwen_client_cli_options_mode(mock_run_command, mock_run, tmp_path):
     """Test that codex CLI is used when API key and base URL are provided."""
     # Pretend codex --version works
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "done\n", "", 0)
 
+    manager = BackendProviderManager(str(tmp_path / "provider_metadata.toml"))
     client = QwenClient(
         model_name="qwen3-coder-plus",
         openai_api_key="sk-test-123",
         openai_base_url="https://api.example.com",
         use_env_vars=False,  # Use CLI options instead of env vars
+        provider_manager=manager,
     )
 
     _ = client._run_qwen_cli("probe")
@@ -41,18 +44,20 @@ def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_preserve_env_mode(mock_run_command, mock_run):
+def test_qwen_client_preserve_env_mode(mock_run_command, mock_run, tmp_path):
     """Test that codex CLI is used with environment variables when API key is provided."""
     # Pretend codex --version works
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "done\n", "", 0)
 
+    manager = BackendProviderManager(str(tmp_path / "provider_metadata.toml"))
     client = QwenClient(
         model_name="qwen3-coder-plus",
         openai_api_key="sk-test-123",
         openai_base_url="https://api.example.com",
         use_env_vars=True,
         preserve_existing_env=True,  # Preserve existing env vars
+        provider_manager=manager,
     )
 
     _ = client._run_qwen_cli("probe")
@@ -74,16 +79,18 @@ def test_qwen_client_preserve_env_mode(mock_run_command, mock_run):
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_default_env_mode(mock_run_command, mock_run):
+def test_qwen_client_default_env_mode(mock_run_command, mock_run, tmp_path):
     """Test default behavior with codex CLI when API key is provided."""
     # Pretend codex --version works
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "done\n", "", 0)
 
+    manager = BackendProviderManager(str(tmp_path / "provider_metadata.toml"))
     client = QwenClient(
         model_name="qwen3-coder-plus",
         openai_api_key="sk-test-123",
         openai_base_url="https://api.example.com",
+        provider_manager=manager,
         # use_env_vars=True (default)
         # preserve_existing_env=False (default)
     )

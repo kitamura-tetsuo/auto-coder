@@ -16,9 +16,9 @@ from typing import Any, Dict, List, Optional, Union
 from unittest.mock import MagicMock, Mock
 
 try:
-    import pytest
-except ImportError:
-    pytest = None
+    import pytest  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    pytest = None  # type: ignore[assignment]
 
 
 class GitHubClientMockFactory:
@@ -53,7 +53,7 @@ class GitHubClientMockFactory:
         """Create a mock client that handles label aliases."""
         mock_client = GitHubClientMockFactory.create_basic_mock()
 
-        def has_label_with_aliases(issue_num: int, label: str, all_labels: List[str] = None):
+        def has_label_with_aliases(issue_num: int, label: str, all_labels: Optional[List[str]] = None):
             all_labels = all_labels or []
             # Check direct match
             if label in all_labels:
@@ -68,7 +68,7 @@ class GitHubClientMockFactory:
         return mock_client
 
     @staticmethod
-    def create_with_priority_labels(priorities: List[str], mappings: Dict[str, str], labels: List[str] = None):
+    def create_with_priority_labels(priorities: List[str], mappings: Dict[str, str], labels: Optional[List[str]] = None):
         """Create a mock client that resolves label priorities."""
         mock_client = GitHubClientMockFactory.create_basic_mock()
         labels = labels or []
@@ -130,7 +130,7 @@ class FileSystemMockFactory:
         return config_file
 
     @staticmethod
-    def create_prompt_file(tmp_path, content: str = None):
+    def create_prompt_file(tmp_path, content: Optional[str] = None):
         """Create a mock prompt file."""
         if content is None:
             content = """
@@ -215,10 +215,10 @@ class ConfigObjectMockFactory:
 
     @staticmethod
     def create_full_config(
-        label_mappings: Dict[str, str] = None,
-        label_priorities: List[str] = None,
-        pr_label_mappings: Dict[str, List[str]] = None,
-        pr_label_priorities: List[str] = None,
+        label_mappings: Optional[Dict[str, str]] = None,
+        label_priorities: Optional[List[str]] = None,
+        pr_label_mappings: Optional[Dict[str, List[str]]] = None,
+        pr_label_priorities: Optional[List[str]] = None,
     ):
         """Create a full mock config with all options."""
         if label_mappings is None:
@@ -273,9 +273,9 @@ class ConfigObjectMockFactory:
 class MockLabelManager:
     """Mock label manager for testing label operations."""
 
-    def __init__(self, labels: List[str] = None):
+    def __init__(self, labels: Optional[List[str]] = None):
         self.labels = labels or []
-        self.label_history = []
+        self.label_history: List[tuple[str, str]] = []
 
     def add_label(self, label: str):
         """Add a label."""
@@ -301,20 +301,24 @@ class MockLabelManager:
 class MockPromptLoader:
     """Mock prompt loader for testing."""
 
-    def __init__(self, prompts: Dict[str, str] = None):
+    def __init__(self, prompts: Optional[Dict[str, str]] = None):
         self.prompts = prompts or {
             "issue.action": "Default issue action",
             "issue.bugfix": "Bug fix prompt",
             "issue.feature": "Feature prompt",
         }
 
-    def load_prompts(self, path: Path = None):
+    def load_prompts(self, path: Optional[Path] = None):
         """Load prompts from a file."""
         return self.prompts
 
-    def get_prompt(self, key: str, default: str = None) -> str:
+    def get_prompt(self, key: str, default: Optional[str] = None) -> str:
         """Get a prompt by key."""
-        return self.prompts.get(key, default)
+        if key in self.prompts:
+            return self.prompts[key]
+        if default is not None:
+            return default
+        return ""
 
 
 # Pytest fixtures for mock factories

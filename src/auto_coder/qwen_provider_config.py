@@ -1,4 +1,8 @@
-"""Helpers for loading Qwen provider fallback configuration."""
+"""Helpers for loading legacy Qwen provider configuration files.
+
+This module is retained for tooling that generates provider metadata definitions.
+Runtime provider rotation now uses BackendProviderManager instead of this module.
+"""
 
 from __future__ import annotations
 

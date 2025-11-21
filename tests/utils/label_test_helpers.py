@@ -17,18 +17,18 @@ from typing import Any, Callable, Dict, List, Optional
 import yaml
 
 try:
-    import pytest
-except ImportError:
-    pytest = None
+    import pytest  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    pytest = None  # type: ignore[assignment]
 
 
 def create_test_issue(
     number: int = 1,
     title: str = "Test Issue",
-    labels: List[str] = None,
+    labels: Optional[List[str]] = None,
     body: str = "",
     state: str = "open",
-    assignees: List[str] = None,
+    assignees: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Create a test issue dictionary with specified labels.
 
@@ -67,7 +67,7 @@ def create_test_issue(
 def create_test_pr(
     number: int = 1,
     title: str = "Test PR",
-    labels: List[str] = None,
+    labels: Optional[List[str]] = None,
     body: str = "",
     state: str = "open",
     mergeable: bool = True,
@@ -162,7 +162,7 @@ def assert_prompt_not_selected(prompt: str, unexpected_content: str):
     assert unexpected_content not in prompt, f"Did not expect '{unexpected_content}' in prompt"
 
 
-def assert_config_validation(config: Dict, is_valid: bool, error_message: str = None):
+def assert_config_validation(config: Dict, is_valid: bool, error_message: Optional[str] = None):
     """Assert that a configuration is valid or invalid.
 
     Args:
@@ -327,7 +327,7 @@ def extract_labels_from_issue(issue: Dict[str, Any]) -> List[str]:
     return [label["name"] for label in issue.get("labels", [])]
 
 
-def create_temp_prompt_file(content: str = None, suffix: str = ".yaml") -> Path:
+def create_temp_prompt_file(content: Optional[str] = None, suffix: str = ".yaml") -> Path:
     """Create a temporary prompt file for testing.
 
     Args:

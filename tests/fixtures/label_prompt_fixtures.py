@@ -12,9 +12,9 @@ Test Data Structure:
 from typing import Any, Dict, List
 
 try:
-    import pytest
-except ImportError:
-    pytest = None
+    import pytest  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover
+    pytest = None  # type: ignore[assignment]
 
 
 # Helper to create fixtures

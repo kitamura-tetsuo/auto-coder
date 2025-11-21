@@ -12,6 +12,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
+from typing import Any, Dict
 
 import pytest
 
@@ -164,6 +165,9 @@ def send_jsonrpc_message(process: subprocess.Popen, message: dict) -> dict:
     Returns:
         JSON-RPC response
     """
+    if process.stdin is None or process.stdout is None:
+        raise RuntimeError("MCP process does not expose stdin/stdout pipes")
+
     # Send message
     message_str = json.dumps(message) + "\n"
     logger.debug(f"Sending: {message_str.strip()}")
@@ -177,7 +181,8 @@ def send_jsonrpc_message(process: subprocess.Popen, message: dict) -> dict:
     if not response_line:
         raise RuntimeError("No response from MCP server")
 
-    return json.loads(response_line)
+    response: Dict[str, Any] = json.loads(response_line)
+    return response
 
 
 def test_graphrag_mcp_server_starts(graphrag_server_process):

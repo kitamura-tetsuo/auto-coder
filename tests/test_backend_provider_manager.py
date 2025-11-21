@@ -11,7 +11,9 @@ from src.auto_coder.backend_provider_manager import (
     BackendProviderManager,
     BackendProviderMetadata,
     ProviderMetadata,
+    ProviderOutcome,
 )
+from src.auto_coder.llm_backend_config import LLMBackendConfiguration
 
 
 class TestProviderMetadata:
@@ -394,3 +396,83 @@ class TestBackendProviderManager:
             claude_metadata = manager.get_backend_providers("claude")
             assert len(claude_metadata.providers) == 1
             assert claude_metadata.providers[0].name == "claude-provider"
+
+    def test_get_provider_chain_respects_config_order(self):
+        """Providers should follow llm_config order when specified."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "metadata.toml"
+            metadata = {
+                "qwen": {
+                    "first": {
+                        "command": "codex",
+                        "description": "First provider",
+                    },
+                    "second": {
+                        "command": "codex",
+                        "description": "Second provider",
+                    },
+                }
+            }
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            config = LLMBackendConfiguration()
+            config.backends["qwen"].providers = ["second", "first"]
+            manager = BackendProviderManager(str(metadata_file), llm_config=config)
+
+            chain = manager.get_provider_chain("qwen")
+            assert [provider.name for provider in chain] == ["second", "first"]
+
+    def test_iterate_provider_choices_rotates_on_usage_limit(self):
+        """Rotation should advance when usage limits are reported."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "metadata.toml"
+            metadata = {
+                "qwen": {
+                    "a": {"command": "codex", "description": "A"},
+                    "b": {"command": "codex", "description": "B"},
+                }
+            }
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            config = LLMBackendConfiguration()
+            config.backends["qwen"].providers = ["a", "b"]
+            manager = BackendProviderManager(str(metadata_file), llm_config=config)
+
+            choices = manager.iterate_provider_choices("qwen")
+            assert choices[0].provider.name == "a"
+
+            manager.report_provider_result("qwen", choices[0], ProviderOutcome.USAGE_LIMIT)
+            rotated = manager.iterate_provider_choices("qwen")
+            assert rotated[0].provider.name == "b"
+
+    def test_report_provider_result_tracks_last_used(self):
+        """Successful executions update last-used provider."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "metadata.toml"
+            metadata = {
+                "qwen": {
+                    "alpha": {"command": "codex", "description": "Alpha"},
+                }
+            }
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            config = LLMBackendConfiguration()
+            config.backends["qwen"].providers = ["alpha"]
+            manager = BackendProviderManager(str(metadata_file), llm_config=config)
+
+            choice = manager.iterate_provider_choices("qwen")[0]
+            manager.report_provider_result("qwen", choice, ProviderOutcome.SUCCESS)
+            assert manager.get_last_used_provider_name("qwen") == "alpha"
+
+    def test_get_provider_chain_with_fallback_only(self):
+        """Fallback providers should be returned when metadata is empty."""
+        config = LLMBackendConfiguration()
+        manager = BackendProviderManager(llm_config=config)
+        fallback = [
+            ProviderMetadata(name="fallback", command="qwen", description="Fallback"),
+        ]
+        chain = manager.get_provider_chain("qwen", fallback)
+        assert [provider.name for provider in chain] == ["fallback"]

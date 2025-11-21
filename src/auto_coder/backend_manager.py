@@ -33,6 +33,7 @@ __all__ = [
     "LLMBackendManager",
     "get_message_backend_manager",
     "get_message_backend_and_model",
+    "get_llm_backend_provider",
 ]
 
 
@@ -245,6 +246,16 @@ class BackendManager(LLMBackendManagerBase):
             except Exception:
                 model = None
         return backend, model
+
+    def get_last_provider_name(self) -> Optional[str]:
+        """Return the last successful provider for the active backend."""
+        backend = self._last_backend or self._current_backend_name()
+        if backend:
+            try:
+                return self._provider_manager.get_last_used_provider_name(backend)
+            except Exception:
+                return None
+        return None
 
     # ---------- Compatibility Helpers ----------
     def switch_to_conflict_model(self) -> None:
@@ -684,3 +695,13 @@ def get_llm_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     if manager is None:
         return None, None  # type: ignore[unreachable]
     return manager.get_last_backend_and_model()
+
+
+def get_llm_backend_provider() -> Optional[str]:
+    """
+    Get the provider used for the most recent backend execution.
+    """
+    manager = LLMBackendManager.get_llm_instance()
+    if manager is None:
+        return None  # type: ignore[unreachable]
+    return manager.get_last_provider_name()
