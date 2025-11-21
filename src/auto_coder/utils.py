@@ -149,6 +149,53 @@ class CommandResult:
     returncode: int
 
 
+class TransientEnv:
+    """
+    Context manager for temporarily setting environment variables.
+
+    This context manager applies environment variables for the duration of a block
+    and ensures they are cleaned up afterward, even if an exception occurs.
+
+    Example:
+        with TransientEnv({"MY_VAR": "value"}):
+            # MY_VAR is set in os.environ
+            subprocess.run(["command"])
+        # MY_VAR is removed from os.environ
+
+    Note: This does not restore previous values of existing variables.
+    For safety, we only clean up variables that we set.
+    """
+
+    def __init__(self, env_vars: Dict[str, str]):
+        """Initialize with dict of environment variables to set.
+
+        Args:
+            env_vars: Dictionary of environment variable names to values
+        """
+        self.env_vars = env_vars
+        self._original_values: Dict[str, Optional[str]] = {}
+
+    def __enter__(self) -> None:
+        """Apply environment variables."""
+        # Store original values and set new ones
+        for key, value in self.env_vars.items():
+            # Save original value if it exists
+            self._original_values[key] = os.environ.get(key)
+            # Set new value
+            os.environ[key] = value
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Clean up environment variables."""
+        # Remove variables that didn't exist before
+        for key, original_value in self._original_values.items():
+            if original_value is None:
+                # Variable didn't exist before, remove it
+                os.environ.pop(key, None)
+            else:
+                # Variable existed before, restore it
+                os.environ[key] = original_value
+
+
 class CommandExecutor:
     """Utility class for executing commands with consistent error handling."""
 

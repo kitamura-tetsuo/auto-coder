@@ -522,3 +522,253 @@ def test_backend_manager_without_provider_manager_uses_default():
     # Verify provider_manager property is accessible and returns default manager
     assert mgr.provider_manager is not None
     assert isinstance(mgr.provider_manager, BackendProviderManager)
+
+
+def test_provider_rotation_on_usage_limit():
+    """Test that provider rotation occurs within same backend before switching backends."""
+    calls = []
+
+    def fac_a():
+        return DummyClient("a", "m1", "limit", calls)
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", calls)
+
+    # Manually configure provider manager with providers for backend 'a'
+    import tempfile
+    from pathlib import Path
+
+    import toml
+
+    from src.auto_coder.backend_provider_manager import BackendProviderManager
+
+    tmpdir_obj = tempfile.TemporaryDirectory()
+    tmpdir = tmpdir_obj.name
+    try:
+        metadata_file = Path(tmpdir) / "provider_metadata.toml"
+        metadata = {
+            "a": {
+                "provider1": {
+                    "command": "cmd1",
+                    "description": "Provider 1",
+                },
+                "provider2": {
+                    "command": "cmd2",
+                    "description": "Provider 2",
+                },
+            }
+        }
+
+        with open(metadata_file, "w") as f:
+            toml.dump(metadata, f)
+
+        provider_mgr = BackendProviderManager(str(metadata_file))
+
+        # Get initial client for default backend
+        a_client = fac_a()
+
+        # Initialize BackendManager with custom provider manager
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=a_client,
+            factories={"a": fac_a, "b": fac_b},
+            order=["a", "b"],
+            provider_manager=provider_mgr,
+        )
+
+        # Initialize the first provider before execution
+        # This simulates what would happen when providers are first configured
+        mgr._switch_to_next_provider("a")
+
+        # Execute - should try provider1 (limit), then provider2 (limit), then switch to backend b (ok)
+        out = mgr._run_llm_cli("P")
+
+        # Should succeed on backend b
+        assert out == "b:P"
+        # Should have tried: a with provider1, a with provider2, then b
+        assert calls == ["a", "a", "b"]
+    finally:
+        tmpdir_obj.cleanup()
+
+
+def test_get_last_backend_provider_and_model():
+    """Test that get_last_backend_provider_and_model returns provider information."""
+    calls = []
+
+    a_client = DummyClient("a", "m1", "ok", calls)
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", calls)
+
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a},
+        order=["a"],
+    )
+
+    # Initially, no provider
+    backend, provider, model = mgr.get_last_backend_provider_and_model()
+    assert backend == "a"
+    assert provider is None
+    assert model == "m1"
+
+    # Manually set provider
+    mgr._last_provider = "test_provider"
+    backend, provider, model = mgr.get_last_backend_provider_and_model()
+    assert backend == "a"
+    assert provider == "test_provider"
+    assert model == "m1"
+
+
+def test_backend_manager_provider_state_tracking():
+    """Test that BackendManager correctly tracks current provider per backend."""
+    calls = []
+
+    a_client = DummyClient("a", "m1", "ok", calls)
+
+    def fac_a():
+        return DummyClient("a", "m1", "ok", calls)
+
+    # Create mock provider manager
+    from src.auto_coder.backend_provider_manager import BackendProviderManager, ProviderMetadata
+
+    class MockProviderManager:
+        def __init__(self):
+            self.providers = {
+                "a": [
+                    ProviderMetadata(name="p1", command="cmd1"),
+                    ProviderMetadata(name="p2", command="cmd2"),
+                ]
+            }
+            self.current_index = {"a": 0}
+
+        def has_providers(self, backend_name):
+            return backend_name in self.providers
+
+        def get_next_provider(self, backend_name):
+            if backend_name not in self.providers or not self.providers[backend_name]:
+                return None
+            idx = self.current_index.get(backend_name, 0)
+            provider = self.providers[backend_name][idx]
+            self.current_index[backend_name] = (idx + 1) % len(self.providers[backend_name])
+            return provider
+
+    mock_provider_mgr = MockProviderManager()
+
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a},
+        order=["a"],
+        provider_manager=mock_provider_mgr,  # type: ignore
+    )
+
+    # Get current provider (should be None initially)
+    provider = mgr._get_provider_for_backend("a")
+    assert provider is None
+
+    # Switch to next provider
+    success = mgr._switch_to_next_provider("a")
+    assert success is True
+
+    # Check provider was set
+    provider = mgr._get_provider_for_backend("a")
+    assert provider == "p1"
+
+    # Switch to next provider again
+    success = mgr._switch_to_next_provider("a")
+    assert success is True
+
+    provider = mgr._get_provider_for_backend("a")
+    assert provider == "p2"
+
+    # Switch again - should cycle back
+    success = mgr._switch_to_next_provider("a")
+    assert success is True
+
+    provider = mgr._get_provider_for_backend("a")
+    assert provider == "p1"
+
+
+def test_backend_manager_with_no_providers():
+    """Test that BackendManager works correctly when no providers are configured."""
+    calls = []
+
+    a_client = DummyClient("a", "m1", "limit", calls)
+
+    def fac_a():
+        return DummyClient("a", "m1", "limit", calls)
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", calls)
+
+    # Use default provider manager (no providers configured)
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=a_client,
+        factories={"a": fac_a, "b": fac_b},
+        order=["a", "b"],
+    )
+
+    # Execute - should switch directly to backend b since no providers are available
+    out = mgr._run_llm_cli("P")
+    assert out == "b:P"
+    assert calls == ["a", "b"]
+
+
+def test_provider_rotation_cycle_exhaustion():
+    """Test that provider rotation cycles through all providers before switching backends."""
+    calls = []
+
+    def fac_a():
+        return DummyClient("a", "m1", "limit", calls)
+
+    def fac_b():
+        return DummyClient("b", "m2", "ok", calls)
+
+    import tempfile
+    from pathlib import Path
+
+    import toml
+
+    from src.auto_coder.backend_provider_manager import BackendProviderManager
+
+    tmpdir_obj = tempfile.TemporaryDirectory()
+    tmpdir = tmpdir_obj.name
+    try:
+        metadata_file = Path(tmpdir) / "provider_metadata.toml"
+        metadata = {
+            "a": {
+                "p1": {"command": "cmd1", "description": "P1"},
+                "p2": {"command": "cmd2", "description": "P2"},
+                "p3": {"command": "cmd3", "description": "P3"},
+            }
+        }
+
+        with open(metadata_file, "w") as f:
+            toml.dump(metadata, f)
+
+        provider_mgr = BackendProviderManager(str(metadata_file))
+
+        # Get initial client for default backend
+        a_client = fac_a()
+
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=a_client,
+            factories={"a": fac_a, "b": fac_b},
+            order=["a", "b"],
+            provider_manager=provider_mgr,
+        )
+
+        # Initialize the first provider before execution
+        mgr._switch_to_next_provider("a")
+
+        # Execute - should try all 3 providers in backend 'a', then switch to backend 'b'
+        out = mgr._run_llm_cli("P")
+        assert out == "b:P"
+        # Should have tried: a with p1, a with p2, a with p3, then b
+        assert calls == ["a", "a", "a", "b"]
+    finally:
+        tmpdir_obj.cleanup()

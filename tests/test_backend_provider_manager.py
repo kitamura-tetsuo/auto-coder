@@ -394,3 +394,232 @@ class TestBackendProviderManager:
             claude_metadata = manager.get_backend_providers("claude")
             assert len(claude_metadata.providers) == 1
             assert claude_metadata.providers[0].name == "claude-provider"
+
+    def test_get_next_provider_cycling(self):
+        """Test that get_next_provider cycles through providers."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "test_metadata.toml"
+
+            metadata = {
+                "test_backend": {
+                    "provider1": {
+                        "command": "cmd1",
+                        "description": "Provider 1",
+                    },
+                    "provider2": {
+                        "command": "cmd2",
+                        "description": "Provider 2",
+                    },
+                    "provider3": {
+                        "command": "cmd3",
+                        "description": "Provider 3",
+                    },
+                }
+            }
+
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            manager = BackendProviderManager(str(metadata_file))
+
+            # First call should return provider1
+            provider1 = manager.get_next_provider("test_backend")
+            assert provider1 is not None
+            assert provider1.name == "provider1"
+
+            # Second call should return provider2
+            provider2 = manager.get_next_provider("test_backend")
+            assert provider2 is not None
+            assert provider2.name == "provider2"
+
+            # Third call should return provider3
+            provider3 = manager.get_next_provider("test_backend")
+            assert provider3 is not None
+            assert provider3.name == "provider3"
+
+            # Fourth call should cycle back to provider1
+            provider1_again = manager.get_next_provider("test_backend")
+            assert provider1_again is not None
+            assert provider1_again.name == "provider1"
+
+    def test_get_next_provider_no_providers(self):
+        """Test get_next_provider when no providers exist for backend."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "test_metadata.toml"
+
+            metadata = {
+                "other_backend": {
+                    "provider1": {
+                        "command": "cmd1",
+                        "description": "Provider 1",
+                    }
+                }
+            }
+
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            manager = BackendProviderManager(str(metadata_file))
+
+            # Request providers for backend with no providers
+            provider = manager.get_next_provider("nonexistent_backend")
+            assert provider is None
+
+    def test_get_current_provider(self):
+        """Test get_current_provider without advancing rotation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "test_metadata.toml"
+
+            metadata = {
+                "test_backend": {
+                    "provider1": {
+                        "command": "cmd1",
+                        "description": "Provider 1",
+                    },
+                    "provider2": {
+                        "command": "cmd2",
+                        "description": "Provider 2",
+                    },
+                }
+            }
+
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            manager = BackendProviderManager(str(metadata_file))
+
+            # Get next provider first - this initializes the rotation to provider1
+            provider1 = manager.get_next_provider("test_backend")
+            assert provider1.name == "provider1"
+
+            # Now the rotation index is at 1 (pointing to provider2)
+            # Get current provider - should return provider1 WITHOUT advancing
+            # But wait, the rotation was already advanced, so current should be provider2
+            # Let me re-think this...
+
+            # Actually, get_next_provider returns the CURRENT provider and THEN advances
+            # So after get_next_provider, we're at provider2
+            current = manager.get_current_provider("test_backend")
+            assert current is not None
+            # Since we called get_next_provider, we're now at index 1 (provider2)
+            assert current.name == "provider2"
+
+            # Get current again - should still be provider2
+            current_again = manager.get_current_provider("test_backend")
+            assert current_again is not None
+            assert current_again.name == "provider2"
+
+    def test_get_provider_env_vars(self):
+        """Test getting environment variables for a provider."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "test_metadata.toml"
+
+            metadata = {
+                "test_backend": {
+                    "test_provider": {
+                        "command": "uvx",
+                        "description": "Test provider",
+                        "API_KEY": "secret123",
+                        "ENDPOINT": "https://example.com",
+                        "TIMEOUT": "30",
+                    }
+                }
+            }
+
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            manager = BackendProviderManager(str(metadata_file))
+
+            # Get env vars for specific provider
+            env_vars = manager.get_provider_env_vars("test_backend", "test_provider")
+            assert len(env_vars) == 3
+            assert env_vars["API_KEY"] == "secret123"
+            assert env_vars["ENDPOINT"] == "https://example.com"
+            assert env_vars["TIMEOUT"] == "30"
+
+            # Get env vars for current provider (should be test_provider after get_next_provider)
+            manager.get_next_provider("test_backend")
+            env_vars_current = manager.get_provider_env_vars("test_backend")
+            assert env_vars_current["API_KEY"] == "secret123"
+
+    def test_get_last_used_provider(self):
+        """Test tracking of last used provider."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "test_metadata.toml"
+
+            metadata = {
+                "test_backend": {
+                    "provider1": {
+                        "command": "cmd1",
+                        "description": "Provider 1",
+                    },
+                    "provider2": {
+                        "command": "cmd2",
+                        "description": "Provider 2",
+                    },
+                }
+            }
+
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            manager = BackendProviderManager(str(metadata_file))
+
+            # Initially, no provider has been used
+            last = manager.get_last_used_provider()
+            assert last is None
+
+            # Get next provider
+            provider1 = manager.get_next_provider("test_backend")
+            assert provider1.name == "provider1"
+
+            # Check last used provider
+            last = manager.get_last_used_provider()
+            assert last == ("test_backend", "provider1")
+
+            # Get next provider again
+            provider2 = manager.get_next_provider("test_backend")
+            assert provider2.name == "provider2"
+
+            # Check last used provider updated
+            last = manager.get_last_used_provider()
+            assert last == ("test_backend", "provider2")
+
+    def test_reset_provider_rotation(self):
+        """Test resetting provider rotation to first provider."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            metadata_file = Path(tmpdir) / "test_metadata.toml"
+
+            metadata = {
+                "test_backend": {
+                    "provider1": {
+                        "command": "cmd1",
+                        "description": "Provider 1",
+                    },
+                    "provider2": {
+                        "command": "cmd2",
+                        "description": "Provider 2",
+                    },
+                }
+            }
+
+            with open(metadata_file, "w") as f:
+                toml.dump(metadata, f)
+
+            manager = BackendProviderManager(str(metadata_file))
+
+            # Advance to provider2
+            manager.get_next_provider("test_backend")  # provider1
+            manager.get_next_provider("test_backend")  # provider2
+
+            # Get current provider (should be provider2)
+            current = manager.get_current_provider("test_backend")
+            assert current.name == "provider2"
+
+            # Reset rotation
+            manager.reset_provider_rotation("test_backend")
+
+            # Get next provider (should wrap back to provider1)
+            provider1_again = manager.get_next_provider("test_backend")
+            assert provider1_again.name == "provider1"

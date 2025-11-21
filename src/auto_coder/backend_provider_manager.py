@@ -33,9 +33,10 @@ QWEN_API_KEY = "your-api-key"
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import toml
 
@@ -105,8 +106,8 @@ class BackendProviderManager:
     from configuration files and gracefully degrades when no providers are
     declared.
 
-    The manager does not perform any runtime behavior changes - it merely
-    provides metadata access for future provider rotation logic.
+    The manager now includes provider rotation logic, allowing automatic failover
+    between multiple providers for the same backend when usage limits are reached.
     """
 
     def __init__(self, provider_metadata_path: Optional[str] = None):
@@ -126,6 +127,14 @@ class BackendProviderManager:
         # Cache for loaded provider metadata: backend_name -> BackendProviderMetadata
         self._provider_cache: Dict[str, BackendProviderMetadata] = {}
         self._metadata_cache: Optional[Dict[str, Dict]] = None
+
+        # Provider rotation state tracking (thread-safe)
+        # backend_name -> current provider index
+        self._current_provider_index: Dict[str, int] = {}
+        self._lock = threading.Lock()
+
+        # Last used provider tracking: (backend_name, provider_name)
+        self._last_used_provider: Optional[Tuple[str, str]] = None
 
     def load_provider_metadata(self) -> None:
         """Load provider metadata from file.
@@ -236,6 +245,120 @@ class BackendProviderManager:
         """
         backend_metadata = self.get_backend_providers(backend_name)
         return len(backend_metadata.providers) > 0
+
+    def get_next_provider(self, backend_name: str) -> Optional[ProviderMetadata]:
+        """
+        Get the next provider for a backend (cycling rotation).
+
+        This method implements provider rotation by returning the next provider
+        in the list for the specified backend. If the end of the list is reached,
+        it wraps around to the beginning.
+
+        Args:
+            backend_name: Name of the backend
+
+        Returns:
+            ProviderMetadata for the next provider, or None if no providers exist
+        """
+        backend_metadata = self.get_backend_providers(backend_name)
+
+        if not backend_metadata.providers:
+            return None
+
+        with self._lock:
+            # Get current index or initialize to 0
+            current_idx = self._current_provider_index.get(backend_name, 0)
+            current_idx %= len(backend_metadata.providers)
+
+            # Get the provider at current index
+            provider = backend_metadata.providers[current_idx]
+
+            # Update index for next call (cycling rotation)
+            self._current_provider_index[backend_name] = (current_idx + 1) % len(backend_metadata.providers)
+
+            # Update last used provider tracking
+            self._last_used_provider = (backend_name, provider.name)
+
+            return provider
+
+    def get_current_provider(self, backend_name: str) -> Optional[ProviderMetadata]:
+        """
+        Get the current provider for a backend without advancing the rotation.
+
+        Args:
+            backend_name: Name of the backend
+
+        Returns:
+            ProviderMetadata for the current provider, or None if no providers exist
+        """
+        backend_metadata = self.get_backend_providers(backend_name)
+
+        if not backend_metadata.providers:
+            return None
+
+        with self._lock:
+            # Get current index or initialize to 0
+            current_idx = self._current_provider_index.get(backend_name, 0)
+            current_idx %= len(backend_metadata.providers)
+
+            # Get the provider at current index
+            provider = backend_metadata.providers[current_idx]
+
+            return provider
+
+    def get_provider_env_vars(self, backend_name: str, provider_name: Optional[str] = None) -> Dict[str, str]:
+        """
+        Get environment variables for a specific provider.
+
+        Extracts uppercase settings from the provider metadata and returns them
+        as environment variables.
+
+        Args:
+            backend_name: Name of the backend
+            provider_name: Optional specific provider name. If None, uses current provider.
+
+        Returns:
+            Dict of environment variable names to values (uppercase_settings)
+        """
+        backend_metadata = self.get_backend_providers(backend_name)
+
+        if not backend_metadata.providers:
+            return {}
+
+        # Find the provider
+        provider = None
+        if provider_name:
+            provider = backend_metadata.get_provider(provider_name)
+        else:
+            provider = self.get_current_provider(backend_name)
+
+        if provider is None:
+            return {}
+
+        # Return uppercase settings as env vars
+        return provider.uppercase_settings.copy()
+
+    def get_last_used_provider(self) -> Optional[Tuple[str, str]]:
+        """
+        Get the last used backend and provider names.
+
+        Returns:
+            Tuple of (backend_name, provider_name) for the most recently used provider,
+            or None if no provider has been used yet.
+        """
+        with self._lock:
+            return self._last_used_provider
+
+    def reset_provider_rotation(self, backend_name: str) -> None:
+        """
+        Reset the provider rotation for a specific backend back to the first provider.
+
+        Args:
+            backend_name: Name of the backend to reset
+        """
+        with self._lock:
+            if backend_name in self._current_provider_index:
+                self._current_provider_index[backend_name] = 0
 
     def clear_cache(self) -> None:
         """

@@ -1,3 +1,4 @@
+import os
 import sys
 from types import SimpleNamespace
 
@@ -102,3 +103,86 @@ def test_is_running_in_debugger_true_env_markers(monkeypatch, marker):
 
     monkeypatch.setenv(marker, "1")
     assert utils.CommandExecutor.is_running_in_debugger() is True
+
+
+def test_transient_env_sets_and_cleans_up(monkeypatch):
+    """Test that TransientEnv sets and cleans up environment variables."""
+    monkeypatch.delenv("TEST_VAR", raising=False)
+
+    with utils.TransientEnv({"TEST_VAR": "test_value"}):
+        assert os.environ.get("TEST_VAR") == "test_value"
+
+    # Variable should be cleaned up
+    assert os.environ.get("TEST_VAR") is None
+
+
+def test_transient_env_restores_existing_value(monkeypatch):
+    """Test that TransientEnv restores existing environment variable values."""
+    monkeypatch.setenv("TEST_VAR", "original_value")
+
+    with utils.TransientEnv({"TEST_VAR": "new_value"}):
+        assert os.environ.get("TEST_VAR") == "new_value"
+
+    # Variable should be restored to original value
+    assert os.environ.get("TEST_VAR") == "original_value"
+
+    # Clean up
+    monkeypatch.delenv("TEST_VAR", raising=False)
+
+
+def test_transient_env_with_multiple_vars(monkeypatch):
+    """Test TransientEnv with multiple environment variables."""
+    monkeypatch.delenv("VAR1", raising=False)
+    monkeypatch.delenv("VAR2", raising=False)
+    monkeypatch.setenv("VAR3", "original")
+
+    with utils.TransientEnv({"VAR1": "value1", "VAR2": "value2", "VAR3": "value3"}):
+        assert os.environ.get("VAR1") == "value1"
+        assert os.environ.get("VAR2") == "value2"
+        assert os.environ.get("VAR3") == "value3"
+
+    # New variables should be cleaned up
+    assert os.environ.get("VAR1") is None
+    assert os.environ.get("VAR2") is None
+
+    # Existing variable should be restored
+    assert os.environ.get("VAR3") == "original"
+
+    # Clean up
+    monkeypatch.delenv("VAR3", raising=False)
+
+
+def test_transient_env_cleanup_on_exception(monkeypatch):
+    """Test that TransientEnv cleans up even when an exception occurs."""
+    monkeypatch.delenv("TEST_VAR", raising=False)
+
+    try:
+        with utils.TransientEnv({"TEST_VAR": "test_value"}):
+            assert os.environ.get("TEST_VAR") == "test_value"
+            raise RuntimeError("Test exception")
+    except RuntimeError:
+        pass
+
+    # Variable should still be cleaned up despite the exception
+    assert os.environ.get("TEST_VAR") is None
+
+
+def test_transient_env_nested(monkeypatch):
+    """Test nested TransientEnv contexts."""
+    monkeypatch.delenv("VAR1", raising=False)
+    monkeypatch.delenv("VAR2", raising=False)
+
+    with utils.TransientEnv({"VAR1": "value1"}):
+        assert os.environ.get("VAR1") == "value1"
+
+        with utils.TransientEnv({"VAR1": "value2", "VAR2": "value2"}):
+            assert os.environ.get("VAR1") == "value2"
+            assert os.environ.get("VAR2") == "value2"
+
+        # After inner context exits, VAR1 should be restored to value1, VAR2 should be gone
+        assert os.environ.get("VAR1") == "value1"
+        assert os.environ.get("VAR2") is None
+
+    # After outer context exits, both should be gone
+    assert os.environ.get("VAR1") is None
+    assert os.environ.get("VAR2") is None
