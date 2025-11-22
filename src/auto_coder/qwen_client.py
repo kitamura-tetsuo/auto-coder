@@ -316,6 +316,20 @@ class QwenClient(LLMClientBase):
         if result.returncode != 0:
             raise RuntimeError(f"{cli_name} CLI failed with return code {result.returncode}\n{full_output}")
 
+        # Log final LLM output in JSON Lines format
+        # Only log if this is not a nested client invocation (e.g., codex exec)
+        # to avoid duplicate logs
+        is_nested_invocation = cli_name.lower() == "codex" and any("exec" in arg for arg in cmd)
+        if not is_nested_invocation:
+            import json as json_lib
+
+            log_entry = {
+                "client": "QwenClient",
+                "model": display_model,
+                "output": full_output,
+            }
+            logger.info("LLM_OUTPUT_JSON_LINES: %s", json_lib.dumps(log_entry, ensure_ascii=False))
+
         return full_output
 
     @staticmethod
