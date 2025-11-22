@@ -36,6 +36,7 @@ class WorkspaceFixResult:
     summary: str
     raw_response: Optional[str]
     backend: str
+    provider: str
     model: str
 
 
@@ -95,7 +96,7 @@ def _sanitize_for_filename(value: str, *, default: str) -> str:
     return cleaned[:80]
 
 
-def _log_fix_attempt_metadata(test_file: Optional[str], backend: str, model: str, timestamp: datetime) -> Path:
+def _log_fix_attempt_metadata(test_file: Optional[str], backend: str, provider: str, model: str, timestamp: datetime) -> Path:
     """Append metadata about a fix attempt to the CSV summary log."""
 
     base_dir = Path(".auto-coder")
@@ -105,13 +106,14 @@ def _log_fix_attempt_metadata(test_file: Optional[str], backend: str, model: str
     record = [
         _normalize_test_file(test_file),
         backend or "unknown",
+        provider or "default",
         model or "unknown",
         timestamp.isoformat(),
     ]
     with csv_path.open("a", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         if not file_exists:
-            writer.writerow(["current_test_file", "backend", "model", "timestamp"])
+            writer.writerow(["current_test_file", "backend", "provider", "model", "timestamp"])
         writer.writerow(record)
     return csv_path
 
@@ -121,6 +123,7 @@ def _write_llm_output_log(
     raw_output: Optional[str],
     test_file: Optional[str],
     backend: str,
+    provider: str,
     model: str,
     timestamp: datetime,
 ) -> Path:
@@ -129,10 +132,11 @@ def _write_llm_output_log(
     log_dir = Path(".auto-coder") / "log"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = "{time}_{test}_{backend}_{model}.txt".format(
+    filename = "{time}_{test}_{backend}_{provider}_{model}.txt".format(
         time=timestamp.strftime("%Y%m%d_%H%M%S"),
         test=_sanitize_for_filename(_normalize_test_file(test_file), default="tests"),
         backend=_sanitize_for_filename(backend or "unknown", default="backend"),
+        provider=_sanitize_for_filename(provider or "default", default="provider"),
         model=_sanitize_for_filename(model or "unknown", default="model"),
     )
     log_path = log_dir / filename
@@ -143,31 +147,53 @@ def _write_llm_output_log(
 
 
 @log_calls  # type: ignore[misc]
-def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
-    """Derive backend/model identifiers from the provided LLM client."""
+def _extract_backend_model(llm_client: Any) -> Tuple[str, str, str]:
+    """Derive backend/provider/model identifiers from the provided LLM client."""
 
     if llm_client is None:
-        return "unknown", "unknown"
+        return "unknown", "default", "unknown"
 
-    getter = getattr(llm_client, "get_last_backend_and_model", None)
+    backend_value: Optional[str] = None
+    provider_value: Optional[str] = None
+    model_value: Optional[str] = None
+
+    getter = getattr(llm_client, "get_last_backend_provider_and_model", None)
     if callable(getter):
         try:
-            result = getter()
-            if isinstance(result, tuple) and len(result) == 2:
-                backend, model = result
-                backend = backend or "unknown"
-                model = model or getattr(llm_client, "model_name", "unknown")
-                return backend, model
+            details = getter()
+            if isinstance(details, tuple):
+                if len(details) == 3:
+                    backend_value, provider_value, model_value = details
+                elif len(details) == 2:
+                    backend_value, model_value = details
         except Exception:
             pass
 
-    backend = getattr(llm_client, "backend", None) or getattr(llm_client, "name", None)
-    if backend is None:
-        backend = llm_client.__class__.__name__
-    model = getattr(llm_client, "model_name", None)
-    if not model:
-        model = "unknown"
-    return str(backend), str(model)
+    if backend_value is None or model_value is None:
+        getter = getattr(llm_client, "get_last_backend_and_model", None)
+        if callable(getter):
+            try:
+                backend_value, model_value = getter()
+            except Exception:
+                backend_value = backend_value or None
+                model_value = model_value or None
+
+    if backend_value is None:
+        backend_value = getattr(llm_client, "backend", None) or getattr(llm_client, "name", None)
+    if backend_value is None:
+        backend_value = llm_client.__class__.__name__
+
+    if provider_value is None:
+        provider_value = getattr(llm_client, "provider_name", None)
+
+    if model_value is None:
+        model_value = getattr(llm_client, "model_name", None)
+
+    backend = str(backend_value) if backend_value else "unknown"
+    provider = str(provider_value) if provider_value else "default"
+    model = str(model_value) if model_value else "unknown"
+
+    return backend, provider, model
 
 
 def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
@@ -345,7 +371,7 @@ def apply_test_stability_fix(
     Called when a test fails in the full suite but passes in isolation,
     indicating test isolation or dependency problems.
     """
-    backend, model = _extract_backend_model(llm_backend_manager)
+    backend, provider, model = _extract_backend_model(llm_backend_manager)
 
     try:
         full_suite_output = f"{full_suite_result.get('errors', '')}\n{full_suite_result.get('output', '')}".strip()
@@ -358,12 +384,12 @@ def apply_test_stability_fix(
             isolated_test_output=isolated_output[: config.MAX_PROMPT_SIZE // 2],
         )
 
-        logger.info(f"Requesting LLM test stability fix for {test_file} using backend {backend} model {model}")
+        logger.info(f"Requesting LLM test stability fix for {test_file} using backend {backend} " f"provider {provider} model {model}")
 
         # Use the LLM backend manager to run the prompt
         response = llm_backend_manager.run_test_fix_prompt(fix_prompt, current_test_file=test_file)
 
-        backend, model = _extract_backend_model(llm_backend_manager)
+        backend, provider, model = _extract_backend_model(llm_backend_manager)
         raw_response = response.strip() if response and response.strip() else None
         if raw_response:
             first_line = raw_response.splitlines()[0]
@@ -377,6 +403,7 @@ def apply_test_stability_fix(
             summary=summary,
             raw_response=raw_response,
             backend=backend,
+            provider=provider,
             model=model,
         )
     except Exception as e:
@@ -384,6 +411,7 @@ def apply_test_stability_fix(
             summary=f"Error applying test stability fix: {e}",
             raw_response=None,
             backend=backend,
+            provider=provider,
             model=model,
         )
 
@@ -397,7 +425,7 @@ def apply_workspace_test_fix(
 ) -> WorkspaceFixResult:
     """Ask the LLM to apply workspace edits based on local test failures."""
 
-    backend, model = _extract_backend_model(llm_backend_manager)
+    backend, provider, model = _extract_backend_model(llm_backend_manager)
 
     try:
         # Convert legacy dict payloads to TestResult for structured extraction
@@ -409,6 +437,7 @@ def apply_workspace_test_fix(
                 summary="No actionable errors found in local test output",
                 raw_response=None,
                 backend=backend,
+                provider=provider,
                 model=model,
             )
 
@@ -419,10 +448,10 @@ def apply_workspace_test_fix(
         )
 
         # Use the LLM backend manager to run the prompt
-        logger.info(f"Requesting LLM workspace fix using backend {backend} model {model} (custom prompt handler)")
+        logger.info(f"Requesting LLM workspace fix using backend {backend} provider {provider} " f"model {model} (custom prompt handler)")
         response = llm_backend_manager.run_test_fix_prompt(fix_prompt, current_test_file=current_test_file)
 
-        backend, model = _extract_backend_model(llm_backend_manager)
+        backend, provider, model = _extract_backend_model(llm_backend_manager)
         raw_response = response.strip() if response and response.strip() else None
         if raw_response:
             logger.debug(f"0")
@@ -438,6 +467,7 @@ def apply_workspace_test_fix(
             summary=summary,
             raw_response=raw_response,
             backend=backend,
+            provider=provider,
             model=model,
         )
     except Exception as e:
@@ -445,6 +475,7 @@ def apply_workspace_test_fix(
             summary=f"Error applying workspace test fix: {e}",
             raw_response=None,
             backend=backend,
+            provider=provider,
             model=model,
         )
 
@@ -552,9 +583,10 @@ def fix_to_pass_tests(
 
         log_timestamp = datetime.now()
         backend_for_log = fix_response.backend
+        provider_for_log = fix_response.provider
         model_for_log = fix_response.model
         try:
-            _log_fix_attempt_metadata(current_test_file, backend_for_log, model_for_log, log_timestamp)
+            _log_fix_attempt_metadata(current_test_file, backend_for_log, provider_for_log, model_for_log, log_timestamp)
         except Exception:
             logger.warning("Failed to record fix-to-pass-tests summary CSV entry", exc_info=True)
         try:
@@ -562,6 +594,7 @@ def fix_to_pass_tests(
                 raw_output=fix_response.raw_response,
                 test_file=current_test_file,
                 backend=backend_for_log,
+                provider=provider_for_log,
                 model=model_for_log,
                 timestamp=log_timestamp,
             )

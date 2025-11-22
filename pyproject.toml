@@ -162,6 +162,9 @@ skip_glob = [
 
 [tool.mypy]
 python_version = "3.11"
+namespace_packages = true
+# Enable explicit_package_bases to avoid module path conflicts
+explicit_package_bases = true
 # Specify the package root directory
 mypy_path = "src"
 # Disable strict mode temporarily to allow commit

@@ -23,7 +23,7 @@ def test_global_functions():
     assert callable(
         get_message_backend_manager
     ), "get_message_backend_manager should be callable"
-    assert callable(run_llm_message_prompt), "run_message_prompt should be callable"
+    assert callable(run_llm_message_prompt), "run_llm_message_prompt should be callable"
     assert callable(
         get_message_backend_and_model
     ), "get_message_backend_and_model should be callable"

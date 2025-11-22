@@ -30,8 +30,9 @@ class TestAutomationEngine:
         from src.auto_coder.backend_manager import get_llm_backend_manager
 
         mock_backend_manager = Mock()
-        mock_backend_manager.get_last_backend_and_model.return_value = (
+        mock_backend_manager.get_last_backend_provider_and_model.return_value = (
             "gemini",
+            "open-router",
             "gemini-2.5-pro",
         )
 
@@ -53,6 +54,7 @@ class TestAutomationEngine:
             # Assert basic result structure
             assert result["repository"] == test_repo_name
             assert result["llm_backend"] == "gemini"
+            assert result["llm_provider"] == "open-router"
             assert result["llm_model"] is not None
             assert "issues_processed" in result
             assert "prs_processed" in result
@@ -73,8 +75,9 @@ class TestAutomationEngine:
         from src.auto_coder.backend_manager import get_llm_backend_manager
 
         mock_backend_manager = Mock()
-        mock_backend_manager.get_last_backend_and_model.return_value = (
+        mock_backend_manager.get_last_backend_provider_and_model.return_value = (
             "gemini",
+            "open-router",
             "gemini-2.5-pro",
         )
 
@@ -97,6 +100,7 @@ class TestAutomationEngine:
             assert result["repository"] == test_repo_name
             assert result["jules_mode"] is True
             assert result["llm_backend"] == "gemini"
+            assert result["llm_provider"] == "open-router"
             assert result["llm_model"] is not None
             assert "issues_processed" in result
             assert "prs_processed" in result
@@ -116,8 +120,9 @@ class TestAutomationEngine:
         from src.auto_coder.backend_manager import get_llm_backend_manager
 
         mock_backend_manager = Mock()
-        mock_backend_manager.get_last_backend_and_model.return_value = (
+        mock_backend_manager.get_last_backend_provider_and_model.return_value = (
             "gemini",
+            "open-router",
             "gemini-2.5-pro",
         )
 
@@ -138,6 +143,7 @@ class TestAutomationEngine:
 
             # Assert that we get a valid result structure even if there are no errors in this case
             assert result["repository"] == test_repo_name
+            assert result["llm_provider"] == "open-router"
             assert "errors" in result
 
 
