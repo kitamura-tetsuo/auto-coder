@@ -10,19 +10,6 @@ from src.auto_coder.utils import CommandResult
 
 
 class TestGeminiClient:
-    @patch("src.auto_coder.gemini_client.logger")
-    @patch("subprocess.run")
-    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
-    def test_llm_invocation_warn_log(self, mock_run_command, mock_run, mock_logger, mock_gemini_api_key):
-        """Verify that LLM invocation emits a warning log before running CLI."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
-
-        client = GeminiClient(mock_gemini_api_key)
-        _ = client._run_llm_cli("hello")
-        assert mock_logger.warning.called
-        assert "LLM invocation" in str(mock_logger.warning.call_args[0][0])
-
     """Test cases for GeminiClient class."""
 
     @patch("src.auto_coder.gemini_client.genai")

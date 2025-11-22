@@ -2,6 +2,7 @@
 Gemini CLI client for Auto-Coder.
 """
 
+import datetime
 import json
 import os
 import subprocess
@@ -21,6 +22,23 @@ from .prompt_loader import render_prompt
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
+
+
+def _log_json_line(level: str, message: str, **kwargs: Any) -> None:
+    """Log a JSON Lines format message.
+
+    Args:
+        level: Log level (INFO, WARNING, ERROR, etc.)
+        message: Main message
+        **kwargs: Additional fields to include in the JSON structure
+    """
+    log_entry = {
+        "logger": "gemini_client",
+        "level": level,
+        "message": message,
+        **kwargs,
+    }
+    logger.log(level, json.dumps(log_entry))
 
 
 class GeminiClient(LLMClientBase):
@@ -72,13 +90,25 @@ class GeminiClient(LLMClientBase):
     def switch_to_conflict_model(self) -> None:
         """Switch to faster model for conflict resolution."""
         if self.model_name != self.conflict_model:
-            logger.info(f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution")
+            _log_json_line(
+                "INFO",
+                f"Switching from {self.model_name} to {self.conflict_model} for conflict resolution",
+                action="model_switch",
+                from_model=self.model_name,
+                to_model=self.conflict_model,
+            )
             self.model_name = self.conflict_model
 
     def switch_to_default_model(self) -> None:
         """Switch back to default model."""
         if self.model_name != self.default_model:
-            logger.info(f"Switching back from {self.model_name} to {self.default_model}")
+            _log_json_line(
+                "INFO",
+                f"Switching back from {self.model_name} to {self.default_model}",
+                action="model_switch",
+                from_model=self.model_name,
+                to_model=self.default_model,
+            )
             self.model_name = self.default_model
 
     def _escape_prompt(self, prompt: str) -> str:
@@ -87,9 +117,14 @@ class GeminiClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
+
         try:
             escaped_prompt = self._escape_prompt(prompt)
-
+            logger.warning(
+                "LLM invocation via Gemini CLI (model=%s, prompt_length=%d)",
+                self.model_name,
+                len(prompt),
+            )
             cmd = [
                 "gemini",
                 "--yolo",
@@ -100,17 +135,39 @@ class GeminiClient(LLMClientBase):
                 escaped_prompt,
             ]
 
-            logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
-            logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
-            logger.info("=" * 60)
+            usage_markers = (
+                "rate limit",
+                "resource_exhausted",
+                "too many requests",
+            )
+
+            _log_json_line(
+                "WARNING",
+                "LLM invocation: gemini CLI is being called. Keep LLM calls minimized.",
+                action="llm_invocation",
+                cli="gemini",
+            )
+            _log_json_line(
+                "DEBUG",
+                f"Running gemini CLI with prompt length: {len(prompt)} characters",
+                prompt_length=len(prompt),
+                cli="gemini",
+            )
+            _log_json_line(
+                "INFO",
+                "🤖 Running: gemini --model {model} --force-model --prompt [prompt]".format(model=self.model_name),
+                action="cli_start",
+                model=self.model_name,
+                cli="gemini",
+            )
+            _log_json_line("INFO", "=" * 60, separator="start", cli="gemini")
 
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
             )
 
-            logger.info("=" * 60)
+            _log_json_line("INFO", "=" * 60, separator="end", cli="gemini")
 
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
@@ -119,18 +176,32 @@ class GeminiClient(LLMClientBase):
             full_output = full_output.strip()
             low = full_output.lower()
 
-            usage_markers = (
-                "rate limit",
-                "resource_exhausted",
-                "too many requests",
-            )
+            # Prepare structured JSON log entry
+            log_entry = {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "client": "gemini",
+                "model": self.model_name,
+                "prompt_length": len(prompt),
+                "return_code": result.returncode,
+                "success": result.returncode == 0,
+                "usage_limit_hit": any(marker in low for marker in usage_markers),
+                "output": full_output,
+            }
 
+            # Log as single-line JSON
+            logger.info(json.dumps(log_entry, ensure_ascii=False))
+
+            # Print summary to stdout
+            summary = f"[Gemini] Model: {self.model_name}, Prompt: {len(prompt)} chars, Output: {len(full_output)} chars"
+            print(summary)
+
+            # Handle errors
             if result.returncode != 0:
-                if any(m in low for m in usage_markers):
+                if log_entry["usage_limit_hit"]:
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
 
-            if any(m in low for m in usage_markers):
+            if log_entry["usage_limit_hit"]:
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
 
@@ -154,11 +225,21 @@ class GeminiClient(LLMClientBase):
             else:
                 response_text = self._run_llm_cli(prompt)
                 suggestions = self._parse_feature_suggestions(response_text)
-            logger.info(f"Generated {len(suggestions)} feature suggestions")
+            _log_json_line(
+                "INFO",
+                f"Generated {len(suggestions)} feature suggestions",
+                action="feature_suggestions",
+                count=len(suggestions),
+            )
             return suggestions
 
         except Exception as e:
-            logger.error(f"Failed to generate feature suggestions: {e}")
+            _log_json_line(
+                "ERROR",
+                f"Failed to generate feature suggestions: {e}",
+                action="feature_suggestions_error",
+                error=str(e),
+            )
             return []
 
     def _create_pr_analysis_prompt(self, pr_data: Dict[str, Any]) -> str:
@@ -271,15 +352,39 @@ class GeminiClient(LLMClientBase):
             if result.returncode == 0:
                 output = result.stdout.lower()
                 if server_name.lower() in output:
-                    logger.info(f"Found MCP server '{server_name}' via 'gemini mcp list'")
+                    _log_json_line(
+                        "INFO",
+                        f"Found MCP server '{server_name}' via 'gemini mcp list'",
+                        action="mcp_check",
+                        server=server_name,
+                        found=True,
+                    )
                     return True
-                logger.debug(f"MCP server '{server_name}' not found via 'gemini mcp list'")
+                _log_json_line(
+                    "DEBUG",
+                    f"MCP server '{server_name}' not found via 'gemini mcp list'",
+                    action="mcp_check",
+                    server=server_name,
+                    found=False,
+                )
                 return False
             else:
-                logger.debug(f"'gemini mcp list' command failed with return code {result.returncode}")
+                _log_json_line(
+                    "DEBUG",
+                    f"'gemini mcp list' command failed with return code {result.returncode}",
+                    action="mcp_check",
+                    server=server_name,
+                    returncode=result.returncode,
+                )
                 return False
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-            logger.debug(f"Failed to check Gemini MCP config: {e}")
+            _log_json_line(
+                "DEBUG",
+                f"Failed to check Gemini MCP config: {e}",
+                action="mcp_check",
+                server=server_name,
+                error=str(e),
+            )
             return False
 
     def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
@@ -306,11 +411,30 @@ class GeminiClient(LLMClientBase):
             )
 
             if result.returncode == 0:
-                logger.info(f"Added MCP server '{server_name}' to Gemini config")
+                _log_json_line(
+                    "INFO",
+                    f"Added MCP server '{server_name}' to Gemini config",
+                    action="mcp_add",
+                    server=server_name,
+                    command=command,
+                    args=args,
+                )
                 return True
             else:
-                logger.error(f"Failed to add Gemini MCP config: {result.stderr}")
+                _log_json_line(
+                    "ERROR",
+                    f"Failed to add Gemini MCP config: {result.stderr}",
+                    action="mcp_add",
+                    server=server_name,
+                    error=result.stderr,
+                )
                 return False
         except Exception as e:
-            logger.error(f"Failed to add Gemini MCP config: {e}")
+            _log_json_line(
+                "ERROR",
+                f"Failed to add Gemini MCP config: {e}",
+                action="mcp_add",
+                server=server_name,
+                error=str(e),
+            )
             return False
