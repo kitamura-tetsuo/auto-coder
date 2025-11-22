@@ -59,7 +59,7 @@ class TestAutomationEngineLabelIntegration:
         client = Mock()
         client.disable_labels = False
         client.has_label.return_value = False
-        client.try_add_labels_to_issue.return_value = True
+        client.try_add_labels.return_value = True
         client.get_issue_details_by_number.return_value = {"labels": []}
         client.get_repository.return_value = Mock()
         client.get_open_pull_requests.return_value = []
@@ -351,7 +351,7 @@ class TestAutomationEngineLabelIntegration:
         # Test integration with LabelManager at the configuration level
         # Verify LabelManager can be instantiated with engine's config
         try:
-            with LabelManager(mock_github_client_for_engine, repo_name, issue_number, item_type="issue", config=config) as should_process:
+            with LabelManager(mock_github_client_for_engine, repo_name, issue_number, "issue", config=config) as should_process:
                 label_manager_used = True
         except Exception:
             label_manager_used = False

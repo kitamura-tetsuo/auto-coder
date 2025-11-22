@@ -19,15 +19,15 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
         # Use LabelManager context manager
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is True
             # Label should be added inside context
-            mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
+            mock_github_client.try_add_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], item_type="issue")
 
         # Label should be removed after exiting context
         mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
@@ -35,13 +35,17 @@ class TestLabelManager:
     def test_label_manager_skips_when_label_already_exists(self):
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
-        mock_github_client.get_issue_details_by_number.return_value = {"labels": ["@auto-coder"]}
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"labels": ["@auto-coder"]}
 
         config = AutomationConfig()
 
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is False
-            mock_github_client.try_add_labels_to_issue.assert_not_called()
+            mock_github_client.try_add_labels.assert_not_called()
 
         mock_github_client.remove_labels.assert_not_called()
 
@@ -54,10 +58,10 @@ class TestLabelManager:
         config = AutomationConfig()
 
         # Use LabelManager context manager
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is True
             # No label operations should be performed
-            mock_github_client.try_add_labels_to_issue.assert_not_called()
+            mock_github_client.try_add_labels.assert_not_called()
 
         # No removal should happen
         mock_github_client.remove_labels.assert_not_called()
@@ -72,10 +76,10 @@ class TestLabelManager:
         config.DISABLE_LABELS = True  # Labels disabled via config
 
         # Use LabelManager context manager
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is True
             # No label operations should be performed
-            mock_github_client.try_add_labels_to_issue.assert_not_called()
+            mock_github_client.try_add_labels.assert_not_called()
 
         # No removal should happen
         mock_github_client.remove_labels.assert_not_called()
@@ -86,13 +90,13 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
         # Use LabelManager context manager and raise an exception
         try:
-            with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+            with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
                 assert should_process is True
                 raise ValueError("Test exception")
         except ValueError:
@@ -107,7 +111,7 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
@@ -116,12 +120,12 @@ class TestLabelManager:
             mock_github_client,
             "owner/repo",
             123,
-            item_type="issue",
+            "issue",
             label_name="custom-label",
             config=config,
         ) as should_process:
             assert should_process is True
-            mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 123, ["custom-label"], "issue")
+            mock_github_client.try_add_labels.assert_called_once_with("owner/repo", 123, ["custom-label"], item_type="issue")
 
         # Custom label should be removed
         mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["custom-label"], "issue")
@@ -132,14 +136,14 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
         # Use LabelManager for PR
-        with LabelManager(mock_github_client, "owner/repo", 456, item_type="pr", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 456, "pr", config=config) as should_process:
             assert should_process is True
-            mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 456, ["@auto-coder"], "pr")
+            mock_github_client.try_add_labels.assert_called_once_with("owner/repo", 456, ["@auto-coder"], item_type="pr")
 
         # Label should be removed from PR
         mock_github_client.remove_labels.assert_called_once_with("owner/repo", 456, ["@auto-coder"], "pr")
@@ -151,7 +155,7 @@ class TestLabelManager:
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
         # First two calls fail, third succeeds
-        mock_github_client.try_add_labels_to_issue.side_effect = [
+        mock_github_client.try_add_labels.side_effect = [
             Exception("API error 1"),
             Exception("API error 2"),
             True,  # Success on third try
@@ -160,10 +164,10 @@ class TestLabelManager:
         config = AutomationConfig()
 
         # Use LabelManager with retry
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=3) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=3) as should_process:
             assert should_process is True
             # Should be called 3 times (2 failures + 1 success)
-            assert mock_github_client.try_add_labels_to_issue.call_count == 3
+            assert mock_github_client.try_add_labels.call_count == 3
 
     def test_label_manager_gives_up_after_max_retries(self):
         """Test that LabelManager gives up after max retries and continues processing."""
@@ -172,15 +176,15 @@ class TestLabelManager:
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
         # Always fails
-        mock_github_client.try_add_labels_to_issue.side_effect = Exception("API error")
+        mock_github_client.try_add_labels.side_effect = Exception("API error")
 
         config = AutomationConfig()
 
         # Use LabelManager with retries
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=2) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=2) as should_process:
             assert should_process is True  # Still returns True to allow processing
             # Should be called 2 times (max_retries)
-            assert mock_github_client.try_add_labels_to_issue.call_count == 2
+            assert mock_github_client.try_add_labels.call_count == 2
 
     def test_label_manager_retry_on_remove_failure(self):
         """Test that LabelManager retries on label removal failure."""
@@ -188,7 +192,7 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
         # First two remove calls fail, third succeeds
         mock_github_client.remove_labels.side_effect = [
             Exception("API error 1"),
@@ -199,7 +203,7 @@ class TestLabelManager:
         config = AutomationConfig()
 
         # Use LabelManager
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=3) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=3) as should_process:
             assert should_process is True
 
         # Remove should be called 3 times (2 failures + 1 success)
@@ -211,12 +215,12 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
         # Create multiple LabelManager instances to test they don't interfere
-        managers = [LabelManager(mock_github_client, "owner/repo", i, item_type="issue", config=config) for i in range(5)]
+        managers = [LabelManager(mock_github_client, "owner/repo", i, "issue", config=config) for i in range(5)]
 
         # All should be able to enter and exit independently
         for manager in managers:
@@ -224,20 +228,20 @@ class TestLabelManager:
                 assert should_process is True
 
         # All should have been processed
-        assert mock_github_client.try_add_labels_to_issue.call_count == 5
+        assert mock_github_client.try_add_labels.call_count == 5
         assert mock_github_client.remove_labels.call_count == 5
 
     def test_label_manager_no_label_added_flag(self):
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.get_issue_details_by_number.return_value = {"labels": []}
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is True
-            mock_github_client.try_add_labels_to_issue.assert_called_once()
+            mock_github_client.try_add_labels.assert_called_once()
 
         mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
 
@@ -254,7 +258,7 @@ class TestLabelManager:
         config = AutomationConfig()
 
         # Use LabelManager - should still proceed even if check fails
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             # Should still return True to allow processing
             assert should_process is True
 
@@ -264,7 +268,7 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
         # Simulate error during cleanup
         mock_github_client.remove_labels.side_effect = Exception("Cleanup error")
 
@@ -272,7 +276,7 @@ class TestLabelManager:
 
         # __exit__ should not raise the exception
         try:
-            with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+            with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
                 assert should_process is True
         except Exception as e:
             pytest.fail(f"__exit__ should not propagate exceptions, but got: {e}")
@@ -284,13 +288,13 @@ class TestLabelManager:
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
         # First attempt fails, second succeeds
-        mock_github_client.try_add_labels_to_issue.side_effect = [Exception("API error"), True]
+        mock_github_client.try_add_labels.side_effect = [Exception("API error"), True]
 
         config = AutomationConfig()
 
         # Use custom retry_delay
         start = time.time()
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=2, retry_delay=0.1) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=2, retry_delay=0.1) as should_process:
             assert should_process is True
         elapsed = time.time() - start
 
@@ -304,16 +308,16 @@ class TestLabelManager:
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
         # Always fails
-        mock_github_client.try_add_labels_to_issue.side_effect = Exception("API error")
+        mock_github_client.try_add_labels.side_effect = Exception("API error")
 
         config = AutomationConfig()
 
         # Use with max_retries=0
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, max_retries=0) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=0) as should_process:
             # Should still return True (fail open) - loop doesn't execute when max_retries=0
             assert should_process is True
         # Should NOT be called at all (range(0) is empty)
-        assert mock_github_client.try_add_labels_to_issue.call_count == 0
+        assert mock_github_client.try_add_labels.call_count == 0
 
     def test_label_manager_with_string_item_number(self):
         """Test LabelManager with string item number (e.g., GitHub issue numbers as strings)."""
@@ -321,14 +325,14 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
         # Use string item number
-        with LabelManager(mock_github_client, "owner/repo", "123", item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", "123", "issue", config=config) as should_process:
             assert should_process is True
-            mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
+            mock_github_client.try_add_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], item_type="issue")
 
         # Label should be removed
         mock_github_client.remove_labels.assert_called_once_with("owner/repo", "123", ["@auto-coder"], "issue")
@@ -339,20 +343,20 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.return_value = False
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
         # Nested contexts for different items
-        with LabelManager(mock_github_client, "owner/repo", 1, item_type="issue", config=config) as should_process_1:
+        with LabelManager(mock_github_client, "owner/repo", 1, "issue", config=config) as should_process_1:
             assert should_process_1 is True
 
             # Inner context for different item
-            with LabelManager(mock_github_client, "owner/repo", 2, item_type="issue", config=config) as should_process_2:
+            with LabelManager(mock_github_client, "owner/repo", 2, "issue", config=config) as should_process_2:
                 assert should_process_2 is True
 
         # Both should have been processed
-        assert mock_github_client.try_add_labels_to_issue.call_count == 2
+        assert mock_github_client.try_add_labels.call_count == 2
         assert mock_github_client.remove_labels.call_count == 2
 
     def test_label_manager_fallback_to_get_issue_details(self):
@@ -362,58 +366,70 @@ class TestLabelManager:
         mock_github_client.disable_labels = False
         # has_label is not a real method (just a Mock attribute)
         mock_github_client.has_label = Mock()  # This will be detected as not a real method
-        # get_issue_details should work
-        mock_github_client.get_issue_details_by_number.return_value = {"labels": []}
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        # get_repository, repo.get_issue, and get_issue_details should work
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"labels": []}
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
         # Use LabelManager - should use fallback
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is True
             # Should have called get_issue_details
-            mock_github_client.get_issue_details_by_number.assert_called_once()
+            mock_github_client.get_issue_details.assert_called_once()
 
     def test_label_manager_fail_open_when_all_checks_error_issue(self):
         """All existence checks raise → fail-open: proceed and try to add label."""
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.side_effect = Exception("primary check error")
-        mock_github_client.get_issue_details_by_number.side_effect = Exception("details error")
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_repo = Mock()
+        mock_repo.get_issue.side_effect = Exception("get issue error")
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is True
-            mock_github_client.try_add_labels_to_issue.assert_called_once()
+            mock_github_client.try_add_labels.assert_called_once()
 
     def test_label_manager_fail_open_when_all_checks_error_pr(self):
         """PR path: has_label and both PR/Issue detail fallbacks raise → proceed."""
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.side_effect = Exception("primary check error")
-        mock_github_client.get_pr_details_by_number.side_effect = Exception("pr details error")
-        mock_github_client.get_issue_details_by_number.side_effect = Exception("issue details error")
-        mock_github_client.try_add_labels_to_issue.return_value = True
+        mock_repo = Mock()
+        mock_repo.get_pull.side_effect = Exception("pr details error")
+        mock_repo.get_issue.side_effect = Exception("issue details error")
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
 
-        with LabelManager(mock_github_client, "owner/repo", 456, item_type="pr", config=config) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 456, "pr", config=config) as should_process:
             assert should_process is True
-            mock_github_client.try_add_labels_to_issue.assert_called_once_with("owner/repo", 456, ["@auto-coder"], "pr")
+            mock_github_client.try_add_labels.assert_called_once_with("owner/repo", 456, ["@auto-coder"], item_type="pr")
 
     def test_label_manager_check_only_mode_label_exists(self):
         """skip_label_add=True かつ既存ラベルあり → False を返し、追加も削除もしない。"""
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
-        mock_github_client.get_issue_details_by_number.return_value = {"labels": ["@auto-coder"]}
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"labels": ["@auto-coder"]}
 
         config = AutomationConfig()
 
-        with LabelManager(mock_github_client, "owner/repo", 123, item_type="issue", config=config, skip_label_add=True) as should_process:
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, skip_label_add=True) as should_process:
             assert should_process is False
-            mock_github_client.try_add_labels_to_issue.assert_not_called()
+            mock_github_client.try_add_labels.assert_not_called()
         mock_github_client.remove_labels.assert_not_called()
 
 

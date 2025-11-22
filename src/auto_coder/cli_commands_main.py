@@ -245,7 +245,9 @@ def process_issues(
                 number = extract_number_from_branch(current_branch)
                 if number:
                     try:
-                        issue_data = github_client.get_issue_details_by_number(repo_name, number)
+                        gh_repo = github_client.get_repository(repo_name)
+                        issue = gh_repo.get_issue(number)
+                        issue_data = github_client.get_issue_details(issue)
                         if issue_data and issue_data.get("state") == "open":
                             target_type = "issue"
                             target_data = issue_data

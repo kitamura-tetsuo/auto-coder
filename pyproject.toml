@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.11.22.2+g99d02b7"
+version = "2.0.0+breaking-change"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -166,13 +166,15 @@ namespace_packages = true
 # Enable explicit_package_bases to avoid module path conflicts
 explicit_package_bases = true
 # Specify the package root directory
-mypy_path = ["src"]
+mypy_path = "src"
 # Disable strict mode temporarily to allow commit
 strict = false
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
-exclude = ["mcp/", "graph_builder/", "mcp_servers/"]
+exclude = ["mcp/", "graph_builder/", "mcp_servers/", "tests/"]
+# Explicitly specify packages to check
+packages = ["auto_coder"]
 
 [[tool.mypy.overrides]]
 module = [

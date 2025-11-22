@@ -57,7 +57,7 @@ class TestIssueProcessorLabelIntegration:
         client = Mock()
         client.disable_labels = False
         client.has_label.return_value = False
-        client.try_add_labels_to_issue.return_value = True
+        client.try_add_labels.return_value = True
         client.get_issue_details_by_number.return_value = {"labels": []}
         client.get_repository.return_value = Mock()
         client.get_open_sub_issues.return_value = []
@@ -131,7 +131,9 @@ class TestIssueProcessorLabelIntegration:
                 )
 
                 # Verify LabelManager was used
-                MockLabelManager.assert_called_once()
+                # First call: check_should_process_with_label_manager (skip_label_add=True)
+                # Second call: add 'jules' label
+                assert MockLabelManager.call_count == 2
                 assert result is not None
 
     def test_full_integration_chain_prompt_loader_label_manager(self, tmp_path):
@@ -318,7 +320,9 @@ class TestIssueProcessorLabelIntegration:
                     )
 
                     # Verify LabelManager was used
-                    MockLabelManager.assert_called_once()
+                    # First call: check_should_process_with_label_manager (skip_label_add=True)
+                    # Second call: add 'jules' label
+                    assert MockLabelManager.call_count == 2
 
     def test_issue_assignment_based_on_labels(self, config_with_labels):
         """Test that issues are correctly assigned based on label types."""

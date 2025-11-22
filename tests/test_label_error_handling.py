@@ -32,7 +32,7 @@ class TestGitHubAPIRateLimiting:
         mock_client = Mock()
         mock_client.disable_labels = False
         mock_client.has_label.side_effect = [requests.exceptions.HTTPError("403 Rate limit exceeded"), True]  # Success after retry
-        mock_client.try_add_labels_to_issue.return_value = True
+        mock_client.try_add_labels.return_value = True
 
         # The LabelManager should handle rate limits gracefully
         # This is a conceptual test - actual rate limiting would be in GitHub client
@@ -42,7 +42,7 @@ class TestGitHubAPIRateLimiting:
         config = AutomationConfig()
 
         # With retries enabled, should eventually succeed
-        with LabelManager(mock_client, "owner/repo", 123, item_type="issue", config=config, max_retries=2):
+        with LabelManager(mock_client, "owner/repo", 123, "issue", config=config, max_retries=2):
             pass
 
     def test_api_timeout_handling(self):
@@ -51,7 +51,7 @@ class TestGitHubAPIRateLimiting:
         mock_client.disable_labels = False
         # Simulate timeout
         mock_client.has_label.side_effect = requests.exceptions.Timeout("API timeout")
-        mock_client.try_add_labels_to_issue.return_value = False
+        mock_client.try_add_labels.return_value = False
 
         from src.auto_coder.automation_config import AutomationConfig
         from src.auto_coder.label_manager import LabelManager
@@ -59,7 +59,7 @@ class TestGitHubAPIRateLimiting:
         config = AutomationConfig()
 
         # Should handle timeout gracefully and return False (skip processing)
-        with LabelManager(mock_client, "owner/repo", 123, item_type="issue", config=config) as should_process:
+        with LabelManager(mock_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is False
 
 

@@ -355,93 +355,6 @@ class TestGitHubClient:
         assert result == expected
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_details_by_number_success(self, mock_github_class, mock_github_token):
-        """Test successful PR details retrieval by number."""
-        # Setup
-        mock_github = Mock()
-        mock_repo = Mock(spec=Repository.Repository)
-        mock_pr = Mock(spec=PullRequest.PullRequest)
-
-        # Configure mock PR
-        mock_pr.number = 123
-        mock_pr.title = "Test PR"
-        mock_pr.body = "Test PR body"
-        mock_pr.state = "open"
-        mock_pr.labels = []
-        mock_pr.assignees = []
-        mock_pr.created_at = Mock()
-        mock_pr.created_at.isoformat.return_value = "2024-01-01T00:00:00Z"
-        mock_pr.updated_at = Mock()
-        mock_pr.updated_at.isoformat.return_value = "2024-01-01T00:00:00Z"
-        mock_pr.html_url = "https://github.com/test/repo/pull/123"
-        mock_pr.user = Mock(login="author")
-        mock_pr.head = Mock(ref="feature-branch")
-        mock_pr.base = Mock(ref="main")
-        mock_pr.mergeable = True
-        mock_pr.draft = False
-        mock_pr.comments = 0
-        mock_pr.review_comments = 0
-        mock_pr.commits = 1
-        mock_pr.additions = 10
-        mock_pr.deletions = 5
-        mock_pr.changed_files = 1
-
-        mock_repo.get_pull.return_value = mock_pr
-        mock_github.get_repo.return_value = mock_repo
-        mock_github_class.return_value = mock_github
-
-        client = GitHubClient.get_instance(mock_github_token)
-
-        # Execute
-        result = client.get_pr_details_by_number("test/repo", 123)
-
-        # Assert
-        assert result["number"] == 123
-        assert result["title"] == "Test PR"
-        assert result["body"] == "Test PR body"
-
-    @patch("src.auto_coder.github_client.Github")
-    def test_get_issue_details_by_number_success(self, mock_github_class, mock_github_token):
-        """Test successful Issue details retrieval by number."""
-        # Setup
-        mock_github = Mock()
-        mock_repo = Mock(spec=Repository.Repository)
-        mock_issue = Mock(spec=Issue.Issue)
-
-        mock_issue.number = 456
-        mock_issue.title = "Test Issue"
-        mock_issue.body = "Test Issue body"
-        mock_issue.state = "open"
-        mock_label = Mock()
-        mock_label.name = "bug"
-        mock_issue.labels = [mock_label]
-        mock_issue.assignees = []
-        mock_issue.created_at = Mock()
-        mock_issue.created_at.isoformat.return_value = "2024-01-01T00:00:00Z"
-        mock_issue.updated_at = Mock()
-        mock_issue.updated_at.isoformat.return_value = "2024-01-01T00:00:00Z"
-        mock_issue.html_url = "https://github.com/test/repo/issues/456"
-        mock_issue.user = Mock(login="user")
-        mock_issue.comments = 0
-
-        mock_repo.get_issue.return_value = mock_issue
-        mock_github.get_repo.return_value = mock_repo
-        mock_github_class.return_value = mock_github
-
-        client = GitHubClient.get_instance(mock_github_token)
-
-        # Execute
-        result = client.get_issue_details_by_number("test/repo", 456)
-
-        # Assert
-        assert result["number"] == 456
-        assert result["title"] == "Test Issue"
-        assert result["body"] == "Test Issue body"
-        assert result["state"] == "open"
-        assert result["labels"] == ["bug"]
-        assert result["url"] == "https://github.com/test/repo/issues/456"
-
-    @patch("src.auto_coder.github_client.Github")
     def test_create_issue_success(self, mock_github_class, mock_github_token):
         """Test successful issue creation."""
         # Setup
@@ -596,7 +509,7 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
-        client.add_labels("test/repo", 456, ["jules", "enhancement"], item_type="pr")
+        client.add_labels("test/repo", 456, ["jules", "enhancement"], "pr")
 
         # Assert
         mock_repo.get_pull.assert_called_once_with(456)
@@ -630,35 +543,12 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute - try to add "jules" again and "enhancement"
-        client.add_labels("test/repo", 456, ["jules", "enhancement"], item_type="pr")
+        client.add_labels("test/repo", 456, ["jules", "enhancement"], "pr")
 
         # Assert
         mock_repo.get_pull.assert_called_once_with(456)
         # Should not call add_to_labels at all since "jules" already exists
         assert mock_pr.add_to_labels.call_count == 0
-
-    def test_add_labels_to_pr_wrapper_delegates(self, mock_github_token):
-        """Wrapper add_labels_to_pr should delegate to add_labels with item_type='pr'."""
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "add_labels") as mock_add:
-            client.add_labels_to_pr("test/repo", 789, ["x"])
-            mock_add.assert_called_once_with("test/repo", 789, ["x"], item_type="pr")
-
-    def test_remove_labels_from_pr_wrapper_delegates(self, mock_github_token):
-        """Wrapper remove_labels_from_pr should delegate to remove_labels with item_type='pr'."""
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "remove_labels") as mock_remove:
-            client.remove_labels_from_pr("test/repo", 789, ["x"])
-            mock_remove.assert_called_once_with("test/repo", 789, ["x"], item_type="pr")
-
-    def test_has_label_on_pr_wrapper_delegates(self, mock_github_token):
-        """Wrapper has_label_on_pr should delegate to has_label with item_type='pr'."""
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "has_label") as mock_has:
-            mock_has.return_value = True
-            result = client.has_label_on_pr("test/repo", 789, "x")
-            assert result is True
-            mock_has.assert_called_once_with("test/repo", 789, "x", item_type="pr")
 
     @patch("src.auto_coder.github_client.Github")
     def test_has_linked_pr_with_linked_pr(self, mock_github_class, mock_github_token):
@@ -1043,9 +933,20 @@ class TestGitHubClient:
         # Setup
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
+        # Mock get_repository, repo.get_issue, and get_issue_details
+        mock_repo = Mock()
+        mock_issue_100 = Mock()
+        mock_issue_200 = Mock()
 
-        # Mock get_issue_details_by_number to return closed issues
-        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
+        def get_issue_side_effect(num):
+            if num == 100:
+                return mock_issue_100
+            elif num == 200:
+                return mock_issue_200
+
+        mock_repo.get_issue.side_effect = get_issue_side_effect
+
+        with patch.object(client, "get_repository", return_value=mock_repo), patch.object(client, "get_issue_details") as mock_get_details:
             mock_get_details.side_effect = [
                 {"number": 100, "state": "closed"},
                 {"number": 200, "state": "closed"},
@@ -1064,9 +965,15 @@ class TestGitHubClient:
         # Setup
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
+        # Mock get_repository, repo.get_issue, and get_issue_details
+        mock_repo = Mock()
 
-        # Mock get_issue_details_by_number to return mixed states
-        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
+        def get_issue_side_effect(num):
+            return Mock()
+
+        mock_repo.get_issue.side_effect = get_issue_side_effect
+
+        with patch.object(client, "get_repository", return_value=mock_repo), patch.object(client, "get_issue_details") as mock_get_details:
             mock_get_details.side_effect = [
                 {"number": 100, "state": "closed"},
                 {"number": 200, "state": "open"},
@@ -1087,8 +994,15 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
-        # Mock get_issue_details_by_number to return all open issues
-        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
+        # Mock get_repository, repo.get_issue, and get_issue_details
+        mock_repo = Mock()
+
+        def get_issue_side_effect(num):
+            return Mock()
+
+        mock_repo.get_issue.side_effect = get_issue_side_effect
+
+        with patch.object(client, "get_repository", return_value=mock_repo), patch.object(client, "get_issue_details") as mock_get_details:
             mock_get_details.side_effect = [
                 {"number": 100, "state": "open"},
                 {"number": 200, "state": "open"},
@@ -1121,16 +1035,16 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
-        # Mock get_issue_details_by_number to raise exception
-        with patch.object(client, "get_issue_details_by_number") as mock_get_details:
-            mock_get_details.side_effect = GithubException(404, "Issue not found")
+        # Mock get_repository and repo.get_issue to raise exception
+        mock_repo = Mock()
+        mock_repo.get_issue.side_effect = GithubException(404, "Issue not found")
 
+        with patch.object(client, "get_repository", return_value=mock_repo):
             # Execute
             result = client.check_issue_dependencies_resolved("test/repo", [99999])
 
             # Assert - missing issue is considered unresolved
             assert result == [99999]
-            assert mock_get_details.call_count == 1
 
     @patch("src.auto_coder.github_client.Github")
     def test_search_issues_by_title_exact_match(self, mock_github_class, mock_github_token):

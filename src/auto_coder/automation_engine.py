@@ -15,6 +15,7 @@ from .gh_logger import get_gh_logger
 from .git_utils import git_commit_with_retry, git_push
 from .github_client import GitHubClient
 from .issue_processor import create_feature_issues
+from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
@@ -77,8 +78,9 @@ class AutomationEngine:
                 continue
 
             # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-            if not self.github.check_should_process_with_label_manager(repo_name, pr_number, item_type="pr"):
-                continue
+            with LabelManager(self.github, repo_name, pr_number, item_type="pr", skip_label_add=True) as should_process:
+                if not should_process:
+                    continue
 
             # Calculate GitHub Actions status for the PR
             checks = _check_github_actions_status(repo_name, pr_data, self.config)
@@ -145,8 +147,9 @@ class AutomationEngine:
                     continue
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-                if not self.github.check_should_process_with_label_manager(repo_name, number, item_type="issue"):
-                    continue
+                with LabelManager(self.github, repo_name, number, item_type="issue", skip_label_add=True) as should_process:
+                    if not should_process:
+                        continue
 
                 # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
                 if self.github.get_open_sub_issues(repo_name, number):
@@ -494,10 +497,13 @@ class AutomationEngine:
                             from .util.github_action import check_and_handle_closed_state
 
                             with ProgressStage("Checking final status"):
+                                repo = self.github.get_repository(repo_name)
                                 if item_type == "issue":
-                                    current_item = self.github.get_issue_details_by_number(repo_name, item_number)
+                                    issue = repo.get_issue(item_number)
+                                    current_item = self.github.get_issue_details(issue)
                                 else:
-                                    current_item = self.github.get_pr_details_by_number(repo_name, item_number)
+                                    pr = repo.get_pull(item_number)
+                                    current_item = self.github.get_pr_details(pr)
 
                                 # Check if item is closed and handle state
                                 check_and_handle_closed_state(
@@ -686,8 +692,10 @@ class AutomationEngine:
         """Resolve merge conflicts for a PR."""
         try:
             # Get PR details to determine the base branch
-            pr_data = self.github.get_pr_details_by_number(repo_name, pr_number)
-            base_branch = pr_data.get("base", {}).get("ref", "main")
+            repo = self.github.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+            pr_data = self.github.get_pr_details(pr)
+            base_branch = pr_data.get("base_branch", "main")
 
             # Clean up any existing conflicts
             self.cmd.run_command(["git", "reset", "--hard", "HEAD"])
@@ -1117,15 +1125,19 @@ class AutomationEngine:
             if target_type == "auto":
                 # Prefer PR to avoid mislabeling PR issues
                 try:
-                    pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                    repo = self.github.get_repository(repo_name)
+                    pr = repo.get_pull(number)
+                    pr_data = self.github.get_pr_details(pr)
                     target_type = "pr"
                 except Exception:
                     target_type = "issue"
 
             if target_type == "pr":
                 # Get PR data
-                pr_data = self.github.get_pr_details_by_number(repo_name, number)
-                branch_name = pr_data.get("head", {}).get("ref")
+                repo = self.github.get_repository(repo_name)
+                pr = repo.get_pull(number)
+                pr_data = self.github.get_pr_details(pr)
+                branch_name = pr_data.get("head_branch")
                 pr_body = pr_data.get("body", "")
                 related_issues = []
                 if pr_body:
@@ -1140,7 +1152,9 @@ class AutomationEngine:
                 )
             elif target_type == "issue":
                 # Get issue data
-                issue_data = self.github.get_issue_details_by_number(repo_name, number)
+                repo = self.github.get_repository(repo_name)
+                issue = repo.get_issue(number)
+                issue_data = self.github.get_issue_details(issue)
 
                 return Candidate(
                     type="issue",
