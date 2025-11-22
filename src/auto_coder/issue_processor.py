@@ -14,7 +14,7 @@ from auto_coder.util.github_action import (
 )
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
-from .backend_manager import get_llm_backend_manager, run_message_prompt
+from .backend_manager import get_llm_backend_manager, run_llm_message_prompt
 from .gh_logger import get_gh_logger
 from .git_utils import branch_context, commit_and_push_changes, get_commit_log
 from .github_client import GitHubClient
@@ -170,7 +170,7 @@ def _create_pr_for_issue(
                 changes_summary=llm_response[:500],
                 commit_log=commit_log or "(No commit history)",
             )
-            pr_message_response = run_message_prompt(pr_message_prompt)
+            pr_message_response = run_llm_message_prompt(pr_message_prompt)
 
             if pr_message_response and len(pr_message_response.strip()) > 0:
                 # Parse the response (first line is title, rest is body)

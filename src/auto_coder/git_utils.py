@@ -13,7 +13,7 @@ from typing import Any, Dict, Generator, List, Optional
 from urllib.parse import urlparse
 
 from .automation_config import AutomationConfig
-from .backend_manager import get_message_backend_manager, run_message_prompt
+from .backend_manager import get_message_backend_manager, run_llm_prompt
 
 try:
     from git import InvalidGitRepositoryError, Repo
@@ -1233,7 +1233,7 @@ def try_llm_commit_push(
         )
 
         # Execute LLM to resolve the issue
-        response = run_message_prompt(prompt)
+        response = run_llm_prompt(prompt)
 
         if not response:
             logger.error("No response from LLM for commit/push resolution")
@@ -1307,7 +1307,7 @@ def try_llm_dprint_fallback(
         )
 
         # Execute LLM to resolve the issue
-        response = run_message_prompt(prompt)
+        response = run_llm_prompt(prompt)
 
         if not response:
             logger.error("No response from LLM for dprint fallback")

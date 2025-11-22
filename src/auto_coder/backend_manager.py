@@ -674,7 +674,7 @@ def get_message_backend_manager(
     )
 
 
-def run_message_prompt(prompt: str) -> str:
+def run_llm_message_prompt(prompt: str) -> str:
     """
     Run a prompt using the global message backend manager.
 

@@ -1,4 +1,4 @@
-version: "2025.11.21+gedcc95f"
+version: "2025.11.21+g2b85260"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
