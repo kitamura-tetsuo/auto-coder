@@ -260,38 +260,17 @@ def check_codex_cli_or_fail() -> None:
 
 def check_qwen_cli_or_fail() -> None:
     """Check if qwen CLI is available and working."""
-    try:
-        result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using qwen CLI")
-            return
-    except Exception:
-        pass
-    raise click.ClickException("Qwen Code CLI is required. Please install it from:\n" "https://github.com/QwenLM/qwen-code\n" "Or use: npm install -g @qwen-code/qwen-code")
+    check_cli_tool(tool_name="qwen", install_url="https://github.com/QwenLM/qwen-code\nOr use: npm install -g @qwen-code/qwen-code", version_flag="--version")
 
 
 def check_auggie_cli_or_fail() -> None:
     """Check if auggie CLI is available and working."""
-    try:
-        result = subprocess.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using auggie CLI")
-            return
-    except Exception:
-        pass
-    raise click.ClickException("Auggie CLI is required. Please install it via:\n" "npm install -g @augmentcode/auggie")
+    check_cli_tool(tool_name="auggie", install_url="npm install -g @augmentcode/auggie", version_flag="--version")
 
 
 def check_claude_cli_or_fail() -> None:
     """Check if claude CLI is available and working."""
-    try:
-        result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using claude CLI")
-            return
-    except Exception:
-        pass
-    raise click.ClickException("Claude CLI is required. Please install it from:\n" "https://claude.ai/download")
+    check_cli_tool(tool_name="claude", install_url="https://claude.ai/download", version_flag="--version")
 
 
 def check_cli_tool(tool_name: str, install_url: str, version_flag: str = "--version", cmd_override_env: Optional[str] = None) -> None:
