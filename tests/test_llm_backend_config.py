@@ -34,6 +34,8 @@ class TestBackendConfig:
         assert config.openai_base_url is None
         assert config.extra_args == {}
         assert config.providers == []
+        assert config.usage_limit_retry_count == 0
+        assert config.usage_limit_retry_wait_seconds == 0
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -50,6 +52,8 @@ class TestBackendConfig:
             openai_base_url="https://openai.example.com",
             extra_args={"arg1": "value1"},
             providers=["provider1", "provider2"],
+            usage_limit_retry_count=5,
+            usage_limit_retry_wait_seconds=30,
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -63,6 +67,8 @@ class TestBackendConfig:
         assert config.openai_base_url == "https://openai.example.com"
         assert config.extra_args == {"arg1": "value1"}
         assert config.providers == ["provider1", "provider2"]
+        assert config.usage_limit_retry_count == 5
+        assert config.usage_limit_retry_wait_seconds == 30
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -429,6 +435,76 @@ class TestLLMBackendConfiguration:
             assert data["backends"]["gemini"]["model"] == "custom-model"
             assert data["backends"]["gemini"]["temperature"] == 0.9
             assert data["backends"]["qwen"]["providers"] == ["qwen-open-router", "qwen-azure"]
+
+    def test_toml_save_and_load_retry_config(self):
+        """Test that retry configuration fields are properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_retry_config.toml"
+
+            # Create configuration with retry settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").usage_limit_retry_count = 5
+            config.get_backend_config("gemini").usage_limit_retry_wait_seconds = 30
+            config.get_backend_config("qwen").usage_limit_retry_count = 3
+            config.get_backend_config("qwen").usage_limit_retry_wait_seconds = 60
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify retry configuration was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.usage_limit_retry_count == 5
+            assert gemini_config.usage_limit_retry_wait_seconds == 30
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.usage_limit_retry_count == 3
+            assert qwen_config.usage_limit_retry_wait_seconds == 60
+
+    def test_backward_compatibility_old_toml_without_retry_fields(self):
+        """Test loading old TOML files that don't have retry configuration fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config.toml"
+
+            # Create a TOML file with the old structure (without retry fields)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify retry fields have default values when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.usage_limit_retry_count == 0
+            assert qwen_config.usage_limit_retry_wait_seconds == 0
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.usage_limit_retry_count == 0
+            assert gemini_config.usage_limit_retry_wait_seconds == 0
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
 
     def test_configuration_persistence_across_instances(self):
         """Test that configuration persists correctly across multiple instances."""
