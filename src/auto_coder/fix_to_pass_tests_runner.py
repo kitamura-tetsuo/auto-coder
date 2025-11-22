@@ -15,9 +15,10 @@ from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_com
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
+from .test_log_utils import extract_first_failed_test
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
-from .utils import CommandExecutor, change_fraction, extract_first_failed_test, log_action
+from .utils import CommandExecutor, change_fraction, log_action
 
 if TYPE_CHECKING:
     from .backend_manager import BackendManager

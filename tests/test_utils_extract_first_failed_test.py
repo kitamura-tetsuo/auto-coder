@@ -1,7 +1,7 @@
 import os
 import textwrap
 
-from src.auto_coder.utils import extract_first_failed_test
+from src.auto_coder.test_log_utils import extract_first_failed_test
 
 
 def test_extract_from_pytest_failed_summary_hyphen(monkeypatch):
