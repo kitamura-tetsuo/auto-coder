@@ -115,6 +115,27 @@ class GeminiClient(LLMClientBase):
         """Escape @ characters in prompt for Gemini."""
         return prompt.replace("@", "\\@").strip()
 
+    @staticmethod
+    def _is_usage_limit(message: str, returncode: int) -> bool:
+        """Detect usage/traffic limit signals from Gemini CLI output."""
+        low = message.lower()
+        if not low:
+            return False
+
+        # Direct rate/usage limit markers
+        if "rate limit" in low or "usage limit" in low or "quota" in low:
+            return True
+
+        # HTTP 429 responses (even when return code is 0)
+        if "429" in low or "too many requests" in low:
+            return True
+
+        # Google specific resource exhaustion wording
+        if "resource_exhausted" in low or "resource exhausted" in low:
+            return True
+
+        return False
+
     def _run_llm_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
 
@@ -137,8 +158,12 @@ class GeminiClient(LLMClientBase):
 
             usage_markers = (
                 "rate limit",
+                "usage limit",
+                "quota",
                 "resource_exhausted",
                 "too many requests",
+                "429",
+                "[api error: you have exhausted your capacity on this model. your quota will reset after ",
             )
 
             _log_json_line(
@@ -177,6 +202,7 @@ class GeminiClient(LLMClientBase):
             low = full_output.lower()
 
             # Prepare structured JSON log entry
+            usage_limit_hit = self._is_usage_limit(full_output, result.returncode) or any(m in low for m in usage_markers)
             log_entry = {
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                 "client": "gemini",
@@ -184,7 +210,7 @@ class GeminiClient(LLMClientBase):
                 "prompt_length": len(prompt),
                 "return_code": result.returncode,
                 "success": result.returncode == 0,
-                "usage_limit_hit": any(marker in low for marker in usage_markers),
+                "usage_limit_hit": usage_limit_hit,
                 "output": full_output,
             }
 
@@ -196,13 +222,11 @@ class GeminiClient(LLMClientBase):
             print(summary)
 
             # Handle errors
-            if result.returncode != 0:
-                if log_entry["usage_limit_hit"]:
-                    raise AutoCoderUsageLimitError(full_output)
-                raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
-
-            if log_entry["usage_limit_hit"]:
+            if usage_limit_hit:
                 raise AutoCoderUsageLimitError(full_output)
+
+            if result.returncode != 0:
+                raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
             return full_output
 
         except AutoCoderUsageLimitError:
