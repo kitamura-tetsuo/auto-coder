@@ -91,9 +91,11 @@ class CodexClient(LLMClientBase):
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
+
+            if any(marker in low for marker in usage_markers):
+                raise AutoCoderUsageLimitError(full_output)
+
             if result.returncode != 0:
-                if any(marker in low for marker in usage_markers):
-                    raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"codex CLI failed with return code {result.returncode}\n{full_output}")
 
             return full_output
