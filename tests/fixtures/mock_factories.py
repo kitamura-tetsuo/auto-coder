@@ -34,7 +34,6 @@ class GitHubClientMockFactory:
         mock_client.get_issue_details_by_number.return_value = {"labels": []}
         mock_client.get_pr_details_by_number.return_value = {"labels": []}
         mock_client.get_repository.return_value = Mock()
-        mock_client.add_labels_to_issue.return_value = True
         mock_client.get_labels.return_value = []
         mock_client.token = "test_token"
         return mock_client

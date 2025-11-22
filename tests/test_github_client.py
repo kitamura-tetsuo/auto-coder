@@ -637,29 +637,6 @@ class TestGitHubClient:
         # Should not call add_to_labels at all since "jules" already exists
         assert mock_pr.add_to_labels.call_count == 0
 
-    def test_add_labels_to_pr_wrapper_delegates(self, mock_github_token):
-        """Wrapper add_labels_to_pr should delegate to add_labels with item_type='pr'."""
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "add_labels") as mock_add:
-            client.add_labels_to_pr("test/repo", 789, ["x"])
-            mock_add.assert_called_once_with("test/repo", 789, ["x"], item_type="pr")
-
-    def test_remove_labels_from_pr_wrapper_delegates(self, mock_github_token):
-        """Wrapper remove_labels_from_pr should delegate to remove_labels with item_type='pr'."""
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "remove_labels") as mock_remove:
-            client.remove_labels_from_pr("test/repo", 789, ["x"])
-            mock_remove.assert_called_once_with("test/repo", 789, ["x"], item_type="pr")
-
-    def test_has_label_on_pr_wrapper_delegates(self, mock_github_token):
-        """Wrapper has_label_on_pr should delegate to has_label with item_type='pr'."""
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "has_label") as mock_has:
-            mock_has.return_value = True
-            result = client.has_label_on_pr("test/repo", 789, "x")
-            assert result is True
-            mock_has.assert_called_once_with("test/repo", 789, "x", item_type="pr")
-
     @patch("src.auto_coder.github_client.Github")
     def test_has_linked_pr_with_linked_pr(self, mock_github_class, mock_github_token):
         """Test has_linked_pr returns True when PR references the issue."""

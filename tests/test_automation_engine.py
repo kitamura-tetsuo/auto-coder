@@ -87,7 +87,7 @@ class TestAutomationEngine:
             "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         # Mock successful processing - simulate that the PR was processed without errors
         with (
@@ -124,7 +124,7 @@ class TestAutomationEngine:
             "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         # Mock failed processing
         with (
@@ -161,7 +161,7 @@ class TestAutomationEngine:
             "draft": False,
         }
         mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
-        mock_github_client.try_add_work_in_progress_label.return_value = True
+        mock_github_client.try_add_labels.return_value = True
 
         # Mock that GitHub Actions are failing due to conflicts
         with (
@@ -2505,4 +2505,4 @@ class TestUrgentLabelPropagation:
         assert create_call[2] == "create"
 
         # Verify urgent label was NOT added
-        mock_github_client.add_labels_to_issue.assert_not_called()
+        mock_github_client.add_labels.assert_not_called()
