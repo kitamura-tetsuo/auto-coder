@@ -382,8 +382,6 @@ class CodexMCPClient(LLMClientBase):
                 logger.warning(f"MCP attempts failed, will fallback to codex exec: {e}")
 
         # Fallback: codex exec
-        import datetime
-
         try:
             cmd: List[str] = [
                 "codex",
@@ -402,9 +400,6 @@ class CodexMCPClient(LLMClientBase):
             )
 
             # Capture output without streaming to logger
-            import subprocess
-            from typing import List
-
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,

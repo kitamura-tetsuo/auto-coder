@@ -285,8 +285,6 @@ class QwenClient(LLMClientBase):
         Returns:
             The CLI's response as a string
         """
-        import datetime
-
         usage_markers = (
             "rate limit",
             "quota",

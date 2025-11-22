@@ -91,6 +91,11 @@ class GeminiClient(LLMClientBase):
 
         try:
             escaped_prompt = self._escape_prompt(prompt)
+            logger.warning(
+                "LLM invocation via Gemini CLI (model=%s, prompt_length=%d)",
+                self.model_name,
+                len(prompt),
+            )
             cmd = [
                 "gemini",
                 "--yolo",
