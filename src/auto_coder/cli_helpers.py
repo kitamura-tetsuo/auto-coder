@@ -232,30 +232,13 @@ def check_codex_cli_or_fail() -> None:
     execute the command with `--version` first; if that fails, we will run the
     command without arguments as a liveness check.
     """
-    # Allow override for CI/e2e tests
-    override = os.environ.get("AUTOCODER_CODEX_CLI")
-    if override:
-        cmd = shlex.split(override)
-        # Try with --version
-        try:
-            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                click.echo(f"Using codex CLI (override): {cmd[0]}")
-                return
-        except Exception:
-            pass
-        # Fallback: run without args
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                click.echo(f"Using codex CLI (override): {cmd[0]}")
-                return
-        except Exception:
-            pass
-        raise click.ClickException("Codex CLI override (AUTOCODER_CODEX_CLI) is set but not working")
-
-    # Default: use generic function
-    check_cli_tool(tool_name="codex", install_url="https://github.com/openai/codex", version_flag="--version")
+    check_cli_tool(
+        tool_name="codex",
+        install_url="https://github.com/openai/codex",
+        version_flag="--version",
+        cmd_override_env="AUTOCODER_CODEX_CLI",
+        fallback_without_args=True,
+    )
 
 
 def check_qwen_cli_or_fail() -> None:
@@ -273,7 +256,13 @@ def check_claude_cli_or_fail() -> None:
     check_cli_tool(tool_name="claude", install_url="https://claude.ai/download", version_flag="--version")
 
 
-def check_cli_tool(tool_name: str, install_url: str, version_flag: str = "--version", cmd_override_env: Optional[str] = None) -> None:
+def check_cli_tool(
+    tool_name: str,
+    install_url: str,
+    version_flag: str = "--version",
+    cmd_override_env: Optional[str] = None,
+    fallback_without_args: bool = False,
+) -> None:
     """Generic CLI tool checker.
 
     Args:
@@ -282,6 +271,8 @@ def check_cli_tool(tool_name: str, install_url: str, version_flag: str = "--vers
         version_flag: Flag to use for version check (default: "--version")
         cmd_override_env: Optional environment variable name that, if set, contains
                          an override command to use instead of the tool name
+        fallback_without_args: If True and version check fails, try running without args
+                              (useful for some CLIs that don't support --version)
 
     Raises:
         click.ClickException: If the CLI tool is not available or not working
@@ -297,6 +288,17 @@ def check_cli_tool(tool_name: str, install_url: str, version_flag: str = "--vers
                 return
         except Exception:
             pass
+
+        # Fallback: try without args if version check fails
+        if fallback_without_args:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    click.echo(f"Using {tool_name} CLI")
+                    return
+            except Exception:
+                pass
+
         raise click.ClickException(f"{tool_name} CLI override ({cmd_override_env}) is set but not working")
 
     # Default: check the actual CLI tool
