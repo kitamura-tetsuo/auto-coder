@@ -10,10 +10,10 @@ argument.
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
@@ -132,7 +132,7 @@ class AuggieClient(LLMClientBase):
     def _check_and_increment_usage(self) -> None:
         """Ensure the daily usage limit allows another Auggie invocation."""
 
-        today_str = datetime.now().date().isoformat()
+        today_str = datetime.datetime.now().date().isoformat()
         stored_date, count = self._load_usage_state()
 
         if stored_date != today_str:
@@ -242,7 +242,73 @@ class AuggieClient(LLMClientBase):
         Returns:
             The LLM's response as a string
         """
-        return self._run_auggie_cli(prompt)
+        self._check_and_increment_usage()
+        escaped_prompt = self._escape_prompt(prompt)
+        cmd = [
+            "auggie",
+            "--print",
+            "--model",
+            self.model_name,
+            escaped_prompt,
+        ]
+
+        usage_markers = (
+            "rate limit",
+            "quota",
+            "429",
+        )
+
+        # Capture output without streaming to logger
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
+        )
+
+        output_lines: List[str] = []
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            output_lines.append(line)
+
+        return_code = process.wait()
+        full_output = "\n".join(output_lines).strip()
+        low = full_output.lower()
+
+        # Prepare structured JSON log entry
+        log_entry = {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "client": "auggie",
+            "model": self.model_name,
+            "prompt_length": len(prompt),
+            "return_code": return_code,
+            "success": return_code == 0,
+            "usage_limit_hit": any(marker in low for marker in usage_markers),
+            "output": full_output,
+        }
+
+        # Log as single-line JSON
+        logger.info(json.dumps(log_entry, ensure_ascii=False))
+
+        # Print summary to stdout
+        summary = f"[Auggie] Model: {self.model_name}, Prompt: {len(prompt)} chars, Output: {len(full_output)} chars"
+        print(summary)
+
+        # Handle errors
+        if return_code != 0:
+            if log_entry["usage_limit_hit"]:
+                raise AutoCoderUsageLimitError(full_output)
+            raise RuntimeError(f"auggie CLI failed with return code {return_code}\n{full_output}")
+
+        if log_entry["usage_limit_hit"]:
+            raise AutoCoderUsageLimitError(full_output)
+
+        return full_output
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Auggie CLI.

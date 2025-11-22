@@ -9,6 +9,7 @@ Design: mirror GeminiClient/CodexClient public surface so AutomationEngine can u
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import subprocess
@@ -284,31 +285,63 @@ class QwenClient(LLMClientBase):
         Returns:
             The CLI's response as a string
         """
-        display_model = model or self.default_model
-        display_cmd = " ".join(cmd[:3]) + "..." if len(cmd) > 3 else " ".join(cmd)
-
-        logger.warning(
-            "LLM invocation: %s CLI is being called. Keep LLM calls minimized.",
-            cli_name,
+        usage_markers = (
+            "rate limit",
+            "quota",
+            "429",
+            "too many requests",
+            "error: 400 model access denied.",
+            "openai api streaming error: 429 free allocated quota exceeded.",
+            "openai api streaming error: 429 provider returned error",
         )
-        logger.info(
-            "🤖 Running (qwen): %s",
-            display_cmd,
-        )
-        logger.info("=" * 60)
 
+        # Capture output without streaming to logger
         result = CommandExecutor.run_command(
             cmd,
-            stream_output=True,
+            stream_output=False,
             env=env,
         )
-        logger.info("=" * 60)
 
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
         combined_parts = [part for part in (stdout, stderr) if part]
         full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
         full_output = full_output.strip()
+        low = full_output.lower()
+
+        # Calculate prompt length by finding the prompt argument in the command
+        prompt_length = 0
+        if cli_name == "qwen":
+            # In qwen CLI, prompt is passed via -p flag
+            for i, arg in enumerate(cmd):
+                if arg == "-p" and i + 1 < len(cmd):
+                    prompt_length = len(cmd[i + 1])
+                    break
+        else:
+            # For codex CLI, prompt is the last argument (non-flag)
+            for arg in reversed(cmd):
+                if not arg.startswith("-") and len(arg) > 5:  # Skip short arguments
+                    prompt_length = len(arg)
+                    break
+
+        # Prepare structured JSON log entry
+        log_entry = {
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "client": cli_name,
+            "model": model or self.default_model,
+            "prompt_length": prompt_length,
+            "return_code": result.returncode,
+            "success": result.returncode == 0,
+            "usage_limit_hit": any(marker in low for marker in usage_markers),
+            "output": full_output,
+        }
+
+        # Log as single-line JSON
+        logger.info(json.dumps(log_entry, ensure_ascii=False))
+
+        # Print summary to stdout
+        summary = f"[{cli_name.capitalize()}] Model: {model or self.default_model}, Output: {len(full_output)} chars"
+        print(summary)
 
         if self._is_usage_limit(full_output, result.returncode):
             raise AutoCoderUsageLimitError(full_output)
