@@ -1,3 +1,4 @@
+import os
 import sys
 from types import SimpleNamespace
 
@@ -102,3 +103,19 @@ def test_is_running_in_debugger_true_env_markers(monkeypatch, marker):
 
     monkeypatch.setenv(marker, "1")
     assert utils.CommandExecutor.is_running_in_debugger() is True
+
+
+def test_run_command_env_overrides(monkeypatch):
+    """CommandExecutor should apply env overrides without mutating global os.environ."""
+    monkeypatch.delenv("FAKE_PROVIDER_TOKEN", raising=False)
+
+    script = [
+        sys.executable,
+        "-c",
+        "import os; print(os.getenv('FAKE_PROVIDER_TOKEN', 'missing'))",
+    ]
+
+    result = utils.CommandExecutor.run_command(script, stream_output=False, env_overrides={"FAKE_PROVIDER_TOKEN": "scoped"})
+
+    assert result.stdout.strip() == "scoped"
+    assert "FAKE_PROVIDER_TOKEN" not in os.environ
