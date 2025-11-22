@@ -57,6 +57,8 @@ class CodexClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Run codex CLI with the given prompt and show real-time output."""
+        import datetime
+
         try:
             escaped_prompt = self._escape_prompt(prompt)
             cmd = [
@@ -68,11 +70,6 @@ class CodexClient(LLMClientBase):
                 escaped_prompt,
             ]
 
-            logger.warning("LLM invocation: codex CLI is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running codex CLI with prompt length: {len(prompt)} characters")
-            logger.info("🤖 Running: codex exec -s workspace-write --dangerously-bypass-approvals-and-sandbox [prompt]")
-            logger.info("=" * 60)
-
             usage_markers = (
                 "rate limit",
                 "usage limit",
@@ -80,23 +77,45 @@ class CodexClient(LLMClientBase):
                 "too many requests",
             )
 
+            # Capture output without streaming to logger
             result = CommandExecutor.run_command(
                 cmd,
-                stream_output=True,
+                stream_output=False,
             )
-            logger.info("=" * 60)
+
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
             combined_parts = [part for part in (stdout, stderr) if part]
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
+
+            # Prepare structured JSON log entry
+            log_entry = {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "client": "codex",
+                "model": self.model_name,
+                "prompt_length": len(prompt),
+                "return_code": result.returncode,
+                "success": result.returncode == 0,
+                "usage_limit_hit": any(marker in low for marker in usage_markers),
+                "output": full_output,
+            }
+
+            # Log as single-line JSON
+            logger.info(json.dumps(log_entry, ensure_ascii=False))
+
+            # Print summary to stdout
+            summary = f"[Codex] Model: {self.model_name}, Prompt: {len(prompt)} chars, Output: {len(full_output)} chars"
+            print(summary)
+
+            # Handle errors
             if result.returncode != 0:
-                if any(marker in low for marker in usage_markers):
+                if log_entry["usage_limit_hit"]:
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"codex CLI failed with return code {result.returncode}\n{full_output}")
 
-            if any(marker in low for marker in usage_markers):
+            if log_entry["usage_limit_hit"]:
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
         except AutoCoderUsageLimitError:
