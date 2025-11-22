@@ -221,16 +221,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
 def check_gemini_cli_or_fail() -> None:
     """Check if gemini CLI is available and working."""
-    try:
-        result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using gemini CLI")
-            return
-    except Exception:
-        pass
-
-    # Show helpful error with installation instructions
-    raise click.ClickException("Gemini CLI is required. Please install it from:\n" "https://github.com/google-gemini/gemini-cli\n" "Or use: npm install -g @google/generative-ai-cli")
+    check_cli_tool(tool_name="gemini", install_url="https://github.com/google-gemini/gemini-cli\nOr use: npm install -g @google/generative-ai-cli", version_flag="--version")
 
 
 def check_codex_cli_or_fail() -> None:
@@ -241,74 +232,85 @@ def check_codex_cli_or_fail() -> None:
     execute the command with `--version` first; if that fails, we will run the
     command without arguments as a liveness check.
     """
-    # Allow override for CI/e2e tests
-    override = os.environ.get("AUTOCODER_CODEX_CLI")
-    if override:
-        cmd = shlex.split(override)
-        # Try with --version
-        try:
-            result = subprocess.run(cmd + ["--version"], capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                click.echo(f"Using codex CLI (override): {cmd[0]}")
-                return
-        except Exception:
-            pass
-        # Fallback: run without args
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-            if result.returncode == 0:
-                click.echo(f"Using codex CLI (override): {cmd[0]}")
-                return
-        except Exception:
-            pass
-        raise click.ClickException("Codex CLI override (AUTOCODER_CODEX_CLI) is set but not working")
-
-    # Default: check real codex CLI
-    try:
-        result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using codex CLI")
-            return
-    except Exception:
-        pass
-
-    raise click.ClickException("Codex CLI is required. Please install it from:\n" "https://github.com/openai/codex")
+    check_cli_tool(
+        tool_name="codex",
+        install_url="https://github.com/openai/codex",
+        version_flag="--version",
+        cmd_override_env="AUTOCODER_CODEX_CLI",
+        fallback_without_args=True,
+    )
 
 
 def check_qwen_cli_or_fail() -> None:
     """Check if qwen CLI is available and working."""
-    try:
-        result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using qwen CLI")
-            return
-    except Exception:
-        pass
-    raise click.ClickException("Qwen Code CLI is required. Please install it from:\n" "https://github.com/QwenLM/qwen-code\n" "Or use: npm install -g @qwen-code/qwen-code")
+    check_cli_tool(tool_name="qwen", install_url="https://github.com/QwenLM/qwen-code\nOr use: npm install -g @qwen-code/qwen-code", version_flag="--version")
 
 
 def check_auggie_cli_or_fail() -> None:
     """Check if auggie CLI is available and working."""
-    try:
-        result = subprocess.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using auggie CLI")
-            return
-    except Exception:
-        pass
-    raise click.ClickException("Auggie CLI is required. Please install it via:\n" "npm install -g @augmentcode/auggie")
+    check_cli_tool(tool_name="auggie", install_url="npm install -g @augmentcode/auggie", version_flag="--version")
 
 
 def check_claude_cli_or_fail() -> None:
     """Check if claude CLI is available and working."""
+    check_cli_tool(tool_name="claude", install_url="https://claude.ai/download", version_flag="--version")
+
+
+def check_cli_tool(
+    tool_name: str,
+    install_url: str,
+    version_flag: str = "--version",
+    cmd_override_env: Optional[str] = None,
+    fallback_without_args: bool = False,
+) -> None:
+    """Generic CLI tool checker.
+
+    Args:
+        tool_name: Name of the CLI tool to check
+        install_url: URL with installation instructions for the tool
+        version_flag: Flag to use for version check (default: "--version")
+        cmd_override_env: Optional environment variable name that, if set, contains
+                         an override command to use instead of the tool name
+        fallback_without_args: If True and version check fails, try running without args
+                              (useful for some CLIs that don't support --version)
+
+    Raises:
+        click.ClickException: If the CLI tool is not available or not working
+    """
+    # Check if override env var is set
+    override = os.environ.get(cmd_override_env) if cmd_override_env else None
+    if override:
+        cmd = shlex.split(override)
+        try:
+            result = subprocess.run(cmd + [version_flag], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                click.echo(f"Using {tool_name} CLI")
+                return
+        except Exception:
+            pass
+
+        # Fallback: try without args if version check fails
+        if fallback_without_args:
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    click.echo(f"Using {tool_name} CLI")
+                    return
+            except Exception:
+                pass
+
+        raise click.ClickException(f"{tool_name} CLI override ({cmd_override_env}) is set but not working")
+
+    # Default: check the actual CLI tool
     try:
-        result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
+        result = subprocess.run([tool_name, version_flag], capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
-            click.echo("Using claude CLI")
+            click.echo(f"Using {tool_name} CLI")
             return
     except Exception:
         pass
-    raise click.ClickException("Claude CLI is required. Please install it from:\n" "https://claude.ai/download")
+
+    raise click.ClickException(f"{tool_name} CLI is required. Please install it from:\n{install_url}")
 
 
 def build_models_map() -> Dict[str, str]:

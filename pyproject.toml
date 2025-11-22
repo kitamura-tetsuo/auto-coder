@@ -166,15 +166,13 @@ namespace_packages = true
 # Enable explicit_package_bases to avoid module path conflicts
 explicit_package_bases = true
 # Specify the package root directory
-mypy_path = "."
+mypy_path = ["src"]
 # Disable strict mode temporarily to allow commit
 strict = false
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["mcp/", "graph_builder/", "mcp_servers/"]
-# Specify files to check
-files = ["src", "tests"]
 
 [[tool.mypy.overrides]]
 module = [
