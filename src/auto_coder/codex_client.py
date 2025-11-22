@@ -2,6 +2,7 @@
 Codex CLI client for Auto-Coder.
 """
 
+import datetime
 import json
 import subprocess
 from pathlib import Path
@@ -57,7 +58,6 @@ class CodexClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Run codex CLI with the given prompt and show real-time output."""
-        import datetime
 
         try:
             escaped_prompt = self._escape_prompt(prompt)
