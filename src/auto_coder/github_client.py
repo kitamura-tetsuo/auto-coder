@@ -633,19 +633,6 @@ class GitHubClient:
             logger.error(f"Failed to close issue #{issue_number}: {e}")
             raise
 
-    def add_labels_to_issue(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> None:
-        """Add labels to an existing issue or PR.
-
-        This method is kept for backward compatibility. Use add_labels() instead.
-
-        Args:
-            repo_name: Repository name (owner/repo)
-            issue_number: Issue or PR number
-            labels: List of labels to add
-            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
-        """
-        self.add_labels(repo_name, issue_number, labels, item_type)
-
     def add_labels(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> None:
         """Add labels to an existing issue or PR.
 
@@ -742,50 +729,6 @@ class GitHubClient:
         except GithubException as e:
             logger.error(f"Failed to add labels to {item_type} #{issue_number}: {e}")
             raise
-
-    def try_add_labels_to_issue(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> bool:
-        """Add labels to an existing issue or PR.
-
-        This method is kept for backward compatibility. Use try_add_labels() instead.
-
-        Args:
-            repo_name: Repository name (owner/repo)
-            issue_number: Issue or PR number
-            labels: List of labels to add
-            item_type: Type of item ('issue' or 'pr'), defaults to 'issue'
-
-        Returns:
-            True if labels were successfully added, False if they already exist
-        """
-        return self.try_add_labels(repo_name, issue_number, labels, item_type)
-
-    def add_labels_to_pr(self, repo_name: str, pr_number: int, labels: List[str]) -> None:
-        """Convenience wrapper to add labels to a PR.
-
-        Delegates to add_labels(..., item_type="pr").
-        """
-        self.add_labels(repo_name, pr_number, labels, item_type="pr")
-
-    def remove_labels_from_pr(self, repo_name: str, pr_number: int, labels: List[str]) -> None:
-        """Convenience wrapper to remove labels from a PR.
-
-        Delegates to remove_labels(..., item_type="pr").
-        """
-        self.remove_labels(repo_name, pr_number, labels, item_type="pr")
-
-    def has_label_on_pr(self, repo_name: str, pr_number: int, label: str) -> bool:
-        """Convenience wrapper to check if a PR has a label.
-
-        Delegates to has_label(..., item_type="pr").
-        """
-        return self.has_label(repo_name, pr_number, label, item_type="pr")
-
-    def try_add_work_in_progress_label(self, repo_name: str, pr_number: int) -> bool:
-        """Convenience wrapper to add 'work-in-progress' label to a PR if absent.
-
-        Returns True if the label was added, False if it already existed.
-        """
-        return self.try_add_labels(repo_name, pr_number, ["work-in-progress"], item_type="pr")
 
     def remove_labels(self, repo_name: str, item_number: int, labels: List[str], item_type: str = "issue") -> None:
         """Remove labels from an existing issue or PR.
