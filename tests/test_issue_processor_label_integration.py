@@ -131,7 +131,9 @@ class TestIssueProcessorLabelIntegration:
                 )
 
                 # Verify LabelManager was used
-                MockLabelManager.assert_called_once()
+                # First call: check_should_process_with_label_manager (skip_label_add=True)
+                # Second call: add 'jules' label
+                assert MockLabelManager.call_count == 2
                 assert result is not None
 
     def test_full_integration_chain_prompt_loader_label_manager(self, tmp_path):
@@ -318,7 +320,9 @@ class TestIssueProcessorLabelIntegration:
                     )
 
                     # Verify LabelManager was used
-                    MockLabelManager.assert_called_once()
+                    # First call: check_should_process_with_label_manager (skip_label_add=True)
+                    # Second call: add 'jules' label
+                    assert MockLabelManager.call_count == 2
 
     def test_issue_assignment_based_on_labels(self, config_with_labels):
         """Test that issues are correctly assigned based on label types."""

@@ -211,26 +211,6 @@ class GitHubClient:
             "changed_files": pr.changed_files,
         }
 
-    def get_pr_details_by_number(self, repo_name: str, pr_number: int) -> Dict[str, Any]:
-        """Get PR details by repository name and PR number."""
-        try:
-            repo = self.get_repository(repo_name)
-            pr = repo.get_pull(pr_number)
-            return self.get_pr_details(pr)
-        except GithubException as e:
-            logger.error(f"Failed to get PR #{pr_number} from {repo_name}: {e}")
-            raise
-
-    def get_issue_details_by_number(self, repo_name: str, issue_number: int) -> Dict[str, Any]:
-        """Get Issue details by repository name and issue number."""
-        try:
-            repo = self.get_repository(repo_name)
-            issue = repo.get_issue(issue_number)
-            return self.get_issue_details(issue)
-        except GithubException as e:
-            logger.error(f"Failed to get Issue #{issue_number} from {repo_name}: {e}")
-            raise
-
     def find_pr_by_head_branch(self, repo_name: str, branch_name: str) -> Optional[Dict[str, Any]]:
         """Find an open PR by its head branch name.
 
@@ -796,37 +776,6 @@ class GitHubClient:
             logger.error(f"Failed to check labels for {item_type} #{issue_number}: {e}")
             raise
 
-    def check_should_process_with_label_manager(
-        self,
-        repo_name: str,
-        issue_number: int,
-        item_type: str,
-    ) -> bool:
-        """Check if label exists using LabelManager without adding it.
-
-        This method provides a unified way to check for label existence using the
-        LabelManager, which ensures proper reentry handling and thread safety.
-
-        Args:
-            repo_name: Repository name in format 'owner/repo'
-            issue_number: Issue or PR number
-            item_type: Type of item ('issue' or 'pr')
-
-        Returns:
-            True if procees should continue (label added or already checked),
-            False if label already exists (another instance is processing)
-        """
-        from .label_manager import LabelManager
-
-        with LabelManager(
-            self,
-            repo_name,
-            issue_number,
-            item_type=item_type,
-            skip_label_add=True,
-        ) as should_process:
-            return should_process
-
     def _search_issues_by_title(self, repo_name: str, search_title: str) -> Optional[int]:
         """Search for an open issue by title using fuzzy matching.
 
@@ -1074,9 +1023,11 @@ class GitHubClient:
             return []
 
         unresolved = []
+        repo = self.get_repository(repo_name)
         for issue_num in dependencies:
             try:
-                issue_details = self.get_issue_details_by_number(repo_name, issue_num)
+                issue = repo.get_issue(issue_num)
+                issue_details = self.get_issue_details(issue)
                 state = issue_details.get("state", "open")
                 if state == "open":
                     unresolved.append(issue_num)

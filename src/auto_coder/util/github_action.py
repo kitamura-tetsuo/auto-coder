@@ -1943,10 +1943,13 @@ def check_and_handle_closed_state(
     try:
         # Get current item state if not provided
         if current_item is None:
+            repo = github_client.get_repository(repo_name)
             if item_type == "pr":
-                current_item = github_client.get_pr_details_by_number(repo_name, item_number)
+                pr = repo.get_pull(item_number)
+                current_item = github_client.get_pr_details(pr)
             elif item_type == "issue":
-                current_item = github_client.get_issue_details_by_number(repo_name, item_number)
+                issue = repo.get_issue(item_number)
+                current_item = github_client.get_issue_details(issue)
             else:
                 logger.warning(f"Unknown item type: {item_type}")
                 return False

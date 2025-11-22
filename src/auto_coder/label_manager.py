@@ -509,65 +509,32 @@ class LabelManager:
                 # Fall through to fallback path if result is not boolean
 
             # Fallback when using a mocked client (spec=GitHubClient) or when has_label is unavailable.
-            # Attempt number-based detail getters first, then fall back to object-based getters
-            # that tests commonly patch (get_pr_details / get_issue_details).
+            # Use object-based detail getters that tests commonly patch (get_pr_details / get_issue_details).
             if self.item_type.lower() == "pr":
                 pr_labels: list[str] = []
-                # Try by-number API
                 try:
-                    pr_details = self.github_client.get_pr_details_by_number(self.repo_name, int(self.item_number))
+                    repo = self.github_client.get_repository(self.repo_name)
+                    pr_obj = repo.get_pull(int(self.item_number))
+                    pr_details = self.github_client.get_pr_details(pr_obj)
                     if isinstance(pr_details, dict):
                         pr_labels = pr_details.get("labels", []) or []
-                    else:
-                        # Fall back to object-based details (compatible with tests)
-                        try:
-                            repo = self.github_client.get_repository(self.repo_name)
-                            pr_obj = repo.get_pull(int(self.item_number))
-                            pr_details = self.github_client.get_pr_details(pr_obj)
-                            if isinstance(pr_details, dict):
-                                pr_labels = pr_details.get("labels", []) or []
-                        except Exception:
-                            # Ignore and keep labels as empty list
-                            pass
                 except Exception:
-                    # If by-number fails, try object-based path directly
-                    try:
-                        repo = self.github_client.get_repository(self.repo_name)
-                        pr_obj = repo.get_pull(int(self.item_number))
-                        pr_details = self.github_client.get_pr_details(pr_obj)
-                        if isinstance(pr_details, dict):
-                            pr_labels = pr_details.get("labels", []) or []
-                    except Exception:
-                        pass
+                    # Ignore and keep labels as empty list
+                    pass
 
                 return self.label_name not in pr_labels
 
             # Issue path
             issue_labels: list[str] = []
             try:
-                issue_details = self.github_client.get_issue_details_by_number(self.repo_name, int(self.item_number))
+                repo = self.github_client.get_repository(self.repo_name)
+                issue_obj = repo.get_issue(int(self.item_number))
+                issue_details = self.github_client.get_issue_details(issue_obj)
                 if isinstance(issue_details, dict):
                     issue_labels = issue_details.get("labels", []) or []
-                else:
-                    # Fall back to object-based details (compatible with tests)
-                    try:
-                        repo = self.github_client.get_repository(self.repo_name)
-                        issue_obj = repo.get_issue(int(self.item_number))
-                        issue_details = self.github_client.get_issue_details(issue_obj)
-                        if isinstance(issue_details, dict):
-                            issue_labels = issue_details.get("labels", []) or []
-                    except Exception:
-                        pass
             except Exception:
-                # If by-number fails, try object-based path directly
-                try:
-                    repo = self.github_client.get_repository(self.repo_name)
-                    issue_obj = repo.get_issue(int(self.item_number))
-                    issue_details = self.github_client.get_issue_details(issue_obj)
-                    if isinstance(issue_details, dict):
-                        issue_labels = issue_details.get("labels", []) or []
-                except Exception:
-                    pass
+                # Ignore and keep labels as empty list
+                pass
 
             return self.label_name not in issue_labels
 

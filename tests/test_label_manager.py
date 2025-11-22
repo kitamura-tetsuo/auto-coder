@@ -35,7 +35,11 @@ class TestLabelManager:
     def test_label_manager_skips_when_label_already_exists(self):
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
-        mock_github_client.get_issue_details_by_number.return_value = {"labels": ["@auto-coder"]}
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"labels": ["@auto-coder"]}
 
         config = AutomationConfig()
 
@@ -362,8 +366,12 @@ class TestLabelManager:
         mock_github_client.disable_labels = False
         # has_label is not a real method (just a Mock attribute)
         mock_github_client.has_label = Mock()  # This will be detected as not a real method
-        # get_issue_details should work
-        mock_github_client.get_issue_details_by_number.return_value = {"labels": []}
+        # get_repository, repo.get_issue, and get_issue_details should work
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"labels": []}
         mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
@@ -372,14 +380,16 @@ class TestLabelManager:
         with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
             assert should_process is True
             # Should have called get_issue_details
-            mock_github_client.get_issue_details_by_number.assert_called_once()
+            mock_github_client.get_issue_details.assert_called_once()
 
     def test_label_manager_fail_open_when_all_checks_error_issue(self):
         """All existence checks raise → fail-open: proceed and try to add label."""
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.side_effect = Exception("primary check error")
-        mock_github_client.get_issue_details_by_number.side_effect = Exception("details error")
+        mock_repo = Mock()
+        mock_repo.get_issue.side_effect = Exception("get issue error")
+        mock_github_client.get_repository.return_value = mock_repo
         mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
@@ -393,8 +403,10 @@ class TestLabelManager:
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
         mock_github_client.has_label.side_effect = Exception("primary check error")
-        mock_github_client.get_pr_details_by_number.side_effect = Exception("pr details error")
-        mock_github_client.get_issue_details_by_number.side_effect = Exception("issue details error")
+        mock_repo = Mock()
+        mock_repo.get_pull.side_effect = Exception("pr details error")
+        mock_repo.get_issue.side_effect = Exception("issue details error")
+        mock_github_client.get_repository.return_value = mock_repo
         mock_github_client.try_add_labels.return_value = True
 
         config = AutomationConfig()
@@ -407,7 +419,11 @@ class TestLabelManager:
         """skip_label_add=True かつ既存ラベルあり → False を返し、追加も削除もしない。"""
         mock_github_client = Mock()
         mock_github_client.disable_labels = False
-        mock_github_client.get_issue_details_by_number.return_value = {"labels": ["@auto-coder"]}
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"labels": ["@auto-coder"]}
 
         config = AutomationConfig()
 

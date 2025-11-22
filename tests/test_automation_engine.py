@@ -86,7 +86,11 @@ class TestAutomationEngine:
             "mergeable": True,
             "draft": False,
         }
-        mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
+        mock_repo = Mock()
+        mock_pr = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github_client.get_pr_details.return_value = mock_pr_data
         mock_github_client.try_add_labels.return_value = True
 
         # Mock successful processing - simulate that the PR was processed without errors
@@ -123,7 +127,11 @@ class TestAutomationEngine:
             "mergeable": True,
             "draft": False,
         }
-        mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
+        mock_repo = Mock()
+        mock_pr = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github_client.get_pr_details.return_value = mock_pr_data
         mock_github_client.try_add_labels.return_value = True
 
         # Mock failed processing
@@ -160,7 +168,11 @@ class TestAutomationEngine:
             "mergeable": False,  # Simulate merge conflicts
             "draft": False,
         }
-        mock_github_client.get_pr_details_by_number.return_value = mock_pr_data
+        mock_repo = Mock()
+        mock_pr = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github_client.get_pr_details.return_value = mock_pr_data
         mock_github_client.try_add_labels.return_value = True
 
         # Mock that GitHub Actions are failing due to conflicts
@@ -226,9 +238,13 @@ class TestAutomationEngine:
             "number": 456,
             "title": "Feature PR",
             "body": "Some changes",
-            "base": {"ref": "develop"},
+            "base_branch": "develop",  # Updated to match new format
         }
-        mock_github_client.get_pr_details_by_number.return_value = pr_data
+        mock_repo = Mock()
+        mock_pr = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github_client.get_pr_details.return_value = pr_data
 
         # Track the git commands that are called
         with patch.object(engine.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_subprocess:
@@ -1585,7 +1601,9 @@ class TestGetCandidates:
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
-        mock_github_client.check_should_process_with_label_manager.return_value = True
+        # Mock LabelManager context manager
+        with patch("src.auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            mock_label_mgr.return_value.__enter__.return_value = True
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -1655,7 +1673,9 @@ class TestGetCandidates:
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
-        mock_github_client.check_should_process_with_label_manager.return_value = True
+        # Mock LabelManager context manager
+        with patch("src.auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            mock_label_mgr.return_value.__enter__.return_value = True
 
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
@@ -1716,10 +1736,12 @@ class TestGetCandidates:
         mock_github_client.has_linked_pr.return_value = False
 
         # Mock label check via LabelManager: skip PR #1 and Issue #11 as already labeled
-        mock_github_client.check_should_process_with_label_manager.side_effect = lambda repo, num, item_type: False if num in (1, 11) else True
+        with patch("src.auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            # LabelManager returns True if should process, False if should skip
+            mock_label_mgr.return_value.__enter__.side_effect = lambda: False if mock_label_mgr.call_args[0][2] in (1, 11) else True
 
-        # Execute
-        candidates = engine._get_candidates(test_repo_name, max_items=10)
+            # Execute
+            candidates = engine._get_candidates(test_repo_name, max_items=10)
 
         # Assert - Only non-labeled items should be returned (PR #1 has @auto-coder label, Issue #11 has @auto-coder label)
         assert len(candidates) == 1

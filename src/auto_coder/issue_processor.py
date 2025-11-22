@@ -34,12 +34,13 @@ def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationCon
         issue_number = issue_data["number"]
 
         # Check if issue already has @auto-coder label (being processed by another instance)
-        if not github_client.check_should_process_with_label_manager(repo_name, issue_number, item_type="issue"):
-            logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-            return ProcessedIssueResult(
-                issue_data=issue_data,
-                actions_taken=["Skipped - already being processed (@auto-coder label present)"],
-            )
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", skip_label_add=True) as should_process:
+            if not should_process:
+                logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
+                return ProcessedIssueResult(
+                    issue_data=issue_data,
+                    actions_taken=["Skipped - already being processed (@auto-coder label present)"],
+                )
 
         # Skip if issue has open sub-issues
         open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
