@@ -404,12 +404,12 @@ class LabelManager:
             # Try to add the label with retry logic
             for attempt in range(self.max_retries):
                 try:
-                    # Use the legacy wrapper to align with existing call sites/tests
-                    result = self.github_client.try_add_labels_to_issue(
+                    # Use the generic method for adding labels
+                    result = self.github_client.try_add_labels(
                         self.repo_name,
                         int(self.item_number),
                         [self.label_name],
-                        self.item_type,
+                        item_type=self.item_type,
                     )
                     if result:
                         self._label_added = True

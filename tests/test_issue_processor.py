@@ -233,7 +233,7 @@ class TestPRLabelCopying:
             assert f"Successfully created PR for issue #{issue_number}" in result
 
             # Verify label copying - only urgent label should be propagated
-            # Now using generic add_labels method with item_type="pr"
+            # Now using generic add_labels method with "pr"
             label_calls = []
             for call in github_client.method_calls:
                 if call[0] == "add_labels":
@@ -241,7 +241,7 @@ class TestPRLabelCopying:
 
             # Should have at least one call for urgent
             assert len(label_calls) >= 1
-            # Verify the label propagated is 'urgent' with item_type="pr"
+            # Verify the label propagated is 'urgent' with "pr"
             assert any(call[0] == "add_labels" and call[1][0] == repo_name and call[1][1] == pr_number and call[1][2] == ["urgent"] and call[2] == {"item_type": "pr"} for call in label_calls)
 
     def test_create_pr_for_issue_copies_labels_with_aliases(self):
@@ -294,7 +294,7 @@ class TestPRLabelCopying:
 
             # Should have at least one call for urgent
             assert len(label_calls) >= 1
-            # Verify the label propagated is 'urgent' with item_type="pr"
+            # Verify the label propagated is 'urgent' with "pr"
             assert any(call[0] == "add_labels" and call[1][0] == repo_name and call[1][1] == pr_number and call[1][2] == ["urgent"] and call[2] == {"item_type": "pr"} for call in label_calls)
 
     def test_create_pr_for_issue_respects_max_label_count(self):
@@ -348,7 +348,7 @@ class TestPRLabelCopying:
 
             # At least 1 label addition for urgent
             assert len(label_calls) >= 1
-            # Verify the label propagated is 'urgent' with item_type="pr"
+            # Verify the label propagated is 'urgent' with "pr"
             assert any(call[0] == "add_labels" and call[1][0] == repo_name and call[1][1] == pr_number and call[1][2] == ["urgent"] and call[2] == {"item_type": "pr"} for call in label_calls)
 
     def test_create_pr_for_issue_disabled_label_copying(self):
