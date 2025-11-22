@@ -256,14 +256,8 @@ def _create_pr_for_issue(
                             # Copy labels to PR with error handling
                             for label in labels_to_propagate:
                                 try:
-                                    # Use legacy wrapper to match existing tests and maintain compatibility
-                                    github_client.add_labels_to_issue(repo_name, pr_number, [label])
-                                    # Also call the PR-specific wrapper to ensure correct runtime behavior
-                                    try:
-                                        github_client.add_labels_to_pr(repo_name, pr_number, [label])  # pragma: no cover
-                                    except Exception:
-                                        # Ignore failures in the secondary call in tests/runtime
-                                        pass
+                                    # Use generic add_labels method with item_type="pr"
+                                    github_client.add_labels(repo_name, pr_number, [label], item_type="pr")
                                     logger.info(f"Added semantic label '{label}' to PR #{pr_number}")
                                 except Exception as e:
                                     logger.warning(f"Failed to add semantic label '{label}' to PR #{pr_number}: {e}")

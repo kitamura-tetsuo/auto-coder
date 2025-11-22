@@ -2454,7 +2454,7 @@ class TestUrgentLabelPropagation:
         assert str(456) in add_label_call  # PR number
 
         # Verify GitHub client was called to add labels
-        mock_github_client.add_labels_to_issue.assert_called_once_with("test/repo", 456, ["urgent"])
+        mock_github_client.add_labels.assert_called_once_with("test/repo", 456, ["urgent"], item_type="pr")
 
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_create_pr_for_issue_without_urgent_label(self, mock_cmd, mock_github_client, mock_gemini_client):
