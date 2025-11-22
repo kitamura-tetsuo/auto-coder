@@ -119,9 +119,7 @@ class GeminiClient(LLMClientBase):
             full_output = full_output.strip()
             low = full_output.lower()
 
-            usage_markers = (
-                '[API Error: You have exhausted your capacity on this model. Your quota will reset after '.lower(),
-            )
+            usage_markers = ("[API Error: You have exhausted your capacity on this model. Your quota will reset after ".lower(),)
 
             if result.returncode != 0:
                 if any(m in low for m in usage_markers):
