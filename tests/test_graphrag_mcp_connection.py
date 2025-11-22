@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from src.auto_coder.logger_config import get_logger
+from auto_coder.logger_config import get_logger
 
 logger = get_logger(__name__)
 

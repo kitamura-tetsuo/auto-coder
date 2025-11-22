@@ -1,5 +1,5 @@
-from src.auto_coder.backend_manager import BackendManager, LLMBackendManager
-from src.auto_coder.exceptions import AutoCoderUsageLimitError
+from auto_coder.backend_manager import BackendManager, LLMBackendManager
+from auto_coder.exceptions import AutoCoderUsageLimitError
 
 
 class DummyClient:

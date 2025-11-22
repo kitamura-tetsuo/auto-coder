@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_message_prompt
+from auto_coder.backend_manager import get_llm_backend_manager
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import (
     _check_github_actions_status,
@@ -149,6 +149,8 @@ def _create_pr_for_issue(
     Returns:
         Action message describing the PR creation result
     """
+    from auto_coder.backend_manager import run_message_prompt
+
     issue_number = issue_data.get("number", "unknown")
     issue_title = issue_data.get("title", "Unknown")
     issue_body = issue_data.get("body", "")

@@ -35,7 +35,23 @@ from .config import settings
 # package is installed this resolves to ``.../site-packages``.  When running
 # directly from the repository it resolves to ``.../src``.
 _PACKAGE_DIR = Path(__file__).resolve().parent
-_PATH_TRIM_BASES = (_PACKAGE_DIR.parent.resolve(),)
+
+# Include both the package directory parent and also check for a workspace directory
+# This handles cases where tests run from a workspace while the package is installed in a venv
+_PATH_TRIM_BASES = [
+    _PACKAGE_DIR.parent.resolve(),
+]
+
+# Also check if there's a src directory in the current working directory
+# This handles the case where tests are run from the workspace
+try:
+    cwd = Path.cwd()
+    workspace_src = cwd / "src"
+    if workspace_src.exists() and workspace_src.is_dir():
+        _PATH_TRIM_BASES.append(workspace_src.resolve())
+except Exception:
+    # If we can't get the cwd, just use the defaults
+    pass
 
 
 def format_path_for_log(file_path: str) -> str:

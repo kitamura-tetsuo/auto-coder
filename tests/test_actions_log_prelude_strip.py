@@ -27,7 +27,7 @@ sys.exit(0)
         [
             sys.executable,
             "-m",
-            "src.auto_coder.cli",
+            "auto_coder.cli",
             "get-actions-logs",
             "--url",
             url,

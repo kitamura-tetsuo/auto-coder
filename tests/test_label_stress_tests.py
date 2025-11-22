@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.auto_coder.prompt_loader import (
+from auto_coder.prompt_loader import (
     _get_prompt_for_labels,
     _resolve_label_priority,
     clear_prompt_cache,
@@ -255,7 +255,7 @@ class TestMemoryLeakDetection:
 
     def test_memory_with_cache_operations(self):
         """Test memory usage during cache operations."""
-        from src.auto_coder.prompt_loader import _PROMPTS_CACHE
+        from auto_coder.prompt_loader import _PROMPTS_CACHE
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             f.write('issue:\n  action: "Test"\n')
@@ -465,7 +465,7 @@ class TestLongRunningProcessStability:
 
     def test_cache_stability_over_time(self):
         """Test cache stability over extended operations."""
-        from src.auto_coder.prompt_loader import _PROMPTS_CACHE
+        from auto_coder.prompt_loader import _PROMPTS_CACHE
 
         # Clear cache
         clear_prompt_cache()

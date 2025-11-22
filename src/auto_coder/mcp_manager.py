@@ -9,7 +9,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
@@ -33,19 +33,19 @@ class MCPServerConfig:
     env_vars: Optional[Dict[str, str]] = None
     """Environment variables to set in .env file"""
 
-    setup_callback: Optional[callable] = None
+    setup_callback: Optional[Callable[..., Any]] = None
     """Optional callback for custom setup logic"""
 
 
 class MCPServerManager:
     """Manager for multiple MCP servers."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize MCP Server Manager."""
         self.servers: Dict[str, MCPServerConfig] = {}
         self._register_builtin_servers()
 
-    def _register_builtin_servers(self):
+    def _register_builtin_servers(self) -> None:
         """Register built-in MCP servers."""
         # Get auto_coder package directory
         try:
@@ -87,7 +87,7 @@ class MCPServerManager:
             )
         )
 
-    def register_server(self, config: MCPServerConfig):
+    def register_server(self, config: MCPServerConfig) -> None:
         """Register an MCP server.
 
         Args:
@@ -397,6 +397,7 @@ class MCPServerManager:
             return result
         except Exception as e:
             logger.error(f"Failed to add Windsurf/Claude config for {server_name}: {e}")
+            return False
 
     def _add_claude_config(self, server_name: str, install_path: Path) -> bool:
         """Add MCP server configuration to Claude CLI config.

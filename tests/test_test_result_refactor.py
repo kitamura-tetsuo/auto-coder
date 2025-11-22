@@ -3,11 +3,11 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.fix_to_pass_tests_runner import extract_important_errors
-from src.auto_coder.pr_processor import _apply_github_actions_fix
-from src.auto_coder.test_result import TestResult
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_engine import AutomationEngine
+from auto_coder.fix_to_pass_tests_runner import extract_important_errors
+from auto_coder.pr_processor import _apply_github_actions_fix
+from auto_coder.test_result import TestResult
 
 
 def test_testresult_dataclass_structure():
@@ -104,9 +104,9 @@ def test_github_actions_enhanced_integration_passes_structured_context():
         return "PROMPT"
 
     with (
-        patch("src.auto_coder.pr_processor.render_prompt", side_effect=fake_render_prompt) as mock_render,
-        patch("src.auto_coder.pr_processor.run_llm_prompt", return_value="OK") as mock_llm,
-        patch("src.auto_coder.pr_processor.get_commit_log", return_value="commit log") as _,
+        patch("auto_coder.pr_processor.render_prompt", side_effect=fake_render_prompt) as mock_render,
+        patch("auto_coder.pr_processor.run_llm_prompt", return_value="OK") as mock_llm,
+        patch("auto_coder.pr_processor.get_commit_log", return_value="commit log") as _,
     ):
         actions = _apply_github_actions_fix("owner/repo", pr_data, config, github_logs, test_result=tr)
 

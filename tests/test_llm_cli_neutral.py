@@ -1,13 +1,13 @@
 from unittest.mock import patch
 
-from src.auto_coder.codex_client import CodexClient
-from src.auto_coder.gemini_client import GeminiClient
-from src.auto_coder.qwen_client import QwenClient
-from src.auto_coder.utils import CommandResult
+from auto_coder.codex_client import CodexClient
+from auto_coder.gemini_client import GeminiClient
+from auto_coder.qwen_client import QwenClient
+from auto_coder.utils import CommandResult
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+@patch("auto_coder.gemini_client.CommandExecutor.run_command")
 def test_gemini_client_run_llm_cli_delegates(mock_run_command, mock_run, mock_gemini_api_key):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "gem ok\n", "", 0)
@@ -18,7 +18,7 @@ def test_gemini_client_run_llm_cli_delegates(mock_run_command, mock_run, mock_ge
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+@patch("auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_run_llm_cli_delegates(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "qwen ok\n", "", 0)
@@ -33,7 +33,7 @@ def test_qwen_client_run_llm_cli_delegates(mock_run_command, mock_run):
 
 
 @patch("subprocess.run")
-@patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+@patch("auto_coder.codex_client.CommandExecutor.run_command")
 def test_codex_client_run_llm_cli_delegates(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "codex ok\n", "", 0)

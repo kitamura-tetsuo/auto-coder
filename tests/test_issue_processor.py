@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.issue_processor import _apply_issue_actions_directly, _create_pr_for_issue
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.issue_processor import _apply_issue_actions_directly, _create_pr_for_issue
 
 
 def _cmd_result(success=True, stdout="", stderr="", returncode=0):
@@ -41,15 +41,15 @@ def test_parent_issue_branch_creation_uses_main_base():
         yield True
 
     # CommandExecutor instance in issue_processor module
-    with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+    with patch("auto_coder.issue_processor.cmd") as mock_cmd:
         # Simulate: parent branch missing, work branch missing
         mock_cmd.run_command.side_effect = [
             _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse parent
             _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work
         ]
 
-        with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+        with patch("auto_coder.issue_processor.LabelManager", fake_label_manager):
+            with patch("auto_coder.issue_processor.branch_context", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
                 github_client.get_parent_issue.return_value = parent_issue_number
@@ -59,7 +59,7 @@ def test_parent_issue_branch_creation_uses_main_base():
                     def _run_llm_cli(self, *_args, **_kwargs):
                         return None
 
-                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                with patch("auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
                     _apply_issue_actions_directly(
                         repo_name,
                         issue_data,
@@ -96,7 +96,7 @@ def test_existing_work_branch_not_recreated():
         yield True
 
     # CommandExecutor instance in issue_processor module
-    with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+    with patch("auto_coder.issue_processor.cmd") as mock_cmd:
         # Simulate: work branch already exists locally
         # git rev-parse --abbrev-ref HEAD (get current branch)
         # git rev-parse --verify work_branch (check if work branch exists)
@@ -105,8 +105,8 @@ def test_existing_work_branch_not_recreated():
             _cmd_result(success=True, stdout="issue-456", returncode=0),  # rev-parse work branch exists
         ]
 
-        with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+        with patch("auto_coder.issue_processor.LabelManager", fake_label_manager):
+            with patch("auto_coder.issue_processor.branch_context", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
                 github_client.get_parent_issue.return_value = None  # No parent issue
@@ -116,7 +116,7 @@ def test_existing_work_branch_not_recreated():
                     def _run_llm_cli(self, *_args, **_kwargs):
                         return None
 
-                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                with patch("auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
                     _apply_issue_actions_directly(
                         repo_name,
                         issue_data,
@@ -151,7 +151,7 @@ def test_missing_work_branch_created_with_correct_base():
         yield True
 
     # CommandExecutor instance in issue_processor module
-    with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+    with patch("auto_coder.issue_processor.cmd") as mock_cmd:
         # Simulate: work branch does not exist locally
         # git rev-parse --abbrev-ref HEAD (get current branch)
         # git rev-parse --verify work_branch (check if work branch exists)
@@ -160,8 +160,8 @@ def test_missing_work_branch_created_with_correct_base():
             _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
         ]
 
-        with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
-            with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+        with patch("auto_coder.issue_processor.LabelManager", fake_label_manager):
+            with patch("auto_coder.issue_processor.branch_context", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
                 github_client.get_parent_issue.return_value = None  # No parent issue
@@ -171,7 +171,7 @@ def test_missing_work_branch_created_with_correct_base():
                     def _run_llm_cli(self, *_args, **_kwargs):
                         return None
 
-                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                with patch("auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
                     _apply_issue_actions_directly(
                         repo_name,
                         issue_data,
@@ -213,7 +213,7 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -269,7 +269,7 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -323,7 +323,7 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -376,7 +376,7 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -426,7 +426,7 @@ class TestPRLabelCopying:
         github_client.get_pr_closing_issues.return_value = [issue_number]
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
@@ -477,7 +477,7 @@ class TestPRLabelCopying:
         github_client.add_labels_to_issue.side_effect = Exception("GitHub API error")
 
         # Mock gh pr create to return PR URL
-        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+        with patch("auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
             mock_gh_logger_instance = Mock()
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance

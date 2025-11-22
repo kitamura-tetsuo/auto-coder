@@ -2,8 +2,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.util.github_action import _check_github_actions_status_from_history
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.util.github_action import _check_github_actions_status_from_history
 
 
 def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", returncode: int = 0):

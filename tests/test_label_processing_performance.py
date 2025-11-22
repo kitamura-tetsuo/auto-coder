@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.prompt_loader import (
+from auto_coder.prompt_loader import (
     _get_prompt_for_labels,
     _resolve_label_priority,
     clear_prompt_cache,

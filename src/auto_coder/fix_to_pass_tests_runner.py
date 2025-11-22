@@ -8,7 +8,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
 from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
@@ -142,7 +142,7 @@ def _write_llm_output_log(
     return log_path
 
 
-@log_calls  # type: ignore[misc]
+@log_calls
 def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
     """Derive backend/model identifiers from the provided LLM client."""
 
@@ -165,8 +165,9 @@ def _extract_backend_model(llm_client: Any) -> Tuple[str, str]:
     if backend is None:
         backend = llm_client.__class__.__name__
     model = getattr(llm_client, "model_name", None)
-    if not model:
+    if model is None:
         model = "unknown"
+
     return str(backend), str(model)
 
 
@@ -180,7 +181,7 @@ def cleanup_llm_task_file(path: str = "./llm_task.md") -> None:
         logger.warning(f"Failed to remove {path}: {exc}")
 
 
-def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -> Dict[str, Any]:
+def run_local_tests(config: AutomationConfig, setup_callback: Optional[Callable[..., Any]] = None, test_file: Optional[str] = None) -> Dict[str, Any]:
     """Run local tests using configured script or pytest fallback.
 
     If test_file is specified, only that test file will be run.
@@ -332,7 +333,7 @@ def run_local_tests(config: AutomationConfig, test_file: Optional[str] = None) -
         }
 
 
-@log_calls  # type: ignore[misc]
+@log_calls
 def apply_test_stability_fix(
     config: AutomationConfig,
     test_file: str,
@@ -388,7 +389,7 @@ def apply_test_stability_fix(
         )
 
 
-@log_calls  # type: ignore[misc]
+@log_calls
 def apply_workspace_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
@@ -501,6 +502,7 @@ def fix_to_pass_tests(
             test_result = run_local_tests(config, test_file=current_test_file)
             # Update the current test file being fixed
             current_test_file = test_result.get("test_file")
+
         if test_result["success"]:
             if current_test_file is not None:
                 logger.info(f"Targeted test {current_test_file} passed; clearing focus before rerunning full suite")
@@ -765,7 +767,7 @@ def format_commit_message(config: AutomationConfig, llm_summary: str, attempt: i
     return f"Auto-Coder: {base}"
 
 
-@log_calls  # type: ignore[misc]
+@log_calls
 def extract_important_errors(test_result: TestResult) -> str:
     """Extract important error information from test output.
 

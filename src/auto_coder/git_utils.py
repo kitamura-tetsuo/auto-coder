@@ -13,7 +13,7 @@ from typing import Any, Dict, Generator, List, Optional
 from urllib.parse import urlparse
 
 from auto_coder.automation_config import AutomationConfig
-from auto_coder.backend_manager import get_message_backend_manager, run_message_prompt
+from auto_coder.backend_manager import get_message_backend_manager
 
 try:
     from git import InvalidGitRepositoryError, Repo
@@ -424,7 +424,7 @@ def git_commit_with_retry(commit_message: str, cwd: Optional[str] = None, max_re
                 llm_success = try_llm_commit_push(commit_message, error_output, verify_push=False)
             except TypeError:
                 # Backward compatibility if verify_push param is not available
-                llm_success = try_llm_commit_push(commit_message, error_output)  # type: ignore
+                llm_success = try_llm_commit_push(commit_message, error_output)
             if llm_success:
                 # After LLM intervention, try committing again
                 retry_result = cmd.run_command(["git", "commit", "-m", commit_message], cwd=cwd)
@@ -1222,6 +1222,7 @@ def try_llm_commit_push(
         True if LLM successfully resolved the issue, False otherwise
     """
     cmd = CommandExecutor()
+    from auto_coder.backend_manager import run_message_prompt
 
     try:
 
@@ -1297,6 +1298,7 @@ def try_llm_dprint_fallback(
         True if LLM successfully resolved the dprint issue, False otherwise
     """
     cmd = CommandExecutor()
+    from auto_coder.backend_manager import run_message_prompt
 
     try:
         # Create prompt for LLM to resolve dprint failure

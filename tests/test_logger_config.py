@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 from loguru import logger
 
-from src.auto_coder.logger_config import format_path_for_log, get_logger, setup_logger
-from src.auto_coder.utils import log_action
+from auto_coder.logger_config import format_path_for_log, get_logger, setup_logger
+from auto_coder.utils import log_action
 
 
 class TestLoggerConfig:
@@ -31,7 +31,7 @@ class TestLoggerConfig:
 
     def test_setup_logger_default_settings(self):
         """Test logger setup with default settings."""
-        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+        with patch("auto_coder.logger_config.settings") as mock_settings:
             mock_settings.log_level = "INFO"
 
             setup_logger()
@@ -42,7 +42,7 @@ class TestLoggerConfig:
 
     def test_setup_logger_with_custom_level(self):
         """Test logger setup with custom log level."""
-        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+        with patch("auto_coder.logger_config.settings") as mock_settings:
             mock_settings.log_level = "INFO"
 
             setup_logger(log_level="DEBUG")
@@ -56,7 +56,7 @@ class TestLoggerConfig:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_file = Path(temp_dir) / "test.log"
 
-            with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            with patch("auto_coder.logger_config.settings") as mock_settings:
                 mock_settings.log_level = "INFO"
 
                 setup_logger(log_level="INFO", log_file=str(log_file))
@@ -73,7 +73,7 @@ class TestLoggerConfig:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_file = Path(temp_dir) / "logs" / "test.log"
 
-            with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            with patch("auto_coder.logger_config.settings") as mock_settings:
                 mock_settings.log_level = "INFO"
 
                 setup_logger(log_level="INFO", log_file=str(log_file))
@@ -88,7 +88,7 @@ class TestLoggerConfig:
 
     def test_setup_logger_without_file_info(self):
         """Test logger setup without file information."""
-        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+        with patch("auto_coder.logger_config.settings") as mock_settings:
             mock_settings.log_level = "INFO"
 
             setup_logger(include_file_info=False)
@@ -99,7 +99,7 @@ class TestLoggerConfig:
 
     def test_get_logger_returns_logger_instance(self):
         """Test that get_logger returns a logger instance."""
-        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+        with patch("auto_coder.logger_config.settings") as mock_settings:
             mock_settings.log_level = "INFO"
 
             setup_logger()
@@ -112,7 +112,7 @@ class TestLoggerConfig:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_file = Path(temp_dir) / "test.log"
 
-            with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            with patch("auto_coder.logger_config.settings") as mock_settings:
                 mock_settings.log_level = "DEBUG"
 
                 setup_logger(log_level="DEBUG", log_file=str(log_file))
@@ -144,7 +144,7 @@ class TestLoggerConfig:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_file = Path(temp_dir) / "test.log"
 
-            with patch("src.auto_coder.logger_config.settings") as mock_settings:
+            with patch("auto_coder.logger_config.settings") as mock_settings:
                 mock_settings.log_level = "INFO"
 
                 setup_logger(log_level="INFO", log_file=str(log_file), include_file_info=True)
@@ -165,7 +165,7 @@ class TestLoggerConfig:
 
     def test_logger_console_format_with_colors(self):
         """Test that console format includes color codes when enabled."""
-        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+        with patch("auto_coder.logger_config.settings") as mock_settings:
             mock_settings.log_level = "INFO"
 
             # Mock sys.stdout to capture output
@@ -181,7 +181,7 @@ class TestLoggerConfig:
 
     def test_logger_error_handling_for_invalid_log_level(self):
         """Test logger behavior with invalid log level."""
-        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+        with patch("auto_coder.logger_config.settings") as mock_settings:
             mock_settings.log_level = "INFO"
 
             # Should raise an exception for invalid log level
@@ -213,7 +213,7 @@ class TestLoggerConfig:
 
         buffer = StringIO()
 
-        with patch("src.auto_coder.logger_config.settings") as mock_settings:
+        with patch("auto_coder.logger_config.settings") as mock_settings:
             mock_settings.log_level = "INFO"
 
             setup_logger(log_level="INFO", stream=buffer, include_file_info=True)

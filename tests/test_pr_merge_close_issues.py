@@ -4,8 +4,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _close_linked_issues, _extract_linked_issues_from_pr_body, _merge_pr
+from auto_coder.automation_config import AutomationConfig
+from auto_coder.pr_processor import _close_linked_issues, _extract_linked_issues_from_pr_body, _merge_pr
 
 
 class TestExtractLinkedIssues:
@@ -96,7 +96,7 @@ class TestExtractLinkedIssues:
 class TestCloseLinkedIssues:
     """Test closing of linked issues."""
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_close_single_issue(self, mock_get_gh_logger):
         """Test closing a single linked issue."""
         # Mock the gh_logger instance
@@ -143,7 +143,7 @@ class TestCloseLinkedIssues:
             "Closed by PR #456",
         ]
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_close_multiple_issues(self, mock_get_gh_logger):
         """Test closing multiple linked issues."""
         # Mock the gh_logger instance
@@ -191,7 +191,7 @@ class TestCloseLinkedIssues:
             "Closed by PR #789",
         ] in issue_close_calls
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_no_linked_issues(self, mock_get_gh_logger):
         """Test when PR has no linked issues."""
         # Mock the gh_logger instance
@@ -211,7 +211,7 @@ class TestCloseLinkedIssues:
         # Verify only PR view was called, no issue close
         assert mock_gh_logger.execute_with_logging.call_count == 1
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_pr_view_failure(self, mock_get_gh_logger):
         """Test when PR view fails."""
         # Mock the gh_logger instance
@@ -232,7 +232,7 @@ class TestCloseLinkedIssues:
         # Verify only PR view was called
         assert mock_gh_logger.execute_with_logging.call_count == 1
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_issue_close_failure(self, mock_get_gh_logger):
         """Test when issue close fails."""
         # Mock the gh_logger instance
@@ -265,8 +265,8 @@ class TestCloseLinkedIssues:
 class TestMergePRWithIssueClosing:
     """Test that _merge_pr closes linked issues after successful merge."""
 
-    @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor._close_linked_issues")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_merge_pr_closes_issues_on_success(self, mock_get_gh_logger, mock_close_issues):
         """Test that successful merge triggers issue closing."""
         config = AutomationConfig()
@@ -285,8 +285,8 @@ class TestMergePRWithIssueClosing:
         assert result is True
         mock_close_issues.assert_called_once_with("test/repo", 123)
 
-    @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor._close_linked_issues")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_merge_pr_does_not_close_issues_on_failure(self, mock_get_gh_logger, mock_close_issues):
         """Test that failed merge does not trigger issue closing."""
         config = AutomationConfig()
@@ -305,8 +305,8 @@ class TestMergePRWithIssueClosing:
         assert result is False
         mock_close_issues.assert_not_called()
 
-    @patch("src.auto_coder.pr_processor._close_linked_issues")
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
+    @patch("auto_coder.pr_processor._close_linked_issues")
+    @patch("auto_coder.pr_processor.get_gh_logger")
     def test_merge_pr_auto_merge_closes_issues(self, mock_get_gh_logger, mock_close_issues):
         """Test that auto-merge success triggers issue closing."""
         config = AutomationConfig()

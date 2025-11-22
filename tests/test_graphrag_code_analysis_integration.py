@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
+from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
 
 @pytest.fixture
@@ -461,10 +461,10 @@ class TestGraphRAGCodeAnalysisIntegration:
             # At least one CLI should be present
             assert cli_checked or ts_cli.exists() or py_cli.exists()
 
-    @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._run_graph_builder")
-    @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_graph_in_neo4j")
-    @patch("src.auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_embeddings_in_qdrant")
-    @patch("src.auto_coder.graphrag_index_manager.is_running_in_container")
+    @patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager._run_graph_builder")
+    @patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_graph_in_neo4j")
+    @patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager._store_embeddings_in_qdrant")
+    @patch("auto_coder.graphrag_index_manager.is_running_in_container")
     def test_index_codebase_integration(self, mock_is_container, mock_qdrant, mock_neo4j, mock_builder, tmp_path):
         """Test full _index_codebase integration."""
         graph_data = {

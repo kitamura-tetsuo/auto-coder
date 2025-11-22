@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.auto_coder.automation_config import AutomationConfig
+from auto_coder.automation_config import AutomationConfig
 
 
 def test_label_prompt_mappings_default_config():
