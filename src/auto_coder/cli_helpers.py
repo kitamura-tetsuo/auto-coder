@@ -221,16 +221,7 @@ def check_graphrag_mcp_for_backends(backends: list[str], client: Any = None) -> 
 
 def check_gemini_cli_or_fail() -> None:
     """Check if gemini CLI is available and working."""
-    try:
-        result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using gemini CLI")
-            return
-    except Exception:
-        pass
-
-    # Show helpful error with installation instructions
-    raise click.ClickException("Gemini CLI is required. Please install it from:\n" "https://github.com/google-gemini/gemini-cli\n" "Or use: npm install -g @google/generative-ai-cli")
+    check_cli_tool(tool_name="gemini", install_url="https://github.com/google-gemini/gemini-cli\nOr use: npm install -g @google/generative-ai-cli", version_flag="--version")
 
 
 def check_codex_cli_or_fail() -> None:
@@ -263,16 +254,8 @@ def check_codex_cli_or_fail() -> None:
             pass
         raise click.ClickException("Codex CLI override (AUTOCODER_CODEX_CLI) is set but not working")
 
-    # Default: check real codex CLI
-    try:
-        result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            click.echo("Using codex CLI")
-            return
-    except Exception:
-        pass
-
-    raise click.ClickException("Codex CLI is required. Please install it from:\n" "https://github.com/openai/codex")
+    # Default: use generic function
+    check_cli_tool(tool_name="codex", install_url="https://github.com/openai/codex", version_flag="--version")
 
 
 def check_qwen_cli_or_fail() -> None:
