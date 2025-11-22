@@ -84,6 +84,7 @@ dev = [
     { name = "black" },
     { name = "flake8" },
     { name = "isort" },
+    { name = "types-toml" },
 ]
 
 [package.metadata]
@@ -129,6 +130,7 @@ dev = [
     { name = "black", specifier = ">=25.9.0" },
     { name = "flake8", specifier = ">=6.0.0" },
     { name = "isort", specifier = ">=5.0.0" },
+    { name = "types-toml", specifier = ">=0.10.8.20240310" },
 ]
 
 [[package]]
