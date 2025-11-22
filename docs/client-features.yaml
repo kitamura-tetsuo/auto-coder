@@ -1,4 +1,4 @@
-version: "2025.11.23+g62b4219"
+version: "2025.11.23+g6d90848"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -183,6 +183,7 @@ features:
       configuration_file: "~/.auto-coder/provider_metadata.toml"
       env_var_handling: "Uppercase settings from provider metadata are exported as environment variables during command execution and automatically cleared when the command completes"
       provider_rotation: "Automatic failover to next provider when usage limits are hit; rotates through configured providers before switching backends"
+      usage_limit_handling: "Updated client implementations now raise AutoCoderUsageLimitError on usage limit detection, enabling automatic provider rotation."
       status_reporting: "Provider information is tracked and exposed via telemetry fields (llm_provider) for debugging and monitoring"
       syntax:
         backend_config: "[backends.<model>] section in llm_config.toml supports provider declaration"

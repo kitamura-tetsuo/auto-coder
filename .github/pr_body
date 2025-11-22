@@ -1,0 +1,7 @@
+This PR updates the usage limit handling across the LLM client implementations.
+
+Changes include:
+- Modified `docs/client-features.yaml` to add a `usage_limit_handling` entry describing the updated behavior where client implementations raise `AutoCoderUsageLimitError` on usage limit detection, enabling automatic provider rotation.
+- Updated client code (`src/auto_coder/claude_client.py`, `src/auto_coder/codex_client.py`, `src/auto_coder/gemini_client.py`) to raise the appropriate error on usage limit detection.
+
+These updates improve reliability by ensuring consistent handling of usage limits and better documentation for users.

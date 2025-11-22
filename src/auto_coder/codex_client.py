@@ -75,6 +75,7 @@ class CodexClient(LLMClientBase):
                 "usage limit",
                 "upgrade to pro",
                 "too many requests",
+                "429",
             )
 
             # Capture output without streaming to logger
@@ -91,6 +92,7 @@ class CodexClient(LLMClientBase):
             low = full_output.lower()
 
             # Prepare structured JSON log entry
+            usage_limit_hit = any(marker in low for marker in usage_markers)
             log_entry = {
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                 "client": "codex",
@@ -98,7 +100,7 @@ class CodexClient(LLMClientBase):
                 "prompt_length": len(prompt),
                 "return_code": result.returncode,
                 "success": result.returncode == 0,
-                "usage_limit_hit": any(marker in low for marker in usage_markers),
+                "usage_limit_hit": usage_limit_hit,
                 "output": full_output,
             }
 
@@ -110,13 +112,12 @@ class CodexClient(LLMClientBase):
             print(summary)
 
             # Handle errors
+            if usage_limit_hit:
+                raise AutoCoderUsageLimitError(full_output)
+
             if result.returncode != 0:
-                if log_entry["usage_limit_hit"]:
-                    raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"codex CLI failed with return code {result.returncode}\n{full_output}")
 
-            if log_entry["usage_limit_hit"]:
-                raise AutoCoderUsageLimitError(full_output)
             return full_output
         except AutoCoderUsageLimitError:
             raise
