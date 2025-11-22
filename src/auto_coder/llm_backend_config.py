@@ -31,6 +31,9 @@ class BackendConfig:
     openai_base_url: Optional[str] = None
     # For custom configurations
     extra_args: Dict[str, str] = field(default_factory=dict)
+    # List of provider names available for this backend
+    # Schema: [backends.qwen].providers = ["qwen-open-router", ...]
+    providers: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -96,6 +99,7 @@ class LLMBackendConfiguration:
                     openai_api_key=config_data.get("openai_api_key"),
                     openai_base_url=config_data.get("openai_base_url"),
                     extra_args=config_data.get("extra_args", {}),
+                    providers=config_data.get("providers", []),
                 )
                 backends[name] = backend_config
 
@@ -132,6 +136,7 @@ class LLMBackendConfiguration:
                 "openai_api_key": config.openai_api_key,
                 "openai_base_url": config.openai_base_url,
                 "extra_args": config.extra_args,
+                "providers": config.providers,
             }
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}

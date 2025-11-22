@@ -26,6 +26,21 @@ from .utils import CommandExecutor
 logger = get_logger(__name__)
 
 
+@dataclass
+class _QwenProviderOption:
+    """Simple provider option for fallback when BackendManager is not used."""
+
+    name: str
+    api_key: Optional[str]
+    base_url: Optional[str]
+    model: Optional[str]
+    display_name: str
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.api_key or self.base_url)
+
+
 class QwenClient(LLMClientBase):
     """Qwen Code CLI client.
 
@@ -67,30 +82,29 @@ class QwenClient(LLMClientBase):
         self.use_env_vars = use_env_vars
         self.preserve_existing_env = preserve_existing_env
 
+        # Provider management is now handled by BackendProviderManager via BackendManager
+        # For backward compatibility, also support old-style provider config
+        self._last_used_model: Optional[str] = self.model_name
         self._provider_chain: List[_QwenProviderOption] = self._build_provider_chain()
         self._active_provider_index: int = 0
-        self._last_used_model: Optional[str] = self.model_name
 
         # Verify required CLIs are available
-        # Check if any provider requires codex (has api_key or base_url)
-        needs_codex = any(p.api_key or p.base_url for p in self._provider_chain)
-        needs_qwen = any(not (p.api_key or p.base_url) for p in self._provider_chain)
+        # Check if codex is needed (for providers with api_key or base_url)
+        # Check if qwen is needed (for OAuth fallback)
+        # We check both to provide clear error messages
+        try:
+            result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                logger.warning("codex CLI not working, but will continue (may be unused)")
+        except Exception:
+            logger.debug("codex CLI not available (providers may not use it)")
 
-        if needs_codex:
-            try:
-                result = subprocess.run(["codex", "--version"], capture_output=True, text=True, timeout=10)
-                if result.returncode != 0:
-                    raise RuntimeError("codex CLI not available or not working")
-            except Exception as e:
-                raise RuntimeError(f"codex CLI not available (required for providers): {e}")
-
-        if needs_qwen:
-            try:
-                result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
-                if result.returncode != 0:
-                    raise RuntimeError("qwen CLI not available or not working")
-            except Exception as e:
-                raise RuntimeError(f"qwen CLI not available: {e}")
+        try:
+            result = subprocess.run(["qwen", "--version"], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                raise RuntimeError("qwen CLI not available or not working (required for OAuth fallback)")
+        except Exception as e:
+            raise RuntimeError(f"qwen CLI not available: {e}")
 
     # ----- Model switching (keep simple; Qwen may not need to switch models) -----
     def switch_to_conflict_model(self) -> None:
@@ -112,132 +126,173 @@ class QwenClient(LLMClientBase):
     def _run_qwen_cli(self, prompt: str) -> str:
         """Run qwen CLI with the given prompt and stream output line by line.
 
-        We set OPENAI_* env vars when provided and invoke non-interactively with -p/--prompt.
+        Provider management is now handled by BackendManager. This method receives
+        the provider information via environment variables set by BackendManager.
+        For backward compatibility, also supports old-style provider config.
+
+        Args:
+            prompt: The prompt to send to the LLM
+
+        Returns:
+            The LLM's response as a string
         """
         escaped_prompt = self._escape_prompt(prompt)
 
-        if not self._provider_chain:
-            raise RuntimeError("No Qwen providers are configured")
+        # Check if provider is specified via BackendManager (environment or instance vars)
+        provider_api_key = os.environ.get("QWEN_API_KEY") or os.environ.get("OPENAI_API_KEY") or self.openai_api_key
+        provider_base_url = os.environ.get("QWEN_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or self.openai_base_url
+        provider_model = os.environ.get("QWEN_MODEL")
 
-        usage_errors: List[str] = []
-        start_index = self._active_provider_index
+        if provider_api_key or provider_base_url:
+            # Provider is specified via BackendManager, use it directly
+            use_codex = True
+        elif self._provider_chain:
+            # For backward compatibility, use provider chain from old-style config
+            # Try all providers in the chain
+            usage_errors = []
+            start_index = self._active_provider_index
 
-        for offset in range(len(self._provider_chain)):
-            provider_index = (start_index + offset) % len(self._provider_chain)
-            provider = self._provider_chain[provider_index]
+            for offset in range(len(self._provider_chain)):
+                provider_index = (start_index + offset) % len(self._provider_chain)
+                provider = self._provider_chain[provider_index]
 
-            try:
-                output = self._execute_with_provider(provider, escaped_prompt, prompt)
-                self._active_provider_index = provider_index
-                self._last_used_model = provider.model or self.model_name
-                self.model_name = self._last_used_model or self.model_name
-                return output
-            except AutoCoderUsageLimitError as exc:
-                usage_errors.append(f"{provider.display_name}: {str(exc).strip()}")
-                logger.warning(
-                    "Qwen provider '%s' hit usage limit. Trying next provider.",
-                    provider.display_name,
-                )
-                continue
+                try:
+                    # Execute with this provider
+                    self._active_provider_index = provider_index
+                    if provider.has_credentials:
+                        result = self._run_codex_cli(
+                            escaped_prompt,
+                            provider_model or provider.model,
+                            provider.api_key,
+                            provider.base_url,
+                        )
+                    else:
+                        result = self._run_qwen_oauth_cli(escaped_prompt, provider_model or provider.model)
 
-        if usage_errors:
-            aggregated = " | ".join(usage_errors)
-            raise AutoCoderUsageLimitError(f"All Qwen providers reached usage limits: {aggregated}")
+                    self._last_used_model = provider.model or self.model_name
+                    self.model_name = self._last_used_model
+                    return result
 
-        raise RuntimeError("Qwen providers exhausted without usable response")
+                except AutoCoderUsageLimitError as exc:
+                    usage_errors.append(f"{provider.display_name}: {str(exc).strip()}")
+                    logger.warning(
+                        "Qwen provider '%s' hit usage limit. Trying next provider.",
+                        provider.display_name,
+                    )
+                    continue
 
-    def _execute_with_provider(
+            # All providers failed, fallback to OAuth
+            logger.info("All Qwen providers failed, falling back to OAuth")
+            self._active_provider_index = len(self._provider_chain)  # Reset to after last provider
+            return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
+        else:
+            # No provider configured, use OAuth
+            return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
+
+        # Provider specified via BackendManager, use it
+        if use_codex:
+            return self._run_codex_cli(escaped_prompt, provider_model, provider_api_key, provider_base_url)
+        else:
+            return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
+
+    def _run_codex_cli(
         self,
-        provider: "_QwenProviderOption",
         escaped_prompt: str,
-        original_prompt: str,
+        model: Optional[str],
+        api_key: Optional[str],
+        base_url: Optional[str],
     ) -> str:
+        """Run codex CLI with OpenAI-compatible provider settings."""
         env = os.environ.copy()
 
-        model_to_use = provider.model or self.default_model
+        model_to_use = model or self.default_model
 
-        # Handle environment variables based on configuration
         if not self.preserve_existing_env:
-            # Reset OPENAI_* values before applying overrides.
+            # Reset OPENAI_* values before applying overrides
+            env.pop("OPENAI_API_KEY", None)
+            env.pop("OPENAI_BASE_URL", None)
+
+        # Use codex exec with -c options for model_provider and model
+        cmd = [
+            "codex",
+            "exec",
+            "-s",
+            "workspace-write",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ]
+
+        # Set model
+        if model_to_use:
+            cmd.extend(["-c", f'model="{model_to_use}"'])
+
+        # Set API key and base URL via environment variables
+        if api_key:
+            env["OPENAI_API_KEY"] = api_key
+        if base_url:
+            env["OPENAI_BASE_URL"] = base_url
+
+        # Add prompt
+        cmd.append(escaped_prompt)
+
+        return self._execute_cli(cmd, "codex", env, model_to_use)
+
+    def _run_qwen_oauth_cli(self, escaped_prompt: str, model: Optional[str]) -> str:
+        """Run qwen CLI for OAuth (no provider credentials)."""
+        env = os.environ.copy()
+
+        model_to_use = model or self.default_model
+
+        if not self.preserve_existing_env:
+            # Reset OPENAI_* values before applying overrides
             env.pop("OPENAI_API_KEY", None)
             env.pop("OPENAI_BASE_URL", None)
             env.pop("OPENAI_MODEL", None)
 
-        # Determine if we should use codex or qwen CLI
-        # Use codex when provider has api_key or base_url (OpenAI-compatible providers)
-        use_codex = bool(provider.api_key or provider.base_url)
+        cmd = ["qwen", "-y"]
 
-        if use_codex:
-            # Use codex exec with -c options for model_provider and model
-            cmd = [
-                "codex",
-                "exec",
-                "-s",
-                "workspace-write",
-                "--dangerously-bypass-approvals-and-sandbox",
-            ]
-
-            # Set model_provider based on provider name
-            if provider.name and provider.name.lower() != "qwen-oauth":
-                cmd.extend(["-c", f'model_provider="{provider.name.lower()}"'])
-
-            # Set model
+        if self.use_env_vars:
+            # Pass credentials via environment variables
             if model_to_use:
-                cmd.extend(["-c", f'model="{model_to_use}"'])
-
-            # Set API key and base URL via environment variables
-            if provider.api_key:
-                env["OPENAI_API_KEY"] = provider.api_key
-            if provider.base_url:
-                env["OPENAI_BASE_URL"] = provider.base_url
-
-            # Add prompt
-            cmd.append(escaped_prompt)
-
-            cli_name = "codex"
-            display_cmd = f'codex exec -s workspace-write -c model_provider="{provider.name.lower()}" -c model="{model_to_use}" --dangerously-bypass-approvals-and-sandbox [prompt]'
+                env["OPENAI_MODEL"] = model_to_use
+            # Model flag for qwen CLI
+            if model_to_use:
+                cmd.extend(["-m", model_to_use])
         else:
-            # Use qwen CLI for OAuth (no provider)
-            cmd = ["qwen", "-y"]
+            # Pass credentials via command-line options
+            if model_to_use:
+                cmd.extend(["-m", model_to_use])
 
-            if self.use_env_vars:
-                # Pass credentials via environment variables
-                if provider.api_key:
-                    env["OPENAI_API_KEY"] = provider.api_key
-                if provider.base_url:
-                    env["OPENAI_BASE_URL"] = provider.base_url
-                if model_to_use:
-                    env["OPENAI_MODEL"] = model_to_use
+        cmd.extend(["-p", escaped_prompt])
 
-                # Model flag for qwen CLI
-                if model_to_use:
-                    cmd.extend(["-m", model_to_use])
-            else:
-                # Pass credentials via command-line options
-                if provider.api_key:
-                    cmd.extend(["--openai-api-key", provider.api_key])
-                if provider.base_url:
-                    cmd.extend(["--openai-base-url", provider.base_url])
-                if model_to_use:
-                    cmd.extend(["-m", model_to_use])
+        return self._execute_cli(cmd, "qwen", env, model_to_use)
 
-            cmd.extend(["-p", escaped_prompt])
+    def _execute_cli(
+        self,
+        cmd: List[str],
+        cli_name: str,
+        env: Dict[str, str],
+        model: Optional[str],
+    ) -> str:
+        """Execute a CLI command and handle the response.
 
-            cli_name = "qwen"
-            display_cmd = f"qwen -m {model_to_use} -p [prompt]" if model_to_use else "qwen -p [prompt]"
+        Args:
+            cmd: Command to execute
+            cli_name: Name of the CLI for logging
+            env: Environment variables
+            model: Model name for logging
+
+        Returns:
+            The CLI's response as a string
+        """
+        display_model = model or self.default_model
+        display_cmd = " ".join(cmd[:3]) + "..." if len(cmd) > 3 else " ".join(cmd)
 
         logger.warning(
             "LLM invocation: %s CLI is being called. Keep LLM calls minimized.",
             cli_name,
         )
-        logger.debug(
-            "Running %s CLI with prompt length: %d characters",
-            cli_name,
-            len(original_prompt),
-        )
         logger.info(
-            "🤖 Running (%s): %s",
-            provider.display_name,
+            "🤖 Running (qwen): %s",
             display_cmd,
         )
         logger.info("=" * 60)
@@ -265,6 +320,7 @@ class QwenClient(LLMClientBase):
 
     @staticmethod
     def _is_usage_limit(message: str, returncode: int) -> bool:
+        """Check if the error message indicates a usage limit."""
         low = message.lower()
         # rate limit with Qwen OAuth
         if "rate limit" in low or "quota" in low:
@@ -281,48 +337,36 @@ class QwenClient(LLMClientBase):
             return True
         return False
 
-    def _build_provider_chain(self) -> List["_QwenProviderOption"]:
-        providers: List[_QwenProviderOption] = []
+    def _build_provider_chain(self) -> List[_QwenProviderOption]:
+        """Build provider chain from old-style config for backward compatibility."""
+        try:
+            # Load providers from config file (old-style)
+            configs = load_qwen_provider_configs()
+            if not configs:
+                return []
 
-        if self.openai_api_key and self.openai_base_url:
-            providers.append(
-                _QwenProviderOption(
-                    name="custom-openai",
-                    display_name="Custom OpenAI-compatible",
-                    api_key=self.openai_api_key,
-                    base_url=self.openai_base_url,
-                    model=self.model_name,
+            # Convert to internal provider options
+            providers = []
+            for config in configs:
+                provider = _QwenProviderOption(
+                    name=config.name,
+                    api_key=config.api_key,
+                    base_url=config.base_url,
+                    model=config.model,
+                    display_name=config.name,
                 )
-            )
+                providers.append(provider)
 
-        configured = load_qwen_provider_configs()
-        for cfg in configured:
-            providers.append(
-                _QwenProviderOption(
-                    name=cfg.name,
-                    display_name=cfg.description or cfg.name,
-                    api_key=cfg.api_key,
-                    base_url=cfg.base_url,
-                    model=cfg.model or self.default_model,
-                )
-            )
-
-        # Always allow falling back to OAuth as the last resort so that API keys are
-        # consumed before the default shared pool is hit.
-        providers.append(
-            _QwenProviderOption(
-                name="qwen-oauth",
-                display_name="Qwen OAuth",
-                api_key=None,
-                base_url=None,
-                model=self.model_name,
-            )
-        )
-
-        return providers
+            return providers
+        except Exception as e:
+            logger.debug("Failed to load Qwen provider config: %s", e)
+            return []
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Execute LLM with the given prompt.
+
+        This method is called by BackendManager which handles provider rotation.
+        Environment variables for the current provider are set by BackendManager.
 
         Args:
             prompt: The prompt to send to the LLM
@@ -336,7 +380,7 @@ class QwenClient(LLMClientBase):
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:
         prompt = self._create_feature_suggestion_prompt(repo_context)
         try:
-            response_text = self._run_qwen_cli(prompt)
+            response_text = self._run_llm_cli(prompt)
             suggestions = self._parse_feature_suggestions(response_text)
             logger.info(f"Generated {len(suggestions)} feature suggestions (Qwen)")
             return suggestions
@@ -437,12 +481,3 @@ class QwenClient(LLMClientBase):
         except Exception as e:
             logger.error(f"Unexpected error adding Qwen MCP config: {e}")
             return False
-
-
-@dataclass
-class _QwenProviderOption:
-    name: str
-    display_name: str
-    api_key: Optional[str]
-    base_url: Optional[str]
-    model: Optional[str]
