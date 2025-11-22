@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
+from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
 
