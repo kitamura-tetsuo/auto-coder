@@ -14,6 +14,7 @@ process remains alive to satisfy the requirement of keeping a session for
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import select
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
+from .exceptions import AutoCoderUsageLimitError
 from .graphrag_mcp_integration import GraphRAGMCPIntegration
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
@@ -389,10 +391,15 @@ class CodexMCPClient(LLMClientBase):
                 "--dangerously-bypass-approvals-and-sandbox",
                 escaped_prompt,
             ]
-            logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
-            logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
-            logger.info("🤖 Running under MCP session: codex exec -s workspace-write " "--dangerously-bypass-approvals-and-sandbox [prompt]")
 
+            usage_markers = (
+                "rate limit",
+                "usage limit",
+                "upgrade to pro",
+                "too many requests",
+            )
+
+            # Capture output without streaming to logger
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -404,12 +411,44 @@ class CodexMCPClient(LLMClientBase):
             assert proc.stdout is not None
             for line in proc.stdout:
                 line = line.rstrip("\n")
-                logger.info(line)
+                if not line:
+                    continue
                 output_lines.append(line)
             return_code = proc.wait()
+
+            full_output = "\n".join(output_lines).strip()
+            low = full_output.lower()
+
+            # Prepare structured JSON log entry
+            log_entry = {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "client": "codex-mcp",
+                "model": self.model_name,
+                "prompt_length": len(prompt),
+                "return_code": return_code,
+                "success": return_code == 0,
+                "usage_limit_hit": any(marker in low for marker in usage_markers),
+                "output": full_output,
+            }
+
+            # Log as single-line JSON
+            logger.info(json.dumps(log_entry, ensure_ascii=False))
+
+            # Print summary to stdout
+            summary = f"[CodexMCP] Model: {self.model_name}, Prompt: {len(prompt)} chars, Output: {len(full_output)} chars"
+            print(summary)
+
             if return_code != 0:
-                raise RuntimeError(f"codex exec failed with return code {return_code}")
-            return "\n".join(output_lines).strip()
+                if log_entry["usage_limit_hit"]:
+                    raise AutoCoderUsageLimitError(full_output)
+                raise RuntimeError(f"codex exec failed with return code {return_code}\n{full_output}")
+
+            if log_entry["usage_limit_hit"]:
+                raise AutoCoderUsageLimitError(full_output)
+
+            return full_output
+        except AutoCoderUsageLimitError:
+            raise
         except Exception as e:
             raise RuntimeError(f"Failed to run codex exec under MCP session: {e}")
 

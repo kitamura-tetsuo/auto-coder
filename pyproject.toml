@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.11.22.8+g62fe248"
+version = "2025.11.23+g3b3afbf"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -39,6 +39,7 @@ dependencies = [
     "pytest-cov>=7.0.0",
     "toml>=0.10.0",
     "pytest-timeout>=2.4.0",
+    "pre-commit>=4.5.0",
 ]
 
 [project.optional-dependencies]
