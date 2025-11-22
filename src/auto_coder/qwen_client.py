@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .exceptions import AutoCoderUsageLimitError
@@ -19,9 +20,25 @@ from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .qwen_provider_config import load_qwen_provider_configs
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class _QwenProviderOption:
+    """Simple provider option for fallback when BackendManager is not used."""
+
+    name: str
+    api_key: Optional[str]
+    base_url: Optional[str]
+    model: Optional[str]
+    display_name: str
+
+    @property
+    def has_credentials(self) -> bool:
+        return bool(self.api_key or self.base_url)
 
 
 class QwenClient(LLMClientBase):
@@ -66,8 +83,10 @@ class QwenClient(LLMClientBase):
         self.preserve_existing_env = preserve_existing_env
 
         # Provider management is now handled by BackendProviderManager via BackendManager
-        # We only need to verify that at least one CLI is available
+        # For backward compatibility, also support old-style provider config
         self._last_used_model: Optional[str] = self.model_name
+        self._provider_chain: List[_QwenProviderOption] = self._build_provider_chain()
+        self._active_provider_index: int = 0
 
         # Verify required CLIs are available
         # Check if codex is needed (for providers with api_key or base_url)
@@ -109,6 +128,7 @@ class QwenClient(LLMClientBase):
 
         Provider management is now handled by BackendManager. This method receives
         the provider information via environment variables set by BackendManager.
+        For backward compatibility, also supports old-style provider config.
 
         Args:
             prompt: The prompt to send to the LLM
@@ -118,16 +138,58 @@ class QwenClient(LLMClientBase):
         """
         escaped_prompt = self._escape_prompt(prompt)
 
-        # Get provider settings from environment variables (set by BackendProviderManager)
-        # These are exported as uppercase settings from provider_metadata.toml
-        provider_api_key = os.environ.get("QWEN_API_KEY") or os.environ.get("OPENAI_API_KEY")
-        provider_base_url = os.environ.get("QWEN_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+        # Check if provider is specified via BackendManager (environment or instance vars)
+        provider_api_key = os.environ.get("QWEN_API_KEY") or os.environ.get("OPENAI_API_KEY") or self.openai_api_key
+        provider_base_url = os.environ.get("QWEN_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or self.openai_base_url
         provider_model = os.environ.get("QWEN_MODEL")
 
-        # Use qwen CLI for OAuth (no provider) - this is the default fallback
-        # Use codex CLI when provider has api_key or base_url (OpenAI-compatible providers)
-        use_codex = bool(provider_api_key or provider_base_url)
+        if provider_api_key or provider_base_url:
+            # Provider is specified via BackendManager, use it directly
+            use_codex = True
+        elif self._provider_chain:
+            # For backward compatibility, use provider chain from old-style config
+            # Try all providers in the chain
+            usage_errors = []
+            start_index = self._active_provider_index
 
+            for offset in range(len(self._provider_chain)):
+                provider_index = (start_index + offset) % len(self._provider_chain)
+                provider = self._provider_chain[provider_index]
+
+                try:
+                    # Execute with this provider
+                    self._active_provider_index = provider_index
+                    if provider.has_credentials:
+                        result = self._run_codex_cli(
+                            escaped_prompt,
+                            provider_model or provider.model,
+                            provider.api_key,
+                            provider.base_url,
+                        )
+                    else:
+                        result = self._run_qwen_oauth_cli(escaped_prompt, provider_model or provider.model)
+
+                    self._last_used_model = provider.model or self.model_name
+                    self.model_name = self._last_used_model
+                    return result
+
+                except AutoCoderUsageLimitError as exc:
+                    usage_errors.append(f"{provider.display_name}: {str(exc).strip()}")
+                    logger.warning(
+                        "Qwen provider '%s' hit usage limit. Trying next provider.",
+                        provider.display_name,
+                    )
+                    continue
+
+            # All providers failed, fallback to OAuth
+            logger.info("All Qwen providers failed, falling back to OAuth")
+            self._active_provider_index = len(self._provider_chain)  # Reset to after last provider
+            return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
+        else:
+            # No provider configured, use OAuth
+            return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
+
+        # Provider specified via BackendManager, use it
         if use_codex:
             return self._run_codex_cli(escaped_prompt, provider_model, provider_api_key, provider_base_url)
         else:
@@ -274,6 +336,31 @@ class QwenClient(LLMClientBase):
         if "openai api streaming error: 429 provider returned error" in low:
             return True
         return False
+
+    def _build_provider_chain(self) -> List[_QwenProviderOption]:
+        """Build provider chain from old-style config for backward compatibility."""
+        try:
+            # Load providers from config file (old-style)
+            configs = load_qwen_provider_configs()
+            if not configs:
+                return []
+
+            # Convert to internal provider options
+            providers = []
+            for config in configs:
+                provider = _QwenProviderOption(
+                    name=config.name,
+                    api_key=config.api_key,
+                    base_url=config.base_url,
+                    model=config.model,
+                    display_name=config.name,
+                )
+                providers.append(provider)
+
+            return providers
+        except Exception as e:
+            logger.debug("Failed to load Qwen provider config: %s", e)
+            return []
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Execute LLM with the given prompt.

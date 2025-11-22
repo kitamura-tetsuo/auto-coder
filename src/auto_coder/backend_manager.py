@@ -28,7 +28,7 @@ _initialization_lock = threading.Lock()
 __all__ = [
     "BackendManager",
     "get_llm_backend_manager",
-    "run_message_prompt",
+    "run_llm_message_prompt",
     "run_llm_prompt",
     "get_llm_backend_and_model",
     "get_llm_backend_provider_and_model",
