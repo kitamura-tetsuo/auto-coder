@@ -31,6 +31,7 @@ from src.auto_coder.git_utils import (
 from src.auto_coder.utils import CommandResult
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestGitCommitWithRetry:
     """Tests for git_commit_with_retry function."""
 
@@ -168,14 +169,16 @@ class TestGitCommitWithRetry:
             assert call_args[1]["cwd"] == "/custom/path"
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestGitPush:
     """Tests for git_push function."""
 
     def test_successful_push(self):
         """Test successful push without branch specified."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # First call in check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -197,9 +200,10 @@ class TestGitPush:
 
     def test_push_with_branch(self):
         """Test push with specific branch."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             # When branch is specified, no need to get current branch
             mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
@@ -213,9 +217,10 @@ class TestGitPush:
 
     def test_push_with_custom_remote(self):
         """Test push with custom remote."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             # When branch is specified, no need to get current branch
             mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
 
@@ -229,9 +234,10 @@ class TestGitPush:
 
     def test_push_failure(self):
         """Test push failure."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -255,9 +261,10 @@ class TestGitPush:
 
     def test_push_with_cwd(self):
         """Test push with custom working directory."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -281,9 +288,10 @@ class TestGitPush:
 
     def test_push_no_upstream_auto_retry(self):
         """Test push automatically retries with --set-upstream when upstream is not set."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="issue-733\n", stderr="", returncode=0),
@@ -320,9 +328,10 @@ class TestGitPush:
 
     def test_push_no_upstream_with_branch_specified(self):
         """Test push with branch specified automatically retries with --set-upstream."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # First call: push fails with no upstream error
                 CommandResult(
@@ -351,9 +360,10 @@ class TestGitPush:
 
     def test_push_other_error_no_retry(self):
         """Test push does not retry for errors other than missing upstream."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -378,9 +388,10 @@ class TestGitPush:
 
     def test_push_with_dprint_error_and_retry(self):
         """Test push with dprint formatting error triggers retry without commit message."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -415,9 +426,10 @@ class TestGitPush:
 
     def test_push_with_dprint_error_and_commit_message(self):
         """Test push with dprint formatting error and commit message triggers re-commit."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -455,9 +467,10 @@ class TestGitPush:
 
     def test_push_with_dprint_error_fmt_fails(self):
         """Test push with dprint error but formatter fails."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -489,9 +502,10 @@ class TestGitPush:
 
     def test_push_with_dprint_error_commit_amend_fails(self):
         """Test push with dprint error when commit amend fails, falls back to regular commit."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
@@ -535,9 +549,10 @@ class TestGitPush:
 
     def test_push_with_dprint_error_and_upstream_retry(self):
         """Test push with dprint error and then upstream error triggers both retries."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor_utils, patch("src.auto_coder.git_info.CommandExecutor") as mock_executor_info:
             mock_cmd = MagicMock()
-            mock_executor.return_value = mock_cmd
+            mock_executor_utils.return_value = mock_cmd
+            mock_executor_info.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 # 1) check_unpushed_commits: get current branch
                 CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),
@@ -640,6 +655,7 @@ class TestParseGithubRepoFromUrl:
         assert result is None
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestSaveCommitFailureHistory:
     """Tests for save_commit_failure_history function."""
 
@@ -710,6 +726,7 @@ class TestSaveCommitFailureHistory:
             os.chdir(original_cwd)
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestGitCheckoutBranch:
     """Tests for git_checkout_branch function."""
 
@@ -1318,12 +1335,13 @@ class TestGitCheckoutBranch:
             mock_cmd.run_command.assert_called_once()
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestGetCurrentBranch:
     """Tests for get_current_branch function."""
 
     def test_get_current_branch_success(self):
         """Test successful retrieval of current branch."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(success=True, stdout="main\n", stderr="", returncode=0)
@@ -1335,7 +1353,7 @@ class TestGetCurrentBranch:
 
     def test_get_current_branch_with_cwd(self):
         """Test get_current_branch with custom working directory."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0)
@@ -1347,7 +1365,7 @@ class TestGetCurrentBranch:
 
     def test_get_current_branch_failure(self):
         """Test get_current_branch when git command fails."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1440,12 +1458,13 @@ class TestValidateBranchName:
         assert "issue-123" in error_msg
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestGetCommitLog:
     """Tests for get_commit_log function."""
 
     def test_get_commit_log_with_commits(self):
         """Test getting commit log with multiple commits."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # Mock responses: get_current_branch, origin/main check (succeeds), merge-base, git log
@@ -1469,7 +1488,7 @@ class TestGetCommitLog:
 
     def test_get_commit_log_on_main_branch(self):
         """Test getting commit log when already on main branch."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(success=True, stdout="main\n", stderr="", returncode=0)
@@ -1482,7 +1501,7 @@ class TestGetCommitLog:
 
     def test_get_commit_log_no_base_branch(self):
         """Test getting commit log when base branch doesn't exist."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # origin/main fails, then main fails (second check is attempted)
@@ -1499,7 +1518,7 @@ class TestGetCommitLog:
 
     def test_get_commit_log_no_merge_base(self):
         """Test getting commit log when merge base cannot be found."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1515,7 +1534,7 @@ class TestGetCommitLog:
 
     def test_get_commit_log_no_commits(self):
         """Test getting commit log when there are no new commits."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1532,7 +1551,7 @@ class TestGetCommitLog:
 
     def test_get_commit_log_with_cwd(self):
         """Test getting commit log with custom working directory."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1556,7 +1575,7 @@ class TestGetCommitLog:
 
     def test_get_commit_log_max_commits(self):
         """Test getting commit log respects max_commits limit."""
-        with patch("src.auto_coder.git_utils.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1574,6 +1593,7 @@ class TestGetCommitLog:
             assert "--max-count=5" in log_call
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestGetAllBranches:
     """Tests for get_all_branches function."""
 
@@ -2061,6 +2081,7 @@ class TestMigratePrBranches:
             assert results["success"] is True
 
 
+@pytest.mark.usefixtures("_use_custom_subprocess_mock")
 class TestBranchContext:
     """Tests for branch_context function."""
 
