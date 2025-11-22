@@ -15,11 +15,12 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
 
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
+from .llm_output_logger import get_llm_output_logger
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -35,7 +36,12 @@ class AuggieClient(LLMClientBase):
 
     DAILY_CALL_LIMIT = _DAILY_LIMIT
 
-    def __init__(self, model_name: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        realtime_feedback: bool = False,
+        realtime_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
         config = get_llm_config()
         config_backend = config.get_backend_config("auggie")
 
@@ -44,9 +50,17 @@ class AuggieClient(LLMClientBase):
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None
+        self.realtime_feedback = realtime_feedback
+        self.realtime_callback = realtime_callback
         self._usage_state_path = self._compute_usage_state_path()
         self._usage_date_cache: Optional[str] = None
         self._usage_count_cache: int = 0
+
+        # Initialize LLMOutputLogger
+        self._llm_logger = get_llm_output_logger()
+        if self.realtime_callback:
+            # Update the logger's callback for real-time feedback
+            self._llm_logger.realtime_callback = self.realtime_callback
 
         # Verify Auggie CLI availability early for deterministic failures.
         try:
@@ -139,7 +153,9 @@ class AuggieClient(LLMClientBase):
         return prompt.replace("@", "\\@").strip()
 
     def _run_auggie_cli(self, prompt: str) -> str:
-        """Execute Auggie CLI and stream output via logger."""
+        """Execute Auggie CLI and log output as JSON."""
+        import inspect
+
         self._check_and_increment_usage()
         escaped_prompt = self._escape_prompt(prompt)
         cmd = [
@@ -170,12 +186,44 @@ class AuggieClient(LLMClientBase):
             line = line.rstrip("\n")
             if not line:
                 continue
-            logger.info(line)
+
+            # Real-time feedback: log each line if enabled
+            if self.realtime_feedback:
+                logger.info(line)
+
+            # Store line for buffering
             output_lines.append(line)
+
+            # Real-time callback
+            if self.realtime_callback:
+                try:
+                    self.realtime_callback(line)
+                except Exception as e:
+                    logger.warning(f"Failed to call realtime callback: {e}")
 
         return_code = process.wait()
         logger.info("=" * 60)
         full_output = "\n".join(output_lines).strip()
+
+        # Get caller information for logging
+        frame = inspect.currentframe()
+        caller_file = "__main__"
+        caller_line = 0
+        if frame and frame.f_back:
+            caller_frame = frame.f_back
+            caller_file = caller_frame.f_code.co_filename
+            caller_line = caller_frame.f_lineno
+
+        # Log the complete output as one JSON object
+        self._llm_logger.log_output(
+            model=self.model_name,
+            prompt=prompt,
+            output=full_output,
+            caller_file=caller_file,
+            caller_line=caller_line,
+            metadata={"return_code": return_code},
+        )
+
         low = full_output.lower()
         if return_code != 0:
             if ("rate limit" in low) or ("quota" in low) or ("429" in low):
