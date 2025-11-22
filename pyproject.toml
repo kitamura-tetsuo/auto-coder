@@ -172,8 +172,8 @@ warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
 exclude = ["mcp/", "graph_builder/", "mcp_servers/"]
-# Specify files to check
-files = ["src", "tests"]
+# Use packages instead of files to avoid module path conflicts
+packages = ["auto_coder"]
 
 [[tool.mypy.overrides]]
 module = [

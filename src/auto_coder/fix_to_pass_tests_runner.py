@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 from .automation_config import AutomationConfig
-from .git_utils import get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_info import get_commit_log
+from .git_utils import git_commit_with_retry, git_push, save_commit_failure_history
 from .logger_config import get_logger, log_calls
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt

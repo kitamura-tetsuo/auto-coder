@@ -10,7 +10,8 @@ from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
-from .git_utils import extract_number_from_branch, get_current_branch
+from .git_info import get_current_branch
+from .git_utils import extract_number_from_branch
 from .github_client import GitHubClient
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
