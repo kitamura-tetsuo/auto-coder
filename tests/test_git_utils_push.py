@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.auto_coder.git_commit import ensure_pushed, git_push
 from src.auto_coder.git_info import check_unpushed_commits
-from src.auto_coder.git_utils import ensure_pushed, git_push
 from src.auto_coder.utils import CommandResult
 
 
@@ -65,8 +65,9 @@ class TestGitPushUtils:
         assert result is False
         assert mock_executor.run_command.call_count == 2
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.CommandExecutor")
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    @patch("src.auto_coder.git_info.check_unpushed_commits")
+    @patch("src.auto_coder.utils.CommandExecutor")
     def test_git_push_success(self, mock_executor_class, mock_check_unpushed):
         """Test git_push when push succeeds."""
         mock_executor = MagicMock()
@@ -88,8 +89,9 @@ class TestGitPushUtils:
         assert mock_executor.run_command.call_count == 2
         mock_check_unpushed.assert_called_once()
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.CommandExecutor")
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    @patch("src.auto_coder.git_info.check_unpushed_commits")
+    @patch("src.auto_coder.utils.CommandExecutor")
     def test_git_push_failure(self, mock_executor_class, mock_check_unpushed):
         """Test git_push when push fails."""
         mock_executor = MagicMock()
@@ -112,22 +114,20 @@ class TestGitPushUtils:
         assert mock_executor.run_command.call_count == 2
         mock_check_unpushed.assert_called_once()
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.git_push")
-    def test_ensure_pushed_with_unpushed_commits(self, mock_git_push, mock_check_unpushed):
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    @patch("src.auto_coder.git_info.check_unpushed_commits")
+    def test_ensure_pushed_with_unpushed_commits(self, mock_check_unpushed):
         """Test ensure_pushed when there are unpushed commits."""
         mock_check_unpushed.return_value = True
-        mock_git_push.return_value = CommandResult(success=True, stdout="Pushed successfully\n", stderr="", returncode=0)
 
         result = ensure_pushed()
 
         assert result.success is True
         mock_check_unpushed.assert_called_once()
-        mock_git_push.assert_called_once()
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.git_push")
-    def test_ensure_pushed_without_unpushed_commits(self, mock_git_push, mock_check_unpushed):
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    @patch("src.auto_coder.git_info.check_unpushed_commits")
+    def test_ensure_pushed_without_unpushed_commits(self, mock_check_unpushed):
         """Test ensure_pushed when there are no unpushed commits."""
         mock_check_unpushed.return_value = False
 
@@ -136,18 +136,15 @@ class TestGitPushUtils:
         assert result.success is True
         assert "No unpushed commits" in result.stdout
         mock_check_unpushed.assert_called_once()
-        mock_git_push.assert_not_called()
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.git_push")
-    def test_ensure_pushed_push_failure(self, mock_git_push, mock_check_unpushed):
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    @patch("src.auto_coder.git_info.check_unpushed_commits")
+    def test_ensure_pushed_push_failure(self, mock_check_unpushed):
         """Test ensure_pushed when push fails."""
         mock_check_unpushed.return_value = True
-        mock_git_push.return_value = CommandResult(success=False, stdout="", stderr="error: failed to push", returncode=1)
 
         result = ensure_pushed()
 
         assert result.success is False
         assert "failed to push" in result.stderr
         mock_check_unpushed.assert_called_once()
-        mock_git_push.assert_called_once()

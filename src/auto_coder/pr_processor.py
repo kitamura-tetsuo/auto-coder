@@ -28,8 +28,10 @@ from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
 from .gh_logger import get_gh_logger
+from .git_branch import git_commit_with_retry
+from .git_commit import git_push, save_commit_failure_history
 from .git_info import get_commit_log
-from .git_utils import branch_context, commit_and_push_changes, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_utils import branch_context, commit_and_push_changes
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
