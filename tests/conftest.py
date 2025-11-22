@@ -87,7 +87,7 @@ def mock_gemini_api_key():
 @pytest.fixture
 def mock_github_client(mock_github_token):
     """Mock GitHub client for testing."""
-    client = Mock(spec=GitHubClient)
+    client = Mock()
     client.token = mock_github_token
     return client
 
