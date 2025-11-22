@@ -2,6 +2,7 @@
 Gemini CLI client for Auto-Coder.
 """
 
+import datetime
 import json
 import os
 import subprocess
@@ -116,9 +117,14 @@ class GeminiClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
+
         try:
             escaped_prompt = self._escape_prompt(prompt)
-
+            logger.warning(
+                "LLM invocation via Gemini CLI (model=%s, prompt_length=%d)",
+                self.model_name,
+                len(prompt),
+            )
             cmd = [
                 "gemini",
                 "--yolo",
@@ -128,6 +134,12 @@ class GeminiClient(LLMClientBase):
                 "--prompt",
                 escaped_prompt,
             ]
+
+            usage_markers = (
+                "rate limit",
+                "resource_exhausted",
+                "too many requests",
+            )
 
             _log_json_line(
                 "WARNING",
@@ -164,18 +176,32 @@ class GeminiClient(LLMClientBase):
             full_output = full_output.strip()
             low = full_output.lower()
 
-            usage_markers = (
-                "rate limit",
-                "resource_exhausted",
-                "too many requests",
-            )
+            # Prepare structured JSON log entry
+            log_entry = {
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "client": "gemini",
+                "model": self.model_name,
+                "prompt_length": len(prompt),
+                "return_code": result.returncode,
+                "success": result.returncode == 0,
+                "usage_limit_hit": any(marker in low for marker in usage_markers),
+                "output": full_output,
+            }
 
+            # Log as single-line JSON
+            logger.info(json.dumps(log_entry, ensure_ascii=False))
+
+            # Print summary to stdout
+            summary = f"[Gemini] Model: {self.model_name}, Prompt: {len(prompt)} chars, Output: {len(full_output)} chars"
+            print(summary)
+
+            # Handle errors
             if result.returncode != 0:
-                if any(m in low for m in usage_markers):
+                if log_entry["usage_limit_hit"]:
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
 
-            if any(m in low for m in usage_markers):
+            if log_entry["usage_limit_hit"]:
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
 
