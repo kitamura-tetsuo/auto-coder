@@ -57,7 +57,7 @@ class TestIssueProcessorLabelIntegration:
         client = Mock()
         client.disable_labels = False
         client.has_label.return_value = False
-        client.try_add_labels_to_issue.return_value = True
+        client.try_add_labels.return_value = True
         client.get_issue_details_by_number.return_value = {"labels": []}
         client.get_repository.return_value = Mock()
         client.get_open_sub_issues.return_value = []

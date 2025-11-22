@@ -596,7 +596,7 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
-        client.add_labels("test/repo", 456, ["jules", "enhancement"], item_type="pr")
+        client.add_labels("test/repo", 456, ["jules", "enhancement"], "pr")
 
         # Assert
         mock_repo.get_pull.assert_called_once_with(456)
@@ -630,7 +630,7 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute - try to add "jules" again and "enhancement"
-        client.add_labels("test/repo", 456, ["jules", "enhancement"], item_type="pr")
+        client.add_labels("test/repo", 456, ["jules", "enhancement"], "pr")
 
         # Assert
         mock_repo.get_pull.assert_called_once_with(456)
