@@ -9,20 +9,22 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from src.auto_coder.git_info import (
+    get_commit_log,
+    get_current_branch,
+    get_current_repo_name,
+    is_git_repository,
+    parse_github_repo_from_url,
+)
 from src.auto_coder.git_utils import (
     branch_context,
     extract_number_from_branch,
     get_all_branches,
     get_branches_by_pattern,
-    get_commit_log,
-    get_current_branch,
-    get_current_repo_name,
     git_checkout_branch,
     git_commit_with_retry,
     git_push,
-    is_git_repository,
     migrate_pr_branches,
-    parse_github_repo_from_url,
     save_commit_failure_history,
     validate_branch_name,
 )
