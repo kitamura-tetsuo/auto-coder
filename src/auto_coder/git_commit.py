@@ -8,7 +8,6 @@ dprint formatting issues, and upstream branch setup.
 
 from typing import Any, Dict, Optional
 
-from .git_branch import try_llm_commit_push, try_llm_dprint_fallback
 from .git_info import check_unpushed_commits
 from .logger_config import get_logger
 from .utils import CommandExecutor, CommandResult
@@ -178,6 +177,8 @@ def git_push(
             logger.warning(f"Failed to run dprint formatter: {fmt_result.stderr}")
             # Try LLM fallback when dprint formatter execution fails
             logger.info("Attempting to resolve dprint formatter failure using LLM...")
+            from .git_branch import try_llm_dprint_fallback
+
             llm_success = try_llm_dprint_fallback(commit_message, fmt_result.stderr)
             if not llm_success:
                 logger.error("LLM failed to resolve dprint formatter failure in push operation")
@@ -245,6 +246,8 @@ def git_push(
 
     # If push still failed and we have LLM clients, try LLM fallback
     logger.info("Attempting to resolve push failure using LLM...")
+    from .git_branch import try_llm_commit_push
+
     llm_success = try_llm_commit_push(
         commit_message,
         push_result.stderr,

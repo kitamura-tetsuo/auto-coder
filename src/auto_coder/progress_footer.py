@@ -8,7 +8,7 @@ in the terminal footer with PR/Issue number and processing stage.
 import shutil
 import sys
 import threading
-from typing import Optional
+from typing import Any, Optional
 
 from .logger_config import get_logger
 
@@ -23,7 +23,7 @@ class ProgressFooter:
     that updates in place (overprint) rather than creating new lines.
     """
 
-    def __init__(self, stream=sys.stderr):
+    def __init__(self, stream=sys.stderr) -> None:
         """Initialize the progress footer."""
         self._lock = threading.Lock()
         self._current_footer: Optional[str] = None
@@ -140,7 +140,7 @@ class ProgressFooter:
         else:
             self._current_footer = None
 
-    def sink_wrapper(self, message):
+    def sink_wrapper(self, message: Any) -> None:
         """
         Loguru sink wrapper that clears footer before log, then re-prints after.
 

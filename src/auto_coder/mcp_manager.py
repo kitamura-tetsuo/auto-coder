@@ -40,12 +40,12 @@ class MCPServerConfig:
 class MCPServerManager:
     """Manager for multiple MCP servers."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize MCP Server Manager."""
         self.servers: Dict[str, MCPServerConfig] = {}
         self._register_builtin_servers()
 
-    def _register_builtin_servers(self):
+    def _register_builtin_servers(self) -> None:
         """Register built-in MCP servers."""
         # Get auto_coder package directory
         try:
@@ -87,7 +87,7 @@ class MCPServerManager:
             )
         )
 
-    def register_server(self, config: MCPServerConfig):
+    def register_server(self, config: MCPServerConfig) -> None:
         """Register an MCP server.
 
         Args:

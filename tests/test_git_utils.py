@@ -12,8 +12,11 @@ import pytest
 from src.auto_coder.git_branch import (
     branch_exists,
     extract_number_from_branch,
+    get_all_branches,
+    get_branches_by_pattern,
     git_checkout_branch,
     git_commit_with_retry,
+    migrate_pr_branches,
     validate_branch_name,
 )
 from src.auto_coder.git_commit import (
@@ -27,12 +30,7 @@ from src.auto_coder.git_info import (
     is_git_repository,
     parse_github_repo_from_url,
 )
-from src.auto_coder.git_utils import (
-    branch_context,
-    get_all_branches,
-    get_branches_by_pattern,
-    migrate_pr_branches,
-)
+from src.auto_coder.git_utils import branch_context
 from src.auto_coder.utils import CommandResult
 
 
@@ -1797,7 +1795,7 @@ class TestMigratePrBranches:
 
     def test_migrate_pr_branches_no_pr_branches(self):
         """Test migration when no pr-<number> branches exist."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # git branch -r (get_all_branches) - no pr-* branches
@@ -1956,7 +1954,7 @@ class TestMigratePrBranches:
 
     def test_migrate_pr_branches_extraction_failure(self):
         """Test migration when number extraction fails for a branch."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # Branch with invalid pattern (no number)
