@@ -12,7 +12,6 @@ from typing import Any, Dict, Generator, List, Optional
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import run_llm_prompt
 
-from .git_commit import git_push
 from .git_info import check_unpushed_commits, get_current_branch
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -1008,6 +1007,8 @@ def migrate_pr_branches(
                             continue
 
                     # Push the merged changes
+                    from .git_commit import git_push
+
                     push_result = git_push(cwd=cwd, commit_message=f"Merged {branch_name} into {issue_branch_name}")
                     if not push_result.success:
                         logger.warning(f"Failed to push merged changes: {push_result.stderr}")
@@ -1042,6 +1043,8 @@ def migrate_pr_branches(
                         continue
 
                     # Push the new branch
+                    from .git_commit import git_push
+
                     push_result = git_push(cwd=cwd, commit_message=f"Created {issue_branch_name} from {branch_name}")
                     if not push_result.success:
                         logger.warning(f"Failed to push new branch: {push_result.stderr}")

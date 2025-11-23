@@ -66,85 +66,132 @@ class TestGitPushUtils:
         assert mock_executor.run_command.call_count == 2
 
     @pytest.mark.usefixtures("_use_custom_subprocess_mock")
-    @patch("src.auto_coder.git_info.check_unpushed_commits")
-    @patch("src.auto_coder.utils.CommandExecutor")
-    def test_git_push_success(self, mock_executor_class, mock_check_unpushed):
+    @patch("src.auto_coder.git_commit.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
+    def test_git_push_success(self, mock_executor_info_class, mock_executor_commit_class):
         """Test git_push when push succeeds."""
         mock_executor = MagicMock()
-        mock_executor_class.return_value = mock_executor
+        mock_executor_info_class.return_value = mock_executor
+        mock_executor_commit_class.return_value = mock_executor
 
-        # check_unpushed_commits returns True (there are unpushed commits)
-        mock_check_unpushed.return_value = True
-
+        # Mock responses for check_unpushed_commits (called from git_info module)
         mock_executor.run_command.side_effect = [
-            # _perform_git_push: get current branch for push
-            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-            # _perform_git_push: push succeeds
-            CommandResult(success=True, stdout="Everything up-to-date\n", stderr="", returncode=0),
+            # check_unpushed_commits calls
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get_current_branch
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),  # rev-list with unpushed commits
+            # _perform_git_push calls
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get current branch for push
+            CommandResult(success=True, stdout="Everything up-to-date\n", stderr="", returncode=0),  # push succeeds
         ]
 
         result = git_push()
 
         assert result.success is True
-        assert mock_executor.run_command.call_count == 2
-        mock_check_unpushed.assert_called_once()
+        assert mock_executor.run_command.call_count == 4
 
     @pytest.mark.usefixtures("_use_custom_subprocess_mock")
-    @patch("src.auto_coder.git_info.check_unpushed_commits")
-    @patch("src.auto_coder.utils.CommandExecutor")
-    def test_git_push_failure(self, mock_executor_class, mock_check_unpushed):
+    @patch("src.auto_coder.git_commit.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
+    def test_git_push_failure(self, mock_executor_info_class, mock_executor_commit_class):
         """Test git_push when push fails."""
         mock_executor = MagicMock()
-        mock_executor_class.return_value = mock_executor
+        mock_executor_info_class.return_value = mock_executor
+        mock_executor_commit_class.return_value = mock_executor
 
-        # check_unpushed_commits returns True (there are unpushed commits)
-        mock_check_unpushed.return_value = True
-
+        # Mock responses for check_unpushed_commits (called from git_info module)
         mock_executor.run_command.side_effect = [
-            # _perform_git_push: get current branch for push
-            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),
-            # _perform_git_push: push fails
-            CommandResult(success=False, stdout="", stderr="error: failed to push", returncode=1),
+            # check_unpushed_commits calls
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get_current_branch
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),  # rev-list with unpushed commits
+            # _perform_git_push calls
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get current branch for push
+            CommandResult(success=False, stdout="", stderr="error: failed to push", returncode=1),  # push fails
         ]
 
         result = git_push()
 
         assert result.success is False
         assert "failed to push" in result.stderr
-        assert mock_executor.run_command.call_count == 2
-        mock_check_unpushed.assert_called_once()
+        assert mock_executor.run_command.call_count == 4
 
     @pytest.mark.usefixtures("_use_custom_subprocess_mock")
-    @patch("src.auto_coder.git_info.check_unpushed_commits")
-    def test_ensure_pushed_with_unpushed_commits(self, mock_check_unpushed):
+    @patch("src.auto_coder.git_commit.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
+    def test_ensure_pushed_with_unpushed_commits(self, mock_executor_info_class, mock_executor_commit_class):
         """Test ensure_pushed when there are unpushed commits."""
-        mock_check_unpushed.return_value = True
+        mock_executor = MagicMock()
+        mock_executor_info_class.return_value = mock_executor
+        mock_executor_commit_class.return_value = mock_executor
+
+        # Mock responses for check_unpushed_commits (called from git_info module)
+        # ensure_pushed calls check_unpushed_commits (2 commands)
+        # then calls git_push which calls _perform_git_push which:
+        #   1. calls check_unpushed_commits again (2 commands)
+        #   2. calls rev-parse to get branch (1 command)
+        #   3. calls git push (1 command)
+        mock_executor.run_command.side_effect = [
+            # First check_unpushed_commits call from ensure_pushed
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get_current_branch
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),  # rev-list with unpushed commits
+            # Second check_unpushed_commits call from git_push's _perform_git_push
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get current branch
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),  # rev-list (still has unpushed commits)
+            # _perform_git_push gets current branch when branch is None
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # rev-parse for branch name
+            # git push command succeeds
+            CommandResult(success=True, stdout="Everything up-to-date\n", stderr="", returncode=0),
+        ]
 
         result = ensure_pushed()
 
         assert result.success is True
-        mock_check_unpushed.assert_called_once()
+        assert mock_executor.run_command.call_count == 6
 
     @pytest.mark.usefixtures("_use_custom_subprocess_mock")
-    @patch("src.auto_coder.git_info.check_unpushed_commits")
-    def test_ensure_pushed_without_unpushed_commits(self, mock_check_unpushed):
+    @patch("src.auto_coder.git_commit.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
+    def test_ensure_pushed_without_unpushed_commits(self, mock_executor_info_class, mock_executor_commit_class):
         """Test ensure_pushed when there are no unpushed commits."""
-        mock_check_unpushed.return_value = False
+        mock_executor = MagicMock()
+        mock_executor_info_class.return_value = mock_executor
+        mock_executor_commit_class.return_value = mock_executor
+
+        # Mock responses for check_unpushed_commits (called from git_info module)
+        mock_executor.run_command.side_effect = [
+            # check_unpushed_commits calls
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get_current_branch
+            CommandResult(success=True, stdout="0\n", stderr="", returncode=0),  # rev-list with no unpushed commits
+        ]
 
         result = ensure_pushed()
 
         assert result.success is True
         assert "No unpushed commits" in result.stdout
-        mock_check_unpushed.assert_called_once()
+        assert mock_executor.run_command.call_count == 2
 
     @pytest.mark.usefixtures("_use_custom_subprocess_mock")
-    @patch("src.auto_coder.git_info.check_unpushed_commits")
-    def test_ensure_pushed_push_failure(self, mock_check_unpushed):
+    @patch("src.auto_coder.git_commit.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
+    def test_ensure_pushed_push_failure(self, mock_executor_info_class, mock_executor_commit_class):
         """Test ensure_pushed when push fails."""
-        mock_check_unpushed.return_value = True
+        mock_executor = MagicMock()
+        mock_executor_info_class.return_value = mock_executor
+        mock_executor_commit_class.return_value = mock_executor
+
+        # Mock responses for check_unpushed_commits (called from git_info module)
+        mock_executor.run_command.side_effect = [
+            # First check_unpushed_commits call from ensure_pushed
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get_current_branch
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),  # rev-list with unpushed commits
+            # Second check_unpushed_commits call from git_push's _perform_git_push
+            CommandResult(success=True, stdout="main\n", stderr="", returncode=0),  # get current branch
+            CommandResult(success=True, stdout="2\n", stderr="", returncode=0),  # rev-list (still has unpushed commits)
+            # git push command fails
+            CommandResult(success=False, stdout="", stderr="error: failed to push some refs", returncode=1),
+        ]
 
         result = ensure_pushed()
 
         assert result.success is False
         assert "failed to push" in result.stderr
-        mock_check_unpushed.assert_called_once()
+        assert mock_executor.run_command.call_count == 5
