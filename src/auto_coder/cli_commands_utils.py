@@ -1,7 +1,7 @@
 """Utility CLI commands (auth_status, get_actions_logs)."""
 
 import sys
-from typing import Optional
+from typing import Optional, cast
 
 import click
 
@@ -45,9 +45,9 @@ def get_repo_or_detect(repo: Optional[str]) -> str:
 
     # Try to auto-detect repository
     detected_repo = get_current_repo_name()
-    if detected_repo:
+    if detected_repo is not None:
         click.echo(f"Auto-detected repository: {detected_repo}")
-        return detected_repo
+        return cast(str, detected_repo)
 
     # If not in a git repository or can't detect, show helpful error
     if not is_git_repository():
