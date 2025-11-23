@@ -182,12 +182,31 @@ class BackendManager(LLMBackendManagerBase):
         retry_attempts: Dict[str, int] = {}
 
         while attempts < len(self._all_backends):
-            if self._current_idx in tried:
-                self.switch_to_next_backend()
-                continue
-
-            tried.add(self._current_idx)
             backend_name = self._current_backend_name()
+            current_idx = self._current_idx
+
+            # Check if this backend index has already been tried (for rotation tracking)
+            # But allow retries of the same backend if configured and not exhausted
+            if current_idx in tried:
+                # Check if we should retry this backend before rotating
+                backend_config = get_llm_config().get_backend_config(backend_name)
+                if backend_config and backend_config.usage_limit_retry_count > 0:
+                    # retry_attempts tracks retries already done, check if we can do one more
+                    current_retries = retry_attempts.get(backend_name, 0)
+                    if current_retries < backend_config.usage_limit_retry_count:
+                        # Will retry this backend, don't add to tried yet
+                        pass
+                    else:
+                        # Retries exhausted, rotate to next backend
+                        self.switch_to_next_backend()
+                        continue
+                else:
+                    # No retry config or retries exhausted, rotate
+                    self.switch_to_next_backend()
+                    continue
+            else:
+                # First time trying this backend, add to tried
+                tried.add(current_idx)
 
             try:
                 cli = self._get_or_create_client(backend_name)
