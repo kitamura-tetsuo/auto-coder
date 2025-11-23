@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.git_branch import (
+    branch_context,
     branch_exists,
     extract_number_from_branch,
     get_all_branches,
@@ -30,7 +31,6 @@ from src.auto_coder.git_info import (
     is_git_repository,
     parse_github_repo_from_url,
 )
-from src.auto_coder.git_utils import branch_context
 from src.auto_coder.utils import CommandResult
 
 
@@ -665,7 +665,7 @@ class TestSaveCommitFailureHistory:
     def test_save_commit_failure_history_with_repo_name(self, tmp_path):
         """Test saving commit failure history with repo name."""
         # Mock Path.home() to use tmp_path
-        with patch("src.auto_coder.git_utils.Path.home") as mock_home:
+        with patch("pathlib.Path.home") as mock_home:
             mock_home.return_value = tmp_path
 
             error_message = "Test error message"
@@ -735,7 +735,7 @@ class TestGitCheckoutBranch:
 
     def test_successful_checkout_existing_branch(self):
         """Test successful checkout of an existing branch."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -778,7 +778,7 @@ class TestGitCheckoutBranch:
 
     def test_successful_checkout_create_new_branch(self):
         """Test successful checkout with creating a new branch from origin/main."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -854,7 +854,7 @@ class TestGitCheckoutBranch:
 
     def test_successful_checkout_create_from_base_branch(self):
         """Test successful checkout with creating a new branch from base branch with base ref included."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -921,7 +921,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_failure(self):
         """Test checkout failure."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -945,7 +945,7 @@ class TestGitCheckoutBranch:
 
     def test_create_new_branch_requires_base_branch(self):
         """Creating a new branch without base_branch should raise ValueError."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # First call for branch list (branch doesn't exist)
@@ -956,7 +956,7 @@ class TestGitCheckoutBranch:
 
     def test_create_new_branch_fallback_to_local_base(self):
         """When origin/<base_branch> is missing, fall back to local <base_branch>."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1005,7 +1005,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_success_but_verification_fails(self):
         """Test checkout succeeds but verification command fails."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1035,7 +1035,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_success_but_branch_mismatch(self):
         """Test checkout succeeds but current branch doesn't match expected."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1062,7 +1062,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_with_cwd(self):
         """Test checkout with custom working directory."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1089,7 +1089,7 @@ class TestGitCheckoutBranch:
 
     def test_create_new_branch_push_failure(self):
         """Test creating a new branch when push fails (should still succeed)."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1127,7 +1127,7 @@ class TestGitCheckoutBranch:
 
     def test_create_new_branch_without_publish(self):
         """Test creating a new branch without publishing to remote."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1158,7 +1158,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_with_uncommitted_changes_auto_commit(self):
         """Test checkout with uncommitted changes automatically commits them."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1200,7 +1200,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_with_uncommitted_changes_error_retry(self):
         """Test checkout fails with uncommitted changes error, then retries after commit."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1255,7 +1255,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_with_uncommitted_changes_commit_fails(self):
         """Test checkout with uncommitted changes when commit fails."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
@@ -1288,7 +1288,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_rejects_invalid_pr_branch_name_when_creating(self):
         """Test that creating new branch with pr-<number> pattern is rejected."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # Mock that branch doesn't exist
@@ -1304,7 +1304,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_accepts_existing_pr_branch(self):
         """Test that checking out existing pr-<number> branch is allowed when not creating a new branch."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # When create_new=False, no validation is performed; allow pr-<number>
@@ -1324,7 +1324,7 @@ class TestGitCheckoutBranch:
 
     def test_checkout_rejects_invalid_pr_branch_name_case_insensitive(self):
         """Test that creating pr-<number> pattern is rejected regardless of case."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # Mock that branch doesn't exist
@@ -1602,7 +1602,7 @@ class TestGetAllBranches:
 
     def test_get_all_branches_local(self):
         """Test getting all local branches."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1619,7 +1619,7 @@ class TestGetAllBranches:
 
     def test_get_all_branches_remote(self):
         """Test getting all remote branches."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1636,7 +1636,7 @@ class TestGetAllBranches:
 
     def test_get_all_branches_empty(self):
         """Test getting branches when none exist."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
@@ -1647,7 +1647,7 @@ class TestGetAllBranches:
 
     def test_get_all_branches_with_cwd(self):
         """Test getting branches with custom working directory."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1664,7 +1664,7 @@ class TestGetAllBranches:
 
     def test_get_all_branches_failure(self):
         """Test getting branches when git command fails."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1684,7 +1684,7 @@ class TestGetBranchesByPattern:
 
     def test_get_branches_by_pattern_with_wildcard(self):
         """Test getting branches matching a pattern with wildcard."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # get_all_branches is called internally
@@ -1702,7 +1702,7 @@ class TestGetBranchesByPattern:
 
     def test_get_branches_by_pattern_exact_match(self):
         """Test getting branches with exact match pattern."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1719,7 +1719,7 @@ class TestGetBranchesByPattern:
 
     def test_get_branches_by_pattern_case_insensitive(self):
         """Test case-insensitive pattern matching."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1736,7 +1736,7 @@ class TestGetBranchesByPattern:
 
     def test_get_branches_by_pattern_no_matches(self):
         """Test pattern matching when no branches match."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1753,7 +1753,7 @@ class TestGetBranchesByPattern:
 
     def test_get_branches_by_pattern_with_remote_prefix(self):
         """Test pattern matching with remote branch prefix."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.return_value = CommandResult(
@@ -1770,7 +1770,7 @@ class TestGetBranchesByPattern:
 
     def test_get_branches_by_pattern_local_only(self):
         """Test pattern matching in local branches only."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
             mock_cmd = MagicMock()
             mock_executor.return_value = mock_cmd
             # Mock for local branches (no -r flag)
@@ -2090,17 +2090,22 @@ class TestBranchContext:
 
     def test_branch_context_successful_switch_and_return(self):
         """Test successful branch switch and return using context manager."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+                with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                    with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                        with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                            with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                                mock_cmd = MagicMock()
+                                mock_executor.return_value = mock_cmd
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature", "main"]
-                        mock_is_repo.return_value = True
-                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                # Initially on main - need to set both mocks
+                                side_effect = ["main", "feature", "main"]
+                                mock_get_branch_info.side_effect = side_effect
+                                mock_get_branch_branch.side_effect = side_effect
+                                mock_is_repo.return_value = True
+                                mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                mock_ensure_pushed.return_value = CommandResult(success=True, stdout="No unpushed commits", stderr="", returncode=0)
 
                         # Execute the context manager
                         with branch_context("feature"):
@@ -2120,17 +2125,22 @@ class TestBranchContext:
 
     def test_branch_context_with_exception(self):
         """Test that context manager returns to original branch even when exception occurs."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+                with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                    with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                        with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                            with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                                mock_cmd = MagicMock()
+                                mock_executor.return_value = mock_cmd
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature", "main"]
-                        mock_is_repo.return_value = True
-                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                # Initially on main
+                                side_effect = ["main", "feature", "main"]
+                                mock_get_branch_info.side_effect = side_effect
+                                mock_get_branch_branch.side_effect = side_effect
+                                mock_is_repo.return_value = True
+                                mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                mock_ensure_pushed.return_value = CommandResult(success=True, stdout="No unpushed commits", stderr="", returncode=0)
 
                         # Execute the context manager with an exception
                         with pytest.raises(RuntimeError):
@@ -2145,17 +2155,22 @@ class TestBranchContext:
 
     def test_branch_context_create_new_branch(self):
         """Test context manager with create_new parameter."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+                with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                    with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                        with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                            with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                                mock_cmd = MagicMock()
+                                mock_executor.return_value = mock_cmd
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "new-feature", "main"]
-                        mock_is_repo.return_value = True
-                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                # Initially on main
+                                side_effect = ["main", "new-feature", "main"]
+                                mock_get_branch_info.side_effect = side_effect
+                                mock_get_branch_branch.side_effect = side_effect
+                                mock_is_repo.return_value = True
+                                mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                mock_ensure_pushed.return_value = CommandResult(success=True, stdout="No unpushed commits", stderr="", returncode=0)
 
                         with branch_context("new-feature", create_new=True, base_branch="main"):
                             pass
@@ -2173,17 +2188,22 @@ class TestBranchContext:
 
     def test_branch_context_with_custom_cwd(self):
         """Test context manager with custom working directory."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+                with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                    with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                        with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                            with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                                mock_cmd = MagicMock()
+                                mock_executor.return_value = mock_cmd
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature", "main"]
-                        mock_is_repo.return_value = True
-                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                # Initially on main
+                                side_effect = ["main", "feature", "main"]
+                                mock_get_branch_info.side_effect = side_effect
+                                mock_get_branch_branch.side_effect = side_effect
+                                mock_is_repo.return_value = True
+                                mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                mock_ensure_pushed.return_value = CommandResult(success=True, stdout="No unpushed commits", stderr="", returncode=0)
 
                         with branch_context("feature", cwd="/custom/path"):
                             pass
@@ -2195,17 +2215,22 @@ class TestBranchContext:
 
     def test_branch_context_already_on_target_branch(self):
         """Test context manager when already on the target branch."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+                with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                    with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                        with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                            with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                                mock_cmd = MagicMock()
+                                mock_executor.return_value = mock_cmd
 
-                        # Already on the target branch
-                        mock_get_branch.side_effect = ["feature", "feature"]
-                        mock_is_repo.return_value = True
-                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                # Already on the target branch
+                                side_effect = ["feature", "feature"]
+                                mock_get_branch_info.side_effect = side_effect
+                                mock_get_branch_branch.side_effect = side_effect
+                                mock_is_repo.return_value = True
+                                mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                mock_ensure_pushed.return_value = CommandResult(success=True, stdout="No unpushed commits", stderr="", returncode=0)
 
                         with branch_context("feature"):
                             # Should not call switch_to_branch when already on the branch
@@ -2216,10 +2241,10 @@ class TestBranchContext:
 
     def test_branch_context_switch_failure(self):
         """Test that RuntimeError is raised when switch_to_branch fails."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch:
+                with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                    with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
                         mock_cmd = MagicMock()
                         mock_executor.return_value = mock_cmd
 
@@ -2243,55 +2268,68 @@ class TestBranchContext:
 
     def test_branch_context_get_current_branch_failure(self):
         """Test RuntimeError when get_current_branch fails initially."""
-        with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-            # get_current_branch returns None to simulate failure
-            mock_get_branch.return_value = None
+        with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+            with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                    # get_current_branch returns None to simulate failure
+                    mock_get_branch_info.return_value = None
+                    mock_get_branch_branch.return_value = None
 
-            with pytest.raises(RuntimeError) as exc_info:
-                with branch_context("feature"):
-                    pass
+                    with pytest.raises(RuntimeError) as exc_info:
+                        with branch_context("feature"):
+                            pass
 
-            assert "Failed to get current branch" in str(exc_info.value)
+                    assert "Failed to get current branch" in str(exc_info.value)
 
     def test_branch_context_not_git_repository_on_exit(self):
         """Test that context manager handles not being in a git repo during cleanup."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+                with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                    with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                        with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                            with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                                mock_cmd = MagicMock()
+                                mock_executor.return_value = mock_cmd
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature"]
-                        # Not a git repository during cleanup
-                        mock_is_repo.return_value = False
-                        mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                # Initially on main
+                                side_effect = ["main", "feature"]
+                                mock_get_branch_info.side_effect = side_effect
+                                mock_get_branch_branch.side_effect = side_effect
+                                # Not a git repository during cleanup
+                                mock_is_repo.return_value = False
+                                mock_switch.return_value = CommandResult(success=True, stdout="", stderr="", returncode=0)
+                                mock_ensure_pushed.return_value = CommandResult(success=True, stdout="No unpushed commits", stderr="", returncode=0)
 
-                        with branch_context("feature"):
-                            # Should successfully enter context
-                            pass
+                                with branch_context("feature"):
+                                    # Should successfully enter context
+                                    pass
 
-                        # Should not call switch_to_branch for return since not in git repo
-                        assert mock_switch.call_count == 1
+                                # Should not call switch_to_branch for return since not in git repo
+                                assert mock_switch.call_count == 1
 
     def test_branch_context_return_switch_failure(self):
         """Test that return switch failure is logged but doesn't raise."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        mock_cmd = MagicMock()
-                        mock_executor.return_value = mock_cmd
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch_info:
+                with patch("src.auto_coder.git_branch.get_current_branch") as mock_get_branch_branch:
+                    with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                        with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                            with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
+                                mock_cmd = MagicMock()
+                                mock_executor.return_value = mock_cmd
 
-                        # Initially on main
-                        mock_get_branch.side_effect = ["main", "feature", "feature"]
-                        mock_is_repo.return_value = True
-                        # First call (entry) succeeds, second call (return) fails
-                        mock_switch.side_effect = [
-                            CommandResult(success=True, stdout="", stderr="", returncode=0),
-                            CommandResult(success=False, stdout="", stderr="Failed to switch", returncode=1),
-                        ]
+                                # Initially on main
+                                side_effect = ["main", "feature", "feature"]
+                                mock_get_branch_info.side_effect = side_effect
+                                mock_get_branch_branch.side_effect = side_effect
+                                mock_is_repo.return_value = True
+                                # First call (entry) succeeds, second call (return) fails
+                                mock_switch.side_effect = [
+                                    CommandResult(success=True, stdout="", stderr="", returncode=0),
+                                    CommandResult(success=False, stdout="", stderr="Failed to switch", returncode=1),
+                                ]
+                                mock_ensure_pushed.return_value = CommandResult(success=True, stdout="No unpushed commits", stderr="", returncode=0)
 
                         # Should complete without raising exception
                         with branch_context("feature"):
@@ -2302,10 +2340,10 @@ class TestBranchContext:
 
     def test_branch_context_with_pull_after_switch(self):
         """Test that pull_after_switch is always True for both entry and exit."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch:
+                with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                    with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
                         mock_cmd = MagicMock()
                         mock_executor.return_value = mock_cmd
 
@@ -2323,11 +2361,11 @@ class TestBranchContext:
 
     def test_branch_context_checks_unpushed_commits_by_default(self):
         """Test that branch_context checks and pushes unpushed commits by default."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_utils.ensure_pushed") as mock_ensure_pushed:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch:
+                with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                    with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()
                             mock_executor.return_value = mock_cmd
 
@@ -2352,11 +2390,11 @@ class TestBranchContext:
 
     def test_branch_context_skips_unpushed_commits_when_disabled(self):
         """Test that branch_context skips unpushed commit check when check_unpushed=False."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_utils.ensure_pushed") as mock_ensure_pushed:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch:
+                with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                    with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()
                             mock_executor.return_value = mock_cmd
 
@@ -2373,11 +2411,11 @@ class TestBranchContext:
 
     def test_branch_context_with_custom_remote(self):
         """Test that branch_context uses custom remote for unpushed commit check."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_utils.ensure_pushed") as mock_ensure_pushed:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch:
+                with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                    with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()
                             mock_executor.return_value = mock_cmd
 
@@ -2401,11 +2439,11 @@ class TestBranchContext:
 
     def test_branch_context_handles_ensure_pushed_failure(self):
         """Test that branch_context continues even if ensure_pushed fails."""
-        with patch("src.auto_coder.git_commit.CommandExecutor") as mock_executor:
-            with patch("src.auto_coder.git_utils.get_current_branch") as mock_get_branch:
-                with patch("src.auto_coder.git_utils.switch_to_branch") as mock_switch:
-                    with patch("src.auto_coder.git_utils.is_git_repository") as mock_is_repo:
-                        with patch("src.auto_coder.git_utils.ensure_pushed") as mock_ensure_pushed:
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            with patch("src.auto_coder.git_info.get_current_branch") as mock_get_branch:
+                with patch("src.auto_coder.git_branch.switch_to_branch") as mock_switch:
+                    with patch("src.auto_coder.git_info.is_git_repository") as mock_is_repo:
+                        with patch("src.auto_coder.git_commit.ensure_pushed") as mock_ensure_pushed:
                             mock_cmd = MagicMock()
                             mock_executor.return_value = mock_cmd
 

@@ -12,7 +12,7 @@ from pathlib import Path
 # Add the src directory to the path so we can import the modules
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from auto_coder.git_utils import switch_to_branch, resolve_pull_conflicts
+from auto_coder.git_branch import switch_to_branch, resolve_pull_conflicts
 from auto_coder.utils import CommandExecutor
 
 def test_resolve_pull_conflicts():

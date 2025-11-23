@@ -6,12 +6,12 @@ checking out, and validating branch names.
 """
 
 import re
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Generator, List, Optional
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.backend_manager import run_llm_prompt
 
-from .git_commit import git_push
 from .git_info import check_unpushed_commits, get_current_branch
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
@@ -614,6 +614,247 @@ def get_branches_by_pattern(pattern: str, cwd: Optional[str] = None, remote: boo
     return matching_branches
 
 
+def git_pull(
+    remote: str = "origin",
+    branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+) -> CommandResult:
+    """
+    Perform git pull with comprehensive error handling and conflict resolution.
+
+    This function centralizes git pull operations and handles various scenarios:
+    - Standard pull operations
+    - Merge conflicts
+    - Diverging branches
+    - No tracking information (new branches)
+
+    Args:
+        remote: Remote name (default: 'origin')
+        branch: Optional branch name. If None, uses current branch
+        cwd: Optional working directory for the git command
+
+    Returns:
+        CommandResult with the result of the pull operation
+    """
+    cmd = CommandExecutor()
+
+    # Determine which branch to pull
+    target_branch = branch
+    if not target_branch:
+        branch_result = cmd.run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=cwd)
+        if not branch_result.success:
+            logger.warning(f"Failed to get current branch: {branch_result.stderr}")
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=f"Failed to get current branch: {branch_result.stderr}",
+                returncode=branch_result.returncode,
+            )
+        target_branch = branch_result.stdout.strip()
+
+    logger.info(f"Pulling latest changes from {remote}/{target_branch}...")
+    pull_result = cmd.run_command(["git", "pull", remote, target_branch], cwd=cwd)
+
+    if pull_result.success:
+        logger.info(f"Successfully pulled latest changes from {remote}/{target_branch}")
+        return pull_result
+
+    # Handle various error cases
+    error_msg = pull_result.stderr.lower()
+
+    # Check if it's a "no tracking information" error (new branch)
+    if "no tracking information" in error_msg or "fatal: no such ref was fetched" in error_msg:
+        logger.warning(f"No remote tracking information for branch '{target_branch}', skipping pull")
+        # This is not a critical error for new branches
+        return CommandResult(
+            success=True,  # Treat as success for new branches
+            stdout=f"No remote tracking information for branch '{target_branch}'",
+            stderr=pull_result.stderr,
+            returncode=0,
+        )
+
+    # Check if it's a "diverging branches" error
+    if "diverging branches" in error_msg or "not possible to fast-forward" in error_msg:
+        logger.info(f"Detected diverging branches for branch '{target_branch}', attempting to resolve...")
+
+        # Try to resolve pull conflicts using our conflict resolution function
+        conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+
+        if conflict_result.success:
+            logger.info(f"Successfully resolved pull conflicts for branch '{target_branch}'")
+            return CommandResult(
+                success=True,
+                stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
+                stderr=conflict_result.stderr,
+                returncode=0,
+            )
+        else:
+            logger.warning(f"Failed to resolve pull conflicts for branch '{target_branch}': {conflict_result.stderr}")
+            # Return the conflict resolution result
+            return conflict_result
+
+    # Check for merge conflicts during pull
+    if "conflict" in error_msg or "merge conflict" in error_msg:
+        logger.info(f"Detected merge conflicts during pull, attempting to resolve...")
+        conflict_result = resolve_pull_conflicts(cwd=cwd, merge_method="merge")
+
+        if conflict_result.success:
+            logger.info(f"Successfully resolved pull conflicts")
+            return CommandResult(
+                success=True,
+                stdout=f"Pull with conflict resolution: {conflict_result.stdout}",
+                stderr=conflict_result.stderr,
+                returncode=0,
+            )
+        else:
+            logger.warning(f"Failed to resolve pull conflicts: {conflict_result.stderr}")
+            return conflict_result
+
+    # Other errors
+    logger.error(f"Failed to pull latest changes: {pull_result.stderr}")
+    return pull_result
+
+
+def resolve_pull_conflicts(cwd: Optional[str] = None, merge_method: str = "merge") -> CommandResult:
+    """
+    Resolve pull conflicts by attempting merge/rebase strategies.
+
+    Args:
+        cwd: Optional working directory for the git command
+        merge_method: Strategy to resolve conflicts - "merge" or "rebase"
+
+    Returns:
+        CommandResult with the result of the conflict resolution
+    """
+    cmd = CommandExecutor()
+    logger.info(f"Attempting to resolve pull conflicts using {merge_method} strategy")
+
+    # First, abort any ongoing merge/rebase to start clean
+    abort_result = cmd.run_command(["git", "merge", "--abort"], cwd=cwd)
+    if not abort_result.success:
+        abort_result = cmd.run_command(["git", "rebase", "--abort"], cwd=cwd)
+
+    try:
+        if merge_method == "rebase":
+            # Try rebase first
+            logger.info("Attempting git rebase to resolve pull conflicts")
+            rebase_result = cmd.run_command(["git", "rebase", "origin/HEAD"], cwd=cwd)
+
+            if rebase_result.success:
+                logger.info("Successfully resolved pull conflicts using rebase")
+                return CommandResult(
+                    success=True,
+                    stdout="Pull conflicts resolved via rebase",
+                    stderr="",
+                    returncode=0,
+                )
+            else:
+                # If rebase fails, fall back to merge
+                logger.warning(f"Rebase failed: {rebase_result.stderr}, trying merge strategy")
+                return resolve_pull_conflicts(cwd, "merge")
+        else:
+            # Default: try merge strategy
+            logger.info("Attempting git merge to resolve pull conflicts")
+            merge_result = cmd.run_command(["git", "merge", "--no-ff", "origin/HEAD"], cwd=cwd)
+
+            if merge_result.success:
+                logger.info("Successfully resolved pull conflicts using merge")
+                return CommandResult(
+                    success=True,
+                    stdout="Pull conflicts resolved via merge",
+                    stderr="",
+                    returncode=0,
+                )
+            else:
+                # Check if it's actually a conflict or another error
+                if "conflict" in merge_result.stderr.lower():
+                    logger.error(f"Merge conflicts detected: {merge_result.stderr}")
+                    # For now, return the merge result so the caller can handle conflicts
+                    return merge_result
+                else:
+                    logger.error(f"Merge failed for non-conflict reasons: {merge_result.stderr}")
+                    return merge_result
+
+    except Exception as e:
+        logger.error(f"Error during pull conflict resolution: {e}")
+        return CommandResult(
+            success=False,
+            stdout="",
+            stderr=f"Error resolving pull conflicts: {e}",
+            returncode=1,
+        )
+
+
+def switch_to_branch(
+    branch_name: str,
+    create_new: bool = False,
+    base_branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+    publish: bool = True,
+    pull_after_switch: bool = True,
+) -> CommandResult:
+    """
+    Switch to a git branch and automatically pull latest changes.
+
+    This function centralizes branch switching operations with automatic pull.
+    It combines git_checkout_branch with automatic pull to ensure the branch
+    is synchronized with the remote repository.
+
+    Args:
+        branch_name: Name of the branch to switch to
+        create_new: If True, creates a new branch with -b flag
+        base_branch: If create_new is True and base_branch is specified, creates
+                     the new branch from base_branch (using -B flag)
+        cwd: Optional working directory for the git command
+        publish: If True and create_new is True, push the new branch to remote and set up tracking
+        pull_after_switch: If True, automatically pull latest changes after successful checkout
+
+    Returns:
+        CommandResult with the result of the checkout operation.
+        success=True only if checkout succeeded AND (pull succeeded if requested) AND
+        current branch matches expected branch.
+    """
+    # First, checkout the branch using existing logic
+    checkout_result = git_checkout_branch(
+        branch_name=branch_name,
+        create_new=create_new,
+        base_branch=base_branch,
+        cwd=cwd,
+        publish=publish,
+    )
+
+    if not checkout_result.success:
+        logger.error(f"Failed to checkout branch '{branch_name}': {checkout_result.stderr}")
+        return checkout_result
+
+    # If pull is not requested, return the checkout result
+    if not pull_after_switch:
+        logger.info(f"Successfully switched to branch '{branch_name}' (skipping pull)")
+        return checkout_result
+
+    # Pull the latest changes from remote
+    logger.info(f"Pulling latest changes for branch '{branch_name}'...")
+    pull_result = git_pull(remote="origin", branch=branch_name, cwd=cwd)
+
+    if not pull_result.success:
+        logger.error(f"Failed to pull latest changes for branch '{branch_name}': {pull_result.stderr}")
+        # Return a combined result showing both the checkout and pull results
+        return CommandResult(
+            success=False,
+            stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
+            stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
+            returncode=pull_result.returncode,
+        )
+
+    logger.info(f"Successfully switched to branch '{branch_name}' and pulled latest changes")
+    return CommandResult(
+        success=True,
+        stdout=f"Checkout: {checkout_result.stdout}\nPull: {pull_result.stdout}",
+        stderr=f"Checkout: {checkout_result.stderr}\nPull: {pull_result.stderr}",
+        returncode=0,
+    )
+
+
 def migrate_pr_branches(
     config: AutomationConfig,
     cwd: Optional[str] = None,
@@ -646,8 +887,6 @@ def migrate_pr_branches(
         - 'failed': List of failed migrations with error messages
         - 'conflicts': List of branches with merge conflicts
     """
-    from .git_utils import git_pull
-
     cmd = CommandExecutor()
     results: Dict[str, Any] = {
         "success": True,
@@ -768,6 +1007,8 @@ def migrate_pr_branches(
                             continue
 
                     # Push the merged changes
+                    from .git_commit import git_push
+
                     push_result = git_push(cwd=cwd, commit_message=f"Merged {branch_name} into {issue_branch_name}")
                     if not push_result.success:
                         logger.warning(f"Failed to push merged changes: {push_result.stderr}")
@@ -802,6 +1043,8 @@ def migrate_pr_branches(
                         continue
 
                     # Push the new branch
+                    from .git_commit import git_push
+
                     push_result = git_push(cwd=cwd, commit_message=f"Created {issue_branch_name} from {branch_name}")
                     if not push_result.success:
                         logger.warning(f"Failed to push new branch: {push_result.stderr}")
@@ -838,3 +1081,132 @@ def migrate_pr_branches(
 
     logger.info(f"Branch migration completed. Migrated: {len(results['migrated'])}, Skipped: {len(results['skipped'])}, Failed: {len(results['failed'])}")
     return results
+
+
+@contextmanager
+def branch_context(
+    branch_name: str,
+    create_new: bool = False,
+    base_branch: Optional[str] = None,
+    cwd: Optional[str] = None,
+    check_unpushed: bool = True,
+    remote: str = "origin",
+) -> Generator[None, None, None]:
+    """
+    Context manager for Git branch management.
+
+    This context manager automatically switches to the specified branch on entry,
+    checks for unpushed commits, and returns to the main branch on exit (even if
+    an exception occurs).
+
+    Args:
+        branch_name: Name of the branch to switch to
+        create_new: If True, creates a new branch with -b flag
+        base_branch: If create_new is True and base_branch is specified, creates
+                     the new branch from base_branch (using -B flag)
+        cwd: Optional working directory for the git command
+        check_unpushed: If True, automatically check and push unpushed commits
+                       on entry (default: True)
+        remote: Remote name to use for unpushed commit checks (default: 'origin')
+
+    Example Usage:
+        # Work on a feature branch
+        with branch_context("feature/issue-123"):
+            # Perform work on feature/issue-123 branch
+            # Branch is automatically pulled on entry
+            # Unpushed commits are automatically pushed
+            perform_work()
+        # Automatically back on main branch after exiting context
+
+        # Create and work on new branch
+        with branch_context("feature/new-feature", create_new=True, base_branch="main"):
+            # New branch created from main
+            # Automatic pull after switch
+            # Unpushed commits are automatically pushed
+            perform_work()
+        # Automatically returns to main
+
+    Raises:
+        Exception: Propagates any exceptions from branch operations
+    """
+    from .git_commit import ensure_pushed
+    from .git_info import is_git_repository
+
+    # Store the current branch to return to on exit
+    original_branch = get_current_branch(cwd=cwd)
+
+    if not original_branch:
+        raise RuntimeError("Failed to get current branch before switching")
+
+    # If already on the target branch, just yield without switching
+    if original_branch == branch_name and not create_new:
+        logger.info(f"Already on branch '{branch_name}', staying on current branch")
+        try:
+            yield
+        finally:
+            # Even if we're already on the branch, still need to handle cleanup properly
+            pass
+        return
+
+    try:
+        # On entry: switch to the target branch with automatic pull
+        logger.info(f"Switching to branch '{branch_name}'")
+        switch_result = switch_to_branch(
+            branch_name=branch_name,
+            create_new=create_new,
+            base_branch=base_branch,
+            cwd=cwd,
+            publish=True,  # Default to publishing new branches
+            pull_after_switch=True,  # Always pull after switch
+        )
+
+        if not switch_result.success:
+            raise RuntimeError(f"Failed to switch to branch '{branch_name}': {switch_result.stderr}")
+
+        # Check for and push unpushed commits if requested
+        if check_unpushed:
+            try:
+                # Import ProgressStage here to avoid circular imports
+                from .progress_footer import ProgressStage
+
+                with ProgressStage("Checking unpushed commits"):
+                    logger.info("Checking for unpushed commits before processing...")
+                    push_result = ensure_pushed(cwd=cwd, remote=remote)
+                    if push_result.success and "No unpushed commits" not in push_result.stdout:
+                        logger.info("Successfully pushed unpushed commits")
+                    elif not push_result.success:
+                        logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
+            except ImportError:
+                # ProgressStage not available, just check and push without progress indicator
+                logger.info("Checking for unpushed commits before processing...")
+                push_result = ensure_pushed(cwd=cwd, remote=remote)
+                if push_result.success and "No unpushed commits" not in push_result.stdout:
+                    logger.info("Successfully pushed unpushed commits")
+                elif not push_result.success:
+                    logger.warning(f"Failed to push unpushed commits: {push_result.stderr}")
+
+        # Yield control to the with block
+        yield
+
+    finally:
+        # On exit: always return to the original branch
+        # First, check if we're still in a git repository
+        if is_git_repository(cwd):
+            # Check if the current branch is different from the original
+            current_branch = get_current_branch(cwd=cwd)
+
+            if current_branch != original_branch:
+                logger.info(f"Returning to original branch '{original_branch}'")
+                return_result = switch_to_branch(
+                    branch_name=original_branch,
+                    cwd=cwd,
+                    pull_after_switch=True,  # Always pull after switch
+                )
+
+                if not return_result.success:
+                    logger.warning(f"Failed to return to branch '{original_branch}': {return_result.stderr}")
+                    # Don't raise here - we're in cleanup mode
+            else:
+                logger.info(f"Already on branch '{original_branch}', no need to switch back")
+        else:
+            logger.warning("Not in a git repository during cleanup, cannot return to original branch")

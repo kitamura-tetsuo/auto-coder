@@ -17,8 +17,9 @@ from auto_coder.util.github_action import (
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .gh_logger import get_gh_logger
+from .git_branch import branch_context
+from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log
-from .git_utils import branch_context, commit_and_push_changes
 from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
