@@ -12,7 +12,8 @@ from .automation_config import AutomationConfig, Candidate, CandidateProcessingR
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .gh_logger import get_gh_logger
-from .git_utils import git_commit_with_retry, git_push
+from .git_branch import git_commit_with_retry
+from .git_commit import git_push
 from .github_client import GitHubClient
 from .issue_processor import create_feature_issues
 from .label_manager import LabelManager
