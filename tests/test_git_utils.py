@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.git_branch import (
+    branch_context,
     branch_exists,
     extract_number_from_branch,
     get_all_branches,
@@ -30,7 +31,6 @@ from src.auto_coder.git_info import (
     is_git_repository,
     parse_github_repo_from_url,
 )
-from src.auto_coder.git_utils import branch_context
 from src.auto_coder.utils import CommandResult
 
 
@@ -665,7 +665,7 @@ class TestSaveCommitFailureHistory:
     def test_save_commit_failure_history_with_repo_name(self, tmp_path):
         """Test saving commit failure history with repo name."""
         # Mock Path.home() to use tmp_path
-        with patch("src.auto_coder.git_utils.Path.home") as mock_home:
+        with patch("pathlib.Path.home") as mock_home:
             mock_home.return_value = tmp_path
 
             error_message = "Test error message"

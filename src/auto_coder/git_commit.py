@@ -8,6 +8,7 @@ dprint formatting issues, and upstream branch setup.
 
 from typing import Any, Dict, Optional
 
+from .git_branch import try_llm_commit_push
 from .git_info import check_unpushed_commits
 from .logger_config import get_logger
 from .utils import CommandExecutor, CommandResult
@@ -219,7 +220,7 @@ def git_push(
         logger.info("Detected non-fast-forward error, attempting to pull and retry push...")
 
         # Use the centralized git_pull function
-        from .git_utils import git_pull
+        from .git_branch import git_pull
 
         pull_result = git_pull(remote=remote, branch=branch, cwd=cwd)
 
@@ -348,3 +349,74 @@ def save_commit_failure_history(
 
     # Exit the application immediately
     sys.exit(1)
+
+
+def commit_and_push_changes(
+    result_data: Dict[str, Any],
+    repo_name: Optional[str] = None,
+    issue_number: Optional[int] = None,
+) -> str:
+    """
+    Commit changes and push them to remote using centralized git helper.
+
+    This function handles the complete commit-and-push workflow, including
+    handling non-fast-forward errors by pulling and retrying.
+
+    Args:
+        result_data: Dictionary containing 'summary' key with commit message
+        repo_name: Repository name (e.g., 'owner/repo') for history saving
+        issue_number: Issue number for context in history
+
+    Returns:
+        Action message describing the commit result
+    """
+    from .git_branch import git_commit_with_retry as git_commit_with_retry_local
+    from .git_branch import git_pull
+
+    cmd = CommandExecutor()
+
+    summary = result_data.get("summary", "Auto-Coder: Automated changes")
+
+    # Check if there are any changes to commit
+    status_result = cmd.run_command(["git", "status", "--porcelain"])
+    if not status_result.stdout.strip():
+        return "No changes to commit"
+
+    # Stage all changes
+    add_result = cmd.run_command(["git", "add", "-A"])
+    if not add_result.success:
+        return f"Failed to stage changes: {add_result.stderr}"
+
+    # Commit using centralized helper with dprint retry logic
+    commit_result = git_commit_with_retry_local(summary)
+
+    if commit_result.success:
+        # Use ensure_pushed which handles non-fast-forward errors and LLM fallback
+        push_result = git_push(
+            commit_message=summary,
+        )
+
+        if push_result.success:
+            return f"Successfully committed and pushed changes: {summary}"
+        else:
+            logger.error(f"Failed to push changes after retry: {push_result.stderr}")
+            return f"Failed to commit and push changes: {push_result.stderr}"
+    else:
+        logger.info("Attempting to resolve commit failure using LLM...")
+        llm_success = try_llm_commit_push(
+            summary,
+            commit_result.stderr,
+        )
+        if llm_success:
+            return f"Successfully committed and pushed changes using LLM: {summary}"
+        else:
+            logger.error("LLM failed to resolve commit failure")
+            # Save history and exit immediately
+            context = {
+                "type": "issue",
+                "issue_number": issue_number,
+                "commit_message": summary,
+            }
+            save_commit_failure_history(commit_result.stderr, context, repo_name)
+            # This line will never be reached due to sys.exit in save_commit_failure_history
+            return f"Failed to commit changes: {commit_result.stderr}"
