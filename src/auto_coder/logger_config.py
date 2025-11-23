@@ -130,7 +130,11 @@ def setup_logger(
     if stream is not None:
         selected_stream = stream
     else:
-        verbose_requested = os.environ.get("AUTOCODER_VERBOSE", "").strip().lower() in {"1", "true", "yes"}
+        verbose_requested = os.environ.get("AUTOCODER_VERBOSE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
         selected_stream = sys.stdout if verbose_requested else sys.stderr
 
     # Add console handler (to specified stream or progress footer sink)

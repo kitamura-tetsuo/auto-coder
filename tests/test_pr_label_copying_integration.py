@@ -18,11 +18,7 @@ import pytest
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.issue_processor import _create_pr_for_issue
 from src.auto_coder.label_manager import get_semantic_labels_from_issue, resolve_pr_labels_with_priority
-from tests.fixtures.label_prompt_fixtures import (
-    TEST_ISSUE_DATA,
-    TEST_PR_LABEL_MAPPINGS,
-    TEST_PR_LABEL_PRIORITIES,
-)
+from tests.fixtures.label_prompt_fixtures import TEST_ISSUE_DATA, TEST_PR_LABEL_MAPPINGS, TEST_PR_LABEL_PRIORITIES
 
 
 def _cmd_result(success=True, stdout="", stderr="", returncode=0):
@@ -153,8 +149,16 @@ class TestPRLabelCopyingIntegration:
         test_cases = [
             # (issue_labels, expected_resolved_labels_count, expected_top_priority)
             (["bug", "urgent"], 2, "urgent"),  # urgent has higher priority
-            (["documentation", "enhancement"], 2, "enhancement"),  # enhancement has higher priority
-            (["breaking-change", "bug", "urgent"], 3, "breaking-change"),  # breaking-change has highest priority
+            (
+                ["documentation", "enhancement"],
+                2,
+                "enhancement",
+            ),  # enhancement has higher priority
+            (
+                ["breaking-change", "bug", "urgent"],
+                3,
+                "breaking-change",
+            ),  # breaking-change has highest priority
             (["random-label"], 0, None),  # No semantic labels
             ([], 0, None),  # Empty labels
         ]
@@ -218,7 +222,10 @@ class TestPRLabelCopyingIntegration:
             # Mock gh pr create
             with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
                 mock_gh_logger_instance = Mock()
-                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
+                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(
+                    success=True,
+                    stdout=f"https://github.com/{repo_name}/pull/{pr_number}",
+                )
                 mock_gh_logger.return_value = mock_gh_logger_instance
 
                 # Create PR
@@ -466,7 +473,10 @@ class TestPRLabelCopyingIntegration:
             # Mock gh pr create
             with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
                 mock_gh_logger_instance = Mock()
-                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
+                mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(
+                    success=True,
+                    stdout=f"https://github.com/{repo_name}/pull/{pr_number}",
+                )
                 mock_gh_logger.return_value = mock_gh_logger_instance
 
                 # Create PR with comprehensive test

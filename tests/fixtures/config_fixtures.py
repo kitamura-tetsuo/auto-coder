@@ -153,7 +153,10 @@ INVALID_CONFIG_TEMPLATES = {
     },
     "empty_priorities": {
         "description": "Empty label_priorities",
-        "config": {"label_prompt_mappings": {"bug": "issue.bugfix"}, "label_priorities": []},
+        "config": {
+            "label_prompt_mappings": {"bug": "issue.bugfix"},
+            "label_priorities": [],
+        },
         "expected_issue": "empty_priorities",
     },
     "invalid_type_mappings": {
@@ -163,7 +166,10 @@ INVALID_CONFIG_TEMPLATES = {
     },
     "invalid_type_priorities": {
         "description": "Invalid type for label_priorities",
-        "config": {"label_prompt_mappings": {"bug": "issue.bugfix"}, "label_priorities": "not a list"},
+        "config": {
+            "label_prompt_mappings": {"bug": "issue.bugfix"},
+            "label_priorities": "not a list",
+        },
         "expected_issue": "invalid_type",
     },
     "non_string_mapping_values": {
@@ -213,7 +219,10 @@ ENV_VAR_TEST_CASES = {
             "AUTO_CODER_PR_LABEL_PRIORITIES": '["bug", "feature"]',
         },
         "expected": {
-            "pr_mappings": {"bug": ["bug", "bugfix"], "feature": ["feature", "enhancement"]},
+            "pr_mappings": {
+                "bug": ["bug", "bugfix"],
+                "feature": ["feature", "enhancement"],
+            },
             "pr_priorities": ["bug", "feature"],
         },
     },
@@ -255,7 +264,13 @@ DEFAULT_CONFIGS = {
             "documentation": "issue.documentation",
             "urgent": "issue.urgent",
         },
-        "label_priorities": ["urgent", "bug", "enhancement", "feature", "documentation"],
+        "label_priorities": [
+            "urgent",
+            "bug",
+            "enhancement",
+            "feature",
+            "documentation",
+        ],
         "PR_LABEL_MAPPINGS": {
             "bug": ["bug", "bugfix", "defect", "error", "fix"],
             "feature": ["feature", "new-feature", "enhancement", "improvement"],
@@ -348,11 +363,21 @@ BACKWARD_COMPAT_TEST_CASES = {
                 "expected": "should_work",
             },
             {
-                "call": {"key": "issue.action", "path": None, "data": None, "labels": None},
+                "call": {
+                    "key": "issue.action",
+                    "path": None,
+                    "data": None,
+                    "labels": None,
+                },
                 "expected": "should_work",
             },
             {
-                "call": {"key": "issue.action", "path": None, "data": None, "labels": []},
+                "call": {
+                    "key": "issue.action",
+                    "path": None,
+                    "data": None,
+                    "labels": [],
+                },
                 "expected": "should_work",
             },
         ],

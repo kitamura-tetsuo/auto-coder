@@ -8,6 +8,7 @@ dprint formatting issues, and upstream branch setup.
 
 from typing import Any, Dict, Optional
 
+from .git_branch import try_llm_commit_push
 from .git_info import check_unpushed_commits
 from .logger_config import get_logger
 from .utils import CommandExecutor, CommandResult
@@ -370,7 +371,7 @@ def commit_and_push_changes(
         Action message describing the commit result
     """
     from .git_branch import git_commit_with_retry as git_commit_with_retry_local
-    from .git_branch import git_pull, try_llm_commit_push
+    from .git_branch import git_pull
 
     cmd = CommandExecutor()
 

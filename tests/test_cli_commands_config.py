@@ -56,7 +56,17 @@ def test_config_set_and_get(tmp_path: Path):
     runner = CliRunner()
 
     # Set a value
-    result = runner.invoke(main, ["config", "set", "--file", str(config_file), "gemini.model", "gemini-ultra-test"])
+    result = runner.invoke(
+        main,
+        [
+            "config",
+            "set",
+            "--file",
+            str(config_file),
+            "gemini.model",
+            "gemini-ultra-test",
+        ],
+    )
     assert result.exit_code == 0
     assert "Set gemini.model = gemini-ultra-test" in result.output
 
@@ -80,7 +90,17 @@ def test_config_reset(tmp_path: Path):
     runner = CliRunner()
 
     # Set a value to change it from default
-    runner.invoke(main, ["config", "set", "--file", str(config_file), "gemini.model", "gemini-ultra-test"])
+    runner.invoke(
+        main,
+        [
+            "config",
+            "set",
+            "--file",
+            str(config_file),
+            "gemini.model",
+            "gemini-ultra-test",
+        ],
+    )
 
     # Reset the config
     result = runner.invoke(main, ["config", "reset", "--file", str(config_file)])

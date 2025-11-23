@@ -207,7 +207,16 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
         merge_base_commit = merge_base_result.stdout.strip()
 
         # Get commit log since the merge base
-        log_result = cmd.run_command(["git", "log", f"{merge_base_commit}..HEAD", f"--max-count={max_commits}", "--pretty=format:%s"], cwd=cwd)
+        log_result = cmd.run_command(
+            [
+                "git",
+                "log",
+                f"{merge_base_commit}..HEAD",
+                f"--max-count={max_commits}",
+                "--pretty=format:%s",
+            ],
+            cwd=cwd,
+        )
 
         if not log_result.success:
             logger.warning(f"Failed to get commit log: {log_result.stderr}")

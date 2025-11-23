@@ -182,7 +182,10 @@ def test_default_config_values():
 
 def test_label_prompt_mappings_from_env_var():
     """Test that label prompt mappings can be loaded from environment variable."""
-    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"custom": "issue.custom", "test": "issue.test"}'}):
+    with patch.dict(
+        os.environ,
+        {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"custom": "issue.custom", "test": "issue.test"}'},
+    ):
         config = AutomationConfig(env_override=True)
         assert "custom" in config.label_prompt_mappings
         assert "test" in config.label_prompt_mappings
@@ -217,7 +220,11 @@ def test_env_var_mappings_override_defaults():
 
 def test_env_var_invalid_json_mappings():
     """Test that invalid JSON in mappings env var is handled gracefully."""
-    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"invalid": json'}, clear=False):
+    with patch.dict(
+        os.environ,
+        {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"invalid": json'},
+        clear=False,
+    ):
         config = AutomationConfig(env_override=True)
         # Should fall back to defaults
         assert config.label_prompt_mappings["bug"] == "issue.bug"
@@ -234,7 +241,11 @@ def test_env_var_invalid_json_priorities():
 
 def test_env_var_mappings_non_dict():
     """Test that non-dict values in mappings env var are rejected."""
-    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '["bug", "feature"]'}, clear=False):
+    with patch.dict(
+        os.environ,
+        {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '["bug", "feature"]'},
+        clear=False,
+    ):
         config = AutomationConfig(env_override=True)
         # Should fall back to defaults
         assert config.label_prompt_mappings["bug"] == "issue.bug"
@@ -251,7 +262,11 @@ def test_env_var_priorities_non_list():
 
 def test_env_override_disabled():
     """Test that environment variables are ignored when env_override=False."""
-    with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"custom": "issue.custom"}'}, clear=False):
+    with patch.dict(
+        os.environ,
+        {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": '{"custom": "issue.custom"}'},
+        clear=False,
+    ):
         config = AutomationConfig(env_override=False)
         # Should use defaults only
         assert "custom" not in config.label_prompt_mappings

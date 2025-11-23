@@ -26,7 +26,10 @@ class TestSharedWatcherErrorHandling:
         mock_manager = MagicMock()
         mock_manager.update_index.side_effect = Exception("GraphRAG unavailable")
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create file change
@@ -44,7 +47,10 @@ class TestSharedWatcherErrorHandling:
         mock_manager = MagicMock()
         mock_manager.lightweight_update_check.side_effect = Exception("Git not found")
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # This should handle the error gracefully
@@ -56,7 +62,10 @@ class TestSharedWatcherErrorHandling:
         """Test handling of concurrent file modifications."""
         mock_manager = MagicMock()
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create files concurrently
@@ -85,7 +94,10 @@ class TestSharedWatcherErrorHandling:
         mock_manager = MagicMock()
         mock_manager.smart_update_trigger.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create multiple files quickly
@@ -263,7 +275,10 @@ class TestSharedWatcherErrorHandling:
         mock_manager = MagicMock()
         mock_manager.update_index.side_effect = PermissionError("Permission denied")
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create a code file
@@ -280,7 +295,10 @@ class TestSharedWatcherErrorHandling:
         mock_manager = MagicMock()
         mock_manager.update_index.side_effect = TimeoutError("Operation timed out")
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create a code file

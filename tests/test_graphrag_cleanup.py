@@ -68,7 +68,13 @@ def test_cleanup_snapshots_applies_time_based_policy(tmp_path, monkeypatch):
             "codebase_hash": "h3",
         },
     ]
-    manager._save_index_state({"codebase_hash": "current", "indexed_at": str(repo.resolve()), "snapshots": snapshots})
+    manager._save_index_state(
+        {
+            "codebase_hash": "current",
+            "indexed_at": str(repo.resolve()),
+            "snapshots": snapshots,
+        }
+    )
 
     deleted: List[str] = []
 

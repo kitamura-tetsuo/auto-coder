@@ -6,16 +6,8 @@ from unittest.mock import Mock
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.label_manager import (
-    _is_fuzzy_match,
-    get_semantic_labels_from_issue,
-    resolve_pr_labels_with_priority,
-)
-from src.auto_coder.prompt_loader import (
-    _resolve_label_priority,
-    clear_prompt_cache,
-    render_prompt,
-)
+from src.auto_coder.label_manager import _is_fuzzy_match, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
+from src.auto_coder.prompt_loader import _resolve_label_priority, clear_prompt_cache, render_prompt
 
 
 class TestLabelProcessingPerformance:

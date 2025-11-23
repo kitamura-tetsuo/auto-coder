@@ -7,24 +7,24 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union, cast
 
-from auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
-from auto_coder.github_client import GitHubClient
-from auto_coder.prompt_loader import render_prompt
-from auto_coder.util.github_action import get_github_actions_logs_from_url
-
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
 from .automation_config import AutomationConfig, Candidate, CandidateProcessingResult, ProcessResult
+from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .gh_logger import get_gh_logger
 from .git_branch import git_commit_with_retry
 from .git_commit import git_push
+from .github_client import GitHubClient
 from .issue_processor import create_feature_issues
+from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
 from .pr_processor import process_pull_request
 from .progress_footer import ProgressStage
+from .prompt_loader import render_prompt
 from .test_result import TestResult
+from .util.github_action import get_github_actions_logs_from_url
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -79,8 +79,9 @@ class AutomationEngine:
                 continue
 
             # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-            if not self.github.check_should_process_with_label_manager(repo_name, pr_number, item_type="pr"):
-                continue
+            with LabelManager(self.github, repo_name, pr_number, item_type="pr", skip_label_add=True) as should_process:
+                if not should_process:
+                    continue
 
             # Calculate GitHub Actions status for the PR
             checks = _check_github_actions_status(repo_name, pr_data, self.config)
@@ -107,7 +108,16 @@ class AutomationEngine:
 
             # Calculate priority
             # Enhanced priority logic to distinguish unmergeable PRs
-            if any(label in labels for label in ["breaking-change", "breaking", "api-change", "deprecation", "version-major"]):
+            if any(
+                label in labels
+                for label in [
+                    "breaking-change",
+                    "breaking",
+                    "api-change",
+                    "deprecation",
+                    "version-major",
+                ]
+            ):
                 # Breaking-change PRs get highest priority (7)
                 pr_priority = 7
             elif "urgent" in labels:
@@ -147,8 +157,15 @@ class AutomationEngine:
                     continue
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-                if not self.github.check_should_process_with_label_manager(repo_name, number, item_type="issue"):
-                    continue
+                with LabelManager(
+                    self.github,
+                    repo_name,
+                    number,
+                    item_type="issue",
+                    skip_label_add=True,
+                ) as should_process:
+                    if not should_process:
+                        continue
 
                 # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
                 if self.github.get_open_sub_issues(repo_name, number):
@@ -336,6 +353,7 @@ class AutomationEngine:
             "timestamp": datetime.now().isoformat(),
             "jules_mode": jules_mode,
             "llm_backend": llm_backend_info["backend"],
+            "llm_provider": llm_backend_info["provider"],
             "llm_model": llm_backend_info["model"],
             "issues_processed": [],
             "prs_processed": [],
@@ -495,10 +513,13 @@ class AutomationEngine:
                             from .util.github_action import check_and_handle_closed_state
 
                             with ProgressStage("Checking final status"):
+                                repo = self.github.get_repository(repo_name)
                                 if item_type == "issue":
-                                    current_item = self.github.get_issue_details_by_number(repo_name, item_number)
+                                    issue = repo.get_issue(item_number)
+                                    current_item = self.github.get_issue_details(issue)
                                 else:
-                                    current_item = self.github.get_pr_details_by_number(repo_name, item_number)
+                                    pr = repo.get_pull(item_number)
+                                    current_item = self.github.get_pr_details(pr)
 
                                 # Check if item is closed and handle state
                                 check_and_handle_closed_state(
@@ -535,7 +556,11 @@ class AutomationEngine:
             repo_name,
         )
 
-    def fix_to_pass_tests(self, max_attempts: Optional[int] = None, message_backend_manager: Optional[Any] = None) -> Dict[str, Any]:
+    def fix_to_pass_tests(
+        self,
+        max_attempts: Optional[int] = None,
+        message_backend_manager: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
         run_override = getattr(self, "_run_local_tests", None)
         apply_override = getattr(self, "_apply_workspace_test_fix", None)
@@ -559,38 +584,56 @@ class AutomationEngine:
         return fix_to_pass_tests(self.config, max_attempts)
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
-        """Get LLM backend and model information.
+        """Get LLM backend, provider, and model information for telemetry."""
 
-        Returns:
-            Dictionary with 'backend' and 'model' keys.
-        """
-        try:
-            # Try to get the manager using get_llm_backend_manager() to ensure proper initialization
-            try:
-                manager = get_llm_backend_manager()
-                if manager is not None:
-                    backend, model = manager.get_last_backend_and_model()
-                    return {"backend": backend, "model": model}
-            except (RuntimeError, AttributeError):
-                # get_llm_backend_manager() fails if not initialized, fall back to direct access
+        info: Dict[str, Optional[str]] = {
+            "backend": None,
+            "provider": None,
+            "model": None,
+        }
+
+        def _extract_from_manager(
+            manager: Optional[Any],
+        ) -> Optional[Dict[str, Optional[str]]]:
+            if manager is None:
+                return None
+
+            getter = getattr(manager, "get_last_backend_provider_and_model", None)
+            if callable(getter):
                 try:
-                    manager = LLMBackendManager.get_llm_instance()
-                    if manager is not None:
-                        backend, model = manager.get_last_backend_and_model()
-                        return {"backend": backend, "model": model}
-                except (RuntimeError, AttributeError):
-                    # Also try direct instance access
-                    llm_instance: Optional[Any] = LLMBackendManager._instance
-                    if llm_instance is not None:
-                        backend, model = llm_instance.get_last_backend_and_model()
-                        return {"backend": backend, "model": model}
+                    backend, provider, model = getter()
+                    return {"backend": backend, "provider": provider, "model": model}
+                except Exception:
+                    pass
 
-            # Manager not initialized
-            return {"backend": None, "model": None}
+            getter = getattr(manager, "get_last_backend_and_model", None)
+            if callable(getter):
+                try:
+                    backend, model = getter()
+                    return {"backend": backend, "provider": None, "model": model}
+                except Exception:
+                    pass
+            return None
+
+        try:
+            sources = (
+                lambda: get_llm_backend_manager(),
+                lambda: LLMBackendManager.get_llm_instance(),
+                lambda: LLMBackendManager._instance,
+            )
+
+            for source in sources:
+                try:
+                    details = _extract_from_manager(source())
+                except (RuntimeError, AttributeError):
+                    continue
+                if details:
+                    info.update(details)
+                    return info
         except Exception as e:
-            # Any other exceptions
             logger.debug(f"Error getting LLM backend info: {e}")
-            return {"backend": None, "model": None}
+
+        return info
 
     def _save_report(self, data: Dict[str, Any], filename: str, repo_name: Optional[str] = None) -> None:
         """Save report to file.
@@ -675,8 +718,10 @@ class AutomationEngine:
         """Resolve merge conflicts for a PR."""
         try:
             # Get PR details to determine the base branch
-            pr_data = self.github.get_pr_details_by_number(repo_name, pr_number)
-            base_branch = pr_data.get("base", {}).get("ref", "main")
+            repo = self.github.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+            pr_data = self.github.get_pr_details(pr)
+            base_branch = pr_data.get("base_branch", "main")
 
             # Clean up any existing conflicts
             self.cmd.run_command(["git", "reset", "--hard", "HEAD"])
@@ -726,7 +771,12 @@ class AutomationEngine:
 
             # Check how many commits behind the base branch we are
             rev_list_result = subprocess.run(
-                ["git", "rev-list", "--count", f"HEAD..refs/remotes/origin/{base_branch}"],
+                [
+                    "git",
+                    "rev-list",
+                    "--count",
+                    f"HEAD..refs/remotes/origin/{base_branch}",
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -738,7 +788,12 @@ class AutomationEngine:
 
                     # Merge the base branch
                     merge_result = subprocess.run(
-                        ["git", "merge", f"refs/remotes/origin/{base_branch}", "--no-edit"],
+                        [
+                            "git",
+                            "merge",
+                            f"refs/remotes/origin/{base_branch}",
+                            "--no-edit",
+                        ],
                         capture_output=True,
                         text=True,
                     )
@@ -862,7 +917,10 @@ class AutomationEngine:
         try:
             # Prefer structured extractor from fix_to_pass_tests_runner
             if isinstance(test_result, TestResult):
-                return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(test_result))
+                return cast(
+                    str,
+                    fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+                )
             # Convert legacy dict payloads to TestResult for better extraction
             tr = fix_to_pass_tests_runner_module._to_test_result(test_result)
             return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(tr))
@@ -916,7 +974,10 @@ class AutomationEngine:
 
         try:
             # Derive a concise error summary using the structured extractor
-            error_summary = cast(str, fix_to_pass_tests_runner_module.extract_important_errors(test_result))
+            error_summary = cast(
+                str,
+                fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+            )
             if not github_logs:
                 github_logs = error_summary
 
@@ -1106,15 +1167,19 @@ class AutomationEngine:
             if target_type == "auto":
                 # Prefer PR to avoid mislabeling PR issues
                 try:
-                    pr_data = self.github.get_pr_details_by_number(repo_name, number)
+                    repo = self.github.get_repository(repo_name)
+                    pr = repo.get_pull(number)
+                    pr_data = self.github.get_pr_details(pr)
                     target_type = "pr"
                 except Exception:
                     target_type = "issue"
 
             if target_type == "pr":
                 # Get PR data
-                pr_data = self.github.get_pr_details_by_number(repo_name, number)
-                branch_name = pr_data.get("head", {}).get("ref")
+                repo = self.github.get_repository(repo_name)
+                pr = repo.get_pull(number)
+                pr_data = self.github.get_pr_details(pr)
+                branch_name = pr_data.get("head_branch")
                 pr_body = pr_data.get("body", "")
                 related_issues = []
                 if pr_body:
@@ -1129,7 +1194,9 @@ class AutomationEngine:
                 )
             elif target_type == "issue":
                 # Get issue data
-                issue_data = self.github.get_issue_details_by_number(repo_name, number)
+                repo = self.github.get_repository(repo_name)
+                issue = repo.get_issue(number)
+                issue_data = self.github.get_issue_details(issue)
 
                 return Candidate(
                     type="issue",

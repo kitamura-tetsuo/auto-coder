@@ -281,7 +281,10 @@ class TestLabelEnvironmentConfig:
         with patch.dict(os.environ, {"AUTO_CODER_LABEL_PROMPT_MAPPINGS": json.dumps(test_mappings)}):
             config = AutomationConfig(env_override=True)
             # Nested structure should be preserved for "bug"
-            assert config.label_prompt_mappings["bug"] == {"prompt": "issue.bugfix", "priority": 1}
+            assert config.label_prompt_mappings["bug"] == {
+                "prompt": "issue.bugfix",
+                "priority": 1,
+            }
             # Default mappings should still exist
             assert "breaking-change" in config.label_prompt_mappings
             assert "urgent" in config.label_prompt_mappings

@@ -339,7 +339,17 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                             failed_checks.append({"name": name, "conclusion": status, "details_url": url})
                     else:
                         # Handle any other status values
-                        if status not in ["pass", "success", "fail", "failure", "error", "skipping", "skipped", "pending", "in_progress"]:
+                        if status not in [
+                            "pass",
+                            "success",
+                            "fail",
+                            "failure",
+                            "error",
+                            "skipping",
+                            "skipped",
+                            "pending",
+                            "in_progress",
+                        ]:
                             # Unknown status - treat as potential failure
                             all_passed = False
                         check_info = {
@@ -793,7 +803,12 @@ def get_detailed_checks_from_history(
 
                         all_checks.append(check_info)
 
-                        if run_conclusion in ["failure", "failed", "error", "cancelled"]:
+                        if run_conclusion in [
+                            "failure",
+                            "failed",
+                            "error",
+                            "cancelled",
+                        ]:
                             any_failed = True
                             all_failed_checks.append(check_info)
                         elif run_status in ["in_progress", "queued", "pending"]:
@@ -1943,10 +1958,13 @@ def check_and_handle_closed_state(
     try:
         # Get current item state if not provided
         if current_item is None:
+            repo = github_client.get_repository(repo_name)
             if item_type == "pr":
-                current_item = github_client.get_pr_details_by_number(repo_name, item_number)
+                pr = repo.get_pull(item_number)
+                current_item = github_client.get_pr_details(pr)
             elif item_type == "issue":
-                current_item = github_client.get_issue_details_by_number(repo_name, item_number)
+                issue = repo.get_issue(item_number)
+                current_item = github_client.get_issue_details(issue)
             else:
                 logger.warning(f"Unknown item type: {item_type}")
                 return False

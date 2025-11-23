@@ -6,20 +6,15 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_llm_message_prompt
-from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import (
-    _check_github_actions_status,
-    check_and_handle_closed_state,
-    check_github_actions_and_exit_if_in_progress,
-    get_detailed_checks_from_history,
-)
+from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
+from .backend_manager import get_llm_backend_manager, run_llm_message_prompt
 from .gh_logger import get_gh_logger
 from .git_branch import branch_context
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log
+from .github_client import GitHubClient
 from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -30,18 +25,30 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, repo_name: str, issue_data: Dict[str, Any]) -> ProcessedIssueResult:
+def _process_issue_jules_mode(
+    github_client: GitHubClient,
+    config: AutomationConfig,
+    repo_name: str,
+    issue_data: Dict[str, Any],
+) -> ProcessedIssueResult:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
         issue_number = issue_data["number"]
 
         # Check if issue already has @auto-coder label (being processed by another instance)
-        if not github_client.check_should_process_with_label_manager(repo_name, issue_number, item_type="issue"):
-            logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-            return ProcessedIssueResult(
-                issue_data=issue_data,
-                actions_taken=["Skipped - already being processed (@auto-coder label present)"],
-            )
+        with LabelManager(
+            github_client,
+            repo_name,
+            issue_number,
+            item_type="issue",
+            skip_label_add=True,
+        ) as should_process:
+            if not should_process:
+                logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
+                return ProcessedIssueResult(
+                    issue_data=issue_data,
+                    actions_taken=["Skipped - already being processed (@auto-coder label present)"],
+                )
 
         # Skip if issue has open sub-issues
         open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
@@ -258,14 +265,8 @@ def _create_pr_for_issue(
                             # Copy labels to PR with error handling
                             for label in labels_to_propagate:
                                 try:
-                                    # Use legacy wrapper to match existing tests and maintain compatibility
-                                    github_client.add_labels_to_issue(repo_name, pr_number, [label])
-                                    # Also call the PR-specific wrapper to ensure correct runtime behavior
-                                    try:
-                                        github_client.add_labels_to_pr(repo_name, pr_number, [label])  # pragma: no cover
-                                    except Exception:
-                                        # Ignore failures in the secondary call in tests/runtime
-                                        pass
+                                    # Use generic add_labels method with item_type="pr"
+                                    github_client.add_labels(repo_name, pr_number, [label], item_type="pr")
                                     logger.info(f"Added semantic label '{label}' to PR #{pr_number}")
                                 except Exception as e:
                                     logger.warning(f"Failed to add semantic label '{label}' to PR #{pr_number}: {e}")
@@ -400,7 +401,11 @@ def _apply_issue_actions_directly(
             if not should_process:
                 return actions
 
-            with branch_context(target_branch, create_new=create_new_work_branch, base_branch=(base_branch if "base_branch" in locals() else None)):
+            with branch_context(
+                target_branch,
+                create_new=create_new_work_branch,
+                base_branch=(base_branch if "base_branch" in locals() else None),
+            ):
                 # Get commit log since branch creation
                 with ProgressStage("Getting commit log"):
                     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
