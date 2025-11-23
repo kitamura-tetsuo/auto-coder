@@ -2,8 +2,6 @@
 Claude CLI client for Auto-Coder.
 """
 
-import datetime
-import json
 import subprocess
 from typing import Optional
 
@@ -59,7 +57,6 @@ class ClaudeClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Run claude CLI with the given prompt and show real-time output."""
-
         try:
             escaped_prompt = self._escape_prompt(prompt)
             cmd = [
@@ -82,16 +79,12 @@ class ClaudeClient(LLMClientBase):
                 "usage limit",
                 "upgrade to pro",
                 "overloaded",
-                "429",
-                'api error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"usage limit exceeded',
             )
 
-            # Capture output without streaming to logger
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
             )
-
             logger.info("=" * 60)
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
@@ -99,34 +92,12 @@ class ClaudeClient(LLMClientBase):
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
-
-            # Prepare structured JSON log entry
-            usage_limit_hit = any(marker in low for marker in usage_markers)
-            log_entry = {
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-                "client": "claude",
-                "model": self.model_name,
-                "prompt_length": len(prompt),
-                "return_code": result.returncode,
-                "success": result.returncode == 0,
-                "usage_limit_hit": usage_limit_hit,
-                "output": full_output,
-            }
-
-            # Log as single-line JSON
-            logger.info(json.dumps(log_entry, ensure_ascii=False))
-
-            # Print summary to stdout
-            summary = f"[Claude] Model: {self.model_name}, Prompt: {len(prompt)} chars, Output: {len(full_output)} chars"
-            print(summary)
-
-            # Handle errors
             if result.returncode != 0:
-                if usage_limit_hit:
+                if any(marker in low for marker in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"claude CLI failed with return code {result.returncode}\n{full_output}")
 
-            if usage_limit_hit:
+            if any(marker in low for marker in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
         except AutoCoderUsageLimitError:

@@ -14,7 +14,6 @@ process remains alive to satisfy the requirement of keeping a session for
 
 from __future__ import annotations
 
-import datetime
 import json
 import os
 import select
@@ -27,7 +26,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
-from .exceptions import AutoCoderUsageLimitError
 from .graphrag_mcp_integration import GraphRAGMCPIntegration
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
@@ -431,15 +429,10 @@ class CodexMCPClient(LLMClientBase):
                 "--dangerously-bypass-approvals-and-sandbox",
                 escaped_prompt,
             ]
+            logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
+            logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
+            logger.info("🤖 Running under MCP session: codex exec -s workspace-write " "--dangerously-bypass-approvals-and-sandbox [prompt]")
 
-            usage_markers = (
-                "rate limit",
-                "usage limit",
-                "upgrade to pro",
-                "too many requests",
-            )
-
-            # Capture output without streaming to logger
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,

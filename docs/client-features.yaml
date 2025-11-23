@@ -1,4 +1,4 @@
-version: "2025.11.23+g6d90848"
+version: "2025.11.23+g16302f6"
 project:
   name: auto-coder
   description: Automated application development with multi-backend LLM CLI and GitHub integration
@@ -183,7 +183,6 @@ features:
       configuration_file: "~/.auto-coder/provider_metadata.toml"
       env_var_handling: "Uppercase settings from provider metadata are exported as environment variables during command execution and automatically cleared when the command completes"
       provider_rotation: "Automatic failover to next provider when usage limits are hit; rotates through configured providers before switching backends"
-      usage_limit_handling: "Updated client implementations now raise AutoCoderUsageLimitError on usage limit detection, enabling automatic provider rotation."
       status_reporting: "Provider information is tracked and exposed via telemetry fields (llm_provider) for debugging and monitoring"
       syntax:
         backend_config: "[backends.<model>] section in llm_config.toml supports provider declaration"
@@ -329,15 +328,6 @@ env:
   AUTO_CODER_PR_LABEL_PRIORITIES: "Comma-separated list of PR label priorities (e.g., 'breaking-change,urgent,bug,enhancement,documentation')"
 
 changes:
-  - date: "2026-01-01"
-    version: "2026.0.0.0"
-    breaking_change: true
-    changes:
-      - "Refactored CodexClient and ClaudeClient logging to use structured JSON output instead of line-by-line streaming"
-      - "LLM calls now produce single-line JSON log entries containing timestamp, client, model, prompt length, return code, success status, usage limit flag, and full output"
-      - "Added stdout summary output for each LLM call (format: '[Client] Model: name, Prompt: N chars, Output: N chars')"
-      - "Changed CommandExecutor.run_command calls from stream_output=True to stream_output=False for better output capture"
-      - "Migration guide available at docs/CHANGELOG_Structured_Logging.md with full details on changes and migration steps"
   - date: "2025-11-21"
     version: "2025.11.21+provider-rotation"
     changes:
