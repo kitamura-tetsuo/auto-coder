@@ -130,7 +130,7 @@ def test_backend_manager_initialization():
 
 def test_git_utils_fix():
     """Test that git utils fix works."""
-    from src.auto_coder.git_utils import check_unpushed_commits
+    from src.auto_coder.git_info import check_unpushed_commits
 
     try:
         # This should not crash even if git returns "Everything up-to-date"
