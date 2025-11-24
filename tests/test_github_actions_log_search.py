@@ -395,12 +395,23 @@ class TestSearchGitHubActionsLogsFromHistory:
         with patch("src.auto_coder.util.github_action.get_gh_logger", return_value=mock_logger):
             jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_number=5, repo_name=repo_name)
 
-        mock_logger.execute_with_logging.assert_called_once()
-        command_args, command_kwargs = mock_logger.execute_with_logging.call_args
+        expected_command = [
+            "gh",
+            "run",
+            "view",
+            str(run_id),
+            "-R",
+            repo_name,
+            "--json",
+            "jobs,pullRequests",
+        ]
 
-        assert "-R" in command_args[0]
-        assert repo_name in command_args[0]
-        assert command_kwargs.get("repo") == repo_name
+        mock_logger.execute_with_logging.assert_called_once_with(
+            expected_command,
+            repo=repo_name,
+            timeout=60,
+            capture_output=True,
+        )
         assert jobs == jobs_payload["jobs"]
 
 
