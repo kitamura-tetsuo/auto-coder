@@ -120,6 +120,9 @@ class GeminiClient(LLMClientBase):
             low = full_output.lower()
 
             usage_markers = (
+                "rate limit",
+                "resource_exhausted",
+                "too many requests",
                 "[api error: you have exhausted your capacity on this model. your quota will reset after ",
             )
 
@@ -128,6 +131,8 @@ class GeminiClient(LLMClientBase):
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
 
+            if any(m in low for m in usage_markers):
+                raise AutoCoderUsageLimitError(full_output)
             return full_output
 
         except AutoCoderUsageLimitError:

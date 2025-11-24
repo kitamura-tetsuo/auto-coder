@@ -143,7 +143,13 @@ class AutomationEngine:
                 )
             )
 
-        if candidates_count == 0 or (candidates_count < 3 and max([candidate.priority for candidate in candidates]) < 2):
+        # Collect issues if:
+        # - max_items is set and we haven't reached it yet (respect the requested limit), OR
+        # - we have no PR candidates, OR
+        # - we have few PR candidates and they're low priority (optimization to avoid usage limits)
+        should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < 3 and max([candidate.priority for candidate in candidates]) < 2)
+
+        if should_collect_issues:
             # Collect issue candidates
             issues = self.github.get_open_issues(repo_name)
             for issue in issues:

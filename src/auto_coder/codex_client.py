@@ -96,6 +96,8 @@ class CodexClient(LLMClientBase):
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"codex CLI failed with return code {result.returncode}\n{full_output}")
 
+            if any(marker in low for marker in usage_markers):
+                raise AutoCoderUsageLimitError(full_output)
             return full_output
         except AutoCoderUsageLimitError:
             raise

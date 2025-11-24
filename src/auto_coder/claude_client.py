@@ -74,9 +74,7 @@ class ClaudeClient(LLMClientBase):
             logger.info(f"🤖 Running: claude --print --dangerously-skip-permissions " f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]")
             logger.info("=" * 60)
 
-            usage_markers = (
-                'api error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"usage limit exceeded',
-            )
+            usage_markers = ('api error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"usage limit exceeded',)
 
             result = CommandExecutor.run_command(
                 cmd,
