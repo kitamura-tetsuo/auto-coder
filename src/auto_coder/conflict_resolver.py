@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import run_llm_prompt
 
+from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
 from .gh_logger import get_gh_logger
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
@@ -26,6 +27,79 @@ def _get_merge_conflict_info() -> str:
         return result.stdout if result.success else "Could not get merge conflict information"
     except Exception as e:
         return f"Error getting conflict info: {e}"
+
+
+def _trigger_fallback_for_conflict_failure(
+    repo_name: str,
+    pr_number: int,
+    failure_reason: str,
+) -> None:
+    """Trigger fallback by incrementing attempts for linked issues when conflict resolution fails.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        pr_number: PR number
+        failure_reason: Reason for the failure
+    """
+    try:
+        # Get PR body to extract linked issues
+        gh_logger = get_gh_logger()
+        pr_view_result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
+            repo=repo_name,
+            capture_output=True,
+        )
+
+        if not pr_view_result.success or not pr_view_result.stdout:
+            logger.debug(f"Failed to get PR #{pr_number} body, cannot extract linked issues")
+            return
+
+        pr_info = json.loads(pr_view_result.stdout)
+        pr_body = pr_info.get("body", "")
+        pr_data = {"number": pr_number, "body": pr_body}
+
+        if not pr_body:
+            logger.debug(f"No PR body found for PR #{pr_number}, cannot extract linked issues")
+            return
+
+        # Extract linked issues from PR body
+        # Need to import the extraction function from pr_processor
+        # Let's inline it here for independence
+        related_issues = []
+        if pr_body:
+            # GitHub's supported keywords for linking issues
+            keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
+            # Pattern to match: keyword #123 or keyword owner/repo#123
+            pattern = rf"{keywords}\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
+            import re
+
+            matches = re.finditer(pattern, pr_body, re.IGNORECASE)
+            issue_numbers = [int(m.group(1)) for m in matches]
+            # Remove duplicates while preserving order
+            seen = set()
+            for num in issue_numbers:
+                if num not in seen:
+                    seen.add(num)
+                    related_issues.append(num)
+
+        if not related_issues:
+            logger.debug(f"No linked issues found in PR #{pr_number} body")
+            return
+
+        # Increment attempt for each linked issue
+        for issue_number in related_issues:
+            try:
+                logger.info(f"Incrementing attempt for issue #{issue_number} due to PR #{pr_number} conflict resolution failure: {failure_reason}")
+                increment_attempt(repo_name, issue_number)
+            except Exception as e:
+                logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                # Continue with other issues even if one fails
+                continue
+
+        logger.info(f"Triggered fallback for {len(related_issues)} linked issue(s) from PR #{pr_number}")
+
+    except Exception as e:
+        logger.error(f"Error triggering fallback for PR #{pr_number}: {e}")
 
 
 def scan_conflict_markers() -> List[str]:
@@ -116,6 +190,8 @@ def resolve_merge_conflicts_with_llm(
             flagged = scan_conflict_markers()
             if flagged:
                 actions.append(f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing")
+                # Trigger fallback due to unresolved conflict markers
+                _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "LLM left unresolved conflict markers")
                 return actions
 
             # Commit via helper and push
@@ -124,6 +200,8 @@ def resolve_merge_conflicts_with_llm(
                 actions.append(f"Committed resolved merge for PR #{pr_data}")
             else:
                 actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
+                # Trigger fallback due to commit failure
+                _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "Failed to commit conflict resolution")
                 return actions
 
             push_res = git_push()
@@ -132,12 +210,18 @@ def resolve_merge_conflicts_with_llm(
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
                 actions.append(f"Failed to push resolved merge: {push_res.stderr}")
+                # Trigger fallback due to push failure
+                _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "Failed to push conflict resolution")
         else:
             actions.append("LLM did not provide a clear response for merge conflict resolution")
+            # Trigger fallback due to no LLM response
+            _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "LLM provided no response for conflict resolution")
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts with LLM: {e}")
         actions.append(f"Error resolving merge conflicts: {e}")
+        # Trigger fallback due to exception
+        _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), f"Exception during conflict resolution: {str(e)}")
 
     return actions
 
@@ -256,6 +340,8 @@ def _perform_base_branch_merge_and_conflict_resolution(
                 return True
             else:
                 logger.error(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                # Trigger fallback due to conflict resolution failure
+                _trigger_fallback_for_conflict_failure(repo_name or "", pr_number, "Merge conflict resolution failed (LLM could not resolve conflicts)")
                 return False
 
     except Exception as e:
