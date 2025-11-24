@@ -26,6 +26,22 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
+def generate_work_branch_name(issue_number: int, attempt: int) -> str:
+    """
+    Generate the work branch name based on the issue number and attempt.
+
+    Args:
+        issue_number: The issue number.
+        attempt: The attempt number.
+
+    Returns:
+        The generated work branch name.
+    """
+    if attempt > 0:
+        return f"issue-{issue_number}/attempt-{attempt}"
+    return f"issue-{issue_number}"
+
+
 def _process_issue_jules_mode(
     github_client: GitHubClient,
     config: AutomationConfig,
