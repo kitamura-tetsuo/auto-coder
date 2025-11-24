@@ -295,11 +295,8 @@ class TestWatcherTool:
                 self._run_playwright_tests(True)
             except Exception:
                 pass
-            if self._is_code_file(file_path):
-                try:
-                    self._trigger_graphrag_update(file_path)
-                except Exception:
-                    pass
+            # Skip GraphRAG updates in pytest to avoid DNS/connection errors and speed up tests
+            # The tests don't need actual GraphRAG indexing
             return
 
         # Normal path with logging and background threads
@@ -351,6 +348,10 @@ class TestWatcherTool:
         Args:
             file_path: Path to the changed file that triggered the update
         """
+        # Skip GraphRAG updates if disabled via environment variable
+        if os.environ.get("AC_DISABLE_GRAPH") or os.environ.get("AC_DISABLE_GRAPH_UPDATES"):
+            return
+
         try:
             from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
@@ -409,6 +410,10 @@ class TestWatcherTool:
         Args:
             file_path: Path to the changed file
         """
+        # Skip GraphRAG updates if disabled via environment variable
+        if os.environ.get("AC_DISABLE_GRAPH") or os.environ.get("AC_DISABLE_GRAPH_UPDATES"):
+            return
+
         try:
             from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 

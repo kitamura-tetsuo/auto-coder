@@ -203,7 +203,8 @@ class TestSharedWatcherE2E:
         def mock_graphrag_update(file_path):
             execution_log.append(("graphrag", time.time()))
 
-        with patch.object(watcher, "_run_playwright_tests", side_effect=mock_run_tests), patch.object(watcher, "_trigger_graphrag_update", side_effect=mock_graphrag_update):
+        # Temporarily disable pytest mode to test the full flow with mocked methods
+        with patch.dict("os.environ", {"PYTEST_CURRENT_TEST": ""}), patch.object(watcher, "_run_playwright_tests", side_effect=mock_run_tests), patch.object(watcher, "_trigger_graphrag_update", side_effect=mock_graphrag_update):
             # Trigger multiple file changes
             for i in range(3):
                 watcher._on_file_changed(f"src/file{i}.py")
