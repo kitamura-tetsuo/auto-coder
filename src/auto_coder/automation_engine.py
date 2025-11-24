@@ -143,7 +143,7 @@ class AutomationEngine:
                 )
             )
 
-        if candidates_count < 5:
+        if candidates_count == 0 or (candidates_count < 3 and max([candidate.priority for candidate in candidates]) < 2):
             # Collect issue candidates
             issues = self.github.get_open_issues(repo_name)
             for issue in issues:
