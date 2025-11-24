@@ -261,7 +261,8 @@ def increment_attempt(repo_name: str, issue_number: int) -> int:
     """Increment the attempt count for an issue.
 
     Gets the current attempt count, increments by 1, and posts a new comment
-    with the new attempt number.
+    with the new attempt number. If the issue has sub-issues, propagates the
+    attempt increment to all sub-issues and reopens any closed sub-issues.
 
     Args:
         repo_name: Repository name in format 'owner/repo'
@@ -287,6 +288,32 @@ def increment_attempt(repo_name: str, issue_number: int) -> int:
         client.add_comment_to_issue(repo_name, issue_number, comment_body)
 
         logger.info(f"Incremented attempt for issue #{issue_number} from {current_attempt} to {new_attempt}")
+
+        # Propagate attempt increment to all sub-issues
+        sub_issues = client.get_all_sub_issues(repo_name, issue_number)
+        if sub_issues:
+            logger.info(f"Propagating attempt increment to {len(sub_issues)} sub-issue(s): {sub_issues}")
+
+            for sub_issue_number in sub_issues:
+                try:
+                    # Get the state of the sub-issue to check if it's closed
+                    repo = client.get_repository(repo_name)
+                    sub_issue = repo.get_issue(sub_issue_number)
+
+                    # If sub-issue is closed, reopen it
+                    if sub_issue.state == "closed":
+                        logger.info(f"Reopening closed sub-issue #{sub_issue_number}")
+                        reopen_comment = f"Auto-Coder: Reopened due to attempt increment on parent issue #{issue_number}"
+                        client.reopen_issue(repo_name, sub_issue_number, reopen_comment)
+
+                    # Increment attempt for the sub-issue
+                    increment_attempt(repo_name, sub_issue_number)
+
+                except Exception as e:
+                    logger.error(f"Failed to propagate attempt to sub-issue #{sub_issue_number}: {e}")
+                    # Continue with other sub-issues even if one fails
+                    continue
+
         return new_attempt
 
     except Exception as e:

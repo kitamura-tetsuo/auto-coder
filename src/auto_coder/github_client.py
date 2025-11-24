@@ -613,6 +613,106 @@ class GitHubClient:
             logger.error(f"Failed to close issue #{issue_number}: {e}")
             raise
 
+    def reopen_issue(self, repo_name: str, issue_number: int, comment: Optional[str] = None) -> None:
+        """Reopen a closed issue with optional comment.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue number to reopen
+            comment: Optional comment to add when reopening
+        """
+        try:
+            repo = self.get_repository(repo_name)
+            issue = repo.get_issue(issue_number)
+
+            if comment:
+                issue.create_comment(comment)
+
+            issue.edit(state="open")
+            logger.info(f"Reopened issue #{issue_number}")
+
+        except GithubException as e:
+            logger.error(f"Failed to reopen issue #{issue_number}: {e}")
+            raise
+
+    def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
+        """Get list of all sub-issues for a given issue using GitHub GraphQL API.
+
+        Fetches both open and closed sub-issues.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue number to check for sub-issues
+
+        Returns:
+            List of issue numbers that are linked to the issue (both open and closed).
+        """
+        try:
+            owner, repo = repo_name.split("/")
+
+            # GraphQL query to fetch sub-issues (new sub-issues feature)
+            query = """
+            {
+              repository(owner: "%s", name: "%s") {
+                issue(number: %d) {
+                  number
+                  title
+                  subIssues(first: 100) {
+                    nodes {
+                      number
+                      title
+                      state
+                      url
+                    }
+                  }
+                }
+              }
+            }
+            """ % (
+                owner,
+                repo,
+                issue_number,
+            )
+
+            # Execute GraphQL query using gh CLI with sub_issues feature header
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-H",
+                    "GraphQL-Features: sub_issues",
+                    "-f",
+                    f"query={query}",
+                ],
+                repo=repo_name,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            data = json.loads(result.stdout)
+
+            # Extract all sub-issues (both open and closed)
+            all_sub_issues = []
+            sub_issues = data.get("data", {}).get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
+
+            for sub_issue in sub_issues:
+                all_sub_issues.append(sub_issue.get("number"))
+
+            if all_sub_issues:
+                logger.info(f"Issue #{issue_number} has {len(all_sub_issues)} sub-issue(s): {all_sub_issues}")
+
+            return all_sub_issues
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
+            return []
+
     def add_labels(self, repo_name: str, issue_number: int, labels: List[str], item_type: str = "issue") -> None:
         """Add labels to an existing issue or PR.
 
