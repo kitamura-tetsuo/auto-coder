@@ -34,6 +34,9 @@ class BackendConfig:
     # List of provider names available for this backend
     # Schema: [backends.qwen].providers = ["qwen-open-router", ...]
     providers: List[str] = field(default_factory=list)
+    # Retry configuration for usage limit handling
+    usage_limit_retry_count: int = 0
+    usage_limit_retry_wait_seconds: int = 0
 
 
 @dataclass
@@ -100,6 +103,8 @@ class LLMBackendConfiguration:
                     openai_base_url=config_data.get("openai_base_url"),
                     extra_args=config_data.get("extra_args", {}),
                     providers=config_data.get("providers", []),
+                    usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
+                    usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
                 )
                 backends[name] = backend_config
 
@@ -137,6 +142,8 @@ class LLMBackendConfiguration:
                 "openai_base_url": config.openai_base_url,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
+                "usage_limit_retry_count": config.usage_limit_retry_count,
+                "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
             }
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}

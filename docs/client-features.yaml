@@ -22,6 +22,92 @@ This fork provides specialized TypeScript/JavaScript code analysis capabilities 
 2. **Custom Graph Schema**: Adapted to work with ts-morph generated graph structure with node types like `File`, `Function`, `Method`, `Class`, `Interface`, and relationship types like `CONTAINS`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `IMPORTS`
 3. **Code-Specific Tools**: Replaced original `search_documentation` and `hybrid_search` with code analysis tools
 
+### Configuration
+
+#### Backend Configuration
+
+The auto-coder system supports multiple LLM backends:
+
+```toml
+          [qwen.qwen-direct]
+          command = "uvx"
+          args = ["qwen-direct"]
+          description = "Direct Qwen API access"
+          QWEN_API_KEY = "your-api-key"
+```
+
+#### Backend Management
+
+    nested_managers:
+      description: "Multiple backend manager instances can exist with different configurations"
+      llm_backend: "Singleton instance for general LLM operations (PR processing, test fixes, code generation)"
+      message_backend: "Separate singleton instance for message generation (commit messages, PR messages)"
+      usage: "Access via get_llm_backend_manager() and get_message_backend_manager() for different use cases"
+      provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
+
+  retry_configuration:
+      description: "Configurable retry mechanism for LLM backends when usage limits are hit"
+      fields:
+        - name: "usage_limit_retry_count"
+          type: "int"
+          default: 0
+          purpose: "Number of retry attempts before switching to next backend"
+        - name: "usage_limit_retry_wait_seconds"
+          type: "int"
+          default: 0
+          purpose: "Seconds to wait between retry attempts"
+      behavior:
+        - "When AutoCoderUsageLimitError is caught, backend manager checks retry configuration"
+        - "Retries the same backend up to configured count with specified wait time between attempts"
+        - "After retries are exhausted, rotates to next available backend"
+        - "Default behavior (0 retries, 0 wait) maintains backward compatibility with immediate rotation"
+      example:
+        toml_example: |
+          [backends.gemini]
+          enabled = true
+          model = "gemini-2.5-pro"
+          usage_limit_retry_count = 3
+          usage_limit_retry_wait_seconds = 30
+      configuration_file: "~/.auto-coder/llm_config.toml"
+      scope: "Per-backend configuration allows different backends to have different retry policies"
+
+#### GraphRAG Integration
+
+  graphrag_integration:
+    auto_setup: true
+    mcp_config_check: true
+    index_update: available via CLI
+    snapshot_cleanup:
+      retention_days_default: 7
+      max_snapshots_per_repo_default: 9
+      env_flags:
+        - GRAPHRAG_RETENTION_DAYS
+        - GRAPHRAG_MAX_SNAPSHOTS_PER_REPO
+        - GRAPHRAG_CLEANUP_ON_INIT
+        - GRAPHRAG_CLEANUP_ON_UPDATE
+      cli_command: "auto-coder graphrag cleanup [--dry-run] [--retention-days N] [--max-per-repo M] [--repo-path PATH]"
+      hooks:
+        - initialize_graphrag
+        - GraphRAGIndexManager.update_index
+    pytest_fallback: "Under pytest, GraphRAGIndexManager avoids external graph-builder and uses fast Python fallback indexing"
+    docker_manager:
+      fallback_recovery: true
+      external_network: true
+      auto_retry_on_failure: true
+
+#### Test Watcher
+
+  test_watcher:
+    playwright_safety:
+      - "Skips Playwright execution under pytest or when AC_DISABLE_PLAYWRIGHT=1; returns synthetic report"
+      - "Quick availability probe: 'npx playwright --version' with 5s timeout"
+      - "Process timeout: 120s communicate() timeout; force-kill on timeout"
+    watchdog_daemon: "Observer thread is daemonized; does not block interpreter exit"
+    concurrency:
+      - "Run-on-change spawns daemon threads for Playwright and GraphRAG update"
+      - "GraphRAG retry timers are daemonized"
+      - "GraphRAG index updates in TestWatcherTool are scoped to project_root, keeping pytest flows fast on temporary project trees"
+
 ### Available Tools
 
 The following code analysis tools are available through the MCP server:
