@@ -227,14 +227,13 @@ class TestParseAttemptFromComment:
 
     def test_parse_invalid_timestamp_format(self):
         """Test parsing comment with invalid timestamp format."""
-        # When timestamp is invalid, datetime.fromisoformat raises an exception
-        # and the function returns None due to the try/except wrapper
         comment_body = f"{ATTEMPT_COMMENT_PREFIX}invalid-timestamp | Attempt details"
 
         attempt = parse_attempt_from_comment(comment_body)
 
-        # The invalid timestamp causes an exception, which is caught and returns None
-        assert attempt is None
+        # Invalid timestamps should not block attempt detection
+        assert attempt is not None
+        assert attempt.details.endswith("Attempt details")
 
     def test_parse_malformed_comment(self):
         """Test parsing malformed comment still returns attempt with fallback."""
@@ -343,34 +342,25 @@ class TestFormatAttemptComment:
 
     def test_format_basic_comment(self):
         """Test formatting a basic attempt comment."""
-        timestamp = datetime(2024, 1, 15, 10, 30, 0)
-        details = "Attempt #1 - Processing issue"
+        comment = format_attempt_comment(1)
 
-        comment = format_attempt_comment(timestamp, details)
-
-        expected = f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:30:00 | Attempt #1 - Processing issue"
+        expected = f"{ATTEMPT_COMMENT_PREFIX}1"
         assert comment == expected
 
     def test_format_comment_with_different_status(self):
         """Test formatting comment with different status."""
-        timestamp = datetime(2024, 1, 15, 10, 30, 0)
-        details = "Attempt #1 - Completed"
-        status = "completed"
+        comment = format_attempt_comment(2, details="retry requested")
 
-        comment = format_attempt_comment(timestamp, details, status=status)
-
-        # Status is stored in the AttemptInfo but not in the comment format
-        expected = f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:30:00 | Attempt #1 - Completed"
+        expected = f"{ATTEMPT_COMMENT_PREFIX}2 | retry requested"
         assert comment == expected
 
     def test_format_comment_with_special_characters(self):
         """Test formatting comment with special characters in details."""
-        timestamp = datetime(2024, 1, 15, 10, 30, 0)
         details = "Testing | pipes & special chars: @#$%"
 
-        comment = format_attempt_comment(timestamp, details)
+        comment = format_attempt_comment(3, details=details)
 
-        expected = f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:30:00 | Testing | pipes & special chars: @#$%"
+        expected = f"{ATTEMPT_COMMENT_PREFIX}3 | Testing | pipes & special chars: @#$%"
         assert comment == expected
 
 
@@ -539,8 +529,8 @@ class TestGetCurrentAttempt:
         mock_comment1 = Mock()
         mock_comment2 = Mock()
 
-        mock_comment1.body = f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:00:00 | Attempt #1"
-        mock_comment2.body = f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T11:00:00 | Attempt #2"
+        mock_comment1.body = f"{ATTEMPT_COMMENT_PREFIX}1"
+        mock_comment2.body = f"{ATTEMPT_COMMENT_PREFIX}2"
 
         mock_issue.get_comments.return_value = [mock_comment1, mock_comment2]
         mock_repo.get_issue.return_value = mock_issue
@@ -594,9 +584,9 @@ class TestGetCurrentAttempt:
 
         comments = [
             Mock(body="Regular comment 1"),
-            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:00:00 | Attempt #1"),
+            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}1"),
             Mock(body="Another regular comment"),
-            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T11:00:00 | Attempt #2"),
+            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2 | retry after conflicts"),
             Mock(body="Regular comment 3"),
         ]
 
@@ -606,6 +596,26 @@ class TestGetCurrentAttempt:
         mock_github_client.get_repository.return_value = mock_repo
 
         result = get_current_attempt("owner/repo", 123)
+
+        assert result == 2
+
+    @patch("auto_coder.github_client.GitHubClient")
+    def test_get_current_attempt_with_legacy_timestamp_comments(self, mock_github_client):
+        """Timestamp-prefixed comments still produce the right attempt number."""
+        mock_repo = Mock()
+        mock_issue = Mock()
+
+        legacy_comments = [
+            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T10:00:00 | Attempt #1"),
+            Mock(body=f"{ATTEMPT_COMMENT_PREFIX}2024-01-15T11:00:00 | Attempt #2"),
+        ]
+
+        mock_issue.get_comments.return_value = legacy_comments
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_instance.return_value = mock_github_client
+        mock_github_client.get_repository.return_value = mock_repo
+
+        result = get_current_attempt("owner/repo", 555)
 
         assert result == 2
 
@@ -648,7 +658,7 @@ class TestIncrementAttempt:
         assert args[0] == "owner/repo"
         assert args[1] == 321
         assert ATTEMPT_COMMENT_PREFIX in args[2]
-        assert "Attempt #2" in args[2]
+        assert args[2].strip() == f"{ATTEMPT_COMMENT_PREFIX}2"
 
     @patch("auto_coder.github_client.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
@@ -672,9 +682,9 @@ class TestIncrementAttempt:
         assert mock_client.add_comment_to_issue.call_count == 2
         parent_call, sub_call = mock_client.add_comment_to_issue.call_args_list
         assert parent_call[0][1] == 123
-        assert "Attempt #2" in parent_call[0][2]
+        assert parent_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}2"
         assert sub_call[0][1] == 456
-        assert "Attempt #1" in sub_call[0][2]
+        assert sub_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}1"
         mock_client.reopen_issue.assert_called_once()
         reopen_args = mock_client.reopen_issue.call_args[0]
         assert reopen_args[0] == "owner/repo"

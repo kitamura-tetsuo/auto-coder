@@ -8,7 +8,7 @@ made by Auto-Coder when processing issues and pull requests.
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from .logger_config import get_logger
 
@@ -19,12 +19,17 @@ ATTEMPT_COMMENT_PREFIX = "Auto-Coder Attempt: "
 """Prefix for comments added by Auto-Coder to track attempts."""
 
 # Pattern to parse attempt information from comments
-# Format: "Auto-Coder Attempt: [timestamp] | [details]"
+# Supports both legacy "Auto-Coder Attempt: <timestamp> | details"
+# and new standardized "Auto-Coder Attempt: <number>[ | details]" comments.
 _ATTEMPT_COMMENT_PATTERN_STR = rf"^{re.escape(ATTEMPT_COMMENT_PREFIX)}(.+)$"
 ATTEMPT_COMMENT_PATTERN = re.compile(
     _ATTEMPT_COMMENT_PATTERN_STR,
     re.MULTILINE,
 )
+
+# Patterns to extract attempt numbers from comment bodies
+_ATTEMPT_NUMBER_PREFIX_PATTERN = re.compile(rf"{re.escape(ATTEMPT_COMMENT_PREFIX)}\s*(\d+)(?:\s*$|\s*\|)", re.IGNORECASE)
+_ATTEMPT_NUMBER_DETAILS_PATTERN = re.compile(r"attempt\s*#?\s*(\d+)", re.IGNORECASE)
 
 
 @dataclass
@@ -94,11 +99,52 @@ class AttemptInfo:
         return f"{ATTEMPT_COMMENT_PREFIX}{self.timestamp.isoformat()} | {self.details}"
 
 
-def parse_attempt_from_comment(comment_body: str) -> Optional[AttemptInfo]:
+def _coerce_timestamp(raw: Union[str, datetime, None]) -> Optional[datetime]:
+    """Convert raw timestamp input to datetime if possible."""
+    if raw is None:
+        return None
+    if isinstance(raw, datetime):
+        return raw
+    try:
+        raw_value = str(raw)
+        if raw_value.endswith("Z"):
+            raw_value = raw_value.replace("Z", "+00:00")
+        return datetime.fromisoformat(raw_value)
+    except Exception:
+        return None
+
+
+def extract_attempt_number(comment_body: str) -> Optional[int]:
+    """Extract the attempt number from a comment body.
+
+    Supports both standardized "Auto-Coder Attempt: <N>" and legacy
+    "Attempt #N" suffixes.
+    """
+    if not comment_body:
+        return None
+
+    prefix_match = _ATTEMPT_NUMBER_PREFIX_PATTERN.search(comment_body)
+    if prefix_match:
+        try:
+            return int(prefix_match.group(1))
+        except ValueError:
+            pass
+
+    details_match = _ATTEMPT_NUMBER_DETAILS_PATTERN.search(comment_body)
+    if details_match:
+        try:
+            return int(details_match.group(1))
+        except ValueError:
+            return None
+    return None
+
+
+def parse_attempt_from_comment(comment_body: str, created_at: Optional[Union[str, datetime]] = None) -> Optional[AttemptInfo]:
     """Parse attempt information from a GitHub comment.
 
     Args:
         comment_body: The body of the GitHub comment
+        created_at: Optional timestamp to use when the comment body lacks one
 
     Returns:
         AttemptInfo if parsing succeeds, None otherwise
@@ -109,17 +155,16 @@ def parse_attempt_from_comment(comment_body: str) -> Optional[AttemptInfo]:
         return None
 
     try:
-        # Extract timestamp and details from the match
-        # Format: "timestamp | details"
-        content = match.group(1)
+        content = match.group(1).strip()
+        timestamp: Optional[datetime] = None
+        details = content
+
         if " | " in content:
             timestamp_str, details = content.split(" | ", 1)
-            timestamp = datetime.fromisoformat(timestamp_str.strip())
-        else:
-            # Fallback: use current time if format doesn't match
-            logger.warning(f"Attempt comment format unexpected: {content}")
-            timestamp = datetime.now()
-            details = content
+            timestamp = _coerce_timestamp(timestamp_str.strip())
+
+        if timestamp is None:
+            timestamp = _coerce_timestamp(created_at) or datetime.now()
 
         return AttemptInfo(
             timestamp=timestamp,
@@ -139,10 +184,10 @@ def extract_attempts_from_comments(comments: List[Dict[str, str]]) -> List[Attem
     Returns:
         List of AttemptInfo objects found in comments
     """
-    attempts = []
+    attempts: List[AttemptInfo] = []
     for comment in comments:
         body = comment.get("body", "")
-        attempt = parse_attempt_from_comment(body)
+        attempt = parse_attempt_from_comment(body, created_at=comment.get("created_at"))
         if attempt:
             attempts.append(attempt)
             logger.debug(f"Found attempt in comment: {attempt.details}")
@@ -152,19 +197,21 @@ def extract_attempts_from_comments(comments: List[Dict[str, str]]) -> List[Attem
     return attempts
 
 
-def format_attempt_comment(timestamp: datetime, details: str, status: str = "started") -> str:
-    """Format a comment for an attempt.
+def format_attempt_comment(attempt: int, details: Optional[str] = None) -> str:
+    """Format a standardized attempt comment.
+
+    The standardized format is:
+        "Auto-Coder Attempt: <attempt>[ | <details>]"
 
     Args:
-        timestamp: When the attempt was made
-        details: Details about the attempt
-        status: Status of the attempt
+        attempt: Attempt number (>=1 for retries)
+        details: Optional additional context to append
 
     Returns:
         Formatted comment string
     """
-    attempt = AttemptInfo(timestamp=timestamp, details=details, status=status)
-    return attempt.format_comment()
+    detail_suffix = f" | {details}" if details else ""
+    return f"{ATTEMPT_COMMENT_PREFIX}{attempt}{detail_suffix}"
 
 
 def get_latest_attempt(attempts: List[AttemptInfo]) -> Optional[AttemptInfo]:
@@ -232,22 +279,26 @@ def get_current_attempt(repo_name: str, issue_number: int) -> int:
         # Get all comments for the issue
         comments = issue.get_comments()
 
-        # Convert comments to list of dicts for parsing
+        attempt_numbers: List[int] = []
         comments_data = []
         for comment in comments:
+            body = getattr(comment, "body", "")
+            attempt_number = extract_attempt_number(body)
+            if attempt_number is not None:
+                attempt_numbers.append(attempt_number)
             comments_data.append(
                 {
-                    "body": comment.body,
-                    "created_at": comment.created_at,
+                    "body": body,
+                    "created_at": getattr(comment, "created_at", None),
                 }
             )
 
-        # Extract attempts from comments
-        attempts = extract_attempts_from_comments(comments_data)
+        # Fallback to counting attempt comments when numbers are unavailable
+        if not attempt_numbers:
+            attempts = extract_attempts_from_comments(comments_data)
+            attempt_numbers = [idx + 1 for idx, _ in enumerate(attempts)]
 
-        # Get the current attempt number by counting attempts
-        # Each attempt is sequential, so the count is the attempt number
-        current_attempt = len(attempts)
+        current_attempt = max(attempt_numbers) if attempt_numbers else 0
 
         logger.info(f"Found {current_attempt} attempt(s) for issue #{issue_number}")
         return current_attempt
@@ -279,9 +330,7 @@ def increment_attempt(repo_name: str, issue_number: int) -> int:
         new_attempt = current_attempt + 1
 
         # Create comment with new attempt number
-        timestamp = datetime.now()
-        details = f"Attempt #{new_attempt} - Processing issue"
-        comment_body = format_attempt_comment(timestamp, details, status="started")
+        comment_body = format_attempt_comment(new_attempt)
 
         # Add comment to the issue
         client = GitHubClient.get_instance()
