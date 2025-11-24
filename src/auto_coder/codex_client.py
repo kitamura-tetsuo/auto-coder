@@ -10,6 +10,7 @@ from typing import Optional
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
+from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .utils import CommandExecutor
 
