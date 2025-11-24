@@ -26,7 +26,7 @@ def unlock(force: bool):
         return
 
     if not force:
-        lock_info = lock_manager.get_lock_info()
+        lock_info = lock_manager.get_lock_info_obj()
         if lock_info:
             click.echo("Lock file exists with the following information:")
             click.echo(f"  PID: {lock_info.pid}")
