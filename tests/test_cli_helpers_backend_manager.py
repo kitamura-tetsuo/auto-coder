@@ -1,0 +1,227 @@
+"""Tests for cli_helpers backend manager functions."""
+
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.auto_coder.backend_manager import BackendManager
+from src.auto_coder.cli_helpers import build_backend_manager, build_backend_manager_from_config
+from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
+
+
+class TestBuildBackendManager:
+    """Test cases for build_backend_manager function."""
+
+    def test_build_backend_manager_with_qwen_options(self):
+        """Test that QwenClient receives options from config."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config
+            config = LLMBackendConfiguration()
+            config.backends["qwen"] = BackendConfig(
+                name="qwen",
+                model="qwen3-coder-plus",
+                openai_api_key="test_key",
+                openai_base_url="https://api.example.com",
+                options=["-o", "stream", "false", "--debug"],
+            )
+            config.backends["gemini"] = BackendConfig(
+                name="gemini",
+                model="gemini-2.5-pro",
+                api_key="gemini_key",
+            )
+            mock_get_config.return_value = config
+
+            # Mock QwenClient to capture the options passed to it
+            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+                mock_qwen_instance = MagicMock()
+                mock_qwen_class.return_value = mock_qwen_instance
+
+                # Mock GeminiClient
+                with patch("src.auto_coder.cli_helpers.GeminiClient") as mock_gemini_class:
+                    mock_gemini_instance = MagicMock()
+                    mock_gemini_class.return_value = mock_gemini_instance
+
+                    # Call build_backend_manager with only qwen backend
+                    manager = build_backend_manager(
+                        selected_backends=["qwen"],
+                        primary_backend="qwen",
+                        models={"qwen": "qwen3-coder-plus"},
+                        enable_graphrag=False,
+                    )
+
+                    # Verify QwenClient was called with the options from config
+                    assert mock_qwen_class.call_count == 1
+                    call_kwargs = mock_qwen_class.call_args.kwargs
+
+                    # Check that options were passed
+                    assert "options" in call_kwargs
+                    assert call_kwargs["options"] == ["-o", "stream", "false", "--debug"]
+
+                    # Verify other parameters
+                    assert call_kwargs["model_name"] == "qwen3-coder-plus"
+                    assert call_kwargs["openai_api_key"] == "test_key"
+                    assert call_kwargs["openai_base_url"] == "https://api.example.com"
+
+    def test_build_backend_manager_with_alias_and_backend_type(self):
+        """Test that custom aliases with backend_type are handled correctly."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config with a custom alias
+            config = LLMBackendConfiguration()
+            # Create a custom backend that uses qwen as its backend_type
+            config.backends["my-qwen-alias"] = BackendConfig(
+                name="my-qwen-alias",
+                model="qwen3-coder-plus",
+                backend_type="qwen",  # This alias points to qwen
+                options=["-o", "yolo", "true"],
+            )
+            # Also set up the base qwen config for API keys
+            config.backends["qwen"] = BackendConfig(
+                name="qwen",
+                openai_api_key="test_key",
+                openai_base_url="https://api.example.com",
+            )
+            mock_get_config.return_value = config
+
+            # Mock QwenClient
+            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+                mock_qwen_instance = MagicMock()
+                mock_qwen_class.return_value = mock_qwen_instance
+
+                # Mock GeminiClient
+                with patch("src.auto_coder.cli_helpers.GeminiClient") as mock_gemini_class:
+                    mock_gemini_instance = MagicMock()
+                    mock_gemini_class.return_value = mock_gemini_instance
+
+                    # Call build_backend_manager with the alias
+                    manager = build_backend_manager(
+                        selected_backends=["my-qwen-alias"],
+                        primary_backend="my-qwen-alias",
+                        models={"my-qwen-alias": "qwen3-coder-plus"},
+                        enable_graphrag=False,
+                    )
+
+                    # Verify QwenClient was called with the options from the alias config
+                    assert mock_qwen_class.call_count == 1
+                    call_kwargs = mock_qwen_class.call_args.kwargs
+
+                    # Check that options were passed from the alias
+                    assert "options" in call_kwargs
+                    assert call_kwargs["options"] == ["-o", "yolo", "true"]
+
+                    # Verify the model and API settings from the base qwen config
+                    assert call_kwargs["model_name"] == "qwen3-coder-plus"
+                    # API keys come from the base qwen config, not the alias
+                    assert call_kwargs["openai_api_key"] == "test_key"
+                    assert call_kwargs["openai_base_url"] == "https://api.example.com"
+
+    def test_build_backend_manager_without_options(self):
+        """Test that QwenClient works without options (empty list or None)."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config without options
+            config = LLMBackendConfiguration()
+            config.backends["qwen"] = BackendConfig(
+                name="qwen",
+                model="qwen3-coder-plus",
+                openai_api_key="test_key",
+                openai_base_url="https://api.example.com",
+                # No options specified
+            )
+            mock_get_config.return_value = config
+
+            # Mock QwenClient
+            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+                mock_qwen_instance = MagicMock()
+                mock_qwen_class.return_value = mock_qwen_instance
+
+                # Mock GeminiClient
+                with patch("src.auto_coder.cli_helpers.GeminiClient") as mock_gemini_class:
+                    mock_gemini_instance = MagicMock()
+                    mock_gemini_class.return_value = mock_gemini_instance
+
+                    # Call build_backend_manager
+                    manager = build_backend_manager(
+                        selected_backends=["qwen"],
+                        primary_backend="qwen",
+                        models={"qwen": "qwen3-coder-plus"},
+                        enable_graphrag=False,
+                    )
+
+                    # Verify QwenClient was called
+                    assert mock_qwen_class.call_count == 1
+                    call_kwargs = mock_qwen_class.call_args.kwargs
+
+                    # Check that options is either None or empty list
+                    assert call_kwargs["options"] is None or call_kwargs["options"] == []
+
+
+class TestBuildBackendManagerFromConfig:
+    """Test cases for build_backend_manager_from_config function."""
+
+    def test_build_backend_manager_from_config_with_options(self):
+        """Test that config options are passed to QwenClient through build_backend_manager."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config with options
+            config = LLMBackendConfiguration()
+            config.default_backend = "qwen"
+            config.get_backend_config("qwen").model = "qwen3-coder-plus"
+            config.get_backend_config("qwen").openai_api_key = "test_key"
+            config.get_backend_config("qwen").openai_base_url = "https://api.example.com"
+            config.get_backend_config("qwen").options = ["-o", "stream", "true"]
+            config.get_backend_config("qwen").backend_type = "qwen"
+            mock_get_config.return_value = config
+
+            # Mock build_backend_manager to verify it's called correctly
+            with patch("src.auto_coder.cli_helpers.build_backend_manager") as mock_build:
+                mock_manager = MagicMock()
+                mock_build.return_value = mock_manager
+
+                # Call build_backend_manager_from_config
+                manager = build_backend_manager_from_config(
+                    enable_graphrag=False,
+                    cli_backends=["qwen"],
+                )
+
+                # Verify build_backend_manager was called
+                assert mock_build.call_count == 1
+                call_args = mock_build.call_args
+
+                # Check the parameters
+                assert call_args.kwargs["selected_backends"] == ["qwen"]
+                assert call_args.kwargs["primary_backend"] == "qwen"
+                assert "qwen" in call_args.kwargs["models"]
+                assert call_args.kwargs["enable_graphrag"] is False
+
+    def test_build_backend_manager_from_config_with_alias(self):
+        """Test that config aliases are properly handled."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config with an alias
+            config = LLMBackendConfiguration()
+            config.default_backend = "my-alias"
+            # Add custom backend as alias
+            config.backends["my-alias"] = BackendConfig(
+                name="my-alias",
+                model="qwen3-coder-plus",
+                openai_api_key="test_key",
+                options=["-o", "debug", "true"],
+                backend_type="qwen",
+            )
+            mock_get_config.return_value = config
+
+            # Mock build_backend_manager
+            with patch("src.auto_coder.cli_helpers.build_backend_manager") as mock_build:
+                mock_manager = MagicMock()
+                mock_build.return_value = mock_manager
+
+                # Call build_backend_manager_from_config with the alias
+                manager = build_backend_manager_from_config(
+                    enable_graphrag=False,
+                    cli_backends=["my-alias"],
+                )
+
+                # Verify build_backend_manager was called with the alias
+                assert mock_build.call_count == 1
+                call_args = mock_build.call_args
+
+                assert call_args.kwargs["selected_backends"] == ["my-alias"]
+                assert call_args.kwargs["primary_backend"] == "my-alias"
+                assert call_args.kwargs["models"]["my-alias"] == "qwen3-coder-plus"
