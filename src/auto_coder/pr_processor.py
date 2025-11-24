@@ -151,6 +151,50 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
     return False
 
 
+def _get_mergeable_state(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    _config: AutomationConfig,
+) -> Dict[str, Optional[Any]]:
+    """Get latest mergeable state using existing data with optional refresh."""
+    mergeable = pr_data.get("mergeable")
+    merge_state_status = pr_data.get("mergeStateStatus")
+
+    # Refresh mergeability only when value is unknown
+    if mergeable is None:
+        try:
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
+                [
+                    "gh",
+                    "pr",
+                    "view",
+                    str(pr_data.get("number", "")),
+                    "--repo",
+                    repo_name,
+                    "--json",
+                    "mergeable,mergeStateStatus",
+                ],
+                repo=repo_name,
+                capture_output=True,
+            )
+            if result.success and result.stdout:  # type: ignore[attr-defined]
+                latest = json.loads(result.stdout)
+                mergeable = latest.get("mergeable", mergeable)
+                merge_state_status = latest.get("mergeStateStatus", merge_state_status)
+        except Exception:
+            logger.debug("Unable to refresh mergeable state for PR #%s", pr_data.get("number"))
+
+    return {"mergeable": mergeable, "merge_state_status": merge_state_status}
+
+
+def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional[str]) -> List[str]:
+    """Stub hook for future mergeability remediation workflow."""
+    state_text = merge_state_status or "unknown"
+    log_action(f"Starting mergeability remediation stub for PR #{pr_number}")
+    return [f"Mergeability remediation stub invoked for PR #{pr_number} (state: {state_text})"]
+
+
 def _process_pr_for_merge(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -475,6 +519,19 @@ def _handle_pr_merge(
             item_number=pr_number,
             item_type="PR",
         )  # Not needed for this check
+
+        mergeability = _get_mergeable_state(repo_name, pr_data, config)
+        mergeable_flag = mergeability.get("mergeable")
+        merge_state_status = mergeability.get("merge_state_status")
+
+        if mergeable_flag is False:
+            state_text = merge_state_status or "unknown"
+            actions.append(f"PR #{pr_number} is not mergeable (state: {state_text})")
+
+            if config.ENABLE_MERGEABILITY_REMEDIATION:
+                remediation_actions = _start_mergeability_remediation(pr_number, merge_state_status)
+                actions.extend(remediation_actions)
+                return actions
 
         # Step 2: If checks are in progress, skip this PR
         if not should_continue:
