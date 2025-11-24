@@ -181,3 +181,55 @@ class TestCodexClient:
 
             assert "Codex CLI Execution Summary" in summary_text
             assert "ERROR" in summary_text
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    @patch("builtins.print")
+    def test_no_duplicate_logs(self, mock_print, mock_run_command, mock_run, tmp_path):
+        """Verify that multiple calls do not create duplicate log entries."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        log_file = tmp_path / "test_log.jsonl"
+        with patch.object(CodexClient, "__init__", lambda self, model_name=None: None):
+            client = CodexClient()
+            from src.auto_coder.llm_output_logger import LLMOutputLogger
+
+            client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
+            client.model_name = "codex"
+
+            # Execute the method multiple times
+            for i in range(3):
+                output = client._run_llm_cli(f"test prompt {i}")
+
+            # Verify output is returned
+            assert output == "test output"
+
+            # Verify log file was created
+            assert log_file.exists()
+
+            # Verify there are exactly 3 log entries (one per call)
+            content = log_file.read_text().strip()
+            log_lines = [line for line in content.split("\n") if line.strip()]
+
+            assert len(log_lines) == 3, f"Expected 3 log entries, got {len(log_lines)}"
+
+            # Verify each log entry is valid JSON and has correct structure
+            for i, line in enumerate(log_lines):
+                data = json.loads(line)
+                assert data["event_type"] == "llm_interaction"
+                assert data["backend"] == "codex"
+                assert data["model"] == "codex"
+                assert data["status"] == "success"
+                assert "duration_ms" in data
+                assert "timestamp" in data
+                # Verify each entry corresponds to its call
+                assert data["prompt_length"] == len(f"test prompt {i}")
+
+            # Verify console summary is printed for each call
+            assert mock_print.called
+            print_calls = [str(call) for call in mock_print.call_args_list]
+            summary_text = "".join(print_calls)
+
+            # Should have 3 "Codex CLI Execution Summary" entries (one per call)
+            assert summary_text.count("Codex CLI Execution Summary") == 3
