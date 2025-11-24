@@ -72,6 +72,9 @@ def main(ctx: click.Context, force: bool) -> None:
         read_only_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb"]
         is_unlock = invoked_cmd == "unlock" or "unlock" in sys.argv
 
+        # Track whether we acquired a lock so we can clean it up properly
+        lock_acquired = False
+
         if not (invoked_cmd in read_only_commands or has_help_flag or is_unlock):
             if _lock_manager.is_locked():
                 lock_info = _lock_manager.get_lock_info_obj()
@@ -107,8 +110,19 @@ def main(ctx: click.Context, force: bool) -> None:
                 click.echo("Error: Could not acquire lock.", err=True)
                 sys.exit(1)
 
+            # Register cleanup handler to release lock on exit
+            lock_acquired = True
+            atexit.register(_cleanup_lock)
+
         record_startup_options(sys.argv, os.environ)
         maybe_run_auto_update()
+
+
+def _cleanup_lock() -> None:
+    """Release the lock file on program exit."""
+    global _lock_manager
+    if _lock_manager is not None:
+        _lock_manager.release_lock()
 
 
 # Set the command name to 'auto-coder' when used as a CLI
