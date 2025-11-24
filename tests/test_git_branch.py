@@ -4,7 +4,18 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.git_branch import branch_context, branch_exists, extract_number_from_branch, get_all_branches, get_branches_by_pattern, git_checkout_branch, git_commit_with_retry, migrate_pr_branches, validate_branch_name
+from src.auto_coder.git_branch import (
+    branch_context,
+    branch_exists,
+    extract_attempt_from_branch,
+    extract_number_from_branch,
+    get_all_branches,
+    get_branches_by_pattern,
+    git_checkout_branch,
+    git_commit_with_retry,
+    migrate_pr_branches,
+    validate_branch_name,
+)
 from src.auto_coder.utils import CommandResult
 
 
@@ -124,3 +135,31 @@ class TestGitCheckoutBranch:
                 "--abbrev-ref",
                 "HEAD",
             ]
+
+
+class TestExtractAttemptFromBranch:
+    """Tests for extract_attempt_from_branch function."""
+
+    def test_extract_attempt_from_branch_with_attempt(self):
+        """Test extracting attempt number from branch with attempt suffix."""
+        assert extract_attempt_from_branch("issue-123/attempt-1") == 1
+        assert extract_attempt_from_branch("issue-456/attempt-2") == 2
+        assert extract_attempt_from_branch("issue-789/attempt-10") == 10
+        assert extract_attempt_from_branch("feature/issue-123/attempt-3") == 3
+
+    def test_extract_attempt_from_branch_without_attempt(self):
+        """Test extracting attempt number from branch without attempt suffix."""
+        assert extract_attempt_from_branch("issue-123") is None
+        assert extract_attempt_from_branch("main") is None
+        assert extract_attempt_from_branch("feature-branch") is None
+        assert extract_attempt_from_branch("pr-456") is None
+
+    def test_extract_attempt_from_branch_empty_or_none(self):
+        """Test extracting attempt number from empty or None branch name."""
+        assert extract_attempt_from_branch("") is None
+        assert extract_attempt_from_branch(None) is None  # type: ignore
+
+    def test_extract_attempt_from_branch_case_insensitive(self):
+        """Test that attempt extraction is case-insensitive."""
+        assert extract_attempt_from_branch("issue-123/Attempt-1") == 1
+        assert extract_attempt_from_branch("issue-456/ATTEMPT-2") == 2

@@ -18,6 +18,7 @@ from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
+from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
@@ -239,6 +240,47 @@ def _take_pr_actions(
     return actions
 
 
+def _trigger_fallback_for_pr_failure(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    failure_reason: str,
+) -> None:
+    """Trigger fallback by incrementing attempts for linked issues when PR processing fails.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        pr_data: PR data dictionary
+        failure_reason: Reason for the failure
+    """
+    try:
+        # Extract linked issues from PR body
+        pr_body = pr_data.get("body", "")
+        if not pr_body:
+            logger.debug(f"No PR body found for PR #{pr_data['number']}, cannot extract linked issues")
+            return
+
+        linked_issues = _extract_linked_issues_from_pr_body(pr_body)
+
+        if not linked_issues:
+            logger.debug(f"No linked issues found in PR #{pr_data['number']} body")
+            return
+
+        # Increment attempt for each linked issue
+        for issue_number in linked_issues:
+            try:
+                logger.info(f"Incrementing attempt for issue #{issue_number} due to PR #{pr_data['number']} failure: {failure_reason}")
+                increment_attempt(repo_name, issue_number)
+            except Exception as e:
+                logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+                # Continue with other issues even if one fails
+                continue
+
+        logger.info(f"Triggered fallback for {len(linked_issues)} linked issue(s) from PR #{pr_data['number']}")
+
+    except Exception as e:
+        logger.error(f"Error triggering fallback for PR #{pr_data['number']}: {e}")
+
+
 def _apply_pr_actions_directly(
     github_client: Any,
     repo_name: str,
@@ -288,9 +330,13 @@ def _apply_pr_actions_directly(
                 actions.append(summary_line[: config.MAX_RESPONSE_SIZE])
             elif "CANNOT_FIX" in resp:
                 actions.append(f"LLM reported CANNOT_FIX for PR #{pr_data['number']}")
+                # Trigger fallback due to LLM failure
+                _trigger_fallback_for_pr_failure(repo_name, pr_data, "LLM merge risky/failed (CANNOT_FIX)")
             else:
                 # Fallback: record truncated raw response without posting comments
                 actions.append(f"LLM response: {resp[: config.MAX_RESPONSE_SIZE]}...")
+                # Trigger fallback due to unclear LLM response
+                _trigger_fallback_for_pr_failure(repo_name, pr_data, "LLM merge risky/failed (unclear response)")
 
             # Detect self-merged indication in summary/response
             lower = resp.lower()
@@ -332,6 +378,8 @@ def _apply_pr_actions_directly(
                             else:
                                 logger.error(f"Failed to push changes after retry: {retry_push_res.stderr}")
                                 actions.append(f"CRITICAL: Committed but failed to push changes: {retry_push_res.stderr}")
+                                # Trigger fallback due to push failure
+                                _trigger_fallback_for_pr_failure(repo_name, pr_data, "Failed to push changes after retry")
                 else:
                     # Check if it's a "nothing to commit" case
                     if "nothing to commit" in (commit_res.stdout or ""):
@@ -346,11 +394,17 @@ def _apply_pr_actions_directly(
                         save_commit_failure_history(commit_res.stderr, context, repo_name=None)
                         # This line will never be reached due to sys.exit in save_commit_failure_history
                         actions.append(f"Failed to commit changes: {commit_res.stderr or commit_res.stdout}")
+                        # Trigger fallback due to commit failure
+                        _trigger_fallback_for_pr_failure(repo_name, pr_data, "Failed to commit changes")
         else:
             actions.append("LLM CLI did not provide a clear response for PR actions")
+            # Trigger fallback due to no LLM response
+            _trigger_fallback_for_pr_failure(repo_name, pr_data, "LLM merge risky/failed (no response)")
 
     except Exception as e:
         actions.append(f"Error applying PR actions directly: {e}")
+        # Trigger fallback due to exception
+        _trigger_fallback_for_pr_failure(repo_name, pr_data, f"Exception during LLM processing: {str(e)}")
 
     return actions
 
@@ -882,12 +936,59 @@ def _merge_pr(
                                 log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
                                 _close_linked_issues(repo_name, pr_number)
                                 return True
+                        # All merge attempts failed, trigger fallback
+                        # Get PR data to extract linked issues
+                        try:
+                            pr_data = {"number": pr_number, "body": ""}
+                            gh_logger_temp = get_gh_logger()
+                            pr_view_result = gh_logger_temp.execute_with_logging(
+                                ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
+                                repo=repo_name,
+                                capture_output=True,
+                            )
+                            if pr_view_result.success and pr_view_result.stdout:
+                                pr_info = json.loads(pr_view_result.stdout)
+                                pr_data["body"] = pr_info.get("body", "")
+                            _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution and fallbacks exhausted)")
+                        except Exception:
+                            # Don't fail the merge function if we can't trigger fallback
+                            pass
                         return False
                 else:
                     log_action(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                    # Trigger fallback for merge conflict resolution failure
+                    try:
+                        pr_data = {"number": pr_number, "body": ""}
+                        gh_logger_temp = get_gh_logger()
+                        pr_view_result = gh_logger_temp.execute_with_logging(
+                            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
+                            repo=repo_name,
+                            capture_output=True,
+                        )
+                        if pr_view_result.success and pr_view_result.stdout:
+                            pr_info = json.loads(pr_view_result.stdout)
+                            pr_data["body"] = pr_info.get("body", "")
+                        _trigger_fallback_for_pr_failure(repo_name, pr_data, "Automatic merge failed (conflict resolution failed)")
+                    except Exception:
+                        pass
                     return False
             else:
                 log_action(f"Failed to merge PR #{pr_number}", False, result.stderr)
+                # Trigger fallback for general merge failure
+                try:
+                    pr_data = {"number": pr_number, "body": ""}
+                    gh_logger_temp = get_gh_logger()
+                    pr_view_result = gh_logger_temp.execute_with_logging(
+                        ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
+                        repo=repo_name,
+                        capture_output=True,
+                    )
+                    if pr_view_result.success and pr_view_result.stdout:
+                        pr_info = json.loads(pr_view_result.stdout)
+                        pr_data["body"] = pr_info.get("body", "")
+                    _trigger_fallback_for_pr_failure(repo_name, pr_data, f"Automatic merge failed: {result.stderr[:200]}")
+                except Exception:
+                    pass
                 return False
 
     except Exception as e:
@@ -1144,6 +1245,8 @@ def _fix_pr_issues_with_testing(
 
                     if finite_limit_reached:
                         actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
+                        # Trigger fallback when max fix attempts are reached
+                        _trigger_fallback_for_pr_failure(repo_name, pr_data, f"Max fix attempts ({attempts_limit}) reached")
                         break
                     else:
                         local_fix_actions = _apply_local_test_fix(repo_name, pr_data, config, test_result)

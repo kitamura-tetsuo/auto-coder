@@ -26,6 +26,7 @@ __all__ = [
     "branch_context",
     "branch_exists",
     "extract_number_from_branch",
+    "extract_attempt_from_branch",
     "get_all_branches",
     "get_branches_by_pattern",
     "git_checkout_branch",
@@ -359,6 +360,7 @@ def extract_number_from_branch(branch_name: str) -> Optional[int]:
     Supports patterns like:
     - issue-123
     - pr-456
+    - issue-123/attempt-1
     - feature/issue-789
     - fix/pr-101
 
@@ -381,6 +383,32 @@ def extract_number_from_branch(branch_name: str) -> Optional[int]:
         match = re.search(pattern, branch_name, re.IGNORECASE)
         if match:
             return int(match.group(1))
+
+    return None
+
+
+def extract_attempt_from_branch(branch_name: str) -> Optional[int]:
+    """
+    Extract attempt number from branch name.
+
+    Supports patterns like:
+    - issue-123/attempt-1
+    - issue-456/attempt-2
+    - issue-789 (returns 0 for no attempt suffix)
+
+    Args:
+        branch_name: Branch name to parse
+
+    Returns:
+        Extracted attempt number or None if no attempt suffix found
+    """
+    if not branch_name:
+        return None
+
+    # Match issue-XXX/attempt-Y pattern
+    match = re.search(r"issue-\d+/attempt-(\d+)", branch_name, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
 
     return None
 

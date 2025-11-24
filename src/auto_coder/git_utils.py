@@ -14,6 +14,7 @@ For new code, prefer importing directly from the specific modules.
 from .git_branch import (
     branch_context,
     branch_exists,
+    extract_attempt_from_branch,
     extract_number_from_branch,
     get_all_branches,
     get_branches_by_pattern,
@@ -64,6 +65,7 @@ __all__ = [
     "branch_context",
     "branch_exists",
     "extract_number_from_branch",
+    "extract_attempt_from_branch",
     "get_all_branches",
     "get_branches_by_pattern",
     "git_checkout_branch",

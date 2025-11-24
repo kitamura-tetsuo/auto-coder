@@ -8,12 +8,13 @@ from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
+from .attempt_manager import get_current_attempt
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .backend_manager import get_llm_backend_manager, run_llm_message_prompt
 from .gh_logger import get_gh_logger
-from .git_branch import branch_context
+from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
-from .git_info import get_commit_log
+from .git_info import get_commit_log, get_current_branch
 from .github_client import GitHubClient
 from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
@@ -23,6 +24,22 @@ from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+def generate_work_branch_name(issue_number: int, attempt: int) -> str:
+    """
+    Generate the work branch name based on the issue number and attempt.
+
+    Args:
+        issue_number: The issue number.
+        attempt: The attempt number.
+
+    Returns:
+        The generated work branch name.
+    """
+    if attempt > 0:
+        return f"issue-{issue_number}/attempt-{attempt}"
+    return f"issue-{issue_number}"
 
 
 def _process_issue_jules_mode(
@@ -333,6 +350,7 @@ def _apply_issue_actions_directly(
         # Branch switching: Switch to PR-specified branch if available, otherwise create work branch
         target_branch: str
         pr_base_branch = config.MAIN_BRANCH  # PR merge target branch (parent issue branch if parent issue exists)
+        create_new_work_branch = False
 
         # Store current branch to ensure we can track where we started
         initial_branch = None
@@ -349,7 +367,12 @@ def _apply_issue_actions_directly(
             logger.info(f"Switching to PR branch: {target_branch}")
         else:
             # For regular issues, determine work branch
-            work_branch = f"issue-{issue_number}"
+            # Get current attempt number from issue comments
+            current_attempt = get_current_attempt(repo_name, issue_number)
+            logger.info(f"Current attempt for issue #{issue_number}: {current_attempt}")
+
+            # Determine branch name based on attempt number
+            work_branch = generate_work_branch_name(issue_number, current_attempt)
             logger.info(f"Determining work branch for issue: {work_branch}")
 
             # Check for parent issue
@@ -358,7 +381,12 @@ def _apply_issue_actions_directly(
             base_branch = config.MAIN_BRANCH
             if parent_issue_number:
                 # If parent issue exists, use parent issue branch as base
-                parent_branch = f"issue-{parent_issue_number}"
+                # Check if parent issue has attempts and use the appropriate parent branch
+                parent_attempt = get_current_attempt(repo_name, parent_issue_number)
+                if parent_attempt > 0:
+                    parent_branch = f"issue-{parent_issue_number}/attempt-{parent_attempt}"
+                else:
+                    parent_branch = f"issue-{parent_issue_number}"
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
 
                 # Check if parent issue branch exists
@@ -383,17 +411,26 @@ def _apply_issue_actions_directly(
 
             # Check if work branch already exists
             check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])
+            work_branch_exists = check_work_branch.returncode == 0
 
-            if check_work_branch.returncode == 0:
-                # Work branch exists
+            if work_branch_exists:
                 logger.info(f"Work branch {work_branch} already exists, will switch to it")
                 target_branch = work_branch
-                create_new_work_branch = False
             else:
-                # Work branch doesn't exist, will create it
                 logger.info(f"Work branch {work_branch} does not exist, will create from {base_branch}")
                 target_branch = work_branch
                 create_new_work_branch = True
+
+            # Check if current local branch is for an older attempt
+            # If so, we should create a new branch for the new attempt
+            current_branch = get_current_branch()
+            if current_branch and current_branch.startswith(f"issue-{issue_number}"):
+                # Extract attempt number from current branch if present
+                current_attempt_in_branch = extract_attempt_from_branch(current_branch)
+                branch_attempt_value = current_attempt_in_branch if current_attempt_in_branch is not None else 0
+                if branch_attempt_value < current_attempt:
+                    logger.info(f"Current branch {current_branch} is for older attempt {branch_attempt_value}, creating or switching to attempt {current_attempt}")
+                    create_new_work_branch = create_new_work_branch or not work_branch_exists
 
         # Now perform all work on the target branch using branch_context
         assert target_branch is not None, "target_branch must be set before using branch_context"
