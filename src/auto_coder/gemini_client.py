@@ -123,6 +123,7 @@ class GeminiClient(LLMClientBase):
                 "rate limit",
                 "resource_exhausted",
                 "too many requests",
+                "[api error: you have exhausted your capacity on this model. your quota will reset after ",
             )
 
             if result.returncode != 0:
