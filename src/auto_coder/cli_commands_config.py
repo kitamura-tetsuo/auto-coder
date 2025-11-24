@@ -35,7 +35,13 @@ def config_group() -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def show(config_file: Optional[str]) -> None:
     """Display current configuration."""
     try:
@@ -67,7 +73,13 @@ def show(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def edit(config_file: Optional[str]) -> None:
     """Open configuration file in default editor."""
     config_path = get_config_path(config_file)
@@ -96,7 +108,13 @@ def edit(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 @click.argument("key", required=True)
 @click.argument("value", required=True)
 def set(config_file: Optional[str], key: str, value: str) -> None:
@@ -161,7 +179,13 @@ def set(config_file: Optional[str], key: str, value: str) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 @click.argument("key", required=True)
 def get(config_file: Optional[str], key: str) -> None:
     """Get a configuration value."""
@@ -212,7 +236,13 @@ def get(config_file: Optional[str], key: str) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def reset(config_file: Optional[str]) -> None:
     """Reset configuration to default values."""
     config_path = get_config_path(config_file)
@@ -227,7 +257,13 @@ def reset(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def validate(config_file: Optional[str]) -> None:
     """Validate configuration file format."""
     config_path = get_config_path(config_file)
@@ -254,7 +290,13 @@ def validate(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def migrate(config_file: Optional[str]) -> None:
     """Migrate from old CLI options to configuration file."""
     config_path = get_config_path(config_file)
@@ -368,7 +410,13 @@ def backup_config(config_path: str) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def backup(config_file: Optional[str]) -> None:
     """Create a backup of the configuration file."""
     config_path = get_config_path(config_file)
@@ -387,8 +435,19 @@ def backup(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
-@click.option("--output", "-o", type=click.Path(), help="Output file for backup listing (optional)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(),
+    help="Output file for backup listing (optional)",
+)
 def list_backups(config_file: Optional[str], output: Optional[str]) -> None:
     """List all configuration file backups."""
     config_path = get_config_path(config_file)
@@ -424,7 +483,13 @@ def list_backups(config_file: Optional[str], output: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 @click.argument("backup_path", type=click.Path(exists=True))
 def restore(config_file: Optional[str], backup_path: str) -> None:
     """Restore configuration from a backup file."""
@@ -454,7 +519,13 @@ def restore(config_file: Optional[str], backup_path: str) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 @click.option("--output", "-o", type=click.Path(), help="Output file (default: stdout)")
 def export(config_file: Optional[str], output: Optional[str]) -> None:
     """Export configuration to a file or stdout."""
@@ -480,7 +551,13 @@ def export(config_file: Optional[str], output: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 @click.argument("source_file", type=click.Path(exists=True))
 def import_config(config_file: Optional[str], source_file: str) -> None:
     """Import configuration from a JSON file."""
@@ -532,7 +609,13 @@ def import_config(config_file: Optional[str], source_file: str) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def template(config_file: Optional[str]) -> None:
     """Show configuration template."""
     config_path = get_config_path(config_file)
@@ -562,7 +645,13 @@ def template(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def health(config_file: Optional[str]) -> None:
     """Check configuration health and report status."""
     config_path = get_config_path(config_file)
@@ -653,7 +742,13 @@ def health(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def setup(config_file: Optional[str]) -> None:
     """Interactive configuration setup wizard."""
     config_path = get_config_path(config_file)
@@ -724,7 +819,11 @@ def setup(config_file: Optional[str]) -> None:
         backend_config = config.get_backend_config(backend)
         if backend_config and backend_config.enabled:
             if click.confirm(f"Configure model for {backend}?", default=False):
-                model = click.prompt(f"  Model for {backend}", default=backend_config.model or "", show_default=False)
+                model = click.prompt(
+                    f"  Model for {backend}",
+                    default=backend_config.model or "",
+                    show_default=False,
+                )
                 if model.strip():
                     backend_config.model = model.strip()
 
@@ -791,7 +890,13 @@ def setup(config_file: Optional[str]) -> None:
 
 
 @config_group.command()
-@click.option("--file", "-f", "config_file", type=click.Path(exists=False), help="Path to config file (default: ~/.auto-coder/llm_config.toml)")
+@click.option(
+    "--file",
+    "-f",
+    "config_file",
+    type=click.Path(exists=False),
+    help="Path to config file (default: ~/.auto-coder/llm_config.toml)",
+)
 def examples(config_file: Optional[str]) -> None:
     """Show configuration usage examples."""
     click.echo("📚 Configuration Examples")

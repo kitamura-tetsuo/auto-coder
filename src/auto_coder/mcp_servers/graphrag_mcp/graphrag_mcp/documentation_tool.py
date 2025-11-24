@@ -100,7 +100,7 @@ class DocumentationGPTTool:
         Returns:
             Dictionary with search results and related documents
         """
-        results = {"query": query, "chunks": [], "related_documents": []}
+        results: Dict[str, Any] = {"query": query, "chunks": [], "related_documents": []}
 
         # Generate embedding for query
         if self.model is None:

@@ -45,7 +45,10 @@ class TestSharedWatcherE2E:
         mock_manager = MagicMock()
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create a code file

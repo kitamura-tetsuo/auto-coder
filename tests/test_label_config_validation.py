@@ -13,13 +13,7 @@ import pytest
 import yaml
 
 from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
-    _get_prompt_for_labels,
-    _resolve_label_priority,
-    clear_prompt_cache,
-    get_label_specific_prompt,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import _get_prompt_for_labels, _resolve_label_priority, clear_prompt_cache, get_label_specific_prompt, render_prompt
 
 
 class TestInvalidMappingFormats:
@@ -325,7 +319,10 @@ class TestEnvironmentVariableIntegration:
             with pytest.raises(yaml.YAMLError):
                 yaml.safe_load(env_value)
 
-    @patch.dict(os.environ, {"AUTO_CODER_LABEL_MAPPINGS": '{"bug": "issue.bugfix", "feature": "issue.feature"}'})
+    @patch.dict(
+        os.environ,
+        {"AUTO_CODER_LABEL_MAPPINGS": '{"bug": "issue.bugfix", "feature": "issue.feature"}'},
+    )
     def test_env_variable_not_used_directly(self):
         """Test that env variables don't interfere with direct parameters."""
         labels = ["bug"]
@@ -393,7 +390,10 @@ class TestYAMLConfigurationLoading:
     def test_yaml_with_list_values(self, tmp_path):
         """Test YAML with list values."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  items:\n    - "one"\n    - "two"\n    - "three"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  items:\n    - "one"\n    - "two"\n    - "three"\n',
+            encoding="utf-8",
+        )
 
         clear_prompt_cache()
         data = prompt_loader.load_prompts(str(prompt_file))

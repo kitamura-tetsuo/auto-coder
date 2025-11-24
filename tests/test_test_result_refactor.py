@@ -42,7 +42,13 @@ def test_enhanced_error_extraction_playwright_block():
           Received string:    "<div>Example</div>"
         """
     )
-    tr = TestResult(success=False, output=fake_playwright_output, errors="", return_code=1, framework_type="playwright")
+    tr = TestResult(
+        success=False,
+        output=fake_playwright_output,
+        errors="",
+        return_code=1,
+        framework_type="playwright",
+    )
     errors = extract_important_errors(tr)
     assert "Expected substring:" in errors
     assert "Received string:" in errors
@@ -94,7 +100,10 @@ def test_github_actions_enhanced_integration_passes_structured_context():
         return_code=1,
         framework_type="playwright",
     )
-    tr.extraction_context = {"failed_tests": ["e2e/core/foo.spec.ts"], "summary": "1 failed"}
+    tr.extraction_context = {
+        "failed_tests": ["e2e/core/foo.spec.ts"],
+        "summary": "1 failed",
+    }
 
     captured = {}
 

@@ -12,16 +12,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
-    _get_prompt_for_labels,
-    _resolve_label_priority,
-    _traverse,
-    clear_prompt_cache,
-    get_label_specific_prompt,
-    get_prompt_template,
-    load_prompts,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import _get_prompt_for_labels, _resolve_label_priority, _traverse, clear_prompt_cache, get_label_specific_prompt, get_prompt_template, load_prompts, render_prompt
 
 
 class TestLabelPriorityEdgeCases:
@@ -35,7 +26,12 @@ class TestLabelPriorityEdgeCases:
             # Duplicate labels in priorities
             (["bug"], {"bug": "issue.bug"}, ["bug", "bug"], "bug"),
             # Multiple duplicates across all inputs
-            (["bug", "bug", "feature", "feature"], {"bug": "issue.bug", "feature": "issue.feature"}, ["feature", "feature", "bug"], "feature"),
+            (
+                ["bug", "bug", "feature", "feature"],
+                {"bug": "issue.bug", "feature": "issue.feature"},
+                ["feature", "feature", "bug"],
+                "feature",
+            ),
         ],
     )
     def test_duplicate_labels_handling(self, labels, mappings, priorities, expected):
@@ -294,7 +290,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_with_empty_label_list(self, tmp_path):
         """Test render_prompt with empty label list."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default action"\n  bugfix: "Bug fix"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default action"\n  bugfix: "Bug fix"\n',
+            encoding="utf-8",
+        )
 
         result = render_prompt(
             "issue.action",
@@ -336,7 +335,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_with_unicode_in_template(self, tmp_path):
         """Test render_prompt with Unicode characters in template."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default action"\n  bugfix: "Bug fix for Büɡ $issue_number"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default action"\n  bugfix: "Bug fix for Büɡ $issue_number"\n',
+            encoding="utf-8",
+        )
 
         result = render_prompt(
             "issue.bugfix",
@@ -351,7 +353,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_with_special_chars_in_template(self, tmp_path):
         """Test render_prompt with special characters in template."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default action"\n  bugfix: "Fix @ $issue_title !"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default action"\n  bugfix: "Fix @ $issue_title !"\n',
+            encoding="utf-8",
+        )
 
         result = render_prompt(
             "issue.bugfix",
@@ -366,7 +371,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_with_none_data_value(self, tmp_path):
         """Test render_prompt with None as data value."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default $name"\n  bugfix: "Bug fix for $name"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default $name"\n  bugfix: "Bug fix for $name"\n',
+            encoding="utf-8",
+        )
 
         result = render_prompt(
             "issue.bugfix",
@@ -382,7 +390,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_label_fallback_with_kwargs(self, tmp_path):
         """Test render_prompt fallback with kwargs."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Issue $issue_number: $title"\n  bugfix: "Bug fix"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Issue $issue_number: $title"\n  bugfix: "Bug fix"\n',
+            encoding="utf-8",
+        )
 
         result = render_prompt(
             "issue.action",
@@ -398,7 +409,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_with_nested_template_variables(self, tmp_path):
         """Test render_prompt with nested template variables."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default"\n  bugfix: "Fix $issue.repo/$issue.number"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default"\n  bugfix: "Fix $issue.repo/$issue.number"\n',
+            encoding="utf-8",
+        )
 
         result = render_prompt(
             "issue.bugfix",
@@ -414,7 +428,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_with_list_in_label(self, tmp_path):
         """Test render_prompt with normal string labels (the expected behavior)."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default $issue_number"\n  bugfix: "Bug fix"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default $issue_number"\n  bugfix: "Bug fix"\n',
+            encoding="utf-8",
+        )
 
         # Normal use case with string labels
         result = render_prompt(
@@ -430,7 +447,10 @@ class TestRenderPromptWithLabelsEdgeCases:
     def test_render_cache_invalidation(self, tmp_path):
         """Test that cache is properly handled with label-based prompts."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default action"\n  bugfix: "Bug fix"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default action"\n  bugfix: "Bug fix"\n',
+            encoding="utf-8",
+        )
 
         # First render
         clear_prompt_cache()
@@ -455,7 +475,10 @@ class TestRenderPromptWithLabelsEdgeCases:
 
         # Clear cache and change file
         clear_prompt_cache()
-        prompt_file.write_text('issue:\n  action: "Default action"\n  bugfix: "Changed bug fix"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default action"\n  bugfix: "Changed bug fix"\n',
+            encoding="utf-8",
+        )
 
         result3 = render_prompt(
             "issue.bugfix",
@@ -615,7 +638,10 @@ class TestFallbackMechanism:
     def test_fallback_when_template_missing(self, tmp_path):
         """Test fallback when label-specific template doesn't exist."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default action"\n  bugfix: "Bug fix"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default action"\n  bugfix: "Bug fix"\n',
+            encoding="utf-8",
+        )
 
         # Map to non-existent template should trigger fallback
         result = render_prompt(
@@ -646,7 +672,10 @@ class TestFallbackMechanism:
     def test_fallback_chain(self, tmp_path):
         """Test fallback chain: label-specific -> default."""
         prompt_file = tmp_path / "prompts.yaml"
-        prompt_file.write_text('issue:\n  action: "Default $issue_number"\n  feature: "Feature prompt"\n', encoding="utf-8")
+        prompt_file.write_text(
+            'issue:\n  action: "Default $issue_number"\n  feature: "Feature prompt"\n',
+            encoding="utf-8",
+        )
 
         result = render_prompt(
             "issue.action",
@@ -665,13 +694,23 @@ class TestFallbackMechanism:
         # Test case 1: Single matching label
         (["bug"], {"bug": "issue.bugfix"}, ["bug"], "issue.bugfix"),
         # Test case 2: Multiple labels, priority ordering
-        (["bug", "feature"], {"bug": "issue.bugfix", "feature": "issue.feature"}, ["feature", "bug"], "issue.feature"),
+        (
+            ["bug", "feature"],
+            {"bug": "issue.bugfix", "feature": "issue.feature"},
+            ["feature", "bug"],
+            "issue.feature",
+        ),
         # Test case 3: No matching labels
         (["docs"], {"bug": "issue.bugfix"}, ["bug"], None),
         # Test case 4: Empty inputs
         ([], {}, [], None),
         # Test case 5: Priority list longer than mappings
-        (["bug", "feature"], {"bug": "issue.bugfix"}, ["bug", "feature", "urgent"], "issue.bugfix"),
+        (
+            ["bug", "feature"],
+            {"bug": "issue.bugfix"},
+            ["bug", "feature", "urgent"],
+            "issue.bugfix",
+        ),
     ],
 )
 def test_parametrized_label_scenarios(labels, mappings, priorities, expected_prompt):
@@ -725,7 +764,10 @@ class TestErrorHandlingScenarios:
 
         prompts = load_prompts(path=str(prompt_file))
         # Access the 'action' value (which is a string) and try to get a sub-key
-        with pytest.raises(KeyError, match="Prompt path 'issue.action.nonexistent' does not resolve to a mapping"):
+        with pytest.raises(
+            KeyError,
+            match="Prompt path 'issue.action.nonexistent' does not resolve to a mapping",
+        ):
             prompt_loader._traverse(prompts, "issue.action.nonexistent")
 
     def test_render_prompt_with_none_template_in_mapping(self, tmp_path):

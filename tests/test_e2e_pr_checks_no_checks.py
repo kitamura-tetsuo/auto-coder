@@ -26,7 +26,12 @@ class TestPRChecksNoChecks:
         def mock_side_effect(cmd_list, **kwargs):
             if isinstance(cmd_list, list) and len(cmd_list) >= 3 and cmd_list[1] == "pr" and cmd_list[2] == "checks":
                 # gh pr checks command - return empty result
-                return CommandResult(success=False, stdout="", stderr="no checks reported on the 'test-branch' branch", returncode=1)
+                return CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr="no checks reported on the 'test-branch' branch",
+                    returncode=1,
+                )
             elif isinstance(cmd_list, list) and len(cmd_list) >= 3 and cmd_list[1] == "pr" and cmd_list[2] == "view":
                 # gh pr view command - return empty commits
                 return CommandResult(success=True, stdout='{"commits": []}', stderr="", returncode=0)
@@ -36,7 +41,11 @@ class TestPRChecksNoChecks:
         mock_run_command.side_effect = mock_side_effect
 
         # Provide complete PR data including head_branch for historical fallback
-        pr_data = {"number": 515, "head_branch": "test-branch", "head": {"ref": "test-branch"}}
+        pr_data = {
+            "number": 515,
+            "head_branch": "test-branch",
+            "head": {"ref": "test-branch"},
+        }
         result = _check_github_actions_status("kitamura-tetsuo/outliner", pr_data, config)
 
         # When there are no checks reported, should return success

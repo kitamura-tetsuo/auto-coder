@@ -47,7 +47,10 @@ jkl3456 Refactor code"""
     mock_action_runs_commit3 = []  # No Actions for this commit
 
     # Need to patch cmd.run_command for git commands AND gh_logger.subprocess.run for gh commands
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
+    with (
+        patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command,
+        patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run,
+    ):
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
@@ -121,7 +124,10 @@ def5678 Fix typo in docs
 ghi9012 Add comment"""
 
     # Need to patch both cmd.run_command for git commands AND gh_logger.subprocess.run for gh commands
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
+    with (
+        patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command,
+        patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run,
+    ):
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True
@@ -161,7 +167,10 @@ def test_parse_git_commit_history_no_git_repo():
     mock_git_log = """fatal: not a git repository"""
 
     # Need to patch gh_logger.subprocess.run since _check_commit_for_github_actions uses gh_logger.execute_with_logging
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
+    with (
+        patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command,
+        patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run,
+    ):
         # Setup mock for git log (fails)
         mock_git_result = Mock()
         mock_git_result.success = False
@@ -191,7 +200,10 @@ def test_parse_git_commit_history_depth_limit():
     many_commits = "\n".join([f"{hash(f'commit{i:04d}')} Commit message" for i in range(20)])
 
     # Need to patch gh_logger.subprocess.run since _check_commit_for_github_actions uses gh_logger.execute_with_logging
-    with patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run:
+    with (
+        patch("src.auto_coder.util.github_action.cmd.run_command") as mock_run_command,
+        patch("auto_coder.gh_logger.subprocess.run") as mock_gh_run,
+    ):
         # Setup mock for git log
         mock_git_result = Mock()
         mock_git_result.success = True

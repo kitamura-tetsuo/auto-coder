@@ -97,7 +97,10 @@ class TestGraphRAGUpdateRobustness:
         mock_manager.smart_update_trigger.return_value = True
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Trigger GraphRAG update
             tool._trigger_graphrag_update("src/main.py")
 
@@ -112,7 +115,10 @@ class TestGraphRAGUpdateRobustness:
         mock_manager = MagicMock()
         mock_manager.smart_update_trigger.return_value = False
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Trigger GraphRAG update - should not raise exception
             tool._trigger_graphrag_update("src/main.py")
 
@@ -124,7 +130,10 @@ class TestGraphRAGUpdateRobustness:
         tool = TestWatcherTool(project_root=str(tmp_path))
 
         # Mock GraphRAGIndexManager to always raise an exception
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", side_effect=Exception("Test error")):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            side_effect=Exception("Test error"),
+        ):
             # Mock threading.Timer
             with patch("threading.Timer") as mock_timer:
                 # Trigger GraphRAG update
@@ -148,7 +157,10 @@ class TestGraphRAGUpdateRobustness:
             return MagicMock()
 
         # Mock GraphRAGIndexManager to always raise an exception
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", side_effect=Exception("Test error")):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            side_effect=Exception("Test error"),
+        ):
             with patch("threading.Timer", side_effect=timer_side_effect):
                 # Trigger GraphRAG update - this will fail and schedule retry
                 tool._trigger_graphrag_update("src/main.py")
@@ -184,7 +196,10 @@ class TestGraphRAGUpdateRobustness:
             return MagicMock()
 
         # Mock GraphRAGIndexManager to always raise an exception
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", side_effect=Exception("Test error")):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            side_effect=Exception("Test error"),
+        ):
             with patch("threading.Timer", side_effect=timer_side_effect):
                 # Trigger multiple failures to reach high failure count
                 # The error handler disables retries after 3 failures
@@ -208,7 +223,10 @@ class TestGraphRAGUpdateRobustness:
         del mock_manager.smart_update_trigger  # Remove the attribute
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Trigger GraphRAG update
             tool._trigger_graphrag_update("src/main.py")
 
@@ -251,7 +269,10 @@ class TestGraphRAGUpdateRobustness:
         mock_manager = MagicMock()
         mock_manager.smart_update_trigger.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Trigger multiple file changes
             tool._on_file_changed("src/main.py")
             tool._on_file_changed("src/utils.py")
@@ -269,7 +290,10 @@ class TestGracefulDegradation:
         tool = TestWatcherTool(project_root=str(tmp_path))
 
         # Mock GraphRAGIndexManager to raise an exception
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", side_effect=Exception("GraphRAG unavailable")):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            side_effect=Exception("GraphRAG unavailable"),
+        ):
             # This should not raise an exception or prevent test execution
             tool._trigger_graphrag_update("src/main.py")
 
@@ -292,7 +316,10 @@ class TestGracefulDegradation:
         mock_manager = MagicMock()
         mock_manager.smart_update_trigger = mock_smart_trigger
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             with patch("threading.Timer"):
                 # First call fails
                 tool._trigger_graphrag_update("src/main.py")
@@ -362,7 +389,10 @@ class TestEdgeCases:
         mock_manager = MagicMock()
         mock_manager.smart_update_trigger.return_value = False
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Should handle empty path gracefully
             tool._trigger_graphrag_update("")
 
@@ -377,7 +407,10 @@ class TestEdgeCases:
         mock_manager = MagicMock()
         mock_manager.smart_update_trigger.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Test with special characters
             tool._trigger_graphrag_update("path/with spaces/file.py")
             tool._trigger_graphrag_update("path/with-unicode/файл.py")
@@ -393,7 +426,10 @@ class TestEdgeCases:
         mock_manager = MagicMock()
         mock_manager.smart_update_trigger.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Test with very long path
             long_path = "src/" + "a" * 200 + ".py"
             tool._trigger_graphrag_update(long_path)

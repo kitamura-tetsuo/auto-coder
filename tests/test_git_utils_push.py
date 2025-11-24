@@ -13,7 +13,7 @@ from src.auto_coder.utils import CommandResult
 class TestGitPushUtils:
     """Test git push utility functions."""
 
-    @patch("src.auto_coder.git_utils.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
     def test_check_unpushed_commits_with_unpushed(self, mock_executor_class):
         """Test check_unpushed_commits when there are unpushed commits."""
         mock_executor = MagicMock()
@@ -30,7 +30,7 @@ class TestGitPushUtils:
         assert result is True
         assert mock_executor.run_command.call_count == 2
 
-    @patch("src.auto_coder.git_utils.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
     def test_check_unpushed_commits_without_unpushed(self, mock_executor_class):
         """Test check_unpushed_commits when there are no unpushed commits."""
         mock_executor = MagicMock()
@@ -47,7 +47,7 @@ class TestGitPushUtils:
         assert result is False
         assert mock_executor.run_command.call_count == 2
 
-    @patch("src.auto_coder.git_utils.CommandExecutor")
+    @patch("src.auto_coder.git_info.CommandExecutor")
     def test_check_unpushed_commits_branch_not_exist(self, mock_executor_class):
         """Test check_unpushed_commits when remote branch doesn't exist."""
         mock_executor = MagicMock()
@@ -64,11 +64,13 @@ class TestGitPushUtils:
         assert result is False
         assert mock_executor.run_command.call_count == 2
 
-    @patch("src.auto_coder.git_utils.CommandExecutor")
-    def test_git_push_success(self, mock_executor_class):
+    @patch("src.auto_coder.git_info.CommandExecutor")
+    @patch("src.auto_coder.git_commit.CommandExecutor")
+    def test_git_push_success(self, mock_commit_executor_class, mock_info_executor_class):
         """Test git_push when push succeeds."""
         mock_executor = MagicMock()
-        mock_executor_class.return_value = mock_executor
+        mock_commit_executor_class.return_value = mock_executor
+        mock_info_executor_class.return_value = mock_executor
 
         mock_executor.run_command.side_effect = [
             # 1) check_unpushed_commits: get current branch
@@ -86,11 +88,13 @@ class TestGitPushUtils:
         assert result.success is True
         assert mock_executor.run_command.call_count == 4
 
-    @patch("src.auto_coder.git_utils.CommandExecutor")
-    def test_git_push_failure(self, mock_executor_class):
+    @patch("src.auto_coder.git_info.CommandExecutor")
+    @patch("src.auto_coder.git_commit.CommandExecutor")
+    def test_git_push_failure(self, mock_commit_executor_class, mock_info_executor_class):
         """Test git_push when push fails."""
         mock_executor = MagicMock()
-        mock_executor_class.return_value = mock_executor
+        mock_commit_executor_class.return_value = mock_executor
+        mock_info_executor_class.return_value = mock_executor
 
         mock_executor.run_command.side_effect = [
             # 1) check_unpushed_commits: get current branch
@@ -109,8 +113,8 @@ class TestGitPushUtils:
         assert "failed to push" in result.stderr
         assert mock_executor.run_command.call_count == 4
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.git_push")
+    @patch("src.auto_coder.git_commit.check_unpushed_commits")
+    @patch("src.auto_coder.git_commit.git_push")
     def test_ensure_pushed_with_unpushed_commits(self, mock_git_push, mock_check_unpushed):
         """Test ensure_pushed when there are unpushed commits."""
         mock_check_unpushed.return_value = True
@@ -122,8 +126,8 @@ class TestGitPushUtils:
         mock_check_unpushed.assert_called_once()
         mock_git_push.assert_called_once()
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.git_push")
+    @patch("src.auto_coder.git_commit.check_unpushed_commits")
+    @patch("src.auto_coder.git_commit.git_push")
     def test_ensure_pushed_without_unpushed_commits(self, mock_git_push, mock_check_unpushed):
         """Test ensure_pushed when there are no unpushed commits."""
         mock_check_unpushed.return_value = False
@@ -135,8 +139,8 @@ class TestGitPushUtils:
         mock_check_unpushed.assert_called_once()
         mock_git_push.assert_not_called()
 
-    @patch("src.auto_coder.git_utils.check_unpushed_commits")
-    @patch("src.auto_coder.git_utils.git_push")
+    @patch("src.auto_coder.git_commit.check_unpushed_commits")
+    @patch("src.auto_coder.git_commit.git_push")
     def test_ensure_pushed_push_failure(self, mock_git_push, mock_check_unpushed):
         """Test ensure_pushed when push fails."""
         mock_check_unpushed.return_value = True

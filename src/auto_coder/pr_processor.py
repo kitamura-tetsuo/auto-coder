@@ -16,19 +16,15 @@ from typing import Any, Dict, List, Optional
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 from auto_coder.github_client import GitHubClient
-from auto_coder.util.github_action import (
-    DetailedChecksResult,
-    _check_github_actions_status,
-    _get_github_actions_logs,
-    check_github_actions_and_exit_if_in_progress,
-    get_detailed_checks_from_history,
-)
+from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
 from .gh_logger import get_gh_logger
-from .git_utils import branch_context, commit_and_push_changes, get_commit_log, git_commit_with_retry, git_push, save_commit_failure_history
+from .git_branch import branch_context, git_commit_with_retry
+from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
+from .git_info import get_commit_log
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
@@ -584,13 +580,21 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
             checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name])
 
             if not checkout_result.success:
-                log_action(f"Failed to create branch '{branch_name}' for PR #{pr_number}", False, checkout_result.stderr)
+                log_action(
+                    f"Failed to create branch '{branch_name}' for PR #{pr_number}",
+                    False,
+                    checkout_result.stderr,
+                )
                 return False
 
         # Now the branch is checked out, reset it to match the fetched commit
         reset_result = cmd.run_command(["git", "reset", "--hard", f"refs/remotes/origin/pull/{pr_number}/head"])
         if not reset_result.success:
-            log_action(f"Failed to reset branch '{branch_name}' to PR head", False, reset_result.stderr)
+            log_action(
+                f"Failed to reset branch '{branch_name}' to PR head",
+                False,
+                reset_result.stderr,
+            )
             return False
 
         # Push the branch to set up tracking
@@ -1173,7 +1177,17 @@ def _apply_github_actions_fix(
         commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
         # Extract important error information from GitHub Actions logs using extract_important_errors
-        github_test_result = TestResult(success=False, output=github_logs or "", errors="", return_code=1, command="github_actions_logs", test_file=None, stability_issue=False, extraction_context={}, framework_type="github_actions")
+        github_test_result = TestResult(
+            success=False,
+            output=github_logs or "",
+            errors="",
+            return_code=1,
+            command="github_actions_logs",
+            test_file=None,
+            stability_issue=False,
+            extraction_context={},
+            framework_type="github_actions",
+        )
 
         # Use extract_important_errors to extract failed log file names and error details
         extracted_errors = extract_important_errors(github_test_result)
@@ -1242,7 +1256,7 @@ def _apply_local_test_fix(
                 command=str(test_result.get("command", "")),
                 test_file=test_result.get("test_file"),
                 stability_issue=bool(test_result.get("stability_issue", False)),
-                extraction_context=test_result.get("extraction_context", {}) if isinstance(test_result.get("extraction_context", {}), dict) else {},
+                extraction_context=(test_result.get("extraction_context", {}) if isinstance(test_result.get("extraction_context", {}), dict) else {}),
                 framework_type=test_result.get("framework_type"),
             )
             error_summary = extract_important_errors(tr)

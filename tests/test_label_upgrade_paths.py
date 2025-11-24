@@ -18,14 +18,7 @@ import pytest
 import yaml
 
 from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
-    _get_prompt_for_labels,
-    _resolve_label_priority,
-    clear_prompt_cache,
-    get_label_specific_prompt,
-    load_prompts,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import _get_prompt_for_labels, _resolve_label_priority, clear_prompt_cache, get_label_specific_prompt, load_prompts, render_prompt
 
 
 class TestFreshInstallation:
@@ -813,8 +806,14 @@ def test_upgrade_scenario_matrix(scenario):
     scenarios = {
         "fresh_install": {"has_existing_config": False, "needs_migration": False},
         "upgrade_from_v1": {"has_existing_config": True, "needs_migration": True},
-        "upgrade_with_custom_config": {"has_existing_config": True, "has_custom_labels": True},
-        "migration_with_data_loss_check": {"has_existing_config": True, "check_data_loss": True},
+        "upgrade_with_custom_config": {
+            "has_existing_config": True,
+            "has_custom_labels": True,
+        },
+        "migration_with_data_loss_check": {
+            "has_existing_config": True,
+            "check_data_loss": True,
+        },
     }
 
     scenario_config = scenarios[scenario]

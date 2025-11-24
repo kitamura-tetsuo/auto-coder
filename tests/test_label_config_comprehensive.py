@@ -24,15 +24,7 @@ import pytest
 import yaml
 
 from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
-    _get_prompt_for_labels,
-    _resolve_label_priority,
-    _traverse,
-    clear_prompt_cache,
-    get_label_specific_prompt,
-    load_prompts,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import _get_prompt_for_labels, _resolve_label_priority, _traverse, clear_prompt_cache, get_label_specific_prompt, load_prompts, render_prompt
 
 
 class TestValidConfigurationFormats:
@@ -107,7 +99,11 @@ class TestValidConfigurationFormats:
 
     def test_valid_code_configuration_dict(self):
         """Test valid configuration as Python dictionary."""
-        mappings = {"bug": "issue.bugfix", "feature": "issue.feature", "urgent": "issue.urgent"}
+        mappings = {
+            "bug": "issue.bugfix",
+            "feature": "issue.feature",
+            "urgent": "issue.urgent",
+        }
         priorities = ["urgent", "bug", "feature"]
 
         # Should work with valid dict
@@ -227,7 +223,11 @@ class TestInvalidConfigurationHandling:
     def test_unicode_in_labels(self):
         """Test Unicode characters in label names."""
         labels = ["🐛", "✨", "feature"]
-        mappings = {"🐛": "issue.bugfix", "✨": "issue.feature", "feature": "issue.feature"}
+        mappings = {
+            "🐛": "issue.bugfix",
+            "✨": "issue.feature",
+            "feature": "issue.feature",
+        }
         priorities = ["🐛", "✨", "feature"]
 
         result = _resolve_label_priority(labels, mappings, priorities)
@@ -835,9 +835,24 @@ class TestConfigurationRecovery:
     [
         # Valid configurations
         (["bug"], {"bug": "issue.bugfix"}, ["bug"], "bug"),
-        (["bug", "feature"], {"bug": "issue.bugfix", "feature": "issue.feature"}, ["bug"], "bug"),
-        (["bug", "feature"], {"bug": "issue.bugfix", "feature": "issue.feature"}, ["feature"], "feature"),
-        (["feature", "bug"], {"bug": "issue.bugfix", "feature": "issue.feature"}, ["feature"], "feature"),
+        (
+            ["bug", "feature"],
+            {"bug": "issue.bugfix", "feature": "issue.feature"},
+            ["bug"],
+            "bug",
+        ),
+        (
+            ["bug", "feature"],
+            {"bug": "issue.bugfix", "feature": "issue.feature"},
+            ["feature"],
+            "feature",
+        ),
+        (
+            ["feature", "bug"],
+            {"bug": "issue.bugfix", "feature": "issue.feature"},
+            ["feature"],
+            "feature",
+        ),
         # Empty/None cases
         ([], {"bug": "issue.bugfix"}, ["bug"], None),
         (["bug"], {}, ["bug"], None),
@@ -845,7 +860,12 @@ class TestConfigurationRecovery:
         # No matches
         (["custom"], {"bug": "issue.bugfix"}, ["bug"], None),
         # Multiple priorities
-        (["bug", "feature"], {"bug": "issue.bugfix", "feature": "issue.feature"}, ["feature", "bug"], "feature"),
+        (
+            ["bug", "feature"],
+            {"bug": "issue.bugfix", "feature": "issue.feature"},
+            ["feature", "bug"],
+            "feature",
+        ),
     ],
 )
 def test_comprehensive_config_scenarios(labels, mappings, priorities, expected):

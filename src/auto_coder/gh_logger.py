@@ -16,13 +16,26 @@ from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Union
 
 # Environment variable to disable logging
-GH_LOGGING_DISABLED = os.environ.get("GH_LOGGING_DISABLED", "").lower() in ("1", "true", "yes", "on")
+GH_LOGGING_DISABLED = os.environ.get("GH_LOGGING_DISABLED", "").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Default log directory
 DEFAULT_LOG_DIR = Path.home() / ".auto-coder" / "log"
 
 # CSV field names
-CSV_FIELDS = ["timestamp", "caller_file", "caller_line", "command", "args", "repo", "hostname"]
+CSV_FIELDS = [
+    "timestamp",
+    "caller_file",
+    "caller_line",
+    "command",
+    "args",
+    "repo",
+    "hostname",
+]
 
 
 class GHCommandLogger:

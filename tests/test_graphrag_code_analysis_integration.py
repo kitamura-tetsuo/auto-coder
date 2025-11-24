@@ -42,7 +42,26 @@ def mock_subprocess_availability():
             elif "scan" in cmd:
                 # Mock successful scan with file information
                 graph_data = {
-                    "nodes": [{"id": "node1", "kind": "Function", "fqname": "test.ts:myFunc", "file": "test.ts"}, {"id": "node2", "kind": "File", "fqname": "test.py", "file": "test.py"}, {"id": "node3", "kind": "Function", "fqname": "test.js:world", "file": "test.js"}],
+                    "nodes": [
+                        {
+                            "id": "node1",
+                            "kind": "Function",
+                            "fqname": "test.ts:myFunc",
+                            "file": "test.ts",
+                        },
+                        {
+                            "id": "node2",
+                            "kind": "File",
+                            "fqname": "test.py",
+                            "file": "test.py",
+                        },
+                        {
+                            "id": "node3",
+                            "kind": "Function",
+                            "fqname": "test.js:world",
+                            "file": "test.js",
+                        },
+                    ],
                     "edges": [{"from": "node1", "to": "node2", "type": "CALLS"}],
                 }
                 # Write to output file

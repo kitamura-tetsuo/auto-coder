@@ -115,7 +115,10 @@ def test_is_index_up_to_date_different_hash(index_manager, temp_repo):
 def test_update_index_when_up_to_date(index_manager, temp_repo):
     """Test update_index when index is already up to date."""
     # Mock _run_graph_builder to prevent actual CLI execution
-    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    mock_graph_data = {
+        "nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}],
+        "edges": [],
+    }
     with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
         # Save current hash and path
         current_hash = index_manager._get_codebase_hash()
@@ -134,7 +137,10 @@ def test_update_index_when_up_to_date(index_manager, temp_repo):
 def test_update_index_when_outdated(index_manager, temp_repo):
     """Test update_index when index is outdated."""
     # Mock _run_graph_builder and _store_graph_in_neo4j to prevent actual CLI execution
-    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    mock_graph_data = {
+        "nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}],
+        "edges": [],
+    }
     with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
         with mock.patch.object(index_manager, "_store_graph_in_neo4j"):
             # Save old hash with current path
@@ -157,7 +163,10 @@ def test_update_index_when_outdated(index_manager, temp_repo):
 def test_update_index_force(index_manager, temp_repo):
     """Test update_index with force=True."""
     # Mock _run_graph_builder and _store_graph_in_neo4j to prevent actual CLI execution
-    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    mock_graph_data = {
+        "nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}],
+        "edges": [],
+    }
     with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
         with mock.patch.object(index_manager, "_store_graph_in_neo4j"):
             # Save current hash and path
@@ -181,7 +190,10 @@ def test_update_index_force(index_manager, temp_repo):
 def test_ensure_index_up_to_date_when_up_to_date(index_manager, temp_repo):
     """Test ensure_index_up_to_date when index is up to date."""
     # Mock _run_graph_builder to prevent actual CLI execution
-    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    mock_graph_data = {
+        "nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}],
+        "edges": [],
+    }
     with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
         # Save current hash and path
         current_hash = index_manager._get_codebase_hash()
@@ -200,7 +212,10 @@ def test_ensure_index_up_to_date_when_up_to_date(index_manager, temp_repo):
 def test_ensure_index_up_to_date_when_outdated(index_manager, temp_repo):
     """Test ensure_index_up_to_date when index is outdated."""
     # Mock _run_graph_builder and _store_graph_in_neo4j to prevent actual CLI execution
-    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    mock_graph_data = {
+        "nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}],
+        "edges": [],
+    }
     with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
         with mock.patch.object(index_manager, "_store_graph_in_neo4j"):
             # Save old hash with current path
@@ -223,7 +238,10 @@ def test_ensure_index_up_to_date_when_outdated(index_manager, temp_repo):
 def test_update_index_saves_indexed_at(index_manager):
     """Test that update_index saves indexed_at field."""
     # Mock _run_graph_builder and _store_graph_in_neo4j to prevent actual CLI execution
-    mock_graph_data = {"nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}], "edges": []}
+    mock_graph_data = {
+        "nodes": [{"id": "test_node", "kind": "File", "fqname": "test.py"}],
+        "edges": [],
+    }
     with mock.patch.object(index_manager, "_run_graph_builder", return_value=mock_graph_data):
         with mock.patch.object(index_manager, "_store_graph_in_neo4j"):
             result = index_manager.update_index(force=True)
