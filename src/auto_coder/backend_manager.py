@@ -215,13 +215,18 @@ class BackendManager(LLMBackendManagerBase):
                 continue
 
             try:
-                return self._execute_backend_with_providers(
+                result = self._execute_backend_with_providers(
                     backend_name=backend_name,
                     cli=cli,
                     prompt=prompt,
                     backend_attempt_number=attempts + 1,
                     temp_env_cls=TemporaryEnvironment,
                 )
+                # Check if we should switch to next backend after successful execution
+                backend_config = get_llm_config().get_backend_config(backend_name)
+                if backend_config and backend_config.always_switch_after_execution:
+                    self.switch_to_next_backend()
+                return result
             except AutoCoderUsageLimitError as exc:
                 last_error = exc
                 # Check if we should retry this backend
