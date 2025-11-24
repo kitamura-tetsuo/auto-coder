@@ -14,10 +14,58 @@ from .gh_logger import get_gh_logger
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor, CommandResult
+from .utils import CommandExecutor, CommandResult, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+def _push_updated_branch_with_retry(pr_number: int, commit_message: Optional[str] = None) -> List[str]:
+    """Push current branch with a single retry and skip-analysis flag on success."""
+    actions: List[str] = []
+    push_result = git_push(commit_message=commit_message)
+    if push_result.success:
+        actions.append(f"Pushed updated branch for PR #{pr_number}")
+        actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+        return actions
+
+    logger.warning("First push attempt failed for PR #%s: %s", pr_number, push_result.stderr)
+    time.sleep(2)
+    retry_result = git_push(commit_message=commit_message)
+    if retry_result.success:
+        actions.append(f"Pushed updated branch for PR #{pr_number} (after retry)")
+        actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+    else:
+        actions.append(f"Failed to push updated branch for PR #{pr_number}: {retry_result.stderr or push_result.stderr}")
+    return actions
+
+
+def _finalize_merge_commit(pr_number: int, base_branch: str) -> List[str]:
+    """Commit merge resolution changes and push with retry."""
+    actions: List[str] = []
+    flagged = scan_conflict_markers()
+    if flagged:
+        actions.append(f"Conflict markers still present after remediation for PR #{pr_number}: {', '.join(sorted(set(flagged)))}")
+        return actions
+
+    add_result = cmd.run_command(["git", "add", "."])
+    if not add_result.success:
+        actions.append(f"Failed to stage merge remediation changes: {add_result.stderr}")
+        return actions
+
+    commit_message = f"Auto-Coder: Merge {base_branch} into PR #{pr_number}"
+    commit_result = git_commit_with_retry(commit_message)
+    if not commit_result.success:
+        err_out = commit_result.stderr or commit_result.stdout
+        if err_out and "nothing to commit" in err_out.lower():
+            actions.append("No merge remediation changes to commit")
+        else:
+            actions.append(f"Failed to commit merge remediation changes: {err_out}")
+        return actions
+
+    actions.append(f"Committed merge remediation for PR #{pr_number}")
+    actions.extend(_push_updated_branch_with_retry(pr_number, commit_message=commit_message))
+    return actions
 
 
 def _get_merge_conflict_info() -> str:
