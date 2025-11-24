@@ -74,7 +74,7 @@ def main(ctx: click.Context, force: bool) -> None:
 
         if not (invoked_cmd in read_only_commands or has_help_flag or is_unlock):
             if _lock_manager.is_locked():
-                lock_info = _lock_manager.get_lock_info()
+                lock_info = _lock_manager.get_lock_info_obj()
                 if lock_info:
                     click.echo("Error: auto-coder is already running!", err=True)
                     click.echo("", err=True)

@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import socket
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -47,21 +48,26 @@ class LockManager:
 
         Returns None if not in a git repository or in a temporary directory (test environment).
         """
-        # Get git directory
-        git_dir = os.environ.get("GIT_DIR", ".git")
-        git_dir_path = Path(git_dir).resolve()
+        try:
+            # Use git rev-parse --git-dir to get the git directory
+            result = subprocess.run(["git", "rev-parse", "--git-dir"], capture_output=True, text=True, check=True)
+            git_dir = result.stdout.strip()
+            git_dir_path = Path(git_dir).resolve()
 
-        # Check if git directory exists
-        if not git_dir_path.exists():
+            # Check if git directory exists
+            if not git_dir_path.exists():
+                return None
+
+            # Check if we're in a temporary directory (likely a test environment)
+            # This allows tests to run without lock interference
+            current_dir = Path.cwd()
+            if "tmp" in str(current_dir) or "pytest" in str(current_dir):
+                return None
+
+            return git_dir_path / "auto-coder.lock"
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            # git command failed or not found
             return None
-
-        # Check if we're in a temporary directory (likely a test environment)
-        # This allows tests to run without lock interference
-        current_dir = Path.cwd()
-        if "tmp" in str(current_dir) or "pytest" in str(current_dir):
-            return None
-
-        return git_dir_path / "auto-coder.lock"
 
     def acquire_lock(self, force: bool = False) -> bool:
         """Acquire a lock.
@@ -114,7 +120,7 @@ class LockManager:
         except Exception as e:
             print(f"Error removing lock file: {e}", file=sys.stderr)
 
-    def get_lock_info(self) -> Optional[LockInfo]:
+    def get_lock_info_obj(self) -> Optional[LockInfo]:
         """Get information about the current lock."""
         if not self.is_locked():
             return None
@@ -133,7 +139,7 @@ class LockManager:
             print("Not in a git repository. No lock file available.")
             return
 
-        lock_info = self.get_lock_info()
+        lock_info = self.get_lock_info_obj()
         if not lock_info:
             print("No lock file found.")
             return
@@ -166,3 +172,31 @@ class LockManager:
                 return True
         except (OSError, ProcessLookupError, AttributeError):
             return False
+
+    # Alias methods with exact names as specified in issue #573
+
+    def acquire(self, force: bool = False) -> bool:
+        """Acquire a lock.
+
+        Args:
+            force: If True, forcibly overwrite existing lock
+
+        Returns:
+            True if lock was acquired, False otherwise
+        """
+        return self.acquire_lock(force=force)
+
+    def release(self) -> None:
+        """Remove the lock file."""
+        self.release_lock()
+
+    def get_lock_info(self) -> dict:
+        """Get information about the current lock.
+
+        Returns:
+            Dictionary with lock information, or empty dict if no lock exists
+        """
+        lock_info = self.get_lock_info_obj()
+        if lock_info is None:
+            return {}
+        return lock_info.to_dict()
