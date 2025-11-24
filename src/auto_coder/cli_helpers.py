@@ -405,27 +405,91 @@ def build_backend_manager(
     def _cm() -> str:
         return models.get("claude", "sonnet")
 
-    factories_all = {
-        "codex": lambda: CodexClient(model_name="codex"),
-        "codex-mcp": lambda: CodexMCPClient(model_name="codex-mcp", enable_graphrag=enable_graphrag),
-        "gemini": lambda: (GeminiClient(effective_gemini_api_key, model_name=_gm()) if effective_gemini_api_key else GeminiClient(model_name=_gm())),
-        "qwen": lambda: QwenClient(
-            model_name=_qm(),
+    # Create factory functions that support both direct backend names and aliases
+    def _create_qwen_client(backend_name: str):
+        """Create a QwenClient with options from config if it's an alias."""
+        backend_config = config.get_backend_config(backend_name)
+        options = backend_config.options if backend_config else None
+        return QwenClient(
+            model_name=models.get(backend_name),
             openai_api_key=effective_openai_api_key,
             openai_base_url=effective_openai_base_url,
             use_env_vars=True,
             preserve_existing_env=False,
-        ),
-        "auggie": lambda: AuggieClient(model_name=_am()),
-        "claude": lambda: ClaudeClient(model_name=_cm()),
+            options=options,
+        )
+
+    def _create_gemini_client(backend_name: str):
+        """Create a GeminiClient."""
+        return GeminiClient(effective_gemini_api_key, model_name=models.get(backend_name)) if effective_gemini_api_key else GeminiClient(model_name=models.get(backend_name))
+
+    def _create_claude_client(backend_name: str):
+        """Create a ClaudeClient."""
+        return ClaudeClient(model_name=models.get(backend_name))
+
+    def _create_auggie_client(backend_name: str):
+        """Create an AuggieClient."""
+        return AuggieClient(model_name=models.get(backend_name))
+
+    def _create_codex_client(backend_name: str):
+        """Create a CodexClient."""
+        return CodexClient(model_name=models.get(backend_name, "codex"))
+
+    def _create_codex_mcp_client(backend_name: str):
+        """Create a CodexMCPClient."""
+        return CodexMCPClient(model_name=models.get(backend_name, "codex-mcp"), enable_graphrag=enable_graphrag)
+
+    # Mapping of backend types to factory functions
+    backend_type_factories = {
+        "qwen": _create_qwen_client,
+        "gemini": _create_gemini_client,
+        "claude": _create_claude_client,
+        "auggie": _create_auggie_client,
+        "codex": _create_codex_client,
+        "codex-mcp": _create_codex_mcp_client,
     }
 
-    missing_factories = [name for name in selected_backends if name not in factories_all]
-    if missing_factories:
-        raise click.ClickException(f"Unsupported backend(s) specified: {', '.join(missing_factories)}")
+    # Build factory dictionary with support for aliases
+    selected_factories = {}
+    for backend_name in selected_backends:
+        # Check if it's a direct match first
+        if backend_name in ["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]:
+            # Use the appropriate factory based on backend name
+            if backend_name == "codex":
+                selected_factories[backend_name] = lambda bn=backend_name: _create_codex_client(bn)
+            elif backend_name == "codex-mcp":
+                selected_factories[backend_name] = lambda bn=backend_name: _create_codex_mcp_client(bn)
+            elif backend_name == "gemini":
+                selected_factories[backend_name] = lambda bn=backend_name: _create_gemini_client(bn)
+            elif backend_name == "qwen":
+                selected_factories[backend_name] = lambda bn=backend_name: _create_qwen_client(bn)
+            elif backend_name == "auggie":
+                selected_factories[backend_name] = lambda bn=backend_name: _create_auggie_client(bn)
+            elif backend_name == "claude":
+                selected_factories[backend_name] = lambda bn=backend_name: _create_claude_client(bn)
+        else:
+            # Check if it's an alias (custom backend name)
+            backend_config = config.get_backend_config(backend_name)
+            if not backend_config:
+                raise click.ClickException(f"Backend '{backend_name}' not found in configuration")
 
-    default_client = factories_all[primary_backend]()
-    selected_factories = {name: factories_all[name] for name in selected_backends}
+            # Get the backend type from config
+            backend_type = backend_config.backend_type
+            if not backend_type:
+                raise click.ClickException(f"Backend '{backend_name}' does not have a 'backend_type' specified in configuration")
+
+            # Check if the backend type has a factory
+            if backend_type not in backend_type_factories:
+                raise click.ClickException(f"Backend type '{backend_type}' (for alias '{backend_name}') is not supported")
+
+            # Create factory for this alias
+            factory_func = backend_type_factories[backend_type]
+            selected_factories[backend_name] = lambda bn=backend_name, ff=factory_func: ff(bn)
+
+    # Create default client
+    if primary_backend not in selected_factories:
+        raise click.ClickException(f"Primary backend '{primary_backend}' is not in selected backends")
+    default_client = selected_factories[primary_backend]()
 
     return BackendManager(
         default_backend=primary_backend,
