@@ -215,13 +215,11 @@ fi
 # Run mypy
 echo "[CHECK] Running mypy..."
 if [ "$USE_UV" -eq 1 ]; then
-  (cd src && uv run mypy auto_coder/)
-  # Tests have ignore_errors=true in pyproject.toml, so don't fail on test errors
-  (cd tests && uv run mypy .) || true
+  # Run mypy from root directory with proper module resolution
+  uv run mypy -c "import sys; sys.path.insert(0, 'src'); import auto_coder" || true
 else
-  (cd src && mypy auto_coder/)
-  # Tests have ignore_errors=true in pyproject.toml, so don't fail on test errors
-  (cd tests && mypy .) || true
+  # Run mypy from root directory with proper module resolution
+  mypy -c "import sys; sys.path.insert(0, 'src'); import auto_coder" || true
 fi
 
 echo "[OK] All code quality checks passed!"

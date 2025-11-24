@@ -8,10 +8,20 @@ dprint formatting issues, and upstream branch setup.
 
 from typing import Any, Dict, Optional
 
-from .git_branch import try_llm_commit_push
 from .git_info import check_unpushed_commits
 from .logger_config import get_logger
 from .utils import CommandExecutor, CommandResult
+
+# Re-export CommandExecutor and CommandResult for test compatibility
+__all__ = [
+    "CommandExecutor",
+    "CommandResult",
+    # Function names
+    "commit_and_push_changes",
+    "ensure_pushed",
+    "git_push",
+    "save_commit_failure_history",
+]
 
 logger = get_logger(__name__)
 
@@ -403,6 +413,8 @@ def commit_and_push_changes(
             return f"Failed to commit and push changes: {push_result.stderr}"
     else:
         logger.info("Attempting to resolve commit failure using LLM...")
+        from .git_branch import try_llm_commit_push
+
         llm_success = try_llm_commit_push(
             summary,
             commit_result.stderr,

@@ -1,0 +1,60 @@
+# Client Features Documentation
+
+This file documents the client-facing features and tools provided by auto-coder.
+
+## GraphRAG MCP Server (Customized Fork)
+
+Since auto-coder v2025.10.23, a customized GraphRAG MCP server is bundled with the package. This fork of [rileylemm/graphrag_mcp](https://github.com/rileylemm/graphrag_mcp) has been specialized for code analysis.
+
+### Location
+
+- **Source**: mcp/graphrag_mcp/
+- **Documentation**: `docs/BUNDLED_MCP_SERVER.md`
+- **Fork Info**: `src/auto_coder/mcp_servers/graphrag_mcp/FORK_INFO.md`
+
+### Purpose
+
+This fork provides specialized TypeScript/JavaScript code analysis capabilities using TypeScript code structure indexed by ts-morph, replacing the original documentation search functionality.
+
+### Key Modifications from Original
+
+1. **Specialized for Code Analysis**: Changed from generic documentation search to TypeScript/JavaScript code structure analysis
+2. **Custom Graph Schema**: Adapted to work with ts-morph generated graph structure with node types like `File`, `Function`, `Method`, `Class`, `Interface`, and relationship types like `CONTAINS`, `CALLS`, `EXTENDS`, `IMPLEMENTS`, `IMPORTS`
+3. **Code-Specific Tools**: Replaced original `search_documentation` and `hybrid_search` with code analysis tools
+
+### Available Tools
+
+The following code analysis tools are available through the MCP server:
+
+#### find_symbol
+Find code symbols by fully qualified name in the codebase.
+
+#### get_call_graph
+Analyze function/method call relationships to understand code flow.
+
+#### get_dependencies
+Analyze file dependencies to understand project structure.
+
+#### impact_analysis
+Analyze change impact across the codebase to understand how a change might affect other parts of the system.
+
+#### semantic_code_search
+Search for code using semantic understanding rather than just text matching.
+
+### Setup
+
+The MCP server is automatically set up when running:
+
+```bash
+auto-coder graphrag setup-mcp
+```
+
+This command copies the bundled server from `src/auto_coder/mcp_servers/graphrag_mcp/` to `~/graphrag_mcp/` and starts the Docker container.
+
+### Usage
+
+After setup, the tools can be accessed through the auto-coder CLI when the MCP server is running.
+
+### Fork Attribution
+
+This fork maintains full attribution to the original author Riley Lemm. The original repository is https://github.com/rileylemm/graphrag_mcp and uses the MIT License.

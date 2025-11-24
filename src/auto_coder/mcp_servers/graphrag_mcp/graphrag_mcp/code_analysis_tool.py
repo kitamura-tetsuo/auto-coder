@@ -100,7 +100,7 @@ class CodeAnalysisTool:
         Returns:
             Symbol details including id, kind, signature, complexity, location
         """
-        result = {"fqname": fqname, "symbol": None, "error": None}
+        result: Dict[str, Any] = {"fqname": fqname, "symbol": None, "error": None}
 
         try:
             self._ensure_connected()
@@ -171,7 +171,7 @@ class CodeAnalysisTool:
         Returns:
             Call graph with nodes and edges
         """
-        result = {
+        result: Dict[str, Any] = {
             "symbol_id": symbol_id,
             "direction": direction,
             "depth": depth,
@@ -271,7 +271,7 @@ class CodeAnalysisTool:
         Returns:
             List of imported files and symbols
         """
-        result = {"file": file_path, "imports": [], "imported_by": [], "error": None}
+        result: Dict[str, Any] = {"file": file_path, "imports": [], "imported_by": [], "error": None}
 
         try:
             self._ensure_connected()
@@ -334,7 +334,7 @@ class CodeAnalysisTool:
         Returns:
             Impact analysis including affected symbols, files, and relationships
         """
-        result = {
+        result: Dict[str, Any] = {
             "analyzed_symbols": symbol_ids,
             "max_depth": max_depth,
             "affected_symbols": [],
@@ -443,7 +443,7 @@ class CodeAnalysisTool:
         Returns:
             Semantically similar code symbols with scores
         """
-        result = {"query": query, "symbols": [], "error": None}
+        result: Dict[str, Any] = {"query": query, "symbols": [], "error": None}
 
         try:
             self._ensure_connected()
@@ -521,7 +521,7 @@ class CodeAnalysisTool:
         Returns:
             Semantically similar code symbols with scores
         """
-        result = {"query": query, "symbols": [], "error": None}
+        result: Dict[str, Any] = {"query": query, "symbols": [], "error": None}
 
         try:
             self._ensure_connected()

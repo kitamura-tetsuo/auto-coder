@@ -7,7 +7,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from scanner.python_scanner import CodeEdge, CodeNode, GraphData
 
@@ -79,7 +79,7 @@ def emit_csv(data: GraphData, output_dir: str) -> None:
     print(f"Wrote {len(data.edges)} edges to {rels_path}")
 
 
-def emit_json(data: GraphData, output_dir: str, timestamp: str = None) -> None:
+def emit_json(data: GraphData, output_dir: str, timestamp: Optional[str] = None) -> None:
     """Emit graph data as JSON batch file"""
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -127,7 +127,7 @@ def emit_json(data: GraphData, output_dir: str, timestamp: str = None) -> None:
 
 
 def emit_diff_json(
-    diff_data: Dict[str, Any], output_dir: str, commit: str = None
+    diff_data: Dict[str, Any], output_dir: str, commit: Optional[str] = None
 ) -> None:
     """Emit diff data as JSON file"""
     output_path = Path(output_dir)

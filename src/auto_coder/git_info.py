@@ -19,6 +19,18 @@ except ImportError:
 from .logger_config import get_logger
 from .utils import CommandExecutor
 
+# Re-export CommandExecutor for test compatibility
+__all__ = [
+    "CommandExecutor",
+    # Function names
+    "check_unpushed_commits",
+    "get_commit_log",
+    "get_current_branch",
+    "get_current_repo_name",
+    "is_git_repository",
+    "parse_github_repo_from_url",
+]
+
 logger = get_logger(__name__)
 
 

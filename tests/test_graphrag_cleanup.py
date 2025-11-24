@@ -8,7 +8,7 @@ from typing import List
 import pytest
 from click.testing import CliRunner
 
-from src.auto_coder.cli_commands_graphrag import graphrag_group
+from auto_coder.cli_commands_graphrag import graphrag_group
 from src.auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
 

@@ -18,6 +18,27 @@ from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor, CommandResult
 
+# Re-export CommandExecutor and CommandResult for test compatibility
+__all__ = [
+    "CommandExecutor",
+    "CommandResult",
+    # Function names
+    "branch_context",
+    "branch_exists",
+    "extract_number_from_branch",
+    "get_all_branches",
+    "get_branches_by_pattern",
+    "git_checkout_branch",
+    "git_commit_with_retry",
+    "git_pull",
+    "migrate_pr_branches",
+    "resolve_pull_conflicts",
+    "switch_to_branch",
+    "try_llm_commit_push",
+    "try_llm_dprint_fallback",
+    "validate_branch_name",
+]
+
 logger = get_logger(__name__)
 
 

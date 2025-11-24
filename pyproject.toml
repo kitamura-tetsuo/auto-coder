@@ -204,10 +204,29 @@ module = [
 ]
 ignore_errors = true
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+norecursedirs = [
+    ".*",
+    "build",
+    "dist",
+    "CVS",
+    "_darcs",
+    "{arch}",
+    "*.egg",
+    "venv",
+    "env",
+    "utils",
+]
+
 [dependency-groups]
 dev = [
     "black>=25.9.0",
     "isort>=5.0.0",
     "flake8>=6.0.0",
     "types-toml>=0.10.8.20240310",
+    "types-pyyaml>=6.0.12.20250915",
 ]

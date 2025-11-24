@@ -187,7 +187,7 @@ def impact_analysis(symbol_ids: list, session_id: str, max_depth: int = 2) -> di
 
 
 @mcp.tool()
-def semantic_code_search(query: str, session_id: str, limit: int = 10, kind_filter: list = None) -> dict:
+def semantic_code_search(query: str, session_id: str, limit: int = 10, kind_filter: Optional[list] = None) -> dict:
     """Semantic search with repository isolation.
 
     This tool uses vector embeddings to find code symbols that are semantically
