@@ -55,6 +55,7 @@ class QwenClient(LLMClientBase):
         openai_base_url: Optional[str] = None,
         use_env_vars: bool = True,
         preserve_existing_env: bool = False,
+        options: Optional[List[str]] = None,
     ) -> None:
         """Initialize QwenClient.
 
@@ -66,6 +67,7 @@ class QwenClient(LLMClientBase):
                          If False, use command-line options (default: True)
             preserve_existing_env: If True, preserve existing OPENAI_* env vars.
                                   If False, clear them before setting new values (default: False)
+            options: Additional options to pass to the CLI tool (e.g., ["-o", "yolo", "true"])
         """
         config = get_llm_config()
         config_backend = config.get_backend_config("qwen")
@@ -81,6 +83,8 @@ class QwenClient(LLMClientBase):
         self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url) or os.environ.get("OPENAI_BASE_URL")
         self.use_env_vars = use_env_vars
         self.preserve_existing_env = preserve_existing_env
+        # Store options for CLI commands
+        self.options = options or []
 
         # Provider management is now handled by BackendProviderManager via BackendManager
         # For backward compatibility, also support old-style provider config
@@ -225,6 +229,10 @@ class QwenClient(LLMClientBase):
         if model_to_use:
             cmd.extend(["-c", f'model="{model_to_use}"'])
 
+        # Add custom options from configuration
+        if self.options:
+            cmd.extend(self.options)
+
         # Set API key and base URL via environment variables
         if api_key:
             env["OPENAI_API_KEY"] = api_key
@@ -249,6 +257,10 @@ class QwenClient(LLMClientBase):
             env.pop("OPENAI_MODEL", None)
 
         cmd = ["qwen", "-y"]
+
+        # Add custom options from configuration
+        if self.options:
+            cmd.extend(self.options)
 
         if self.use_env_vars:
             # Pass credentials via environment variables
