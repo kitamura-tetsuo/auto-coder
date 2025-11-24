@@ -69,7 +69,7 @@ def main(ctx: click.Context, force: bool) -> None:
         invoked_cmd = ctx.invoked_subcommand if hasattr(ctx, "invoked_subcommand") else None
 
         # Skip lock check for read-only commands
-        read_only_commands = ["config", "auth-status", "unlock"]
+        read_only_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb"]
         is_unlock = invoked_cmd == "unlock" or "unlock" in sys.argv
 
         if not (invoked_cmd in read_only_commands or has_help_flag or is_unlock):
