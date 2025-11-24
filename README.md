@@ -239,6 +239,38 @@ Behavior Specification:
 - For each failure, extracts important parts from error output and asks LLM for minimal fixes.
 - After fixes, stages and commits. Stops with error if there are no changes at all (`nothing to commit`).
 
+#### Lock Management Commands
+
+Auto-Coder includes a lock mechanism to prevent concurrent executions that could cause conflicts or data corruption. When you run an auto-coder command, it automatically acquires a lock to ensure only one instance is running at a time.
+
+**Automatic Lock Behavior:**
+- Auto-Coder automatically acquires a lock before executing any command (except read-only commands like `config` and `unlock`)
+- If another instance is already running, you'll see an error message with lock information
+- The lock is automatically released when the command completes
+- Lock files are stored in the `.git` directory of your repository
+
+**Manual Lock Control:**
+
+```bash
+# Remove a lock file (use when you know the process has terminated)
+auto-coder lock unlock
+
+# Force remove a lock file (use with caution - only if the process is not running)
+auto-coder lock unlock --force
+```
+
+**Lock Information:**
+When a lock is detected, Auto-Coder displays:
+- Process ID (PID) of the running instance
+- Hostname where the process is running
+- Start time of the process
+- Status (running or stale)
+
+If the status shows "stale lock" (the process is no longer running), you can safely remove the lock with `auto-coder lock unlock`. The `--force` flag should only be used if you're certain the process isn't running or if you need to override a lock for emergency recovery.
+
+**Stale Lock Detection:**
+Auto-Coder detects stale locks by checking if the process associated with the lock is still active. If the process has terminated but left behind a lock file, you can remove it without the `--force` flag. The system will automatically detect that the process is no longer running.
+
 ## Configuration
 
 ### Configuration File (TOML)

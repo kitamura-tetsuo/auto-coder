@@ -1,0 +1,134 @@
+"""
+Tests for the LockManager class.
+"""
+
+import json
+import os
+import platform
+import subprocess
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from src.auto_coder.lock_manager import LockInfo, LockManager
+
+
+class TestLockInfo:
+    """Test cases for the LockInfo class."""
+
+    def test_lock_info_creation(self):
+        """Test creating LockInfo with required parameters."""
+        lock_info = LockInfo(pid=12345, hostname="test-host", started_at="2024-01-01T00:00:00")
+        assert lock_info.pid == 12345
+        assert lock_info.hostname == "test-host"
+        assert lock_info.started_at == "2024-01-01T00:00:00"
+
+    def test_lock_info_from_dict(self):
+        """Test creating LockInfo from dictionary."""
+        data = {"pid": 54321, "hostname": "another-host", "started_at": "2024-12-31T23:59:59"}
+        lock_info = LockInfo.from_dict(data)
+        assert lock_info.pid == 54321
+        assert lock_info.hostname == "another-host"
+        assert lock_info.started_at == "2024-12-31T23:59:59"
+
+    def test_lock_info_to_dict(self):
+        """Test converting LockInfo to dictionary."""
+        lock_info = LockInfo(pid=99999, hostname="test-machine", started_at="2024-06-15T12:30:45")
+        result = lock_info.to_dict()
+        assert result == {"pid": 99999, "hostname": "test-machine", "started_at": "2024-06-15T12:30:45"}
+
+
+class TestLockManager:
+    """Test cases for the LockManager class."""
+
+    def test_lock_info_basic_functionality(self):
+        """Test basic LockInfo operations."""
+        # Create LockInfo
+        lock_info = LockInfo(pid=12345, hostname="test-host", started_at="2024-01-01T00:00:00")
+
+        # Test to_dict
+        data = lock_info.to_dict()
+        assert data["pid"] == 12345
+        assert data["hostname"] == "test-host"
+        assert data["started_at"] == "2024-01-01T00:00:00"
+
+        # Test from_dict
+        lock_info2 = LockInfo.from_dict(data)
+        assert lock_info2.pid == 12345
+        assert lock_info2.hostname == "test-host"
+        assert lock_info2.started_at == "2024-01-01T00:00:00"
+
+    def test_lock_manager_creation(self):
+        """Test LockManager can be created."""
+        lock_manager = LockManager()
+        assert lock_manager is not None
+
+    @pytest.mark.skipif(platform.system() == "Windows", reason="Unix-specific test")
+    def test_is_process_running_unix(self):
+        """Test _is_process_running on Unix systems."""
+        lock_manager = LockManager()
+
+        # Test with non-existent process (use a very large PID that won't exist)
+        assert lock_manager._is_process_running(99999999) is False
+
+        # Test with current process (should exist)
+        current_pid = os.getpid()
+        assert lock_manager._is_process_running(current_pid) is True
+
+    @pytest.mark.skipif(platform.system() != "Windows", reason="Windows-specific test")
+    def test_is_process_running_windows(self):
+        """Test _is_process_running on Windows systems."""
+        lock_manager = LockManager()
+
+        # Test with non-existent process (use a very large PID that won't exist)
+        assert lock_manager._is_process_running(99999999) is False
+
+        # Test with current process (should exist)
+        current_pid = os.getpid()
+        assert lock_manager._is_process_running(current_pid) is True
+
+
+class TestLockCLI:
+    """Integration tests for CLI lock commands."""
+
+    def test_lock_group_help(self):
+        """Test the help output for the 'lock' command group."""
+        from click.testing import CliRunner
+
+        from src.auto_coder.cli import main
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["lock", "--help"])
+        assert result.exit_code == 0
+        assert "Lock management commands" in result.output
+        assert "unlock" in result.output
+
+    def test_unlock_no_lock_file(self):
+        """Test unlock command when no lock file exists."""
+        from click.testing import CliRunner
+
+        from src.auto_coder.cli import main
+
+        runner = CliRunner()
+        with runner.isolated_filesystem():
+            # Not in a git repo, so no lock file should exist
+            result = runner.invoke(main, ["lock", "unlock"])
+            assert result.exit_code == 0
+            assert "No lock file found" in result.output
+
+    def test_lock_unlock_commands_exist(self):
+        """Test that lock and unlock commands are properly registered."""
+        from click.testing import CliRunner
+
+        from src.auto_coder.cli import main
+
+        runner = CliRunner()
+
+        # Test lock command exists
+        result = runner.invoke(main, ["lock", "--help"])
+        assert result.exit_code == 0
+
+        # Test unlock subcommand exists
+        result = runner.invoke(main, ["lock", "unlock", "--help"])
+        assert result.exit_code == 0
