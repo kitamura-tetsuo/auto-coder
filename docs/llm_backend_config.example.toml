@@ -51,6 +51,8 @@ base_url = "https://generativelanguage.googleapis.com"
 # Optional retry configuration for usage limits
 usage_limit_retry_count = 3
 usage_limit_retry_wait_seconds = 30
+# Rotate to the next backend after every successful call to stay under strict execution limits
+always_switch_after_execution = true
 
 # Gemini doesn't support custom options in the same way as qwen
 # Options field is mainly used for qwen backend

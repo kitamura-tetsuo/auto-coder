@@ -80,6 +80,7 @@ The auto-coder system supports multiple LLM backends:
       use_cases:
         - "Distribute traffic evenly across providers"
         - "Avoid soft per-backend limits by rotating proactively"
+        - "Comply with backends that only permit a single execution per window"
       example:
         toml_example: |
           [backend]

@@ -398,7 +398,7 @@ Adjust these values based on your usage patterns and the specific rate limits of
 
 ### Post-Execution Backend Rotation
 
-Enable `always_switch_after_execution` on individual backends to rotate to the next backend in `backend.order` after every successful run. This is useful when you want round-robin usage across providers (for example, to spread traffic or avoid hitting soft limits) instead of sticking to the same backend until a failure occurs.
+Enable `always_switch_after_execution` on individual backends to rotate to the next backend in `backend.order` after every successful run. This is useful when you want round-robin usage across providers (for example, to spread traffic, avoid hitting soft limits, or comply with single-execution quotas) instead of sticking to the same backend until a failure occurs.
 
 Example:
 

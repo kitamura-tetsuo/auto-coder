@@ -422,3 +422,42 @@ def test_get_last_backend_reflects_rotation(mock_llm_config):
     assert model == "model-b"
     # After execution, should be on backend_a (circular)
     assert mgr._current_backend_name() == "backend_a"
+
+
+def test_rotation_respects_toml_config(tmp_path):
+    """Ensure always_switch_after_execution loaded from TOML triggers rotation."""
+    config_path = tmp_path / "llm_config.toml"
+    file_config = LLMBackendConfiguration(
+        backend_order=["first", "second"],
+        default_backend="first",
+        backends={
+            "first": BackendConfig(name="first", always_switch_after_execution=True),
+            "second": BackendConfig(name="second", always_switch_after_execution=False),
+        },
+    )
+    file_config.save_to_file(config_path)
+    loaded_config = LLMBackendConfiguration.load_from_file(str(config_path))
+
+    calls: list[str] = []
+    client_first = DummyClient("first", "m1", calls)
+    client_second = DummyClient("second", "m2", calls)
+
+    with patch("src.auto_coder.backend_manager.get_llm_config", return_value=loaded_config):
+        mgr = BackendManager(
+            default_backend="first",
+            default_client=client_first,
+            factories={"first": lambda: client_first, "second": lambda: client_second},
+            order=["first", "second"],
+        )
+
+        # First call uses first backend and rotates to second because flag is true
+        result_first = mgr._run_llm_cli("hello")
+        assert result_first == "first:hello"
+        assert calls == ["first"]
+        assert mgr._current_backend_name() == "second"
+
+        # Second backend keeps running because its flag is false
+        result_second = mgr._run_llm_cli("world")
+        assert result_second == "second:world"
+        assert calls == ["first", "second"]
+        assert mgr._current_backend_name() == "second"
