@@ -219,6 +219,31 @@ features:
       message_backend: "Separate singleton instance for message generation (commit messages, PR messages)"
       usage: "Access via get_llm_backend_manager() and get_message_backend_manager() for different use cases"
       provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
+  retry_configuration:
+      description: "Configurable retry mechanism for LLM backends when usage limits are hit"
+      fields:
+        - name: "usage_limit_retry_count"
+          type: "int"
+          default: 0
+          purpose: "Number of retry attempts before switching to next backend"
+        - name: "usage_limit_retry_wait_seconds"
+          type: "int"
+          default: 0
+          purpose: "Seconds to wait between retry attempts"
+      behavior:
+        - "When AutoCoderUsageLimitError is caught, backend manager checks retry configuration"
+        - "Retries the same backend up to configured count with specified wait time between attempts"
+        - "After retries are exhausted, rotates to next available backend"
+        - "Default behavior (0 retries, 0 wait) maintains backward compatibility with immediate rotation"
+      example:
+        toml_example: |
+          [backends.gemini]
+          enabled = true
+          model = "gemini-2.5-pro"
+          usage_limit_retry_count = 3
+          usage_limit_retry_wait_seconds = 30
+      configuration_file: "~/.auto-coder/llm_config.toml"
+      scope: "Per-backend configuration allows different backends to have different retry policies"
   graphrag_integration:
     auto_setup: true
     mcp_config_check: true
