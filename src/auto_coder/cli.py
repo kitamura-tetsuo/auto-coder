@@ -120,7 +120,6 @@ def main(ctx: click.Context, force: bool) -> None:
 
 def _cleanup_lock() -> None:
     """Release the lock file on program exit."""
-    global _lock_manager
     if _lock_manager is not None:
         _lock_manager.release_lock()
 
