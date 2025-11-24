@@ -38,6 +38,7 @@ class TestBackendConfig:
         assert config.usage_limit_retry_wait_seconds == 0
         assert config.options == []
         assert config.backend_type is None
+        assert config.always_switch_after_execution is False
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -58,6 +59,7 @@ class TestBackendConfig:
             usage_limit_retry_wait_seconds=30,
             options=["option1", "option2"],
             backend_type="custom_type",
+            always_switch_after_execution=True,
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -75,6 +77,7 @@ class TestBackendConfig:
         assert config.usage_limit_retry_wait_seconds == 30
         assert config.options == ["option1", "option2"]
         assert config.backend_type == "custom_type"
+        assert config.always_switch_after_execution is True
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -496,6 +499,29 @@ class TestLLMBackendConfiguration:
             assert qwen_config.options == ["option3"]
             assert qwen_config.backend_type == "another_type"
 
+    def test_toml_save_and_load_always_switch_after_execution(self):
+        """Test that always_switch_after_execution field is properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_always_switch.toml"
+
+            # Create configuration with always_switch_after_execution settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").always_switch_after_execution = True
+            config.get_backend_config("qwen").always_switch_after_execution = False
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify always_switch_after_execution field was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.always_switch_after_execution is True
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.always_switch_after_execution is False
+
     def test_backward_compatibility_old_toml_without_retry_fields(self):
         """Test loading old TOML files that don't have retry configuration fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -572,6 +598,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config is not None
             assert qwen_config.options == []
             assert qwen_config.backend_type is None
+            assert qwen_config.always_switch_after_execution is False
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
@@ -579,6 +606,7 @@ class TestLLMBackendConfiguration:
             assert gemini_config is not None
             assert gemini_config.options == []
             assert gemini_config.backend_type is None
+            assert gemini_config.always_switch_after_execution is False
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
 
