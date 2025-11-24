@@ -12,7 +12,11 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.util.github_action import _get_github_actions_logs, _search_github_actions_logs_from_history
+from src.auto_coder.util.github_action import (
+    _get_github_actions_logs,
+    _get_jobs_for_run_filtered_by_pr_number,
+    _search_github_actions_logs_from_history,
+)
 
 
 class TestSearchGitHubActionsLogsFromHistory:
@@ -80,6 +84,11 @@ class TestSearchGitHubActionsLogsFromHistory:
                 mock_get_logs.return_value = "=== Job test-job (5001) ===\nTest failed with error"
 
                 result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
+
+                # Ensure the job lookup is scoped to the repository
+                job_view_command = mock_cmd.call_args_list[1].args[0]
+                assert "-R" in job_view_command
+                assert "test/repo" in job_view_command
 
                 assert result is not None
                 assert "test-job" in result
@@ -363,6 +372,36 @@ class TestSearchGitHubActionsLogsFromHistory:
 
                 # Should return None when no detailed logs are available
                 assert result is None
+
+    def test_get_jobs_for_run_passes_repo_to_gh(self):
+        """Ensure job retrieval uses repository scoping."""
+        repo_name = "test/repo"
+        run_id = 1234
+        jobs_payload = {
+            "jobs": [
+                {"databaseId": 10, "name": "test-job", "conclusion": "success"},
+            ],
+            "pullRequests": [{"number": 5}],
+        }
+
+        mock_logger = Mock()
+        mock_logger.execute_with_logging.return_value = Mock(
+            returncode=0,
+            stdout=json.dumps(jobs_payload),
+            stderr="",
+            success=True,
+        )
+
+        with patch("src.auto_coder.util.github_action.get_gh_logger", return_value=mock_logger):
+            jobs = _get_jobs_for_run_filtered_by_pr_number(run_id, pr_number=5, repo_name=repo_name)
+
+        mock_logger.execute_with_logging.assert_called_once()
+        command_args, command_kwargs = mock_logger.execute_with_logging.call_args
+
+        assert "-R" in command_args[0]
+        assert repo_name in command_args[0]
+        assert command_kwargs.get("repo") == repo_name
+        assert jobs == jobs_payload["jobs"]
 
 
 class TestGetGitHubActionsLogs:
