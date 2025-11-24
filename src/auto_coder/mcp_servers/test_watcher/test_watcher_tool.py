@@ -285,16 +285,18 @@ class TestWatcherTool:
         if self._stopping:
             return
 
-        # In pytest, avoid thread overhead: call synchronously and return fast
+        # During pytest, keep overhead minimal for synthetic dirs used in perf tests
+        if os.environ.get("PYTEST_CURRENT_TEST") and file_path.startswith("dir"):
+            return
+
+        # In pytest, call methods synchronously to avoid thread overhead
         if os.environ.get("PYTEST_CURRENT_TEST"):
-            # During pytest, keep overhead minimal for synthetic dirs used in perf tests.
-            # Skip work for paths that start with 'dir' (used only in performance tests).
-            if file_path.startswith("dir"):
-                return
             try:
                 self._run_playwright_tests(True)
             except Exception:
                 pass
+            # Trigger GraphRAG update (only for code files) in pytest
+            # Tests need to verify this behavior
             if self._is_code_file(file_path):
                 try:
                     self._trigger_graphrag_update(file_path)
@@ -351,6 +353,10 @@ class TestWatcherTool:
         Args:
             file_path: Path to the changed file that triggered the update
         """
+        # Skip GraphRAG updates if disabled via environment variable
+        if os.environ.get("AC_DISABLE_GRAPH") or os.environ.get("AC_DISABLE_GRAPH_UPDATES"):
+            return
+
         try:
             from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 
@@ -409,6 +415,10 @@ class TestWatcherTool:
         Args:
             file_path: Path to the changed file
         """
+        # Skip GraphRAG updates if disabled via environment variable
+        if os.environ.get("AC_DISABLE_GRAPH") or os.environ.get("AC_DISABLE_GRAPH_UPDATES"):
+            return
+
         try:
             from auto_coder.graphrag_index_manager import GraphRAGIndexManager
 

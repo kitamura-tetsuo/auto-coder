@@ -146,6 +146,7 @@ class AutomationConfig:
         object.__setattr__(self, "MAX_FIX_ATTEMPTS", 30)
         object.__setattr__(self, "MAIN_BRANCH", "main")
         object.__setattr__(self, "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL", True)
+        object.__setattr__(self, "ENABLE_MERGEABILITY_REMEDIATION", False)
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)
@@ -453,6 +454,9 @@ class AutomationConfig:
     # This changes previous behavior to default-skipping
     # to reduce noisy rebases.
     SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: bool = True
+    # Enable mergeability remediation flow.
+    # Default: True (automatically handle non-mergeable PRs)
+    ENABLE_MERGEABILITY_REMEDIATION: bool = True
 
     # Skip dependency-bot PRs (Dependabot/Renovate/[bot]) for fix flows.
     # Green, mergeable dependency-bot PRs are still auto-merge candidates.

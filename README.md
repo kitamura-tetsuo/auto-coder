@@ -10,12 +10,35 @@ A Python application that automates application development using an AI CLI back
 - **Automated Processing**: Automatic actions based on analysis results
 - **Feature Proposals**: Automatic proposal of new features from repository analysis
 - **Report Generation**: Detailed reports of processing results
+- **PR Mergeability Handling**: Automated detection and remediation of non-mergeable PRs through base branch updates and intelligent conflict resolution
 
 ### 🚀 Automated Workflow
 1. **Issue Processing**: Retrieve open issues and analyze with Gemini AI
 2. **PR Processing**: Retrieve open PRs and evaluate risk levels
 3. **Feature Proposals**: Propose new features from repository context
 4. **Automatic Actions**: Add comments or auto-close based on analysis results
+
+### 🔄 PR Mergeability Handling
+
+Auto-Coder includes intelligent handling for PRs that are not immediately mergeable. When a PR is detected as non-mergeable, the system can automatically:
+
+1. **Detect and Analyze**: Checks PR mergeability status and merge state (CLEAN, DIRTY, UNKNOWN)
+2. **Checkout PR Branch**: Switches to the PR branch for local processing
+3. **Update from Base**: Fetches and merges the latest changes from the base branch
+4. **Resolve Conflicts**: Uses specialized handlers for different conflict types:
+   - **Package-lock conflicts**: Automatically deletes and regenerates lock files (package-lock.json, yarn.lock, pnpm-lock.yaml)
+   - **Package.json dependency conflicts**: Intelligently merges dependency sections, preferring newer versions
+   - **General conflicts**: Uses LLM to resolve remaining conflicts with context
+5. **Push Changes**: Commits and pushes the updated branch with automatic retry logic
+6. **Signal Completion**: Sets `ACTION_FLAG:SKIP_ANALYSIS` marker after successful remediation
+
+This feature is controlled by the `ENABLE_MERGEABILITY_REMEDIATION` configuration flag. When enabled, non-mergeable PRs are automatically remediated without manual intervention.
+
+**Related Configuration:**
+- `ENABLE_MERGEABILITY_REMEDIATION` (default: false) - Enables automatic remediation
+- `SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL` (default: true) - Controls base branch updates during fix flows
+
+See [docs/client-features.yaml](docs/client-features.yaml) for complete technical documentation.
 
 ### 📊 Logging and Monitoring
 - **Structured JSON Logs**: All LLM interactions are logged in JSON Lines format at `~/.auto-coder/logs/llm_output.jsonl`

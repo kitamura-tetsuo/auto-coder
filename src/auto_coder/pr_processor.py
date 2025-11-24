@@ -151,6 +151,129 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
     return False
 
 
+def _get_mergeable_state(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    _config: AutomationConfig,
+) -> Dict[str, Optional[Any]]:
+    """Get latest mergeable state using existing data with optional refresh."""
+    mergeable = pr_data.get("mergeable")
+    merge_state_status = pr_data.get("mergeStateStatus")
+
+    # Refresh mergeability only when value is unknown
+    if mergeable is None:
+        try:
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
+                [
+                    "gh",
+                    "pr",
+                    "view",
+                    str(pr_data.get("number", "")),
+                    "--repo",
+                    repo_name,
+                    "--json",
+                    "mergeable,mergeStateStatus",
+                ],
+                repo=repo_name,
+                capture_output=True,
+            )
+            if result.success and result.stdout:  # type: ignore[attr-defined]
+                latest = json.loads(result.stdout)
+                mergeable = latest.get("mergeable", mergeable)
+                merge_state_status = latest.get("mergeStateStatus", merge_state_status)
+        except Exception:
+            logger.debug("Unable to refresh mergeable state for PR #%s", pr_data.get("number"))
+
+    return {"mergeable": mergeable, "merge_state_status": merge_state_status}
+
+
+def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional[str]) -> List[str]:
+    """Implement mergeability remediation flow for non-mergeable PRs.
+
+    This function handles the end-to-end flow for non-mergeable PRs:
+    1. Get PR details and determine the base branch
+    2. Checkout the PR branch
+    3. Update from the base branch
+    4. Resolve conflicts using existing helpers (including package-lock handling)
+    5. Push the updated branch
+    6. Mark PR as processed once push succeeds (via ACTION_FLAG:SKIP_ANALYSIS)
+
+    Args:
+        pr_number: PR number
+        merge_state_status: Current merge state status from GitHub
+
+    Returns:
+        List of action strings describing what was done
+    """
+    actions = []
+    state_text = merge_state_status or "unknown"
+
+    try:
+        log_action(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
+        actions.append(f"Starting mergeability remediation for PR #{pr_number} (state: {state_text})")
+
+        # Step 1: Get PR details to determine the base branch
+        gh_logger = get_gh_logger()
+        pr_details_result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--json", "base"],
+            capture_output=True,
+        )
+
+        if not pr_details_result.success:  # type: ignore[attr-defined]
+            error_msg = f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}"
+            actions.append(error_msg)
+            log_action(error_msg, False)
+            return actions
+
+        try:
+            pr_data = json.loads(pr_details_result.stdout)
+            base_branch = pr_data.get("base", {}).get("ref", "main")
+        except Exception:
+            base_branch = "main"
+
+        actions.append(f"Determined base branch for PR #{pr_number}: {base_branch}")
+
+        # Step 2: Checkout the PR branch
+        # Create minimal PR data for checkout function
+        pr_data_for_checkout = {"number": pr_number, "head": {"ref": f"pr-{pr_number}"}}
+        checkout_success = _checkout_pr_branch("", pr_data_for_checkout, AutomationConfig())
+
+        if not checkout_success:
+            error_msg = f"Failed to checkout PR #{pr_number} branch"
+            actions.append(error_msg)
+            log_action(error_msg, False)
+            return actions
+
+        actions.append(f"Checked out PR #{pr_number} branch")
+
+        # Step 3: Update from base branch with conflict resolution
+        # The _update_with_base_branch function includes:
+        # - Fetching latest changes
+        # - Merging base branch
+        # - Using _perform_base_branch_merge_and_conflict_resolution for conflicts
+        # - Pushing updated branch with retry
+        update_actions = _update_with_base_branch("", {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
+        actions.extend(update_actions)
+
+        # Step 4: Verify successful remediation
+        # If push succeeded, the action flag will be set
+        if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
+            actions.append(f"Mergeability remediation completed for PR #{pr_number}")
+            actions.append("ACTION_FLAG:SKIP_ANALYSIS")
+        elif "Failed" in str(update_actions):
+            # Remediation attempted but failed
+            actions.append(f"Mergeability remediation failed for PR #{pr_number}")
+
+    except Exception as e:
+        error_msg = f"Error during mergeability remediation for PR #{pr_number}: {str(e)}"
+        logger.error(error_msg)
+        actions.append(error_msg)
+        log_action(error_msg, False)
+
+    return actions
+
+
 def _process_pr_for_merge(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -475,6 +598,19 @@ def _handle_pr_merge(
             item_number=pr_number,
             item_type="PR",
         )  # Not needed for this check
+
+        mergeability = _get_mergeable_state(repo_name, pr_data, config)
+        mergeable_flag = mergeability.get("mergeable")
+        merge_state_status = mergeability.get("merge_state_status")
+
+        if mergeable_flag is False:
+            state_text = merge_state_status or "unknown"
+            actions.append(f"PR #{pr_number} is not mergeable (state: {state_text})")
+
+            if config.ENABLE_MERGEABILITY_REMEDIATION:
+                remediation_actions = _start_mergeability_remediation(pr_number, merge_state_status)
+                actions.extend(remediation_actions)
+                return actions
 
         # Step 2: If checks are in progress, skip this PR
         if not should_continue:
