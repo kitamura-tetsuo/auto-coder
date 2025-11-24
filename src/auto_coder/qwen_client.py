@@ -12,12 +12,14 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
+from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .qwen_provider_config import load_qwen_provider_configs
@@ -87,6 +89,9 @@ class QwenClient(LLMClientBase):
         self._last_used_model: Optional[str] = self.model_name
         self._provider_chain: List[_QwenProviderOption] = self._build_provider_chain()
         self._active_provider_index: int = 0
+
+        # Initialize LLM output logger
+        self.output_logger = LLMOutputLogger()
 
         # Verify required CLIs are available
         # Check if codex is needed (for providers with api_key or base_url)
@@ -284,39 +289,92 @@ class QwenClient(LLMClientBase):
         Returns:
             The CLI's response as a string
         """
-        display_model = model or self.default_model
-        display_cmd = " ".join(cmd[:3]) + "..." if len(cmd) > 3 else " ".join(cmd)
+        start_time = time.time()
+        status = "success"
+        error_message = None
+        prompt = ""  # We'll extract this from cmd if available
+        full_output = ""
 
-        logger.warning(
-            "LLM invocation: %s CLI is being called. Keep LLM calls minimized.",
-            cli_name,
-        )
-        logger.info(
-            "🤖 Running (qwen): %s",
-            display_cmd,
-        )
-        logger.info("=" * 60)
+        # Try to extract prompt from command (last argument typically)
+        if len(cmd) > 0:
+            # The prompt is typically the last argument
+            prompt = cmd[-1]
 
-        result = CommandExecutor.run_command(
-            cmd,
-            stream_output=True,
-            env=env,
-        )
-        logger.info("=" * 60)
+        try:
+            display_model = model or self.default_model
+            display_cmd = " ".join(cmd[:3]) + "..." if len(cmd) > 3 else " ".join(cmd)
 
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
-        combined_parts = [part for part in (stdout, stderr) if part]
-        full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
-        full_output = full_output.strip()
+            logger.warning(
+                "LLM invocation: %s CLI is being called. Keep LLM calls minimized.",
+                cli_name,
+            )
+            logger.info(
+                "🤖 Running (qwen): %s",
+                display_cmd,
+            )
+            logger.info("=" * 60)
 
-        if self._is_usage_limit(full_output, result.returncode):
-            raise AutoCoderUsageLimitError(full_output)
+            result = CommandExecutor.run_command(
+                cmd,
+                stream_output=True,
+                env=env,
+            )
+            logger.info("=" * 60)
 
-        if result.returncode != 0:
-            raise RuntimeError(f"{cli_name} CLI failed with return code {result.returncode}\n{full_output}")
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            combined_parts = [part for part in (stdout, stderr) if part]
+            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+            full_output = full_output.strip()
 
-        return full_output
+            if self._is_usage_limit(full_output, result.returncode):
+                status = "error"
+                error_message = full_output
+                raise AutoCoderUsageLimitError(full_output)
+
+            if result.returncode != 0:
+                status = "error"
+                error_message = f"{cli_name} CLI failed with return code {result.returncode}\n{full_output}"
+                raise RuntimeError(error_message)
+
+            return full_output
+
+        except AutoCoderUsageLimitError:
+            # Re-raise without catching
+            raise
+        except Exception as e:
+            raise
+        finally:
+            # Always log the interaction and print summary
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Determine backend name based on cli_name
+            backend_name = "qwen" if cli_name == "qwen" else "codex"
+
+            # Log to JSON file
+            self.output_logger.log_interaction(
+                backend=backend_name,
+                model=model or self.default_model,
+                prompt=prompt,
+                response=full_output,
+                duration_ms=duration_ms,
+                status=status,
+                error=error_message,
+            )
+
+            # Print user-friendly summary to stdout
+            print("\n" + "=" * 60)
+            print(f"🤖 {cli_name.upper()} CLI Execution Summary")
+            print("=" * 60)
+            print(f"Backend: {backend_name}")
+            print(f"Model: {model or self.default_model}")
+            print(f"Prompt Length: {len(prompt)} characters")
+            print(f"Response Length: {len(full_output)} characters")
+            print(f"Duration: {duration_ms:.0f}ms")
+            print(f"Status: {status.upper()}")
+            if error_message:
+                print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
+            print("=" * 60 + "\n")
 
     @staticmethod
     def _is_usage_limit(message: str, returncode: int) -> bool:
