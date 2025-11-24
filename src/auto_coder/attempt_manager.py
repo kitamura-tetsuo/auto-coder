@@ -207,3 +207,88 @@ def group_attempts_by_status(attempts: List[AttemptInfo]) -> Dict[str, List[Atte
     for attempt in attempts:
         grouped.setdefault(attempt.status, []).append(attempt)
     return grouped
+
+
+def get_current_attempt(repo_name: str, issue_number: int) -> int:
+    """Get the current attempt number for an issue.
+
+    Fetches issue comments, parses them looking for ATTEMPT_COMMENT_PREFIX,
+    and returns the highest attempt number found (default 0).
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        issue_number: Issue number to get attempt count for
+
+    Returns:
+        The current attempt number (0 if no attempts found)
+    """
+    from .github_client import GitHubClient
+
+    try:
+        client = GitHubClient.get_instance()
+        repo = client.get_repository(repo_name)
+        issue = repo.get_issue(issue_number)
+
+        # Get all comments for the issue
+        comments = issue.get_comments()
+
+        # Convert comments to list of dicts for parsing
+        comments_data = []
+        for comment in comments:
+            comments_data.append(
+                {
+                    "body": comment.body,
+                    "created_at": comment.created_at,
+                }
+            )
+
+        # Extract attempts from comments
+        attempts = extract_attempts_from_comments(comments_data)
+
+        # Get the current attempt number by counting attempts
+        # Each attempt is sequential, so the count is the attempt number
+        current_attempt = len(attempts)
+
+        logger.info(f"Found {current_attempt} attempt(s) for issue #{issue_number}")
+        return current_attempt
+
+    except Exception as e:
+        logger.error(f"Failed to get current attempt for issue #{issue_number}: {e}")
+        return 0
+
+
+def increment_attempt(repo_name: str, issue_number: int) -> int:
+    """Increment the attempt count for an issue.
+
+    Gets the current attempt count, increments by 1, and posts a new comment
+    with the new attempt number.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        issue_number: Issue number to increment attempt for
+
+    Returns:
+        The new attempt number after incrementing
+    """
+    from .github_client import GitHubClient
+
+    try:
+        # Get current attempt
+        current_attempt = get_current_attempt(repo_name, issue_number)
+        new_attempt = current_attempt + 1
+
+        # Create comment with new attempt number
+        timestamp = datetime.now()
+        details = f"Attempt #{new_attempt} - Processing issue"
+        comment_body = format_attempt_comment(timestamp, details, status="started")
+
+        # Add comment to the issue
+        client = GitHubClient.get_instance()
+        client.add_comment_to_issue(repo_name, issue_number, comment_body)
+
+        logger.info(f"Incremented attempt for issue #{issue_number} from {current_attempt} to {new_attempt}")
+        return new_attempt
+
+    except Exception as e:
+        logger.error(f"Failed to increment attempt for issue #{issue_number}: {e}")
+        raise
