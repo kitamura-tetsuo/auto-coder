@@ -144,3 +144,18 @@ After setup, the tools can be accessed through the auto-coder CLI when the MCP s
 ### Fork Attribution
 
 This fork maintains full attribution to the original author Riley Lemm. The original repository is https://github.com/rileylemm/graphrag_mcp and uses the MIT License.
+
+## Attempt Mechanism
+
+  attempt_management:
+    description: "Tracks retries per issue/PR and aligns work branches to the current attempt."
+    tracking:
+      - "Attempts are recorded as comments with the prefix 'Auto-Coder Attempt:' followed by ISO8601 timestamp and details."
+      - "get_current_attempt counts those comments before starting work to decide the next attempt number."
+    branching:
+      - "Work branches follow issue-<number> for the first pass and issue-<number>/attempt-<N> for subsequent passes; parent branches cascade to sub-issues."
+    fallback:
+      - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
+      - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge."
+    propagation:
+      - "increment_attempt also reopens closed sub-issues and bumps their counters to keep parent/child attempts in sync."
