@@ -2528,3 +2528,301 @@ class TestUrgentLabelPropagation:
 
         # Verify urgent label was NOT added
         mock_github_client.add_labels.assert_not_called()
+
+
+class TestCheckAndHandleClosedBranch:
+    """Test cases for _check_and_handle_closed_branch method."""
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    @patch("sys.exit")
+    def test_check_and_handle_closed_branch_closed_issue(
+        self,
+        mock_sys_exit,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that closed issue branch triggers closed state handling."""
+        # Setup
+        mock_get_current_branch.return_value = "issue-123"
+        mock_extract_number.return_value = 123
+
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"state": "closed"}
+
+        # Mock sys.exit to raise SystemExit (simulating real behavior)
+        mock_sys_exit.side_effect = SystemExit(0)
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute - SystemExit will be raised
+        with pytest.raises(SystemExit) as exc_info:
+            engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert
+        assert exc_info.value.code == 0
+        mock_sys_exit.assert_called_once_with(0)
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("issue-123")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+        mock_repo.get_issue.assert_called_once_with(123)
+        mock_github_client.get_issue_details.assert_called_once_with(mock_issue)
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    @patch("sys.exit")
+    def test_check_and_handle_closed_branch_closed_pr(
+        self,
+        mock_sys_exit,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that closed PR branch triggers closed state handling."""
+        # Setup
+        mock_get_current_branch.return_value = "pr-456"
+        mock_extract_number.return_value = 456
+
+        mock_repo = Mock()
+        mock_pr = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github_client.get_pr_details.return_value = {"state": "closed"}
+
+        # Mock sys.exit to raise SystemExit (simulating real behavior)
+        mock_sys_exit.side_effect = SystemExit(0)
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute - SystemExit will be raised
+        with pytest.raises(SystemExit) as exc_info:
+            engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert
+        assert exc_info.value.code == 0
+        mock_sys_exit.assert_called_once_with(0)
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("pr-456")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+        mock_repo.get_pull.assert_called_once_with(456)
+        mock_github_client.get_pr_details.assert_called_once_with(mock_pr)
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    @patch("src.auto_coder.util.github_action.check_and_handle_closed_state")
+    def test_check_and_handle_closed_branch_open_issue(
+        self,
+        mock_check_closed_state,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that open issue branch continues processing."""
+        # Setup
+        mock_get_current_branch.return_value = "issue-123"
+        mock_extract_number.return_value = 123
+
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"state": "open"}
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute
+        result = engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert
+        assert result is True
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("issue-123")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+        mock_repo.get_issue.assert_called_once_with(123)
+        mock_github_client.get_issue_details.assert_called_once_with(mock_issue)
+        # check_and_handle_closed_state should NOT be called for open issues
+        mock_check_closed_state.assert_not_called()
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    @patch("src.auto_coder.util.github_action.check_and_handle_closed_state")
+    def test_check_and_handle_closed_branch_open_pr(
+        self,
+        mock_check_closed_state,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that open PR branch continues processing."""
+        # Setup
+        mock_get_current_branch.return_value = "pr-456"
+        mock_extract_number.return_value = 456
+
+        mock_repo = Mock()
+        mock_pr = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github_client.get_pr_details.return_value = {"state": "open"}
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute
+        result = engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert
+        assert result is True
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("pr-456")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+        mock_repo.get_pull.assert_called_once_with(456)
+        mock_github_client.get_pr_details.assert_called_once_with(mock_pr)
+        # check_and_handle_closed_state should NOT be called for open PRs
+        mock_check_closed_state.assert_not_called()
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    def test_check_and_handle_closed_branch_non_matching_branch(
+        self,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that non-matching branch names are skipped."""
+        # Setup
+        mock_get_current_branch.return_value = "feature/new-feature"
+        mock_extract_number.return_value = None
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute
+        result = engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert
+        assert result is True
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("feature/new-feature")
+        # Should not make any GitHub API calls
+        assert not mock_github_client.get_repository.called
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    def test_check_and_handle_closed_branch_none_branch(
+        self,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that None branch name is handled gracefully."""
+        # Setup
+        mock_get_current_branch.return_value = None
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute
+        result = engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert
+        assert result is True
+        mock_get_current_branch.assert_called_once()
+        # Should not make any GitHub API calls
+        assert not mock_github_client.get_repository.called
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    def test_check_and_handle_closed_branch_exception_continues(
+        self,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that exceptions are caught and processing continues."""
+        # Setup
+        mock_get_current_branch.return_value = "issue-123"
+        mock_extract_number.return_value = 123
+        mock_github_client.get_repository.side_effect = Exception("GitHub API error")
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute
+        result = engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert - Should continue processing even on exception
+        assert result is True
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("issue-123")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    def test_check_and_handle_closed_branch_issue_587_case_sensitive(
+        self,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that branch matching is case-insensitive for issue- pattern."""
+        # Setup - Test with capital 'ISSUE-' (edge case)
+        mock_get_current_branch.return_value = "ISSUE-789"
+        mock_extract_number.return_value = 789
+
+        mock_repo = Mock()
+        mock_issue = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_issue.return_value = mock_issue
+        mock_github_client.get_issue_details.return_value = {"state": "open"}
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute
+        result = engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert - Should be treated as PR type when issue- is not in lowercase
+        assert result is True
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("ISSUE-789")
+        # When 'issue-' is not in lowercase, it should be treated as PR
+        mock_repo.get_issue.assert_called_once_with(789)
+        mock_github_client.get_issue_details.assert_called_once_with(mock_issue)
+
+    @patch("src.auto_coder.automation_engine.get_current_branch")
+    @patch("src.auto_coder.automation_engine.extract_number_from_branch")
+    def test_check_and_handle_closed_branch_determines_pr_type_from_branch_name(
+        self,
+        mock_extract_number,
+        mock_get_current_branch,
+        mock_github_client,
+        mock_gemini_client,
+    ):
+        """Test that PR type is determined from branch name when issue- is not present."""
+        # Setup - Test with pr- prefix
+        mock_get_current_branch.return_value = "pr-999"
+        mock_extract_number.return_value = 999
+
+        mock_repo = Mock()
+        mock_pr = Mock()
+        mock_github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+        mock_github_client.get_pr_details.return_value = {"state": "open"}
+
+        engine = AutomationEngine(mock_github_client)
+
+        # Execute
+        result = engine._check_and_handle_closed_branch("test/repo")
+
+        # Assert
+        assert result is True
+        mock_get_current_branch.assert_called_once()
+        mock_extract_number.assert_called_once_with("pr-999")
+        mock_github_client.get_repository.assert_called_once_with("test/repo")
+        mock_repo.get_pull.assert_called_once_with(999)
+        mock_github_client.get_pr_details.assert_called_once_with(mock_pr)
