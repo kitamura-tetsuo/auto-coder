@@ -37,6 +37,10 @@ class BackendConfig:
     # Retry configuration for usage limit handling
     usage_limit_retry_count: int = 0
     usage_limit_retry_wait_seconds: int = 0
+    # Additional options for the backend
+    options: List[str] = field(default_factory=list)
+    # Type of backend
+    backend_type: Optional[str] = None
 
 
 @dataclass
@@ -105,6 +109,8 @@ class LLMBackendConfiguration:
                     providers=config_data.get("providers", []),
                     usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
                     usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
+                    options=config_data.get("options", []),
+                    backend_type=config_data.get("backend_type"),
                 )
                 backends[name] = backend_config
 
@@ -144,6 +150,8 @@ class LLMBackendConfiguration:
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
                 "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
+                "options": config.options,
+                "backend_type": config.backend_type,
             }
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}
