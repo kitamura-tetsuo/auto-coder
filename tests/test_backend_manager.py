@@ -240,3 +240,53 @@ def test_no_retry_on_other_exceptions(mock_llm_config):
         mgr._run_llm_cli("test")
 
     assert calls == ["a"]
+
+
+def test_backend_switch_after_execution_with_flag_enabled(mock_llm_config):
+    """Test that backend switches after successful execution when always_switch_after_execution is True."""
+    mock_llm_config.backends["a"] = BackendConfig(name="a", always_switch_after_execution=True)
+    mock_llm_config.backends["b"] = BackendConfig(name="b", always_switch_after_execution=False)
+
+    calls = []
+    client_a = DummyClient("a", "m1", "ok", calls)
+    client_b = DummyClient("b", "m2", "ok", calls)
+
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client_a,
+        factories={"a": lambda: client_a, "b": lambda: client_b},
+        order=["a", "b"],
+    )
+
+    # Execute a successful prompt
+    result = mgr._run_llm_cli("test")
+    assert result == "a:test"
+    assert calls == ["a"]
+
+    # Verify backend switched to the next one (b)
+    assert mgr._current_backend_name() == "b"
+
+
+def test_backend_no_switch_after_execution_with_flag_disabled(mock_llm_config):
+    """Test that backend does NOT switch after successful execution when always_switch_after_execution is False."""
+    mock_llm_config.backends["a"] = BackendConfig(name="a", always_switch_after_execution=False)
+    mock_llm_config.backends["b"] = BackendConfig(name="b", always_switch_after_execution=False)
+
+    calls = []
+    client_a = DummyClient("a", "m1", "ok", calls)
+    client_b = DummyClient("b", "m2", "ok", calls)
+
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client_a,
+        factories={"a": lambda: client_a, "b": lambda: client_b},
+        order=["a", "b"],
+    )
+
+    # Execute a successful prompt
+    result = mgr._run_llm_cli("test")
+    assert result == "a:test"
+    assert calls == ["a"]
+
+    # Verify backend did NOT switch (stayed on a)
+    assert mgr._current_backend_name() == "a"
