@@ -5,6 +5,7 @@ Gemini CLI client for Auto-Coder.
 import json
 import os
 import subprocess
+import time
 from typing import Any, Dict, List, Optional
 
 # genai is mocked in tests. Ensure the attribute is available even if the package is not installed at runtime
@@ -16,6 +17,7 @@ except Exception:  # Avoid runtime dependency
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
+from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor
@@ -57,6 +59,9 @@ class GeminiClient(LLMClientBase):
         else:
             self.model = None
 
+        # Initialize LLM output logger
+        self.output_logger = LLMOutputLogger()
+
         # Check if gemini CLI is available for CLI-based flows
         try:
             result = subprocess.run(["gemini", "--version"], capture_output=True, text=True, timeout=10)
@@ -87,6 +92,11 @@ class GeminiClient(LLMClientBase):
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
+        start_time = time.time()
+        status = "success"
+        error_message = None
+        full_output = ""
+
         try:
             escaped_prompt = self._escape_prompt(prompt)
 
@@ -128,19 +138,55 @@ class GeminiClient(LLMClientBase):
 
             if result.returncode != 0:
                 if any(m in low for m in usage_markers):
+                    status = "error"
+                    error_message = full_output
                     raise AutoCoderUsageLimitError(full_output)
-                raise RuntimeError(f"Gemini CLI failed with return code {result.returncode}\n{full_output}")
+                status = "error"
+                error_message = f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
+                raise RuntimeError(error_message)
 
             if any(m in low for m in usage_markers):
+                status = "error"
+                error_message = full_output
                 raise AutoCoderUsageLimitError(full_output)
+
             return full_output
 
         except AutoCoderUsageLimitError:
+            # Re-raise without catching
             raise
         except Exception as e:
             if "timed out" not in str(e):
                 raise RuntimeError(f"Failed to run Gemini CLI: {e}")
             raise
+        finally:
+            # Always log the interaction and print summary
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Log to JSON file
+            self.output_logger.log_interaction(
+                backend="gemini",
+                model=self.model_name,
+                prompt=prompt,
+                response=full_output,
+                duration_ms=duration_ms,
+                status=status,
+                error=error_message,
+            )
+
+            # Print user-friendly summary to stdout
+            print("\n" + "=" * 60)
+            print("🤖 Gemini CLI Execution Summary")
+            print("=" * 60)
+            print(f"Backend: gemini")
+            print(f"Model: {self.model_name}")
+            print(f"Prompt Length: {len(prompt)} characters")
+            print(f"Response Length: {len(full_output)} characters")
+            print(f"Duration: {duration_ms:.0f}ms")
+            print(f"Status: {status.upper()}")
+            if error_message:
+                print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
+            print("=" * 60 + "\n")
 
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Suggest new features based on repository analysis."""

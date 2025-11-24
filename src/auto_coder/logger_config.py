@@ -10,6 +10,30 @@ practice this produced very long, noisy file paths such as::
 To keep log output focused on project-relevant information we strip those
 environment specific prefixes and report file paths relative to the
 ``auto_coder`` package root instead.
+
+Environment Variables
+---------------------
+
+LLM_LOGGING_DISABLED
+    When set to "1", "true", "yes", or "on", disables file logging even when
+    a log file path is specified. This can be useful to temporarily disable
+    logging without modifying the application configuration. Console logging
+    continues to work normally.
+
+    Note: This only affects the main application logging. The LLM output logger
+    has its own separate configuration via AUTO_CODER_LLM_OUTPUT_LOG_ENABLED.
+
+Examples
+--------
+
+To disable file logging::
+
+    export LLM_LOGGING_DISABLED=1
+    auto-coder process-issues --log-file /tmp/app.log  # File logging will be skipped
+
+To re-enable file logging::
+
+    unset LLM_LOGGING_DISABLED
 """
 
 import os
@@ -157,7 +181,12 @@ def setup_logger(
         )
 
     # Add file handler if specified
-    if log_file:
+    if log_file and not os.environ.get("LLM_LOGGING_DISABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
         # Ensure log directory exists
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)

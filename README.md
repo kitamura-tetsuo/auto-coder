@@ -17,6 +17,14 @@ A Python application that automates application development using an AI CLI back
 3. **Feature Proposals**: Propose new features from repository context
 4. **Automatic Actions**: Add comments or auto-close based on analysis results
 
+### 📊 Logging and Monitoring
+- **Structured JSON Logs**: All LLM interactions are logged in JSON Lines format at `~/.auto-coder/logs/llm_output.jsonl`
+- **User-Friendly Output**: Execution summaries are printed to console for immediate feedback
+- **Rich Metadata**: Each log entry includes timestamp, backend, model, prompt/response lengths, duration, and status
+- **Environment Control**: Toggle logging via `AUTO_CODER_LLM_OUTPUT_LOG_ENABLED` environment variable
+- **Error Tracking**: Detailed error information for failed requests
+- **Easy Analysis**: Machine-readable format for parsing with `jq` or custom scripts
+
 ## Installation
 
 ### Prerequisites
@@ -421,6 +429,140 @@ If you were using the old environment variables (`GEMINI_API_KEY`, `OPENAI_API_K
 ```bash
 auto-coder config migrate
 ```
+
+## Logging and Monitoring
+
+### Overview
+
+Auto-Coder provides comprehensive logging for all LLM interactions using the `LLMOutputLogger` class. Logs are written in structured JSON Lines format (one JSON object per line) for easy parsing and analysis.
+
+### Default Log Location
+
+```
+~/.auto-coder/logs/llm_output.jsonl
+```
+
+### Environment Variable Control
+
+Enable or disable logging using the `AUTO_CODER_LLM_OUTPUT_LOG_ENABLED` environment variable:
+
+```bash
+# Enable logging (default)
+export AUTO_CODER_LLM_OUTPUT_LOG_ENABLED=1
+# or: true, yes, on
+
+# Disable logging
+export AUTO_CODER_LLM_OUTPUT_LOG_ENABLED=0
+# or: false, no, off
+```
+
+### Example Log Entry
+
+Each log entry contains structured data about an LLM interaction:
+
+```json
+{
+  "timestamp": "2025-11-24T10:30:45.123Z",
+  "event_type": "llm_interaction",
+  "backend": "codex",
+  "model": "codex",
+  "prompt_length": 15420,
+  "response_length": 8956,
+  "duration_ms": 1234,
+  "status": "success"
+}
+```
+
+### Parsing Logs with jq
+
+```bash
+# Extract all successful interactions
+grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq 'select(.status == "success")'
+
+# Find errors
+grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq 'select(.status == "error")'
+
+# Filter by backend
+grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq 'select(.backend == "codex")'
+
+# Get statistics
+grep "^{" ~/.auto-coder/logs/llm_output.jsonl | jq -r '.backend' | sort | uniq -c
+```
+
+### Parsing Logs with Python
+
+```python
+import json
+from pathlib import Path
+
+log_file = Path.home() / ".auto-coder" / "logs" / "llm_output.jsonl"
+
+# Read all log entries
+with log_file.open("r") as f:
+    for line in f:
+        data = json.loads(line.strip())
+        print(f"{data['timestamp']}: {data['backend']} - {data['status']}")
+
+# Filter by backend
+with log_file.open("r") as f:
+    codex_logs = []
+    for line in f:
+        data = json.loads(line.strip())
+        if data['backend'] == 'codex':
+            codex_logs.append(data)
+
+print(f"Found {len(codex_logs)} Codex interactions")
+```
+
+### Log Entry Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | string | ISO 8601 timestamp with timezone |
+| `event_type` | string | Event type: `llm_request`, `llm_response`, or `llm_interaction` |
+| `backend` | string | Backend name (e.g., "codex", "gemini", "qwen") |
+| `model` | string | Model name |
+| `prompt_length` | integer | Prompt length in characters |
+| `response_length` | integer | Response length in characters |
+| `duration_ms` | float | Request duration in milliseconds |
+| `status` | string | Request status (e.g., "success", "error") |
+| `error` | string (optional) | Error message if status is "error" |
+| Additional metadata | any | Custom fields from the interaction |
+
+### Console Output
+
+In addition to JSON log files, Auto-Coder prints user-friendly execution summaries to console:
+
+```
+============================================================
+🤖 Codex CLI Execution Summary
+============================================================
+Backend: codex
+Model: codex
+Prompt Length: 15420 characters
+Response Length: 8956 characters
+Duration: 1234ms
+Status: SUCCESS
+============================================================
+```
+
+This provides immediate feedback during execution while detailed logs are saved to the file.
+
+### Custom Log Path
+
+You can configure a custom log path programmatically:
+
+```python
+from src.auto_coder.llm_output_logger import LLMOutputLogger
+
+# Use custom path
+logger = LLMOutputLogger(log_path="/custom/path/log.jsonl")
+
+# Disable logging
+logger = LLMOutputLogger(enabled=False)
+```
+
+For more detailed documentation, see [docs/llm_output_logger_usage.md](docs/llm_output_logger_usage.md).
 
 ## Label-Based Prompt Routing
 
