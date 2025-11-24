@@ -196,7 +196,7 @@ This fork maintains full attribution to the original author Riley Lemm. The orig
     configuration:
       - name: "ENABLE_MERGEABILITY_REMEDIATION"
         type: "bool"
-        default: false
+        default: true
         purpose: "Enables automatic remediation flow for non-mergeable PRs when set to true"
         behavior:
           - "When PR is detected as not mergeable, system automatically initiates remediation"

@@ -454,9 +454,9 @@ class AutomationConfig:
     # This changes previous behavior to default-skipping
     # to reduce noisy rebases.
     SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL: bool = True
-    # Enable mergeability remediation flow (stubbed hook).
-    # Default: False (feature gated)
-    ENABLE_MERGEABILITY_REMEDIATION: bool = False
+    # Enable mergeability remediation flow.
+    # Default: True (automatically handle non-mergeable PRs)
+    ENABLE_MERGEABILITY_REMEDIATION: bool = True
 
     # Skip dependency-bot PRs (Dependabot/Renovate/[bot]) for fix flows.
     # Green, mergeable dependency-bot PRs are still auto-merge candidates.
