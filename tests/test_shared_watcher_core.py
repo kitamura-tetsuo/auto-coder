@@ -92,7 +92,10 @@ class TestSharedWatcherCore:
         mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Trigger GraphRAG update
             tool._trigger_graphrag_update("src/main.py")
 
@@ -104,7 +107,10 @@ class TestSharedWatcherCore:
         tool = TestWatcherTool(project_root=str(tmp_path))
 
         # Mock GraphRAGIndexManager to raise an exception
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", side_effect=Exception("Test error")):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            side_effect=Exception("Test error"),
+        ):
             # Trigger GraphRAG update - should not raise an exception
             tool._trigger_graphrag_update("src/main.py")
 
@@ -120,7 +126,10 @@ class TestSharedWatcherCore:
         mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = False
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             # Trigger GraphRAG update
             tool._trigger_graphrag_update("src/main.py")
 
@@ -235,7 +244,11 @@ class TestLightweightUpdateCheck:
         import subprocess
 
         subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
-        subprocess.run(["git", "add", "README.md", "config.json"], cwd=tmp_path, capture_output=True)
+        subprocess.run(
+            ["git", "add", "README.md", "config.json"],
+            cwd=tmp_path,
+            capture_output=True,
+        )
 
         # Should not detect code changes
         assert manager._has_recent_code_changes() is False

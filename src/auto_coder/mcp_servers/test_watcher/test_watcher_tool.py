@@ -20,7 +20,12 @@ from watchdog.observers import Observer
 class GitIgnoreFileHandler(FileSystemEventHandler):
     """File system event handler that respects .gitignore patterns."""
 
-    def __init__(self, project_root: Path, gitignore_spec: pathspec.PathSpec, callback: Callable[[str], None]):
+    def __init__(
+        self,
+        project_root: Path,
+        gitignore_spec: pathspec.PathSpec,
+        callback: Callable[[str], None],
+    ):
         self.project_root = project_root
         self.gitignore_spec = gitignore_spec
         self.callback = callback

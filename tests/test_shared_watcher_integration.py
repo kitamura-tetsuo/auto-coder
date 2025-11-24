@@ -53,7 +53,10 @@ class TestSharedWatcherIntegration:
         # We need to set up smart_update_trigger to return True as well
         mock_manager.smart_update_trigger.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create a Python file
@@ -75,7 +78,10 @@ class TestSharedWatcherIntegration:
         mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create non-code file
@@ -99,7 +105,10 @@ class TestSharedWatcherIntegration:
         """Verify that _on_file_changed filters non-code files for GraphRAG updates."""
         mock_manager = MagicMock()
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             with patch.object(watcher, "_run_playwright_tests") as mock_test:
@@ -140,7 +149,10 @@ class TestSharedWatcherIntegration:
         mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create a code file
@@ -160,7 +172,10 @@ class TestSharedWatcherIntegration:
         mock_manager.smart_update_trigger = MagicMock(return_value=True)
         mock_manager.update_index = MagicMock(return_value=True)
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create a code file
@@ -240,7 +255,10 @@ class TestSharedWatcherIntegration:
         mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create multiple code files
@@ -268,7 +286,10 @@ class TestSharedWatcherIntegration:
         mock_manager = Mock(spec=["update_index"])
         mock_manager.update_index.return_value = True
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             # Create test files
@@ -300,7 +321,10 @@ class TestSharedWatcherIntegration:
         """Test handling a mix of code and non-code file changes with _on_file_changed."""
         mock_manager = MagicMock()
 
-        with patch("auto_coder.graphrag_index_manager.GraphRAGIndexManager", return_value=mock_manager):
+        with patch(
+            "auto_coder.graphrag_index_manager.GraphRAGIndexManager",
+            return_value=mock_manager,
+        ):
             watcher = TestWatcherTool(project_root=str(tmp_path))
 
             with patch.object(watcher, "_run_playwright_tests") as mock_test:

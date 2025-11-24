@@ -9,11 +9,7 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.prompt_loader import clear_prompt_cache, render_prompt
-from tests.fixtures.label_prompt_fixtures import (
-    TEST_ISSUE_DATA,
-    TEST_LABEL_PRIORITIES,
-    TEST_LABEL_PROMPT_MAPPINGS,
-)
+from tests.fixtures.label_prompt_fixtures import TEST_ISSUE_DATA, TEST_LABEL_PRIORITIES, TEST_LABEL_PROMPT_MAPPINGS
 
 
 class TestLabelBasedIssueProcessingE2E:

@@ -12,7 +12,8 @@ from .automation_config import AutomationConfig, Candidate, CandidateProcessingR
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .gh_logger import get_gh_logger
-from .git_utils import git_commit_with_retry, git_push
+from .git_branch import git_commit_with_retry
+from .git_commit import git_push
 from .github_client import GitHubClient
 from .issue_processor import create_feature_issues
 from .label_manager import LabelManager
@@ -107,7 +108,16 @@ class AutomationEngine:
 
             # Calculate priority
             # Enhanced priority logic to distinguish unmergeable PRs
-            if any(label in labels for label in ["breaking-change", "breaking", "api-change", "deprecation", "version-major"]):
+            if any(
+                label in labels
+                for label in [
+                    "breaking-change",
+                    "breaking",
+                    "api-change",
+                    "deprecation",
+                    "version-major",
+                ]
+            ):
                 # Breaking-change PRs get highest priority (7)
                 pr_priority = 7
             elif "urgent" in labels:
@@ -147,7 +157,13 @@ class AutomationEngine:
                     continue
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-                with LabelManager(self.github, repo_name, number, item_type="issue", skip_label_add=True) as should_process:
+                with LabelManager(
+                    self.github,
+                    repo_name,
+                    number,
+                    item_type="issue",
+                    skip_label_add=True,
+                ) as should_process:
                     if not should_process:
                         continue
 
@@ -540,7 +556,11 @@ class AutomationEngine:
             repo_name,
         )
 
-    def fix_to_pass_tests(self, max_attempts: Optional[int] = None, message_backend_manager: Optional[Any] = None) -> Dict[str, Any]:
+    def fix_to_pass_tests(
+        self,
+        max_attempts: Optional[int] = None,
+        message_backend_manager: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         """Run tests and, if failing, repeatedly request LLM fixes until tests pass."""
         run_override = getattr(self, "_run_local_tests", None)
         apply_override = getattr(self, "_apply_workspace_test_fix", None)
@@ -566,9 +586,15 @@ class AutomationEngine:
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
         """Get LLM backend, provider, and model information for telemetry."""
 
-        info: Dict[str, Optional[str]] = {"backend": None, "provider": None, "model": None}
+        info: Dict[str, Optional[str]] = {
+            "backend": None,
+            "provider": None,
+            "model": None,
+        }
 
-        def _extract_from_manager(manager: Optional[Any]) -> Optional[Dict[str, Optional[str]]]:
+        def _extract_from_manager(
+            manager: Optional[Any],
+        ) -> Optional[Dict[str, Optional[str]]]:
             if manager is None:
                 return None
 
@@ -745,7 +771,12 @@ class AutomationEngine:
 
             # Check how many commits behind the base branch we are
             rev_list_result = subprocess.run(
-                ["git", "rev-list", "--count", f"HEAD..refs/remotes/origin/{base_branch}"],
+                [
+                    "git",
+                    "rev-list",
+                    "--count",
+                    f"HEAD..refs/remotes/origin/{base_branch}",
+                ],
                 capture_output=True,
                 text=True,
             )
@@ -757,7 +788,12 @@ class AutomationEngine:
 
                     # Merge the base branch
                     merge_result = subprocess.run(
-                        ["git", "merge", f"refs/remotes/origin/{base_branch}", "--no-edit"],
+                        [
+                            "git",
+                            "merge",
+                            f"refs/remotes/origin/{base_branch}",
+                            "--no-edit",
+                        ],
                         capture_output=True,
                         text=True,
                     )
@@ -881,7 +917,10 @@ class AutomationEngine:
         try:
             # Prefer structured extractor from fix_to_pass_tests_runner
             if isinstance(test_result, TestResult):
-                return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(test_result))
+                return cast(
+                    str,
+                    fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+                )
             # Convert legacy dict payloads to TestResult for better extraction
             tr = fix_to_pass_tests_runner_module._to_test_result(test_result)
             return cast(str, fix_to_pass_tests_runner_module.extract_important_errors(tr))
@@ -935,7 +974,10 @@ class AutomationEngine:
 
         try:
             # Derive a concise error summary using the structured extractor
-            error_summary = cast(str, fix_to_pass_tests_runner_module.extract_important_errors(test_result))
+            error_summary = cast(
+                str,
+                fix_to_pass_tests_runner_module.extract_important_errors(test_result),
+            )
             if not github_logs:
                 github_logs = error_summary
 

@@ -6,17 +6,14 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
 
-from auto_coder.util.github_action import (
-    _check_github_actions_status,
-    check_and_handle_closed_state,
-    check_github_actions_and_exit_if_in_progress,
-    get_detailed_checks_from_history,
-)
+from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .backend_manager import get_llm_backend_manager, run_llm_message_prompt
 from .gh_logger import get_gh_logger
-from .git_utils import branch_context, commit_and_push_changes, get_commit_log
+from .git_branch import branch_context
+from .git_commit import commit_and_push_changes
+from .git_info import get_commit_log
 from .github_client import GitHubClient
 from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
@@ -28,13 +25,24 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
-def _process_issue_jules_mode(github_client: GitHubClient, config: AutomationConfig, repo_name: str, issue_data: Dict[str, Any]) -> ProcessedIssueResult:
+def _process_issue_jules_mode(
+    github_client: GitHubClient,
+    config: AutomationConfig,
+    repo_name: str,
+    issue_data: Dict[str, Any],
+) -> ProcessedIssueResult:
     """Process a single issue in jules mode - only add 'jules' label."""
     try:
         issue_number = issue_data["number"]
 
         # Check if issue already has @auto-coder label (being processed by another instance)
-        with LabelManager(github_client, repo_name, issue_number, item_type="issue", skip_label_add=True) as should_process:
+        with LabelManager(
+            github_client,
+            repo_name,
+            issue_number,
+            item_type="issue",
+            skip_label_add=True,
+        ) as should_process:
             if not should_process:
                 logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
                 return ProcessedIssueResult(
@@ -393,7 +401,11 @@ def _apply_issue_actions_directly(
             if not should_process:
                 return actions
 
-            with branch_context(target_branch, create_new=create_new_work_branch, base_branch=(base_branch if "base_branch" in locals() else None)):
+            with branch_context(
+                target_branch,
+                create_new=create_new_work_branch,
+                base_branch=(base_branch if "base_branch" in locals() else None),
+            ):
                 # Get commit log since branch creation
                 with ProgressStage("Getting commit log"):
                     commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)

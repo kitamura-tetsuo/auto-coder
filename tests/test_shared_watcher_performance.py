@@ -234,7 +234,10 @@ class TestBatchUpdatePerformance:
         # Mock the smart_update_trigger method
         with patch.object(manager, "smart_update_trigger", return_value=True) as mock_smart:
             # Add enough files to trigger immediate processing
-            manager.batch_update_trigger(["file1.py", "file2.py", "file3.py", "file4.py", "file5.py"], max_batch_size=5)
+            manager.batch_update_trigger(
+                ["file1.py", "file2.py", "file3.py", "file4.py", "file5.py"],
+                max_batch_size=5,
+            )
 
             # Give time for processing
             time.sleep(0.1)

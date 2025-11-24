@@ -3,16 +3,7 @@
 import pytest
 
 from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
-    DEFAULT_PROMPTS_PATH,
-    _get_prompt_for_labels,
-    _is_breaking_change_issue,
-    _resolve_label_priority,
-    clear_prompt_cache,
-    get_label_specific_prompt,
-    get_prompt_template,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import DEFAULT_PROMPTS_PATH, _get_prompt_for_labels, _is_breaking_change_issue, _resolve_label_priority, clear_prompt_cache, get_label_specific_prompt, get_prompt_template, render_prompt
 
 
 class TestLabelBasedPromptLoader:

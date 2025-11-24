@@ -20,7 +20,7 @@ from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
 from ..gh_logger import get_gh_logger
-from ..git_utils import branch_context
+from ..git_branch import branch_context
 from ..github_client import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
@@ -339,7 +339,17 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                             failed_checks.append({"name": name, "conclusion": status, "details_url": url})
                     else:
                         # Handle any other status values
-                        if status not in ["pass", "success", "fail", "failure", "error", "skipping", "skipped", "pending", "in_progress"]:
+                        if status not in [
+                            "pass",
+                            "success",
+                            "fail",
+                            "failure",
+                            "error",
+                            "skipping",
+                            "skipped",
+                            "pending",
+                            "in_progress",
+                        ]:
                             # Unknown status - treat as potential failure
                             all_passed = False
                         check_info = {
@@ -793,7 +803,12 @@ def get_detailed_checks_from_history(
 
                         all_checks.append(check_info)
 
-                        if run_conclusion in ["failure", "failed", "error", "cancelled"]:
+                        if run_conclusion in [
+                            "failure",
+                            "failed",
+                            "error",
+                            "cancelled",
+                        ]:
                             any_failed = True
                             all_failed_checks.append(check_info)
                         elif run_status in ["in_progress", "queued", "pending"]:

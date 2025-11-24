@@ -405,7 +405,10 @@ def test_run_docker_compose_no_retry_when_disabled(docker_manager, mock_executor
 
 def test_get_current_container_id_in_container(docker_manager):
     """Test getting container ID when running in container."""
-    with mock.patch("src.auto_coder.graphrag_docker_manager.is_running_in_container", return_value=True):
+    with mock.patch(
+        "src.auto_coder.graphrag_docker_manager.is_running_in_container",
+        return_value=True,
+    ):
         with mock.patch("builtins.open", mock.mock_open(read_data="abc123def456\n")):
             container_id = docker_manager._get_current_container_id()
 
@@ -414,7 +417,10 @@ def test_get_current_container_id_in_container(docker_manager):
 
 def test_get_current_container_id_not_in_container(docker_manager):
     """Test getting container ID when not running in container."""
-    with mock.patch("src.auto_coder.graphrag_docker_manager.is_running_in_container", return_value=False):
+    with mock.patch(
+        "src.auto_coder.graphrag_docker_manager.is_running_in_container",
+        return_value=False,
+    ):
         container_id = docker_manager._get_current_container_id()
 
     assert container_id is None
@@ -573,7 +579,11 @@ def test_get_compose_file_from_package_uses_home_directory(monkeypatch):
     # Mock the entire method to avoid actual file system operations
     expected_path = str(fake_home / ".auto-coder" / "graphrag" / "docker-compose.graphrag.yml")
 
-    with mock.patch.object(GraphRAGDockerManager, "_get_compose_file_from_package", return_value=expected_path):
+    with mock.patch.object(
+        GraphRAGDockerManager,
+        "_get_compose_file_from_package",
+        return_value=expected_path,
+    ):
         with mock.patch("src.auto_coder.graphrag_docker_manager.CommandExecutor"):
             with mock.patch.object(
                 GraphRAGDockerManager,

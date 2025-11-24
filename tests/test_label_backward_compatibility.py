@@ -19,14 +19,7 @@ import pytest
 import yaml
 
 from src.auto_coder import prompt_loader
-from src.auto_coder.prompt_loader import (
-    _get_prompt_for_labels,
-    _resolve_label_priority,
-    clear_prompt_cache,
-    get_label_specific_prompt,
-    load_prompts,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import _get_prompt_for_labels, _resolve_label_priority, clear_prompt_cache, get_label_specific_prompt, load_prompts, render_prompt
 
 
 class TestExistingPromptCalls:
@@ -546,7 +539,10 @@ class TestMigrationHelpers:
 
         # New format (structured)
         new_config = {
-            "label_prompt_mappings": {"bug": "issue.bugfix", "feature": "issue.feature"},
+            "label_prompt_mappings": {
+                "bug": "issue.bugfix",
+                "feature": "issue.feature",
+            },
             "label_priorities": ["bug", "feature"],
         }
 
@@ -648,7 +644,17 @@ class TestRegressionBackwardCompatibility:
         ({"key": "issue.action", "path": None, "data": None}, True),
         ({"key": "issue.action", "path": None, "data": None, "labels": None}, True),
         ({"key": "issue.action", "path": None, "data": None, "labels": []}, True),
-        ({"key": "issue.action", "path": None, "data": None, "labels": ["bug"], "label_prompt_mappings": {"bug": "issue.bug"}, "label_priorities": ["bug"]}, True),
+        (
+            {
+                "key": "issue.action",
+                "path": None,
+                "data": None,
+                "labels": ["bug"],
+                "label_prompt_mappings": {"bug": "issue.bug"},
+                "label_priorities": ["bug"],
+            },
+            True,
+        ),
     ],
 )
 def test_backward_compatible_render_prompt_calls(old_call, expected_works):
@@ -666,9 +672,27 @@ def test_backward_compatible_render_prompt_calls(old_call, expected_works):
     "labels, mappings, priorities, legacy_aliases, expected",
     [
         # Legacy alias tests
-        (["defect"], {"defect": "issue.bugfix"}, ["defect"], {"defect": "bug"}, "defect"),
-        (["hotfix"], {"hotfix": "issue.bugfix"}, ["hotfix"], {"hotfix": "bug"}, "hotfix"),
-        (["enhancement"], {"enhancement": "issue.feature"}, ["enhancement"], {"enhancement": "feature"}, "enhancement"),
+        (
+            ["defect"],
+            {"defect": "issue.bugfix"},
+            ["defect"],
+            {"defect": "bug"},
+            "defect",
+        ),
+        (
+            ["hotfix"],
+            {"hotfix": "issue.bugfix"},
+            ["hotfix"],
+            {"hotfix": "bug"},
+            "hotfix",
+        ),
+        (
+            ["enhancement"],
+            {"enhancement": "issue.feature"},
+            ["enhancement"],
+            {"enhancement": "feature"},
+            "enhancement",
+        ),
     ],
 )
 def test_legacy_label_aliases(labels, mappings, priorities, legacy_aliases, expected):

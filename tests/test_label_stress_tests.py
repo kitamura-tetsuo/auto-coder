@@ -15,14 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.auto_coder.prompt_loader import (
-    _get_prompt_for_labels,
-    _resolve_label_priority,
-    clear_prompt_cache,
-    get_label_specific_prompt,
-    load_prompts,
-    render_prompt,
-)
+from src.auto_coder.prompt_loader import _get_prompt_for_labels, _resolve_label_priority, clear_prompt_cache, get_label_specific_prompt, load_prompts, render_prompt
 
 
 class TestRapidSuccessiveLabelOperations:
@@ -63,7 +56,14 @@ class TestRapidSuccessiveLabelOperations:
             start = time.perf_counter()
 
             for i in range(num_operations):
-                render_prompt("issue.action", path=prompt_file, labels=labels, label_prompt_mappings=mappings, label_priorities=priorities, var=f"value-{i}")
+                render_prompt(
+                    "issue.action",
+                    path=prompt_file,
+                    labels=labels,
+                    label_prompt_mappings=mappings,
+                    label_priorities=priorities,
+                    var=f"value-{i}",
+                )
 
             elapsed = time.perf_counter() - start
             ops_per_second = num_operations / elapsed

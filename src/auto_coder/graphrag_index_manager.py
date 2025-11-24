@@ -699,7 +699,10 @@ class GraphRAGIndexManager:
         has_py_cli = (candidate / "src" / "cli_python.py").exists()
 
         if not (has_ts_cli_bundle or has_ts_cli or has_py_cli):
-            return False, f"No CLI found (expected dist/cli.bundle.js, dist/cli.js, or src/cli_python.py)"
+            return (
+                False,
+                f"No CLI found (expected dist/cli.bundle.js, dist/cli.js, or src/cli_python.py)",
+            )
 
         valid_clis = []
         if has_ts_cli_bundle:
