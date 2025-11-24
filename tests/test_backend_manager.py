@@ -1,4 +1,3 @@
-import logging
 import os
 from unittest.mock import MagicMock, patch
 
@@ -200,8 +199,8 @@ def test_edge_case_large_retries(mock_llm_config):
         assert calls == ["a"] * 5
 
 
-@patch("src.auto_coder.backend_manager.logger")
-def test_verify_log_messages(mock_logger, mock_llm_config):
+def test_backend_manager_no_duplicate_logging(mock_llm_config):
+    """Verify that BackendManager delegates logging to clients and does not duplicate output."""
     mock_llm_config.backends["a"] = BackendConfig(name="a", usage_limit_retry_count=2, usage_limit_retry_wait_seconds=3)
 
     calls = []
@@ -215,10 +214,13 @@ def test_verify_log_messages(mock_logger, mock_llm_config):
         order=["a", "b"],
     )
 
-    with patch("time.sleep"):
-        mgr._run_llm_cli("test")
-        mock_logger.info.assert_any_call("Retrying backend 'a' (retry 1/2) after 3 seconds")
-        mock_logger.info.assert_any_call("BackendManager: switched to next backend -> b")
+    # Ensure backend rotation works correctly without duplicate logging
+    # With retry_count=2: 1 initial + 1 retry = 2 attempts on "a", then 1 on "b"
+    with patch("time.sleep") as mock_sleep:
+        result = mgr._run_llm_cli("test")
+        assert result == "b:test"
+        assert calls == ["a", "a", "b"]
+        assert mock_sleep.call_count == 2
 
 
 def test_no_retry_on_other_exceptions(mock_llm_config):

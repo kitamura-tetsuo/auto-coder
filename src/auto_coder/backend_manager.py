@@ -146,7 +146,6 @@ class BackendManager(LLMBackendManagerBase):
 
     def switch_to_next_backend(self) -> None:
         self._switch_to_index(self._current_idx + 1)
-        logger.info(f"BackendManager: switched to next backend -> {self._current_backend_name()}")
 
     def switch_to_default_backend(self) -> None:
         # To the default position
@@ -155,7 +154,6 @@ class BackendManager(LLMBackendManagerBase):
         except ValueError:
             idx = 0
         self._switch_to_index(idx)
-        logger.info(f"BackendManager: switched back to default backend -> {self._current_backend_name()}")
 
     def _get_current_provider_name(self, backend_name: str) -> Optional[str]:
         """
@@ -212,7 +210,6 @@ class BackendManager(LLMBackendManagerBase):
                 cli = self._get_or_create_client(backend_name)
             except Exception as exc:  # pragma: no cover - defensive guard
                 last_error = exc
-                logger.error(f"Failed to initialize backend '{backend_name}': {exc}")
                 self.switch_to_next_backend()
                 attempts += 1
                 continue
@@ -235,19 +232,16 @@ class BackendManager(LLMBackendManagerBase):
                         # Retry the same backend
                         retry_attempts[backend_name] = current_retries + 1
                         wait_seconds = backend_config.usage_limit_retry_wait_seconds
-                        logger.info(f"Retrying backend '{backend_name}' (retry {current_retries + 1}/{backend_config.usage_limit_retry_count}) after {wait_seconds} seconds")
                         time.sleep(wait_seconds)
                         # Don't switch to next backend, retry on the same one
                         continue
 
                 # If we reach here, either no retry config or retries exhausted
-                logger.warning(f"Backend '{backend_name}' exhausted providers due to usage limits: {exc}")
                 self.switch_to_next_backend()
                 attempts += 1
                 continue
             except Exception as exc:
                 last_error = exc
-                logger.error(f"Execution failed on backend '{backend_name}': {exc}")
                 break
 
         if last_error:
@@ -292,10 +286,8 @@ class BackendManager(LLMBackendManagerBase):
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
-                    logger.info(f"Successfully executed on backend '{backend_name}' " f"(provider: '{provider_name or 'default'}')")
                     return out
                 except AutoCoderUsageLimitError as exc:
-                    logger.warning(f"Provider usage limit reached for backend '{backend_name}' " f"(provider: '{provider_name or 'default'}'): {exc}")
                     if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
                         rotated = self._provider_manager.advance_to_next_provider(backend_name)
                         if rotated:
@@ -452,8 +444,7 @@ class BackendManager(LLMBackendManagerBase):
                 if not cli.ensure_mcp_server_configured(server_name, command, args):
                     all_success = False
 
-            except Exception as e:
-                logger.error(f"Error configuring MCP server '{server_name}' for backend '{backend_name}': {e}")
+            except Exception:
                 all_success = False
 
         return all_success
@@ -550,14 +541,10 @@ class LLMBackendManager:
                 else:
                     # If force_reinitialize and instance exists, close it first
                     if force_reinitialize and cls._instance is not None:
-                        logger.info(f"Reinitializing LLMBackendManager singleton with default backend: {default_backend}")
                         try:
                             cls._instance.close()
                         except Exception:
                             pass  # Best effort cleanup
-                    elif cls._instance is None:
-                        # Initialize singleton with parameters
-                        logger.info(f"Initializing LLMBackendManager singleton with default backend: {default_backend}")
 
                     # Create new instance (or reuse if force_reinitialize)
                     if cls._instance is None or force_reinitialize:
@@ -576,7 +563,7 @@ class LLMBackendManager:
             elif default_backend is not None or default_client is not None or factories is not None:
                 # Parameters provided but instance already exists (and not forcing reinit)
                 # This is allowed - we just ignore the parameters and return existing instance
-                logger.debug("LLMBackendManager singleton already initialized, ignoring new parameters")
+                pass
 
             return cls._instance
 
@@ -592,7 +579,6 @@ class LLMBackendManager:
         """
         with cls._lock:
             if cls._instance is not None:
-                logger.info("Resetting LLMBackendManager singleton")
                 try:
                     cls._instance.close()
                 except Exception:
@@ -647,14 +633,10 @@ class LLMBackendManager:
                 else:
                     # If force_reinitialize and instance exists, close it first
                     if force_reinitialize and cls._message_instance is not None:
-                        logger.info(f"Reinitializing message LLMBackendManager singleton with default backend: {default_backend}")
                         try:
                             cls._message_instance.close()
                         except Exception:
                             pass  # Best effort cleanup
-                    elif cls._message_instance is None:
-                        # Initialize singleton with parameters
-                        logger.info(f"Initializing message LLMBackendManager singleton with default backend: {default_backend}")
 
                     # Create new instance (or reuse if force_reinitialize)
                     if cls._message_instance is None or force_reinitialize:
@@ -667,7 +649,7 @@ class LLMBackendManager:
             elif default_backend is not None or default_client is not None or factories is not None:
                 # Parameters provided but instance already exists (and not forcing reinit)
                 # This is allowed - we just ignore the parameters and return existing instance
-                logger.debug("LLMBackendManager message singleton already initialized, ignoring new parameters")
+                pass
 
             return cls._message_instance
 
