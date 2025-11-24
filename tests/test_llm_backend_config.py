@@ -36,6 +36,8 @@ class TestBackendConfig:
         assert config.providers == []
         assert config.usage_limit_retry_count == 0
         assert config.usage_limit_retry_wait_seconds == 0
+        assert config.options == []
+        assert config.backend_type is None
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -54,6 +56,8 @@ class TestBackendConfig:
             providers=["provider1", "provider2"],
             usage_limit_retry_count=5,
             usage_limit_retry_wait_seconds=30,
+            options=["option1", "option2"],
+            backend_type="custom_type",
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -69,6 +73,8 @@ class TestBackendConfig:
         assert config.providers == ["provider1", "provider2"]
         assert config.usage_limit_retry_count == 5
         assert config.usage_limit_retry_wait_seconds == 30
+        assert config.options == ["option1", "option2"]
+        assert config.backend_type == "custom_type"
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -463,6 +469,33 @@ class TestLLMBackendConfiguration:
             assert qwen_config.usage_limit_retry_count == 3
             assert qwen_config.usage_limit_retry_wait_seconds == 60
 
+    def test_toml_save_and_load_new_fields(self):
+        """Test that new options and backend_type fields are properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_new_fields.toml"
+
+            # Create configuration with new fields
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").options = ["option1", "option2"]
+            config.get_backend_config("gemini").backend_type = "custom_type"
+            config.get_backend_config("qwen").options = ["option3"]
+            config.get_backend_config("qwen").backend_type = "another_type"
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify new fields were persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.options == ["option1", "option2"]
+            assert gemini_config.backend_type == "custom_type"
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.options == ["option3"]
+            assert qwen_config.backend_type == "another_type"
+
     def test_backward_compatibility_old_toml_without_retry_fields(self):
         """Test loading old TOML files that don't have retry configuration fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -503,6 +536,49 @@ class TestLLMBackendConfiguration:
             assert gemini_config is not None
             assert gemini_config.usage_limit_retry_count == 0
             assert gemini_config.usage_limit_retry_wait_seconds == 0
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
+
+    def test_backward_compatibility_old_toml_without_new_fields(self):
+        """Test loading old TOML files that don't have options and backend_type fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_new_fields.toml"
+
+            # Create a TOML file with the old structure (without new fields)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify new fields have default values when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.options == []
+            assert qwen_config.backend_type is None
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.options == []
+            assert gemini_config.backend_type is None
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
 
