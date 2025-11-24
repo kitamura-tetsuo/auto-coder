@@ -7,7 +7,7 @@ made by Auto-Coder when processing issues and pull requests.
 
 import re
 from datetime import datetime
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -24,6 +24,7 @@ from auto_coder.attempt_manager import (
     parse_attempt_from_comment,
 )
 from auto_coder.git_branch import extract_attempt_from_branch
+from auto_coder.issue_processor import generate_work_branch_name
 
 
 class TestAttemptInfo:
@@ -621,251 +622,126 @@ class TestGetCurrentAttempt:
 
 
 class TestIncrementAttempt:
-    """Test incrementing attempt count and posting comments."""
+    """Test incrementing attempt count and propagation."""
 
-    @patch("auto_coder.attempt_manager.get_current_attempt")
     @patch("auto_coder.github_client.GitHubClient")
-    def test_increment_attempt_basic(self, mock_github_client, mock_get_current_attempt):
-        """Test basic increment attempt."""
-        # Mock current attempt count
+    @patch("auto_coder.attempt_manager.get_current_attempt")
+    def test_increment_attempt_posts_comment_and_increments(self, mock_get_current_attempt, mock_github_client):
+        """Incrementing adds a new attempt comment based on the current count."""
         mock_get_current_attempt.return_value = 1
 
-        # Mock the GitHub client
         mock_client = Mock()
         mock_repo = Mock()
-        mock_issue = Mock()
+        mock_issue = Mock(state="open")
 
+        mock_repo.get_issue.return_value = mock_issue
         mock_client.get_repository.return_value = mock_repo
-        mock_client.get_repository.return_value = mock_repo
-        mock_client.get_repository.return_value = mock_repo
+        mock_client.get_all_sub_issues.return_value = []
         mock_github_client.get_instance.return_value = mock_client
 
-        # Mock get_issue
-        mock_repo.get_issue.return_value = mock_issue
+        result = increment_attempt("owner/repo", 321)
 
-        # Mock get_all_sub_issues to return empty list (no sub-issues)
-        mock_client.get_all_sub_issues.return_value = []
+        assert result == 2
+        mock_get_current_attempt.assert_called_once_with("owner/repo", 321)
+        mock_client.add_comment_to_issue.assert_called_once()
+        args = mock_client.add_comment_to_issue.call_args[0]
+        assert args[0] == "owner/repo"
+        assert args[1] == 321
+        assert ATTEMPT_COMMENT_PREFIX in args[2]
+        assert "Attempt #2" in args[2]
+
+    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.attempt_manager.get_current_attempt")
+    def test_increment_attempt_propagates_and_reopens_sub_issues(self, mock_get_current_attempt, mock_github_client):
+        """Attempt increment posts comments for sub-issues and reopens closed ones."""
+        attempts = {123: 1, 456: 0}
+        mock_get_current_attempt.side_effect = lambda repo, issue_num: attempts.get(issue_num, 0)
+
+        mock_client = Mock()
+        mock_repo = Mock()
+        issues = {123: Mock(state="open"), 456: Mock(state="closed")}
+
+        mock_repo.get_issue.side_effect = lambda issue_num: issues[issue_num]
+        mock_client.get_repository.return_value = mock_repo
+        mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456] if issue_num == 123 else []
+        mock_github_client.get_instance.return_value = mock_client
 
         result = increment_attempt("owner/repo", 123)
 
         assert result == 2
-        mock_get_current_attempt.assert_called_once_with("owner/repo", 123)
-        mock_client.add_comment_to_issue.assert_called_once()
-        # Verify comment was posted
-        call_args = mock_client.add_comment_to_issue.call_args
-        assert "owner/repo" in call_args[0]
-        assert 123 in call_args[0]
-        assert ATTEMPT_COMMENT_PREFIX in call_args[0][2]  # comment is at index 2
+        assert mock_client.add_comment_to_issue.call_count == 2
+        parent_call, sub_call = mock_client.add_comment_to_issue.call_args_list
+        assert parent_call[0][1] == 123
+        assert "Attempt #2" in parent_call[0][2]
+        assert sub_call[0][1] == 456
+        assert "Attempt #1" in sub_call[0][2]
+        mock_client.reopen_issue.assert_called_once()
+        reopen_args = mock_client.reopen_issue.call_args[0]
+        assert reopen_args[0] == "owner/repo"
+        assert reopen_args[1] == 456
+        assert "parent issue #123" in reopen_args[2]
 
-    @patch("auto_coder.attempt_manager.get_current_attempt")
     @patch("auto_coder.github_client.GitHubClient")
-    def test_increment_attempt_first_time(self, mock_github_client, mock_get_current_attempt):
-        """Test incrementing attempt for first time (no previous attempts)."""
-        # Mock current attempt count (0)
-        mock_get_current_attempt.return_value = 0
+    @patch("auto_coder.attempt_manager.get_current_attempt")
+    def test_increment_attempt_does_not_reopen_open_sub_issue(self, mock_get_current_attempt, mock_github_client):
+        """Open sub-issues are left open but still receive a new attempt comment."""
+        attempts = {123: 0, 456: 0}
+        mock_get_current_attempt.side_effect = lambda repo, issue_num: attempts.get(issue_num, 0)
 
-        # Mock the GitHub client
         mock_client = Mock()
         mock_repo = Mock()
+        issues = {123: Mock(state="open"), 456: Mock(state="open")}
 
+        mock_repo.get_issue.side_effect = lambda issue_num: issues[issue_num]
         mock_client.get_repository.return_value = mock_repo
+        mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456] if issue_num == 123 else []
         mock_github_client.get_instance.return_value = mock_client
-
-        # Mock get_all_sub_issues to return empty list
-        mock_client.get_all_sub_issues.return_value = []
 
         result = increment_attempt("owner/repo", 123)
 
         assert result == 1
-        mock_get_current_attempt.assert_called_once_with("owner/repo", 123)
+        assert mock_client.add_comment_to_issue.call_count == 2
+        mock_client.reopen_issue.assert_not_called()
 
-    @patch("auto_coder.attempt_manager.get_current_attempt")
     @patch("auto_coder.github_client.GitHubClient")
-    def test_increment_attempt_with_sub_issues(self, mock_github_client, mock_get_current_attempt):
-        """Test incrementing attempt propagates to sub-issues."""
-        # Mock current attempt count
-        mock_get_current_attempt.return_value = 1
+    @patch("auto_coder.attempt_manager.get_current_attempt")
+    def test_increment_attempt_continues_when_sub_issue_fails(self, mock_get_current_attempt, mock_github_client):
+        """Propagating attempts should continue even if one sub-issue errors."""
+        attempts = {123: 1, 456: 0, 789: 0}
+        mock_get_current_attempt.side_effect = lambda repo, issue_num: attempts.get(issue_num, 0)
 
-        # Mock the GitHub client
         mock_client = Mock()
         mock_repo = Mock()
-        mock_issue = Mock()
+        issues = {123: Mock(state="open"), 456: Mock(state="closed")}
 
+        def get_issue_side_effect(issue_num):
+            if issue_num == 789:
+                raise Exception("failed to load sub-issue")
+            return issues.get(issue_num, Mock(state="open"))
+
+        mock_repo.get_issue.side_effect = get_issue_side_effect
         mock_client.get_repository.return_value = mock_repo
+        mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456, 789] if issue_num == 123 else []
         mock_github_client.get_instance.return_value = mock_client
-
-        # Mock get_issue
-        mock_repo.get_issue.return_value = mock_issue
-
-        # Mock sub-issues
-        sub_issues = [456, 789]
-        mock_client.get_all_sub_issues.return_value = sub_issues
-
-        # Track whether increment_attempt is called for sub-issues by checking
-        # that get_current_attempt is called with sub-issue numbers
-        get_current_attempt_calls = []
-
-        def track_get_current_attempt(*args, **kwargs):
-            issue_number = args[1] if len(args) > 1 else args[0]
-            get_current_attempt_calls.append(issue_number)
-            return 1  # Return attempt count
-
-        mock_get_current_attempt.side_effect = track_get_current_attempt
 
         result = increment_attempt("owner/repo", 123)
 
         assert result == 2
-        # Verify that get_current_attempt was called for parent and sub-issues
-        assert 123 in get_current_attempt_calls
-        assert 456 in get_current_attempt_calls
-        assert 789 in get_current_attempt_calls
-        # Total of 3 calls: 1 parent + 2 sub-issues
-        assert len(get_current_attempt_calls) == 3
+        # Parent and first sub-issue should get comments; failing sub-issue is skipped
+        assert mock_client.add_comment_to_issue.call_count == 2
+        mock_client.reopen_issue.assert_called_once_with("owner/repo", 456, ANY)
 
-    @patch("auto_coder.attempt_manager.get_current_attempt")
-    @patch("auto_coder.github_client.GitHubClient")
-    def test_increment_attempt_reopens_closed_sub_issues(self, mock_github_client, mock_get_current_attempt):
-        """Test incrementing attempt reopens closed sub-issues."""
-        # Mock current attempt count
-        mock_get_current_attempt.return_value = 1
 
-        # Mock the GitHub client
-        mock_client = Mock()
-        mock_repo = Mock()
+class TestGenerateWorkBranchName:
+    """Test branch name generation for attempts."""
 
-        mock_client.get_repository.return_value = mock_repo
-        mock_github_client.get_instance.return_value = mock_client
+    def test_generate_branch_without_attempt(self):
+        """Branch omits attempt segment when attempt is zero."""
+        assert generate_work_branch_name(42, 0) == "issue-42"
 
-        # Mock sub-issues
-        sub_issues = [456, 789]
-        mock_client.get_all_sub_issues.return_value = sub_issues
-
-        # Mock get_issue to return closed issues
-        mock_issue = Mock()
-        mock_issue.state = "closed"
-        mock_repo.get_issue.return_value = mock_issue
-
-        # Track reopen calls
-        reopen_calls = []
-
-        def mock_reopen(repo_name, issue_number, comment):
-            reopen_calls.append(issue_number)
-
-        mock_client.reopen_issue = mock_reopen
-
-        # Track increment calls for sub-issues
-        increment_calls = []
-
-        def mock_increment_attempt(repo, issue_num):
-            increment_calls.append(issue_num)
-
-        with patch("auto_coder.attempt_manager.increment_attempt", side_effect=mock_increment_attempt):
-            result = increment_attempt("owner/repo", 123)
-
-            assert result == 2
-            # Verify sub-issues were reopened
-            assert 456 in reopen_calls
-            assert 789 in reopen_calls
-
-    @patch("auto_coder.attempt_manager.get_current_attempt")
-    @patch("auto_coder.github_client.GitHubClient")
-    def test_increment_attempt_does_not_reopen_open_sub_issues(self, mock_github_client, mock_get_current_attempt):
-        """Test incrementing attempt doesn't reopen already open sub-issues."""
-        # Mock current attempt count
-        mock_get_current_attempt.return_value = 1
-
-        # Mock the GitHub client
-        mock_client = Mock()
-        mock_repo = Mock()
-
-        mock_client.get_repository.return_value = mock_repo
-        mock_github_client.get_instance.return_value = mock_client
-
-        # Mock sub-issues
-        sub_issues = [456]
-        mock_client.get_all_sub_issues.return_value = sub_issues
-
-        # Mock get_issue to return open issue
-        mock_issue = Mock()
-        mock_issue.state = "open"
-        mock_repo.get_issue.return_value = mock_issue
-
-        # Track reopen calls
-        reopen_called = []
-
-        def mock_reopen(repo_name, issue_number, comment):
-            reopen_called.append(issue_number)
-
-        mock_client.reopen_issue = mock_reopen
-
-        with patch("auto_coder.attempt_manager.increment_attempt", return_value=2):
-            result = increment_attempt("owner/repo", 123)
-
-            assert result == 2
-            # Verify sub-issue was NOT reopened (already open)
-            assert len(reopen_called) == 0
-
-    @patch("auto_coder.attempt_manager.get_current_attempt")
-    @patch("auto_coder.github_client.GitHubClient")
-    def test_increment_attempt_error_handling(self, mock_github_client, mock_get_current_attempt):
-        """Test incrementing attempt handles errors gracefully."""
-        # Mock current attempt count
-        mock_get_current_attempt.return_value = 1
-
-        # Mock the GitHub client to raise exception
-        mock_client = Mock()
-        mock_github_client.get_instance.return_value = mock_client
-        mock_client.get_repository.side_effect = Exception("API error")
-
-        with pytest.raises(Exception):
-            increment_attempt("owner/repo", 123)
-
-    @patch("auto_coder.attempt_manager.get_current_attempt")
-    @patch("auto_coder.github_client.GitHubClient")
-    def test_increment_attempt_propagation_continues_on_error(self, mock_github_client, mock_get_current_attempt):
-        """Test incrementing attempt continues propagating even if one sub-issue fails."""
-        # Mock current attempt count
-        mock_get_current_attempt.return_value = 1
-
-        # Mock the GitHub client
-        mock_client = Mock()
-        mock_repo = Mock()
-
-        mock_client.get_repository.return_value = mock_repo
-        mock_github_client.get_instance.return_value = mock_client
-
-        # Mock sub-issues
-        sub_issues = [456, 789, 999]
-        mock_client.get_all_sub_issues.return_value = sub_issues
-
-        # Mock get_issue to raise exception for one sub-issue
-        def mock_get_issue_side_effect(issue_num):
-            mock_issue = Mock()
-            if issue_num == 789:
-                raise Exception(f"Failed to process issue {issue_num}")
-            mock_issue.state = "closed"
-            return mock_issue
-
-        mock_repo.get_issue.side_effect = mock_get_issue_side_effect
-
-        # Track reopen and increment calls
-        reopen_calls = []
-        increment_calls = []
-
-        def mock_reopen(repo_name, issue_number, comment):
-            reopen_calls.append(issue_number)
-
-        def mock_increment_attempt(repo, issue_num):
-            increment_calls.append(issue_num)
-
-        mock_client.reopen_issue = mock_reopen
-
-        with patch("auto_coder.attempt_manager.increment_attempt", side_effect=mock_increment_attempt):
-            result = increment_attempt("owner/repo", 123)
-
-            assert result == 2
-            # Verify some sub-issues were still processed
-            assert len(increment_calls) >= 2  # At least parent + some sub-issues
+    def test_generate_branch_with_attempt(self):
+        """Branch includes attempt segment when attempt is positive."""
+        assert generate_work_branch_name(42, 3) == "issue-42/attempt-3"
 
 
 class TestExtractAttemptFromBranch:
