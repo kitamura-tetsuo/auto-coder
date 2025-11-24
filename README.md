@@ -267,58 +267,132 @@ version = "1.0.0"
 created_at = "2023-01-01T00:00:00"
 updated_at = "2023-01-01T00:00:00"
 
+[backend]
+order = ["gemini", "qwen", "claude"]
+default = "gemini"
+
 [backends.codex]
+enabled = true
 api_key = ""
 base_url = ""
 model = "codex"
 temperature = 0.7
 timeout = 30
 max_retries = 3
+usage_limit_retry_count = 0
+usage_limit_retry_wait_seconds = 0
 
 [backends.codex_mcp]
+enabled = true
 api_key = ""
 base_url = ""
 model = "codex-mcp"
 temperature = 0.7
 timeout = 30
 max_retries = 3
+usage_limit_retry_count = 0
+usage_limit_retry_wait_seconds = 0
 
 [backends.gemini]
+enabled = true
 api_key = "your-gemini-api-key"  # Alternatively use GEMINI_API_KEY env var
 base_url = ""
 model = "gemini-2.5-pro"
 temperature = 0.7
 timeout = 30
 max_retries = 3
+usage_limit_retry_count = 3
+usage_limit_retry_wait_seconds = 30
 
 [backends.qwen]
+enabled = true
 api_key = "your-qwen-api-key"  # Alternatively use OPENAI_API_KEY env var
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Or your OpenAI-compatible endpoint
 model = "qwen3-coder-plus"
 temperature = 0.7
 timeout = 30
 max_retries = 3
+usage_limit_retry_count = 2
+usage_limit_retry_wait_seconds = 60
 
 [backends.claude]
+enabled = true
 api_key = "your-claude-api-key"  # Alternatively use ANTHROPIC_API_KEY env var
 base_url = ""
 model = "sonnet"
 temperature = 0.7
 timeout = 30
 max_retries = 3
+usage_limit_retry_count = 5
+usage_limit_retry_wait_seconds = 45
 
 [backends.auggie]
+enabled = true
 api_key = ""
 base_url = ""
 model = "GPT-5"
 temperature = 0.7
 timeout = 30
 max_retries = 3
+usage_limit_retry_count = 1
+usage_limit_retry_wait_seconds = 120
 
-[defaults]
-backend = "codex"
-fallback_order = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
+[message_backend]
+order = ["claude"]
+default = "claude"
 ```
+
+### Retry Configuration
+
+Auto-Coder supports automatic retry on usage limit errors for LLM backends. This feature helps handle temporary rate limits or quota exhaustion by allowing backends to retry requests before rotating to the next available backend.
+
+#### Configuration Fields
+
+Each backend in the TOML configuration file can specify retry behavior using these fields:
+
+- **`usage_limit_retry_count`**: Number of times to retry when a usage limit error is encountered (default: 0)
+  - Set to 0 to disable retries (immediately rotate to next backend)
+  - Set to a positive number to retry on the same backend before rotating
+
+- **`usage_limit_retry_wait_seconds`**: Number of seconds to wait between retry attempts (default: 0)
+  - This delay allows the backend's usage quota to reset or rate limits to expire
+  - Recommended values depend on the backend provider's rate limiting policies
+
+#### Behavior
+
+**When retry is configured (usage_limit_retry_count > 0):**
+1. Backend encounters a usage limit error
+2. System retries the same backend up to `usage_limit_retry_count` times
+3. Waits `usage_limit_retry_wait_seconds` between each retry attempt
+4. If all retries are exhausted, rotates to the next backend in the configured order
+5. Continues through the backend rotation until a successful response is received or all backends are exhausted
+
+**When retry is not configured (usage_limit_retry_count = 0, default):**
+1. Backend encounters a usage limit error
+2. Immediately rotates to the next backend in the configured order
+3. No retry attempts on the same backend
+
+#### Example Configuration
+
+The example configuration above demonstrates different retry settings for different backends:
+
+- **Gemini**: Retries 3 times with 30-second delays between attempts
+- **Qwen**: Retries 2 times with 60-second delays between attempts
+- **Claude**: Retries 5 times with 45-second delays between attempts (more aggressive retry policy)
+- **Auggie**: Retries 1 time with 120-second delays (longer wait time due to daily limits)
+- **Codex/Codex-MCP**: No retries (0 count, 0 wait) - immediately rotates on usage limits
+
+#### Recommended Settings
+
+Different LLM providers have different rate limiting behaviors:
+
+- **Gemini**: 3-5 retries with 30-60 second waits typically works well
+- **Claude**: 3-5 retries with 30-60 second waits
+- **Qwen**: 2-3 retries with 60-120 second waits, especially for API keys
+- **Auggie**: 1-2 retries with 120+ seconds (due to strict daily call limits)
+- **Codex**: 0-1 retries (OpenAI Codex has strict rate limits)
+
+Adjust these values based on your usage patterns and the specific rate limits of your LLM providers.
 
 ### Environment Variables
 
