@@ -311,6 +311,7 @@ timeout = 30
 max_retries = 3
 usage_limit_retry_count = 3
 usage_limit_retry_wait_seconds = 30
+always_switch_after_execution = false
 
 [backends.qwen]
 enabled = true
@@ -322,6 +323,7 @@ timeout = 30
 max_retries = 3
 usage_limit_retry_count = 2
 usage_limit_retry_wait_seconds = 60
+always_switch_after_execution = false
 
 [backends.claude]
 enabled = true
@@ -401,6 +403,30 @@ Different LLM providers have different rate limiting behaviors:
 - **Codex**: 0-1 retries (OpenAI Codex has strict rate limits)
 
 Adjust these values based on your usage patterns and the specific rate limits of your LLM providers.
+
+### Post-Execution Backend Rotation
+
+Enable `always_switch_after_execution` on individual backends to rotate to the next backend in `backend.order` after every successful run. This is useful when you want round-robin usage across providers (for example, to spread traffic, avoid hitting soft limits, or comply with single-execution quotas) instead of sticking to the same backend until a failure occurs.
+
+Example:
+
+```toml
+[backend]
+order = ["gemini", "qwen", "claude"]
+default = "gemini"
+
+[backends.gemini]
+enabled = true
+model = "gemini-2.5-pro"
+always_switch_after_execution = true  # switch to qwen after each gemini call
+
+[backends.qwen]
+enabled = true
+model = "qwen3-coder-plus"
+always_switch_after_execution = true  # continue rotation to claude next
+```
+
+If `always_switch_after_execution` is omitted or set to `false`, Auto-Coder keeps using the active backend until a retry/rotation condition is triggered.
 
 ### Environment Variables
 

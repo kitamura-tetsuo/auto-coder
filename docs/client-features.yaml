@@ -70,6 +70,33 @@ The auto-coder system supports multiple LLM backends:
           usage_limit_retry_wait_seconds = 30
       configuration_file: "~/.auto-coder/llm_config.toml"
       scope: "Per-backend configuration allows different backends to have different retry policies"
+  post_execution_rotation:
+      description: "Optional round-robin style rotation after every successful backend call"
+      fields:
+        - name: "always_switch_after_execution"
+          type: "bool"
+          default: false
+          purpose: "If true, immediately switch to the next backend in backend.order after a successful execution"
+      use_cases:
+        - "Distribute traffic evenly across providers"
+        - "Avoid soft per-backend limits by rotating proactively"
+        - "Comply with backends that only permit a single execution per window"
+      example:
+        toml_example: |
+          [backend]
+          order = ["gemini", "qwen", "claude"]
+
+          [backends.gemini]
+          enabled = true
+          model = "gemini-2.5-pro"
+          always_switch_after_execution = true
+
+          [backends.qwen]
+          enabled = true
+          model = "qwen3-coder-plus"
+          always_switch_after_execution = true
+      configuration_file: "~/.auto-coder/llm_config.toml"
+      scope: "Per-backend flag; defaults to false when omitted"
 
 #### GraphRAG Integration
 
