@@ -737,7 +737,7 @@ def get_detailed_checks_from_history(
             # Get jobs for this run using gh run view
             gh_logger = get_gh_logger()
             jobs_result = gh_logger.execute_with_logging(
-                ["gh", "run", "view", str(run_id), "--json", "jobs"],
+                ["gh", "run", "view", str(run_id), "-R", repo_name, "--json", "jobs"],
                 repo=repo_name,
                 timeout=60,
                 capture_output=True,
@@ -792,7 +792,7 @@ def get_detailed_checks_from_history(
                 # Fallback: create a check based on run conclusion
                 gh_logger = get_gh_logger()
                 run_result = gh_logger.execute_with_logging(
-                    ["gh", "run", "view", str(run_id), "--json", "conclusion,status"],
+                    ["gh", "run", "view", str(run_id), "-R", repo_name, "--json", "conclusion,status"],
                     repo=repo_name,
                     timeout=60,
                     capture_output=True,
@@ -1339,6 +1339,8 @@ def _search_github_actions_logs_from_history(
                         "gh",
                         "run",
                         "list",
+                        "-R",
+                        repo_name,
                         "--limit",
                         str(max_runs),
                         "--json",
@@ -1376,6 +1378,8 @@ def _search_github_actions_logs_from_history(
                     "gh",
                     "run",
                     "list",
+                    "-R",
+                    repo_name,
                     "--limit",
                     str(max_runs),
                     "--json",
@@ -1391,6 +1395,8 @@ def _search_github_actions_logs_from_history(
                         "gh",
                         "run",
                         "list",
+                        "-R",
+                        repo_name,
                         "--limit",
                         str(max_runs),
                         "--json",
@@ -1586,6 +1592,8 @@ def _get_github_actions_logs(
                 "gh",
                 "run",
                 "list",
+                "-R",
+                repo_name,
                 "--limit",
                 "50",
                 "--json",
@@ -1614,7 +1622,7 @@ def _get_github_actions_logs(
             if run_id:
                 gh_logger = get_gh_logger()
                 jobs_res = gh_logger.execute_with_logging(
-                    ["gh", "run", "view", run_id, "--json", "jobs"],
+                    ["gh", "run", "view", run_id, "-R", repo_name, "--json", "jobs"],
                     repo=repo_name,
                     timeout=60,
                     capture_output=True,

@@ -85,6 +85,10 @@ class TestSearchGitHubActionsLogsFromHistory:
 
                 result = _search_github_actions_logs_from_history("test/repo", config, failed_checks, max_runs=10)
 
+                run_list_command = mock_cmd.call_args_list[0].args[0]
+                assert "-R" in run_list_command
+                assert "test/repo" in run_list_command
+
                 # Ensure the job lookup is scoped to the repository
                 job_view_command = mock_cmd.call_args_list[1].args[0]
                 assert "-R" in job_view_command
