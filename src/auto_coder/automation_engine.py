@@ -12,8 +12,9 @@ from .automation_config import AutomationConfig, Candidate, CandidateProcessingR
 from .backend_manager import LLMBackendManager, get_llm_backend_manager, run_llm_prompt
 from .fix_to_pass_tests_runner import fix_to_pass_tests
 from .gh_logger import get_gh_logger
-from .git_branch import git_commit_with_retry
+from .git_branch import extract_number_from_branch, git_commit_with_retry
 from .git_commit import git_push
+from .git_info import get_current_branch
 from .github_client import GitHubClient
 from .issue_processor import create_feature_issues
 from .label_manager import LabelManager
@@ -24,7 +25,7 @@ from .pr_processor import process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
-from .util.github_action import get_github_actions_logs_from_url
+from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -45,6 +46,83 @@ class AutomationEngine:
 
         # Note: Report directories are created per repository,
         # so we do not create one here (created in _save_report)
+
+    def _check_and_handle_closed_branch(self, repo_name: str) -> bool:
+        """
+        Check if the current branch corresponds to a closed PR or Issue and handle it.
+
+        This method:
+        1. Identifies the current branch
+        2. Determines if it corresponds to a PR or Issue (by extracting number from branch name)
+        3. Checks if that PR/Issue is closed on GitHub
+        4. If closed, checkout main and call check_and_handle_closed_state
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+
+        Returns:
+            True if processing should continue (item is not closed), False otherwise (will exit)
+        """
+        try:
+            # Get current branch name
+            current_branch = get_current_branch()
+            if not current_branch:
+                logger.debug("Could not get current branch, skipping closed branch check")
+                return True
+
+            logger.debug(f"Current branch: {current_branch}")
+
+            # Extract issue/PR number from branch name
+            # Branch naming convention: issue-<number> (not pr-<number>)
+            item_number = extract_number_from_branch(current_branch)
+            if item_number is None:
+                logger.debug(f"Branch '{current_branch}' does not match issue/PR pattern, skipping closed branch check")
+                return True
+
+            # Determine item type based on branch name pattern
+            # According to AGENTS.md, only 'issue-<number>' pattern is used
+            # (pr-<number> pattern is prohibited)
+            item_type = "issue"
+            if "issue-" not in current_branch.lower():
+                # If somehow we have a pr-<number> branch (shouldn't happen per AGENTS.md)
+                # treat it as a PR
+                item_type = "pr"
+
+            logger.info(f"Found {item_type} #{item_number} in branch '{current_branch}', checking if closed...")
+
+            # Get current item state from GitHub
+            repo = self.github.get_repository(repo_name)
+            if item_type == "issue":
+                issue = repo.get_issue(item_number)
+                current_item = self.github.get_issue_details(issue)
+            else:
+                pr = repo.get_pull(item_number)
+                current_item = self.github.get_pr_details(pr)
+
+            # Check if item is closed
+            if current_item.get("state") == "closed":
+                logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch and calling check_and_handle_closed_state")
+
+                # Call check_and_handle_closed_state which will:
+                # 1. Switch to main branch
+                # 2. Exit the program
+                return check_and_handle_closed_state(
+                    repo_name,
+                    item_type,
+                    item_number,
+                    self.config,
+                    self.github,
+                    current_item=current_item,
+                )
+
+            # Item is not closed, continue processing
+            logger.debug(f"{item_type.capitalize()} #{item_number} is open, continuing processing")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Failed to check/handle closed branch state: {e}")
+            # Continue processing on error
+            return True
 
     def _get_candidates(self, repo_name: str, max_items: Optional[int] = None) -> List[Candidate]:
         """Collect PR/Issue candidates with priority.
@@ -351,6 +429,19 @@ class AutomationEngine:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
+        # Check if current branch corresponds to a closed PR/Issue
+        if not self._check_and_handle_closed_branch(repo_name):
+            # check_and_handle_closed_state will handle branch switching and exit
+            # This line should not be reached, but just in case
+            return {
+                "repository": repo_name,
+                "timestamp": datetime.now().isoformat(),
+                "jules_mode": jules_mode,
+                "issues_processed": [],
+                "prs_processed": [],
+                "errors": ["Exited due to closed item on current branch"],
+            }
+
         # Get LLM backend information
         llm_backend_info = self._get_llm_backend_info()
 
@@ -444,6 +535,19 @@ class AutomationEngine:
         from datetime import datetime
 
         with ProgressStage("Processing single PR/IS"):
+            # Check if current branch corresponds to a closed PR/Issue
+            if not self._check_and_handle_closed_branch(repo_name):
+                # check_and_handle_closed_state will handle branch switching and exit
+                # This line should not be reached, but just in case
+                return {
+                    "repository": repo_name,
+                    "timestamp": datetime.now().isoformat(),
+                    "jules_mode": jules_mode,
+                    "issues_processed": [],
+                    "prs_processed": [],
+                    "errors": ["Exited due to closed item on current branch"],
+                }
+
             logger.info(f"Processing single target: type={target_type}, number={number} for {repo_name}")
             result = ProcessResult(
                 repository=repo_name,
