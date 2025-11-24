@@ -189,76 +189,41 @@ This fork maintains full attribution to the original author Riley Lemm. The orig
     propagation:
       - "increment_attempt also reopens closed sub-issues and bumps their counters to keep parent/child attempts in sync."
 
-## PR Mergeability Remediation
+## Lock Mechanism
 
-  mergeability_remediation:
-    description: "Automated handling of non-mergeable PRs through base branch updates and conflict resolution."
-    configuration:
-      - name: "ENABLE_MERGEABILITY_REMEDIATION"
-        type: "bool"
-        default: true
-        purpose: "Enables automatic remediation flow for non-mergeable PRs when set to true"
+  lock_mechanism:
+    description: "Prevents concurrent auto-coder executions to avoid conflicts and data corruption"
+    behavior:
+      - "Automatically acquires a lock before executing any command (except read-only commands like 'config' and 'unlock')"
+      - "Lock files are stored in the repository's .git directory as 'auto-coder.lock'"
+      - "Lock information includes PID, hostname, and start time"
+      - "Automatically detects stale locks (process no longer running)"
+      - "Lock is released when command completes successfully"
+    commands:
+      auto_lock:
+        description: "Lock is automatically acquired by default for all commands"
+        exceptions: "Read-only commands ('config', 'unlock', 'auth-status', 'get-actions-logs', 'mcp-pdb')"
+      unlock:
+        description: "Manually remove a lock file"
+        usage: "auto-coder lock unlock"
+        options:
+          - "--force: Force remove lock file even if process appears to be running (use with caution)"
         behavior:
-          - "When PR is detected as not mergeable, system automatically initiates remediation"
-          - "Flow checks out PR branch, updates from base branch, resolves conflicts, and pushes changes"
-          - "On successful push, sets ACTION_FLAG:SKIP_ANALYSIS to mark PR as processed"
-          - "Failure scenarios are handled gracefully with detailed error reporting"
-      - name: "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL"
-        type: "bool"
-        default: true
-        purpose: "Controls whether to merge base branch when GitHub Actions checks fail"
-        behavior:
-          - "When true: Skips base branch update during fix flows to reduce noisy rebases"
-          - "When false: Performs base branch update before attempting fixes"
-          - "Only applies when GitHub Actions checks have failed"
-    flow:
-      detection:
-        - "System checks PR mergeable status using GitHub API"
-        - "If mergeable=false, records state status (CLEAN, DIRTY, UNKNOWN)"
-        - "With ENABLE_MERGEABILITY_REMEDIATION=true, initiates remediation flow"
-      remediation_steps:
-        - "1. Get PR details and determine base branch (main or custom)"
-        - "2. Checkout PR branch using gh pr checkout"
-        - "3. Fetch latest base branch changes"
-        - "4. Merge base branch into PR branch"
-        - "5. If conflicts detected, resolve using specialized handlers:"
-          - "Package-lock conflicts: Delete and regenerate lock files (npm/yarn)"
-          - "Package.json dependency-only conflicts: Merge dependencies preferring newer versions"
-          - "General conflicts: Use LLM to resolve remaining conflicts"
-        - "6. Commit merge resolution changes"
-        - "7. Push updated branch with retry logic"
-      conflict_resolution_strategies:
-        package_lock:
-          - "Detects package-lock.json, yarn.lock, pnpm-lock.yaml conflicts"
-          - "Removes conflicted lock files and regenerates via package manager"
-          - "Monorepo-friendly: processes each conflicted directory independently"
-          - "Attempts npm install first, falls back to yarn if needed"
-        package_json_deps:
-          - "Detects package.json conflicts affecting only dependency sections"
-          - "Merges dependencies from both sides:"
-            - "Takes union of all packages"
-            - "For version conflicts, prefers newer semver version"
-            - "Tie-breaker: prefers side with more dependencies in that section"
-          - "Leaves non-dependency sections unchanged (they are identical by detection)"
-        general_conflicts:
-          - "Uses LLM to resolve remaining conflicts"
-          - "Passes commit history and PR context to LLM for informed decisions"
-          - "Validates resolution by checking for remaining conflict markers"
-          - "Falls back to attempt increment on unresolved conflicts"
-      completion_criteria:
-        - "Success: ACTION_FLAG:SKIP_ANALYSIS set after successful push"
-        - "Run considered complete when:"
-          - "Mergeability remediation completed successfully, OR"
-          - "PR was already mergeable and merged, OR"
-          - "GitHub Actions passed and PR was merged, OR"
-          - "Tests were fixed and pushed successfully"
-      error_handling:
-        - "Checkout failures: Reported but don't block other PRs"
-        - "Update failures: Detailed error messages with rollback to clean state"
-        - "Push failures: Automatic retry with brief pause, final failure reported"
-        - "LLM resolution failures: Triggers attempt increment for linked issues"
-        - "Unresolved conflict markers: Triggers fallback mechanism"
-    testing:
-      - "Tested via test_pr_mergeability_remediation.py"
-      - "Validates detection, flow invocation, success and failure paths"
-      - "Includes edge cases like checkout failures and update failures"
+          - "Shows lock information before removing"
+          - "Prevents removal if process is still running (unless --force is used)"
+          - "Automatically detects and removes stale locks without --force flag"
+    error_handling:
+      concurrent_execution:
+        description: "When another instance is already running"
+        message: "Displays error with lock information (PID, hostname, start time, status)"
+        action: "User must wait for existing instance to complete or use 'unlock' command"
+      stale_lock:
+        description: "When lock file exists but process is no longer running"
+        detection: "Checks if PID is still active using os.kill(pid, 0) on Unix or OpenProcess on Windows"
+        action: "Safe to remove without --force flag"
+    technical_details:
+      implementation: "LockManager class in src/auto_coder/lock_manager.py"
+      cli_commands: "src/auto_coder/cli_commands_lock.py"
+      integration: "Lock check in cli.py before command execution"
+      skip_conditions: "Temporary directories (paths containing 'tmp' or 'pytest')"
+      storage_format: "JSON file with pid, hostname, and started_at fields"
