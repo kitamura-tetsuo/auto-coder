@@ -10,6 +10,7 @@ from src.auto_coder.utils import CommandResult
 from tests.support.env import patch_environment
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient provider chain - provider rotation now handled by BackendManager")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, mock_run, tmp_path) -> None:
@@ -59,6 +60,7 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
     assert client.model_name == "qwen3-coder-plus"
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient provider chain - provider rotation now handled by BackendManager")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path) -> None:
@@ -110,6 +112,7 @@ def test_qwen_client_fallback_to_openrouter(mock_run_command, mock_run, tmp_path
     assert client.model_name == "qwen/qwen3-coder:free"
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient provider chain - provider rotation now handled by BackendManager")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_run, tmp_path) -> None:
@@ -163,6 +166,7 @@ def test_qwen_client_fallbacks_to_oauth_after_api_keys(mock_run_command, mock_ru
     assert client._active_provider_index == 2
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient provider chain - provider rotation now handled by BackendManager")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_all_limits_raise(mock_run_command, mock_run, tmp_path) -> None:
