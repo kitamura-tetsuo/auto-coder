@@ -425,7 +425,14 @@ def build_backend_manager(
 
     def _create_claude_client(backend_name: str):
         """Create a ClaudeClient."""
-        return ClaudeClient(model_name=models.get(backend_name))
+        # Get the backend config to check if it's an alias
+        backend_config = config.get_backend_config(backend_name)
+        if backend_config and backend_config.backend_type == "claude":
+            # It's an alias with backend_type "claude", pass backend_name
+            return ClaudeClient(model_name=models.get(backend_name), backend_name=backend_name)
+        else:
+            # It's the default claude backend
+            return ClaudeClient(model_name=models.get(backend_name))
 
     def _create_auggie_client(backend_name: str):
         """Create an AuggieClient."""
@@ -433,7 +440,20 @@ def build_backend_manager(
 
     def _create_codex_client(backend_name: str):
         """Create a CodexClient."""
-        return CodexClient(model_name=models.get(backend_name, "codex"))
+        # Get the backend config
+        backend_config = config.get_backend_config(backend_name)
+        if backend_config and backend_config.backend_type == "codex":
+            # It's an alias with backend_type "codex", pass configuration values
+            return CodexClient(
+                model_name=models.get(backend_name, "codex"),
+                api_key=backend_config.api_key,
+                base_url=backend_config.base_url,
+                openai_api_key=backend_config.openai_api_key,
+                openai_base_url=backend_config.openai_base_url,
+            )
+        else:
+            # It's the default codex backend
+            return CodexClient(model_name=models.get(backend_name, "codex"))
 
     def _create_codex_mcp_client(backend_name: str):
         """Create a CodexMCPClient."""
