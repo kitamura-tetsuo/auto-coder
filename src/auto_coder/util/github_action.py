@@ -1938,7 +1938,12 @@ def check_github_actions_and_exit_if_in_progress(
                 logger.info(f"GitHub Actions checks are still in progress for {item_type} #{number}, switching to main branch")
 
                 # Switch to main branch with pull
-                with branch_context(config.MAIN_BRANCH):
+                from ..git_branch import switch_to_branch
+
+                switch_result = switch_to_branch(branch_name=config.MAIN_BRANCH, pull_after_switch=True)
+                if not switch_result.success:
+                    logger.warning(f"Failed to switch to {config.MAIN_BRANCH}: {switch_result.stderr}")
+                else:
                     logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
                 # Exit the program
                 logger.info(f"Exiting due to GitHub Actions in progress for {item_type} #{number}")
@@ -2000,7 +2005,12 @@ def check_and_handle_closed_state(
             logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
 
             # Switch to main branch with pull
-            with branch_context(config.MAIN_BRANCH):
+            from ..git_branch import switch_to_branch
+
+            switch_result = switch_to_branch(branch_name=config.MAIN_BRANCH, pull_after_switch=True)
+            if not switch_result.success:
+                logger.warning(f"Failed to switch to {config.MAIN_BRANCH}: {switch_result.stderr}")
+            else:
                 logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
             # Exit the program
             logger.info(f"Exiting after closing {item_type} #{item_number}")
