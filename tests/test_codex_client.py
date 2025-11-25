@@ -3,8 +3,9 @@ Tests for Codex client functionality.
 """
 
 import json
+import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -68,34 +69,33 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None: None):
-            client = CodexClient()
-            from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
-            client.model_name = "codex"  # Set model_name since we mocked __init__
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            # Execute the method
-            output = client._run_llm_cli("test prompt")
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
 
-            # Verify output is returned
-            assert output == "test output"
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
 
-            # Verify log file was created
-            assert log_file.exists()
+        # Verify output is returned
+        assert output == "test output"
 
-            # Verify JSON log entry
-            content = log_file.read_text().strip()
-            data = json.loads(content)
+        # Verify log file was created
+        assert log_file.exists()
 
-            assert data["event_type"] == "llm_interaction"
-            assert data["backend"] == "codex"
-            assert data["model"] == "codex"
-            assert data["status"] == "success"
-            assert data["prompt_length"] == len("test prompt")
-            assert data["response_length"] == len("test output")
-            assert "duration_ms" in data
-            assert "timestamp" in data
+        # Verify JSON log entry
+        content = log_file.read_text().strip()
+        data = json.loads(content)
+
+        assert data["event_type"] == "llm_interaction"
+        assert data["backend"] == "codex"
+        assert data["model"] == "codex"
+        assert data["status"] == "success"
+        assert data["prompt_length"] == len("test prompt")
+        assert data["response_length"] == len("test output")
+        assert "duration_ms" in data
+        assert "timestamp" in data
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -106,32 +106,31 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(False, "", "boom", 1)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None: None):
-            client = CodexClient()
-            from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
-            client.model_name = "codex"
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            # Execute the method and expect exception
-            with pytest.raises(RuntimeError):
-                client._run_llm_cli("test prompt")
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
 
-            # Verify log file was created
-            assert log_file.exists()
+        # Execute the method and expect exception
+        with pytest.raises(RuntimeError):
+            client._run_llm_cli("test prompt")
 
-            # Verify JSON log entry with error status
-            content = log_file.read_text().strip()
-            data = json.loads(content)
+        # Verify log file was created
+        assert log_file.exists()
 
-            assert data["event_type"] == "llm_interaction"
-            assert data["backend"] == "codex"
-            assert data["model"] == "codex"
-            assert data["status"] == "error"
-            assert data["prompt_length"] == len("test prompt")
-            assert "error" in data
-            assert "duration_ms" in data
-            assert "timestamp" in data
+        # Verify JSON log entry with error status
+        content = log_file.read_text().strip()
+        data = json.loads(content)
+
+        assert data["event_type"] == "llm_interaction"
+        assert data["backend"] == "codex"
+        assert data["model"] == "codex"
+        assert data["status"] == "error"
+        assert data["prompt_length"] == len("test prompt")
+        assert "error" in data
+        assert "duration_ms" in data
+        assert "timestamp" in data
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -191,45 +190,138 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None: None):
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
+
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
+
+        # Execute the method multiple times
+        for i in range(3):
+            output = client._run_llm_cli(f"test prompt {i}")
+
+        # Verify output is returned
+        assert output == "test output"
+
+        # Verify log file was created
+        assert log_file.exists()
+
+        # Verify there are exactly 3 log entries (one per call)
+        content = log_file.read_text().strip()
+        log_lines = [line for line in content.split("\n") if line.strip()]
+
+        assert len(log_lines) == 3, f"Expected 3 log entries, got {len(log_lines)}"
+
+        # Verify each log entry is valid JSON and has correct structure
+        for i, line in enumerate(log_lines):
+            data = json.loads(line)
+            assert data["event_type"] == "llm_interaction"
+            assert data["backend"] == "codex"
+            assert data["model"] == "codex"
+            assert data["status"] == "success"
+            assert "duration_ms" in data
+            assert "timestamp" in data
+            # Verify each entry corresponds to its call
+            assert data["prompt_length"] == len(f"test prompt {i}")
+
+        # Verify console summary is printed for each call
+        assert mock_print.called
+        print_calls = [str(call) for call in mock_print.call_args_list]
+        summary_text = "".join(print_calls)
+
+        # Should have 3 "Codex CLI Execution Summary" entries (one per call)
+        assert summary_text.count("Codex CLI Execution Summary") == 3
+
+    @patch("subprocess.run")
+    def test_init_with_custom_config(self, mock_run):
+        """CodexClient should accept and store custom configuration values."""
+        mock_run.return_value.returncode = 0
+        client = CodexClient(
+            model_name="custom-codex",
+            backend_name="custom-backend",
+            api_key="test_api_key",
+            base_url="https://test.example.com",
+            openai_api_key="test_openai_key",
+            openai_base_url="https://openai.test.example.com",
+        )
+        assert client.model_name == "custom-codex"
+        assert client.api_key == "test_api_key"
+        assert client.base_url == "https://test.example.com"
+        assert client.openai_api_key == "test_openai_key"
+        assert client.openai_base_url == "https://openai.test.example.com"
+
+    @patch("subprocess.run")
+    def test_init_falls_back_to_config_when_no_custom_config(self, mock_run):
+        """CodexClient should fall back to config when no custom values provided."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+
+        # Mock the config
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "config-model"
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
             client = CodexClient()
-            from src.auto_coder.llm_output_logger import LLMOutputLogger
+            assert client.model_name == "config-model"
 
-            client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
-            client.model_name = "codex"
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_run_injects_env_vars(self, mock_run_command, mock_run):
+        """CodexClient should inject environment variables into subprocess."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
-            # Execute the method multiple times
-            for i in range(3):
-                output = client._run_llm_cli(f"test prompt {i}")
+        client = CodexClient(
+            api_key="test_api_key",
+            base_url="https://test.example.com",
+            openai_api_key="test_openai_key",
+            openai_base_url="https://openai.test.example.com",
+        )
 
-            # Verify output is returned
-            assert output == "test output"
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
 
-            # Verify log file was created
-            assert log_file.exists()
+        # Verify CommandExecutor.run_command was called with env
+        assert mock_run_command.called
+        call_kwargs = mock_run_command.call_args[1]
+        # The env parameter should be passed
+        assert "env" in call_kwargs
+        env = call_kwargs["env"]
+        assert env["CODEX_API_KEY"] == "test_api_key"
+        assert env["CODEX_BASE_URL"] == "https://test.example.com"
+        assert env["OPENAI_API_KEY"] == "test_openai_key"
+        assert env["OPENAI_BASE_URL"] == "https://openai.test.example.com"
 
-            # Verify there are exactly 3 log entries (one per call)
-            content = log_file.read_text().strip()
-            log_lines = [line for line in content.split("\n") if line.strip()]
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_run_skips_env_vars_when_not_provided(self, mock_run_command, mock_run):
+        """CodexClient should not inject environment variables when not provided."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
-            assert len(log_lines) == 3, f"Expected 3 log entries, got {len(log_lines)}"
+        client = CodexClient(model_name="codex")
 
-            # Verify each log entry is valid JSON and has correct structure
-            for i, line in enumerate(log_lines):
-                data = json.loads(line)
-                assert data["event_type"] == "llm_interaction"
-                assert data["backend"] == "codex"
-                assert data["model"] == "codex"
-                assert data["status"] == "success"
-                assert "duration_ms" in data
-                assert "timestamp" in data
-                # Verify each entry corresponds to its call
-                assert data["prompt_length"] == len(f"test prompt {i}")
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
 
-            # Verify console summary is printed for each call
-            assert mock_print.called
-            print_calls = [str(call) for call in mock_print.call_args_list]
-            summary_text = "".join(print_calls)
+        # Verify CommandExecutor.run_command was called without env
+        assert mock_run_command.called
+        call_kwargs = mock_run_command.call_args[1]
+        # The env parameter should not be passed (or should be None)
+        if "env" in call_kwargs:
+            # Only os.environ should be used, no custom env
+            assert call_kwargs["env"] is None or call_kwargs["env"] is os.environ.copy()
 
-            # Should have 3 "Codex CLI Execution Summary" entries (one per call)
-            assert summary_text.count("Codex CLI Execution Summary") == 3
+    @patch("subprocess.run")
+    def test_model_name_default_with_custom_config(self, mock_run):
+        """CodexClient should use default model when model_name is None with custom config."""
+        mock_run.return_value.returncode = 0
+        client = CodexClient(
+            api_key="test_api_key",
+            base_url="https://test.example.com",
+        )
+        assert client.model_name == "codex"  # Default when model_name is None
+        assert client.api_key == "test_api_key"
+        assert client.base_url == "https://test.example.com"

@@ -387,11 +387,8 @@ def build_backend_manager(
 
     # Get API keys and base URLs from configuration
     gemini_config = config.get_backend_config("gemini")
-    qwen_config = config.get_backend_config("qwen")
 
     effective_gemini_api_key = gemini_config.api_key if gemini_config else None
-    effective_openai_api_key = qwen_config.openai_api_key if qwen_config else None
-    effective_openai_base_url = qwen_config.openai_base_url if qwen_config else None
 
     def _gm() -> str:
         return models.get("gemini", "gemini-2.5-pro")
@@ -407,16 +404,18 @@ def build_backend_manager(
 
     # Create factory functions that support both direct backend names and aliases
     def _create_qwen_client(backend_name: str):
-        """Create a QwenClient with options from config if it's an alias."""
+        """Create a QwenClient with options from config."""
         backend_config = config.get_backend_config(backend_name)
-        options = backend_config.options if backend_config else None
         return QwenClient(
             model_name=models.get(backend_name),
-            openai_api_key=effective_openai_api_key,
-            openai_base_url=effective_openai_base_url,
+            backend_name=backend_name,
             use_env_vars=True,
             preserve_existing_env=False,
-            options=options,
+            options=backend_config.options if backend_config else None,
+            api_key=backend_config.api_key if backend_config else None,
+            base_url=backend_config.base_url if backend_config else None,
+            openai_api_key=backend_config.openai_api_key if backend_config else None,
+            openai_base_url=backend_config.openai_base_url if backend_config else None,
         )
 
     def _create_gemini_client(backend_name: str):
@@ -424,16 +423,30 @@ def build_backend_manager(
         return GeminiClient(effective_gemini_api_key, model_name=models.get(backend_name)) if effective_gemini_api_key else GeminiClient(model_name=models.get(backend_name))
 
     def _create_claude_client(backend_name: str):
-        """Create a ClaudeClient."""
-        return ClaudeClient(model_name=models.get(backend_name))
+        """Create a ClaudeClient with optional configuration for aliases."""
+        backend_config = config.get_backend_config(backend_name)
+        return ClaudeClient(
+            model_name=models.get(backend_name),
+            backend_name=backend_name,
+            api_key=backend_config.api_key if backend_config else None,
+            base_url=backend_config.base_url if backend_config else None,
+        )
 
     def _create_auggie_client(backend_name: str):
         """Create an AuggieClient."""
         return AuggieClient(model_name=models.get(backend_name))
 
     def _create_codex_client(backend_name: str):
-        """Create a CodexClient."""
-        return CodexClient(model_name=models.get(backend_name, "codex"))
+        """Create a CodexClient with optional configuration for aliases."""
+        backend_config = config.get_backend_config(backend_name)
+        return CodexClient(
+            model_name=models.get(backend_name, "codex"),
+            backend_name=backend_name,
+            api_key=backend_config.api_key if backend_config else None,
+            base_url=backend_config.base_url if backend_config else None,
+            openai_api_key=backend_config.openai_api_key if backend_config else None,
+            openai_base_url=backend_config.openai_base_url if backend_config else None,
+        )
 
     def _create_codex_mcp_client(backend_name: str):
         """Create a CodexMCPClient."""

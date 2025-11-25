@@ -3,6 +3,7 @@ Codex CLI client for Auto-Coder.
 """
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -21,18 +22,47 @@ logger = get_logger(__name__)
 class CodexClient(LLMClientBase):
     """Codex CLI client for analyzing issues and generating solutions."""
 
-    def __init__(self, model_name: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        backend_name: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
+    ) -> None:
         """Initialize Codex CLI client.
 
         Args:
             model_name: Model name (not used by codex CLI, accepted for interface compatibility).
                         If None, will use the configuration value, then fall back to default.
+            backend_name: Backend name to use for configuration lookup (optional).
+                         If provided along with model_name=None, will use config for this backend.
+            api_key: API key for the backend (optional, for custom backends).
+            base_url: Base URL for the backend (optional, for custom backends).
+            openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
+            openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
         """
         config = get_llm_config()
-        config_backend = config.get_backend_config("codex")
 
-        # Use provided value, fall back to config, then to default
-        self.model_name = model_name or (config_backend and config_backend.model) or "codex"
+        # If backend_name is provided, get config from that backend
+        if backend_name:
+            config_backend = config.get_backend_config(backend_name)
+            # Use provided model_name, fall back to backend config, then to default
+            self.model_name = model_name or (config_backend and config_backend.model) or "codex"
+            self.api_key = api_key or (config_backend and config_backend.api_key)
+            self.base_url = base_url or (config_backend and config_backend.base_url)
+            self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
+            self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url)
+        else:
+            # Fall back to default codex config
+            config_backend = config.get_backend_config("codex")
+            self.model_name = model_name or (config_backend and config_backend.model) or "codex"
+            self.api_key = api_key
+            self.base_url = base_url
+            self.openai_api_key = openai_api_key
+            self.openai_base_url = openai_base_url
+
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None
@@ -85,9 +115,21 @@ class CodexClient(LLMClientBase):
                 "too many requests",
             )
 
+            # Prepare environment variables for subprocess
+            env = os.environ.copy()
+            if self.api_key:
+                env["CODEX_API_KEY"] = self.api_key
+            if self.base_url:
+                env["CODEX_BASE_URL"] = self.base_url
+            if self.openai_api_key:
+                env["OPENAI_API_KEY"] = self.openai_api_key
+            if self.openai_base_url:
+                env["OPENAI_BASE_URL"] = self.openai_base_url
+
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
+                env=env if len(env) > len(os.environ) else None,
             )
 
             stdout = (result.stdout or "").strip()

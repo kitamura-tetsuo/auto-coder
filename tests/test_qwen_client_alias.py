@@ -11,7 +11,7 @@ def test_run_qwen_cli_alias_delegates_and_returns_output(mock_run_command, mock_
     mock_run_command.return_value = CommandResult(True, "alias line 1\nalias line 2\n", "", 0)
 
     client = QwenClient(model_name="qwen3-coder-plus")
-    out = client._run_qwen_cli("probe")
+    out = client._run_qwen_cli("probe", None)
 
     assert "alias line 1" in out and "alias line 2" in out
 
