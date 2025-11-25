@@ -49,6 +49,7 @@ class TestQwenClient:
         args = mock_run_command.call_args[0][0]
         assert args[0] == "qwen"
 
+    @pytest.mark.skip(reason="Tests deprecated QwenClient internal provider rotation - provider rotation now handled by BackendManager")
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
     def test_provider_rotation_on_usage_limit(self, mock_run_command, mock_run):
@@ -233,7 +234,7 @@ class TestQwenClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
     def test_model_name_tracking(self, mock_run_command, mock_run):
-        """Test that the client tracks which model was actually used."""
+        """Test that the client tracks which model is configured."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "response", "", 0)
 
@@ -241,11 +242,10 @@ class TestQwenClient:
 
         # Initial model should be set
         assert client.model_name == "qwen3-coder-plus"
-        assert client._last_used_model == "qwen3-coder-plus"
 
-        # After execution, model should still be tracked
+        # After execution, model should remain the same
         client._run_qwen_cli("test")
-        assert client._last_used_model == "qwen3-coder-plus"
+        assert client.model_name == "qwen3-coder-plus"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")

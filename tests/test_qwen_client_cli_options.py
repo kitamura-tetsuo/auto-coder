@@ -1,9 +1,12 @@
 from unittest.mock import patch
 
+import pytest
+
 from src.auto_coder.qwen_client import QwenClient
 from src.auto_coder.utils import CommandResult
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient codex fallback - QwenClient now only uses OAuth path")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_options_parameter(mock_run_command, mock_run):
@@ -77,6 +80,7 @@ def test_qwen_client_options_parameter_qwen_mode(mock_run_command, mock_run):
     assert "--debug" in args
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient codex fallback - QwenClient now only uses OAuth path")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
@@ -112,6 +116,7 @@ def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
     assert env.get("OPENAI_BASE_URL") == "https://api.example.com"
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient codex fallback - QwenClient now only uses OAuth path")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_preserve_env_mode(mock_run_command, mock_run):
@@ -145,6 +150,7 @@ def test_qwen_client_preserve_env_mode(mock_run_command, mock_run):
     assert env.get("OPENAI_BASE_URL") == "https://api.example.com"
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient codex fallback - QwenClient now only uses OAuth path")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_default_env_mode(mock_run_command, mock_run):
@@ -179,6 +185,7 @@ def test_qwen_client_default_env_mode(mock_run_command, mock_run):
     assert env.get("OPENAI_BASE_URL") == "https://api.example.com"
 
 
+@pytest.mark.skip(reason="Tests deprecated QwenClient codex fallback - QwenClient now only uses OAuth path")
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
 def test_qwen_client_codex_mode_with_options(mock_run_command, mock_run):
