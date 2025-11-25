@@ -200,3 +200,27 @@ class LockManager:
         if lock_info is None:
             return {}
         return lock_info.to_dict()
+
+    def __enter__(self) -> "LockManager":
+        """Context manager entry point.
+
+        Acquires the lock when entering the context.
+
+        Returns:
+            Self for use in with statement
+        """
+        if not self.acquire_lock():
+            raise RuntimeError("Failed to acquire lock")
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit point.
+
+        Releases the lock when exiting the context.
+
+        Args:
+            exc_type: Exception type if an exception occurred
+            exc_val: Exception value if an exception occurred
+            exc_tb: Exception traceback if an exception occurred
+        """
+        self.release_lock()
