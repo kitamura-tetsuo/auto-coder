@@ -59,8 +59,6 @@ class TestBuildBackendManager:
 
                     # Verify other parameters
                     assert call_kwargs["model_name"] == "qwen3-coder-plus"
-                    assert call_kwargs["openai_api_key"] == "test_key"
-                    assert call_kwargs["openai_base_url"] == "https://api.example.com"
 
     def test_build_backend_manager_with_alias_and_backend_type(self):
         """Test that custom aliases with backend_type are handled correctly."""
@@ -108,11 +106,8 @@ class TestBuildBackendManager:
                     assert "options" in call_kwargs
                     assert call_kwargs["options"] == ["-o", "yolo", "true"]
 
-                    # Verify the model and API settings from the base qwen config
+                    # Verify the model
                     assert call_kwargs["model_name"] == "qwen3-coder-plus"
-                    # API keys come from the base qwen config, not the alias
-                    assert call_kwargs["openai_api_key"] == "test_key"
-                    assert call_kwargs["openai_base_url"] == "https://api.example.com"
 
     def test_build_backend_manager_without_options(self):
         """Test that QwenClient works without options (empty list or None)."""
@@ -122,8 +117,6 @@ class TestBuildBackendManager:
             config.backends["qwen"] = BackendConfig(
                 name="qwen",
                 model="qwen3-coder-plus",
-                openai_api_key="test_key",
-                openai_base_url="https://api.example.com",
                 # No options specified
             )
             mock_get_config.return_value = config
@@ -153,6 +146,45 @@ class TestBuildBackendManager:
                     # Check that options is either None or empty list
                     assert call_kwargs["options"] is None or call_kwargs["options"] == []
 
+    def test_build_backend_manager_with_codex_alias(self):
+        """Test that CodexClient receives api_key and base_url from an alias config."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config with a custom alias for codex
+            config = LLMBackendConfiguration()
+            config.backends["my-openrouter-model"] = BackendConfig(
+                name="my-openrouter-model",
+                model="open-router/grok-4.1-fast",
+                backend_type="codex",
+                api_key="or-key",
+                base_url="https://openrouter.ai/api/v1",
+            )
+            mock_get_config.return_value = config
+
+            # Mock CodexClient
+            with patch("src.auto_coder.cli_helpers.CodexClient") as mock_codex_class:
+                mock_codex_instance = MagicMock()
+                mock_codex_class.return_value = mock_codex_instance
+
+                # Call build_backend_manager with the alias
+                manager = build_backend_manager(
+                    selected_backends=["my-openrouter-model"],
+                    primary_backend="my-openrouter-model",
+                    models={"my-openrouter-model": "open-router/grok-4.1-fast"},
+                    enable_graphrag=False,
+                )
+
+                # Verify CodexClient was called with the options from the alias config
+                assert mock_codex_class.call_count == 1
+                call_kwargs = mock_codex_class.call_args.kwargs
+
+                # Check that api_key and base_url were passed from the alias
+                assert "api_key" in call_kwargs
+                assert call_kwargs["api_key"] == "or-key"
+                assert "base_url" in call_kwargs
+                assert call_kwargs["base_url"] == "https://openrouter.ai/api/v1"
+                assert call_kwargs["model_name"] == "open-router/grok-4.1-fast"
+                assert call_kwargs["backend_name"] == "my-openrouter-model"
+
 
 class TestBuildBackendManagerFromConfig:
     """Test cases for build_backend_manager_from_config function."""
@@ -164,8 +196,6 @@ class TestBuildBackendManagerFromConfig:
             config = LLMBackendConfiguration()
             config.default_backend = "qwen"
             config.get_backend_config("qwen").model = "qwen3-coder-plus"
-            config.get_backend_config("qwen").openai_api_key = "test_key"
-            config.get_backend_config("qwen").openai_base_url = "https://api.example.com"
             config.get_backend_config("qwen").options = ["-o", "stream", "true"]
             config.get_backend_config("qwen").backend_type = "qwen"
             mock_get_config.return_value = config

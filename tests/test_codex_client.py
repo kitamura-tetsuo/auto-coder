@@ -69,38 +69,33 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None, api_key=None, base_url=None, openai_api_key=None, openai_base_url=None: None):
-            client = CodexClient()
-            from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
-            client.model_name = "codex"  # Set model_name since we mocked __init__
-            client.api_key = None
-            client.base_url = None
-            client.openai_api_key = None
-            client.openai_base_url = None
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            # Execute the method
-            output = client._run_llm_cli("test prompt")
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
 
-            # Verify output is returned
-            assert output == "test output"
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
 
-            # Verify log file was created
-            assert log_file.exists()
+        # Verify output is returned
+        assert output == "test output"
 
-            # Verify JSON log entry
-            content = log_file.read_text().strip()
-            data = json.loads(content)
+        # Verify log file was created
+        assert log_file.exists()
 
-            assert data["event_type"] == "llm_interaction"
-            assert data["backend"] == "codex"
-            assert data["model"] == "codex"
-            assert data["status"] == "success"
-            assert data["prompt_length"] == len("test prompt")
-            assert data["response_length"] == len("test output")
-            assert "duration_ms" in data
-            assert "timestamp" in data
+        # Verify JSON log entry
+        content = log_file.read_text().strip()
+        data = json.loads(content)
+
+        assert data["event_type"] == "llm_interaction"
+        assert data["backend"] == "codex"
+        assert data["model"] == "codex"
+        assert data["status"] == "success"
+        assert data["prompt_length"] == len("test prompt")
+        assert data["response_length"] == len("test output")
+        assert "duration_ms" in data
+        assert "timestamp" in data
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -111,36 +106,31 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(False, "", "boom", 1)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None, api_key=None, base_url=None, openai_api_key=None, openai_base_url=None: None):
-            client = CodexClient()
-            from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
-            client.model_name = "codex"
-            client.api_key = None
-            client.base_url = None
-            client.openai_api_key = None
-            client.openai_base_url = None
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            # Execute the method and expect exception
-            with pytest.raises(RuntimeError):
-                client._run_llm_cli("test prompt")
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
 
-            # Verify log file was created
-            assert log_file.exists()
+        # Execute the method and expect exception
+        with pytest.raises(RuntimeError):
+            client._run_llm_cli("test prompt")
 
-            # Verify JSON log entry with error status
-            content = log_file.read_text().strip()
-            data = json.loads(content)
+        # Verify log file was created
+        assert log_file.exists()
 
-            assert data["event_type"] == "llm_interaction"
-            assert data["backend"] == "codex"
-            assert data["model"] == "codex"
-            assert data["status"] == "error"
-            assert data["prompt_length"] == len("test prompt")
-            assert "error" in data
-            assert "duration_ms" in data
-            assert "timestamp" in data
+        # Verify JSON log entry with error status
+        content = log_file.read_text().strip()
+        data = json.loads(content)
+
+        assert data["event_type"] == "llm_interaction"
+        assert data["backend"] == "codex"
+        assert data["model"] == "codex"
+        assert data["status"] == "error"
+        assert data["prompt_length"] == len("test prompt")
+        assert "error" in data
+        assert "duration_ms" in data
+        assert "timestamp" in data
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -200,52 +190,46 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None, api_key=None, base_url=None, openai_api_key=None, openai_base_url=None: None):
-            client = CodexClient()
-            from src.auto_coder.llm_output_logger import LLMOutputLogger
+        from src.auto_coder.llm_output_logger import LLMOutputLogger
 
-            client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
-            client.model_name = "codex"
-            client.api_key = None
-            client.base_url = None
-            client.openai_api_key = None
-            client.openai_base_url = None
+        client = CodexClient()
+        client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
 
-            # Execute the method multiple times
-            for i in range(3):
-                output = client._run_llm_cli(f"test prompt {i}")
+        # Execute the method multiple times
+        for i in range(3):
+            output = client._run_llm_cli(f"test prompt {i}")
 
-            # Verify output is returned
-            assert output == "test output"
+        # Verify output is returned
+        assert output == "test output"
 
-            # Verify log file was created
-            assert log_file.exists()
+        # Verify log file was created
+        assert log_file.exists()
 
-            # Verify there are exactly 3 log entries (one per call)
-            content = log_file.read_text().strip()
-            log_lines = [line for line in content.split("\n") if line.strip()]
+        # Verify there are exactly 3 log entries (one per call)
+        content = log_file.read_text().strip()
+        log_lines = [line for line in content.split("\n") if line.strip()]
 
-            assert len(log_lines) == 3, f"Expected 3 log entries, got {len(log_lines)}"
+        assert len(log_lines) == 3, f"Expected 3 log entries, got {len(log_lines)}"
 
-            # Verify each log entry is valid JSON and has correct structure
-            for i, line in enumerate(log_lines):
-                data = json.loads(line)
-                assert data["event_type"] == "llm_interaction"
-                assert data["backend"] == "codex"
-                assert data["model"] == "codex"
-                assert data["status"] == "success"
-                assert "duration_ms" in data
-                assert "timestamp" in data
-                # Verify each entry corresponds to its call
-                assert data["prompt_length"] == len(f"test prompt {i}")
+        # Verify each log entry is valid JSON and has correct structure
+        for i, line in enumerate(log_lines):
+            data = json.loads(line)
+            assert data["event_type"] == "llm_interaction"
+            assert data["backend"] == "codex"
+            assert data["model"] == "codex"
+            assert data["status"] == "success"
+            assert "duration_ms" in data
+            assert "timestamp" in data
+            # Verify each entry corresponds to its call
+            assert data["prompt_length"] == len(f"test prompt {i}")
 
-            # Verify console summary is printed for each call
-            assert mock_print.called
-            print_calls = [str(call) for call in mock_print.call_args_list]
-            summary_text = "".join(print_calls)
+        # Verify console summary is printed for each call
+        assert mock_print.called
+        print_calls = [str(call) for call in mock_print.call_args_list]
+        summary_text = "".join(print_calls)
 
-            # Should have 3 "Codex CLI Execution Summary" entries (one per call)
-            assert summary_text.count("Codex CLI Execution Summary") == 3
+        # Should have 3 "Codex CLI Execution Summary" entries (one per call)
+        assert summary_text.count("Codex CLI Execution Summary") == 3
 
     @patch("subprocess.run")
     def test_init_with_custom_config(self, mock_run):
@@ -253,6 +237,7 @@ class TestCodexClient:
         mock_run.return_value.returncode = 0
         client = CodexClient(
             model_name="custom-codex",
+            backend_name="custom-backend",
             api_key="test_api_key",
             base_url="https://test.example.com",
             openai_api_key="test_openai_key",

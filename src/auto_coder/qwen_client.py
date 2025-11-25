@@ -36,8 +36,7 @@ class QwenClient(LLMClientBase):
     def __init__(
         self,
         model_name: Optional[str] = None,
-        openai_api_key: Optional[str] = None,
-        openai_base_url: Optional[str] = None,
+        backend_name: Optional[str] = None,
         use_env_vars: bool = True,
         preserve_existing_env: bool = False,
         options: Optional[List[str]] = None,
@@ -46,8 +45,7 @@ class QwenClient(LLMClientBase):
 
         Args:
             model_name: Model name to use (will use config default if not provided)
-            openai_api_key: OpenAI API key (will use config value if not provided)
-            openai_base_url: OpenAI base URL (will use config value if not provided)
+            backend_name: Backend name to use for configuration lookup (optional).
             use_env_vars: If True, pass credentials via environment variables.
                          If False, use command-line options (default: True)
             preserve_existing_env: If True, preserve existing OPENAI_* env vars.
@@ -55,7 +53,10 @@ class QwenClient(LLMClientBase):
             options: Additional options to pass to the CLI tool (e.g., ["-o", "yolo", "true"])
         """
         config = get_llm_config()
-        config_backend = config.get_backend_config("qwen")
+        if backend_name:
+            config_backend = config.get_backend_config(backend_name)
+        else:
+            config_backend = config.get_backend_config("qwen")
 
         # Use provided values, fall back to config, then to default
         self.model_name = model_name or (config_backend and config_backend.model) or "qwen3-coder-plus"
@@ -63,13 +64,10 @@ class QwenClient(LLMClientBase):
         # Use a faster/cheaper coder variant for conflict resolution when switching
         self.conflict_model = self.model_name
         self.timeout: Optional[int] = None
-        # Use provided values or config values, with environment variables as another fallback
-        self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key) or os.environ.get("OPENAI_API_KEY")
-        self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url) or os.environ.get("OPENAI_BASE_URL")
         self.use_env_vars = use_env_vars
         self.preserve_existing_env = preserve_existing_env
         # Store options for CLI commands
-        self.options = options or []
+        self.options = options or (config_backend and config_backend.options) or []
 
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()
@@ -99,8 +97,11 @@ class QwenClient(LLMClientBase):
         return prompt.strip()
 
     # ----- Core execution -----
-    def _run_qwen_cli(self, prompt: str) -> str:
-        """Run qwen CLI with the given prompt and stream output line by line.
+    def _run_llm_cli(self, prompt: str) -> str:
+        """Execute LLM with the given prompt.
+
+        This method is called by BackendManager which handles provider rotation.
+        Environment variables for the current provider are set by BackendManager.
 
         Args:
             prompt: The prompt to send to the LLM
@@ -123,10 +124,8 @@ class QwenClient(LLMClientBase):
         model_to_use = model or self.default_model
 
         if not self.preserve_existing_env:
-            # Reset OPENAI_* values before applying overrides
-            env.pop("OPENAI_API_KEY", None)
-            env.pop("OPENAI_BASE_URL", None)
-            env.pop("OPENAI_MODEL", None)
+            # Reset QWEN_MODEL value before applying overrides
+            env.pop("QWEN_MODEL", None)
 
         cmd = ["qwen", "-y"]
 
@@ -137,7 +136,7 @@ class QwenClient(LLMClientBase):
         if self.use_env_vars:
             # Pass credentials via environment variables
             if model_to_use:
-                env["OPENAI_MODEL"] = model_to_use
+                env["QWEN_MODEL"] = model_to_use
             # Model flag for qwen CLI
             if model_to_use:
                 cmd.extend(["-m", model_to_use])
@@ -228,7 +227,7 @@ class QwenClient(LLMClientBase):
             duration_ms = (time.time() - start_time) * 1000
 
             # Determine backend name based on cli_name
-            backend_name = "qwen" if cli_name == "qwen" else "codex"
+            backend_name = "qwen"
 
             # Log to JSON file
             self.output_logger.log_interaction(
@@ -286,7 +285,13 @@ class QwenClient(LLMClientBase):
         Returns:
             The LLM's response as a string
         """
-        return self._run_qwen_cli(prompt)
+        escaped_prompt = self._escape_prompt(prompt)
+
+        # Get model from environment or use default
+        provider_model = os.environ.get("QWEN_MODEL")
+
+        # Always use OAuth path (native Qwen CLI)
+        return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:

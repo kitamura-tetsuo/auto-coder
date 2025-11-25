@@ -387,11 +387,8 @@ def build_backend_manager(
 
     # Get API keys and base URLs from configuration
     gemini_config = config.get_backend_config("gemini")
-    qwen_config = config.get_backend_config("qwen")
 
     effective_gemini_api_key = gemini_config.api_key if gemini_config else None
-    effective_openai_api_key = qwen_config.openai_api_key if qwen_config else None
-    effective_openai_base_url = qwen_config.openai_base_url if qwen_config else None
 
     def _gm() -> str:
         return models.get("gemini", "gemini-2.5-pro")
@@ -412,8 +409,7 @@ def build_backend_manager(
         options = backend_config.options if backend_config else None
         return QwenClient(
             model_name=models.get(backend_name),
-            openai_api_key=effective_openai_api_key,
-            openai_base_url=effective_openai_base_url,
+            backend_name=backend_name,
             use_env_vars=True,
             preserve_existing_env=False,
             options=options,
@@ -446,6 +442,7 @@ def build_backend_manager(
             # It's an alias with backend_type "codex", pass configuration values
             return CodexClient(
                 model_name=models.get(backend_name, "codex"),
+                backend_name=backend_name,
                 api_key=backend_config.api_key,
                 base_url=backend_config.base_url,
                 openai_api_key=backend_config.openai_api_key,
@@ -453,7 +450,10 @@ def build_backend_manager(
             )
         else:
             # It's the default codex backend
-            return CodexClient(model_name=models.get(backend_name, "codex"))
+            return CodexClient(
+                model_name=models.get(backend_name, "codex"),
+                backend_name=backend_name,
+            )
 
     def _create_codex_mcp_client(backend_name: str):
         """Create a CodexMCPClient."""
