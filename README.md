@@ -272,6 +272,26 @@ Auto-Coder includes a lock mechanism to prevent concurrent executions that could
 - The lock is automatically released when the command completes
 - Lock files are stored in the `.git` directory of your repository
 
+**For Developers:**
+The `LockManager` class supports Python's context manager protocol for safe lock management:
+```python
+from auto_coder.lock_manager import LockManager
+
+# Recommended: Using context manager (automatic cleanup)
+with LockManager() as lock:
+    # Lock is automatically acquired here
+    do_work()
+# Lock is automatically released here, even if an exception occurs
+
+# Alternative: Manual management
+lock = LockManager()
+if lock.acquire():
+    try:
+        do_work()
+    finally:
+        lock.release()
+```
+
 **Manual Lock Control:**
 
 ```bash

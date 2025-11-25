@@ -199,6 +199,31 @@ This fork maintains full attribution to the original author Riley Lemm. The orig
       - "Lock information includes PID, hostname, and start time"
       - "Automatically detects stale locks (process no longer running)"
       - "Lock is released when command completes successfully"
+      - "Supports context manager protocol for safe lock acquisition and release"
+    usage_patterns:
+      context_manager:
+        description: "Recommended pattern using Python's with statement"
+        example: |
+          with LockManager() as lock:
+              # Lock is automatically acquired here
+              do_work()
+          # Lock is automatically released here, even if an exception occurs
+        benefits:
+          - "Automatic cleanup even on exceptions"
+          - "More Pythonic and readable code"
+          - "Prevents accidental lock leaks"
+      manual_management:
+        description: "Explicit acquire/release pattern"
+        example: |
+          lock = LockManager()
+          if lock.acquire():
+              try:
+                  do_work()
+              finally:
+                  lock.release()
+        use_cases:
+          - "Complex control flow requiring early release"
+          - "Legacy code compatibility"
     commands:
       auto_lock:
         description: "Lock is automatically acquired by default for all commands"

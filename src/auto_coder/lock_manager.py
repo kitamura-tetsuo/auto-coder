@@ -38,7 +38,25 @@ class LockInfo:
 
 
 class LockManager:
-    """Manages lock files to prevent concurrent auto-coder executions."""
+    """Manages lock files to prevent concurrent auto-coder executions.
+
+    This class can be used either with explicit acquire/release calls or as a context manager.
+
+    Examples:
+        Using as a context manager (recommended):
+        >>> with LockManager() as lock:
+        ...     # Lock is automatically acquired here
+        ...     do_work()
+        ... # Lock is automatically released here, even if an exception occurs
+
+        Using explicit acquire/release:
+        >>> lock = LockManager()
+        >>> if lock.acquire():
+        ...     try:
+        ...         do_work()
+        ...     finally:
+        ...         lock.release()
+    """
 
     def __init__(self):
         self.lock_file_path = self._get_lock_file_path()
@@ -71,6 +89,10 @@ class LockManager:
 
     def acquire_lock(self, force: bool = False) -> bool:
         """Acquire a lock.
+
+        This method is called automatically when using LockManager as a context manager.
+        For manual lock management, call this method explicitly and ensure release_lock()
+        is called in a finally block.
 
         Args:
             force: If True, forcibly overwrite existing lock
@@ -111,7 +133,11 @@ class LockManager:
         return self.lock_file_path.exists()
 
     def release_lock(self) -> None:
-        """Remove the lock file."""
+        """Remove the lock file.
+
+        This method is called automatically when using LockManager as a context manager.
+        For manual lock management, ensure this is called in a finally block.
+        """
         if self.lock_file_path is None:
             return
         try:
@@ -176,7 +202,11 @@ class LockManager:
     # Alias methods with exact names as specified in issue #573
 
     def acquire(self, force: bool = False) -> bool:
-        """Acquire a lock.
+        """Acquire a lock (alias for acquire_lock).
+
+        This method is called automatically when using LockManager as a context manager.
+        For manual lock management, call this method explicitly and ensure release()
+        is called in a finally block.
 
         Args:
             force: If True, forcibly overwrite existing lock
@@ -187,7 +217,11 @@ class LockManager:
         return self.acquire_lock(force=force)
 
     def release(self) -> None:
-        """Remove the lock file."""
+        """Remove the lock file (alias for release_lock).
+
+        This method is called automatically when using LockManager as a context manager.
+        For manual lock management, ensure this is called in a finally block.
+        """
         self.release_lock()
 
     def get_lock_info(self) -> dict:
