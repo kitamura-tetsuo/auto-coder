@@ -377,3 +377,78 @@ class TestCodexClient:
         assert client.model_name == "codex"  # Default when model_name is None
         assert client.api_key == "test_api_key"
         assert client.base_url == "https://test.example.com"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_custom_model_like_grok_passed_to_cli(self, mock_run_command, mock_run):
+        """CodexClient should pass custom models like 'grok-4.1-fast' to codex CLI.
+
+        This test verifies the fix for issue #672 where configured models
+        were allegedly not being passed to the underlying codex CLI.
+        """
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Simulate a user configuring a custom model like in the example config:
+        # [my-openrouter-model]
+        # model = "open-router/grok-4.1-fast"
+        # backend_type = "codex"
+        client = CodexClient(
+            model_name="open-router/grok-4.1-fast",
+            backend_name="my-openrouter-model",
+            openai_api_key="sk-or-v1-test-key",
+            openai_base_url="https://openrouter.ai/api/v1",
+        )
+
+        # Verify model is set correctly
+        assert client.model_name == "open-router/grok-4.1-fast"
+
+        # Execute a command
+        output = client._run_llm_cli("test prompt")
+
+        # Verify CommandExecutor.run_command was called
+        assert mock_run_command.called
+        cmd = mock_run_command.call_args[0][0]
+
+        # Verify --model flag is in the command with the custom model
+        assert "--model" in cmd
+        model_index = cmd.index("--model")
+        assert cmd[model_index + 1] == "open-router/grok-4.1-fast"
+
+        # Verify environment variables are set
+        call_kwargs = mock_run_command.call_args[1]
+        assert "env" in call_kwargs
+        env = call_kwargs["env"]
+        assert env["OPENAI_API_KEY"] == "sk-or-v1-test-key"
+        assert env["OPENAI_BASE_URL"] == "https://openrouter.ai/api/v1"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_minimax_model_passed_to_cli(self, mock_run_command, mock_run):
+        """CodexClient should pass MiniMax models to codex CLI.
+
+        This test verifies another model mentioned in issue #672.
+        """
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Simulate MiniMax-M2 model configuration
+        client = CodexClient(
+            model_name="MiniMax-M2",
+            backend_name="my-minimax",
+            openai_api_key="test-key",
+            openai_base_url="https://api.minimax.com/v1",
+        )
+
+        # Verify model is set correctly
+        assert client.model_name == "MiniMax-M2"
+
+        # Execute a command
+        output = client._run_llm_cli("test prompt")
+
+        # Verify --model flag is passed with the correct model
+        assert mock_run_command.called
+        cmd = mock_run_command.call_args[0][0]
+        assert "--model" in cmd
+        model_index = cmd.index("--model")
+        assert cmd[model_index + 1] == "MiniMax-M2"

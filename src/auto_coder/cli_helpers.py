@@ -380,7 +380,7 @@ def build_backend_manager(
 ) -> BackendManager:
     """Construct BackendManager with per-backend model selection.
 
-    models: mapping backend -> model_name (codex backends ignored but accepted).
+    models: mapping backend -> model_name (all backends respect this configuration).
     enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True).
     """
     config = get_llm_config()
