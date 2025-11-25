@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
-from gh_sub_issue.cli import main
+from github_sub_issue.cli import main
 
 
 class TestCLI:
@@ -15,7 +15,7 @@ class TestCLI:
         """Run before each test."""
         self.runner = CliRunner()
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_add_command(self, mock_api_class: MagicMock) -> None:
         """Verify that add command works correctly."""
         mock_api = MagicMock()
@@ -35,7 +35,48 @@ class TestCLI:
         assert "Added sub-issue #456 to parent #123" in result.output
         mock_api.add_sub_issue.assert_called_once_with("123", "456", False)
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_add_command_multiple_sub_issues(self, mock_api_class: MagicMock) -> None:
+        """Verify that multiple sub-issues can be added in a single command."""
+        mock_api = MagicMock()
+        mock_api.add_sub_issue.side_effect = [
+            {
+                "data": {
+                    "addSubIssue": {
+                        "issue": {"number": 123, "title": "Parent Issue"},
+                        "subIssue": {"number": 456, "title": "Child 1"},
+                    }
+                }
+            },
+            {
+                "data": {
+                    "addSubIssue": {
+                        "issue": {"number": 123, "title": "Parent Issue"},
+                        "subIssue": {"number": 457, "title": "Child 2"},
+                    }
+                }
+            },
+            {
+                "data": {
+                    "addSubIssue": {
+                        "issue": {"number": 123, "title": "Parent Issue"},
+                        "subIssue": {"number": 458, "title": "Child 3"},
+                    }
+                }
+            },
+        ]
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(main, ["add", "123", "456", "457", "458"])
+
+        assert result.exit_code == 0
+        assert "Added sub-issue #456" in result.output
+        assert "Added sub-issue #457" in result.output
+        assert "Added sub-issue #458" in result.output
+        assert "Successfully added 3 sub-issue(s)" in result.output
+        assert mock_api.add_sub_issue.call_count == 3
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_add_command_with_replace_parent(self, mock_api_class: MagicMock) -> None:
         """Verify that --replace-parent option works in add command."""
         mock_api = MagicMock()
@@ -54,7 +95,63 @@ class TestCLI:
         assert result.exit_code == 0
         mock_api.add_sub_issue.assert_called_once_with("123", "456", True)
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_add_command_multiple_with_failures(self, mock_api_class: MagicMock) -> None:
+        """Verify error handling when some sub-issues fail to add."""
+        mock_api = MagicMock()
+        # First succeeds, second fails, third succeeds
+        mock_api.add_sub_issue.side_effect = [
+            {
+                "data": {
+                    "addSubIssue": {
+                        "issue": {"number": 123, "title": "Parent Issue"},
+                        "subIssue": {"number": 456, "title": "Child 1"},
+                    }
+                }
+            },
+            Exception("Issue #999 does not exist"),  # Second one fails
+            {
+                "data": {
+                    "addSubIssue": {
+                        "issue": {"number": 123, "title": "Parent Issue"},
+                        "subIssue": {"number": 458, "title": "Child 3"},
+                    }
+                }
+            },
+        ]
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(main, ["add", "123", "456", "999", "458"])
+
+        assert result.exit_code == 1
+        assert "Added sub-issue #456" in result.output
+        assert "Failed to add sub-issue 999" in result.output
+        assert "Added sub-issue #458" in result.output
+        assert "Successfully added 2 sub-issue(s)" in result.output
+        assert "Failed to add 1 sub-issue(s)" in result.output
+        assert mock_api.add_sub_issue.call_count == 3
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_add_command_all_failures(self, mock_api_class: MagicMock) -> None:
+        """Verify error handling when all sub-issues fail to add."""
+        mock_api = MagicMock()
+        # All fail
+        mock_api.add_sub_issue.side_effect = [
+            Exception("Issue #999 does not exist"),
+            Exception("Issue #998 does not exist"),
+        ]
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(main, ["add", "123", "999", "998"])
+
+        assert result.exit_code == 1
+        assert "Failed to add sub-issue 999" in result.output
+        assert "Failed to add sub-issue 998" in result.output
+        assert "Successfully added 0 sub-issue(s)" in result.output
+        assert "Failed to add 2 sub-issue(s)" in result.output
+        assert mock_api.add_sub_issue.call_count == 2
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_create_command(self, mock_api_class: MagicMock) -> None:
         """Verify that create command works correctly."""
         mock_api = MagicMock()
@@ -87,7 +184,7 @@ class TestCLI:
             assignees=["user1"],
         )
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_list_command(self, mock_api_class: MagicMock) -> None:
         """Verify that list command works correctly."""
         mock_api = MagicMock()
@@ -120,7 +217,7 @@ class TestCLI:
         assert "@user1" in result.output
         mock_api.list_sub_issues.assert_called_once_with("123", "OPEN")
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_list_command_json_output(self, mock_api_class: MagicMock) -> None:
         """Verify that JSON output works in list command."""
         mock_api = MagicMock()
@@ -143,7 +240,7 @@ class TestCLI:
         assert len(output_data) == 1
         assert output_data[0]["number"] == 456
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_list_command_empty(self, mock_api_class: MagicMock) -> None:
         """Verify behavior when list command has no sub-issues."""
         mock_api = MagicMock()
@@ -155,7 +252,7 @@ class TestCLI:
         assert result.exit_code == 0
         assert "No open sub-issues found" in result.output
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_remove_command_with_force(self, mock_api_class: MagicMock) -> None:
         """Verify that --force option works in remove command."""
         mock_api = MagicMock()
@@ -175,7 +272,7 @@ class TestCLI:
         assert "Removed sub-issue #456" in result.output
         mock_api.remove_sub_issue.assert_called_once_with("123", "456")
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_remove_command_multiple(self, mock_api_class: MagicMock) -> None:
         """Verify that multiple sub-issues can be removed in remove command."""
         mock_api = MagicMock()
@@ -206,7 +303,7 @@ class TestCLI:
         assert "Removed sub-issue #457" in result.output
         assert mock_api.remove_sub_issue.call_count == 2
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_remove_command_with_confirmation(self, mock_api_class: MagicMock) -> None:
         """Verify that confirmation prompt appears in remove command."""
         mock_api = MagicMock()
@@ -220,7 +317,7 @@ class TestCLI:
         assert "Cancelled." in result.output
         mock_api.remove_sub_issue.assert_not_called()
 
-    @patch("gh_sub_issue.cli.GitHubSubIssueAPI")
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
     def test_repo_option(self, mock_api_class: MagicMock) -> None:
         """Verify that --repo option is passed correctly."""
         mock_api = MagicMock()
