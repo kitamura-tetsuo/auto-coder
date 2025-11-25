@@ -300,6 +300,29 @@ Auto-Coder detects stale locks by checking if the process associated with the lo
 
 Auto-Coder uses a TOML configuration file for backend settings. The configuration file is located at `~/.auto-coder/llm_config.toml` by default.
 
+#### Custom Backend Names
+
+You can define custom backend names using the `backend_type` field. This is useful for:
+- Using OpenRouter with specific model names
+- Configuring multiple versions of the same backend
+- Using OpenAI-compatible providers
+
+Example:
+```toml
+[backends.grok-4.1-fast]
+enabled = true
+backend_type = "codex"  # Use codex CLI for OpenAI-compatible APIs
+model = "grok-4.1-fast"
+openai_api_key = "your-openrouter-api-key"
+openai_base_url = "https://openrouter.ai/api/v1"
+```
+
+Supported `backend_type` values: `codex`, `codex-mcp`, `gemini`, `qwen`, `auggie`, `claude`
+
+For detailed configuration examples and troubleshooting, see [Custom Backend Configuration](docs/Custom_Backend_Configuration.md).
+
+#### Configuration Management
+
 To manage the configuration file, use the built-in config commands:
 ```bash
 # Show current configuration
@@ -406,6 +429,26 @@ usage_limit_retry_wait_seconds = 120
 order = ["claude"]
 default = "claude"
 ```
+
+### Supported Backend Types
+
+Auto-Coder supports multiple backend types. When using custom backend names, you must specify the `backend_type` field:
+
+| Backend Type | Description | Required Tools | Use Cases |
+|-------------|-------------|----------------|-----------|
+| `codex` | OpenAI Codex and OpenAI-compatible APIs | Codex CLI | OpenRouter, Azure OpenAI, custom endpoints |
+| `codex-mcp` | Codex with MCP support | Codex CLI | Advanced MCP integrations |
+| `gemini` | Google Gemini | Gemini CLI | Direct Google API integration |
+| `qwen` | Qwen Code | Qwen CLI | Native Qwen CLI with OAuth |
+| `claude` | Anthropic Claude | Claude CLI | Direct Anthropic API integration |
+| `auggie` | Auggie | Auggie CLI (`npm install -g @augmentcode/auggie`) | Auggie integration |
+
+**Important:** Custom backend names require the `backend_type` field. Standard backend names (`codex`, `gemini`, `qwen`, `claude`, `auggie`) work without this field.
+
+For more details, see:
+- [Custom Backend Configuration Guide](docs/Custom_Backend_Configuration.md)
+- [OpenRouter Setup Guide](OPENROUTER_SETUP.md)
+- [Example Configuration File](docs/llm_backend_config.example.toml)
 
 ### Retry Configuration
 
@@ -1064,6 +1107,25 @@ Example: For `owner/repo` repository, reports are saved in `~/.auto-coder/owner_
 1. **GitHub API limits**: Wait some time before retrying if you hit rate limits
 2. **Gemini API errors**: Check if API keys are correctly configured
 3. **Permission errors**: Check if GitHub token has appropriate permissions
+
+#### "Unsupported backend specified" Error
+
+If you see this error with a custom backend name:
+1. Ensure you have set `backend_type` in your configuration
+2. Use a valid backend type: `codex`, `codex-mcp`, `gemini`, `qwen`, `claude`, or `auggie`
+3. Ensure the required CLI tool for the `backend_type` is installed
+
+**Example fix:**
+```toml
+[backends.my-custom-backend]
+enabled = true
+backend_type = "codex"  # Add this line
+model = "grok-4.1-fast"
+openai_api_key = "your-key"
+openai_base_url = "https://openrouter.ai/api/v1"
+```
+
+See [Custom Backend Configuration](docs/Custom_Backend_Configuration.md) for detailed troubleshooting.
 
 ### Checking Logs
 
