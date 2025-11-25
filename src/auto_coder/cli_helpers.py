@@ -356,8 +356,21 @@ def normalize_backends(backends: tuple[str, ...]) -> list[str]:
 
 
 def check_backend_prerequisites(backends: list[str]) -> None:
-    """Verify CLI prerequisites for all requested backends."""
+    """Verify CLI prerequisites for all requested backends.
+
+    Supports both known backend types (codex, gemini, qwen, auggie, claude)
+    and custom backend names that reference a backend_type in configuration.
+
+    Args:
+        backends: List of backend names to check
+
+    Raises:
+        click.ClickException: If a backend is unsupported or misconfigured
+    """
+    config = get_llm_config()
+
     for backend_name in backends:
+        # Known backend types
         if backend_name in ("codex", "codex-mcp"):
             check_codex_cli_or_fail()
         elif backend_name == "gemini":
@@ -369,7 +382,13 @@ def check_backend_prerequisites(backends: list[str]) -> None:
         elif backend_name == "claude":
             check_claude_cli_or_fail()
         else:
-            raise click.ClickException(f"Unsupported backend specified: {backend_name}")
+            # Check if it's a custom backend with backend_type
+            backend_config = config.get_backend_config(backend_name)
+            if backend_config and backend_config.backend_type:
+                # Recursively check the backend_type
+                check_backend_prerequisites([backend_config.backend_type])
+            else:
+                raise click.ClickException(f"Unsupported backend specified: {backend_name}. " f"Either use a known backend type (codex, gemini, qwen, auggie, claude) " f"or configure backend_type in llm_config.toml")
 
 
 def build_backend_manager(
