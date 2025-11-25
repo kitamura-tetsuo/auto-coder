@@ -268,6 +268,58 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_model_flag_passed_to_cli(self, mock_run_command, mock_run):
+        """CodexClient should pass --model flag to codex exec when model_name is specified."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        client = CodexClient(model_name="custom-model")
+
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
+
+        # Verify CommandExecutor.run_command was called
+        assert mock_run_command.called
+        cmd = mock_run_command.call_args[0][0]
+
+        # Verify --model flag is in the command
+        assert "--model" in cmd
+        model_index = cmd.index("--model")
+        assert cmd[model_index + 1] == "custom-model"
+
+        # Verify command structure
+        assert cmd[0] == "codex"
+        assert cmd[1] == "exec"
+        assert "test prompt" in cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_model_flag_not_passed_when_model_name_is_none(self, mock_run_command, mock_run):
+        """CodexClient should not pass --model flag when model_name is None."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Create client with model_name=None
+        with patch("src.auto_coder.codex_client.get_llm_config") as mock_config:
+            mock_backend = MagicMock()
+            mock_backend.model = None
+            mock_config.return_value.get_backend_config.return_value = mock_backend
+
+            client = CodexClient()
+            client.model_name = None  # Explicitly set to None
+
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify --model flag is NOT in the command
+            assert "--model" not in cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_injects_env_vars(self, mock_run_command, mock_run):
         """CodexClient should inject environment variables into subprocess."""
         mock_run.return_value.returncode = 0
