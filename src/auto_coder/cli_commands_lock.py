@@ -48,7 +48,3 @@ def lock_group():
         The lock_group is deprecated. Use 'auto-coder unlock' directly.
     """
     pass
-
-
-# Add unlock to lock_group for backward compatibility
-lock_group.add_command(unlock)
