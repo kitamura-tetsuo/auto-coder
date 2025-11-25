@@ -88,6 +88,62 @@ class TestLockManager:
         current_pid = os.getpid()
         assert lock_manager._is_process_running(current_pid) is True
 
+    def test_context_manager_acquire_and_release(self):
+        """Test context manager __enter__ and __exit__ methods."""
+        lock_manager = LockManager()
+
+        # Mock the lock_file_path to simulate being in a git repository
+        with patch.object(lock_manager, "lock_file_path", Path("/tmp/test_lock.lock")):
+            # Ensure clean state
+            if lock_manager.lock_file_path.exists():
+                lock_manager.lock_file_path.unlink()
+
+            # Test context manager usage
+            with lock_manager:
+                # Lock should be acquired when entering context
+                assert lock_manager.is_locked() is True
+
+            # Lock should be released when exiting context
+            assert lock_manager.is_locked() is False
+
+    def test_context_manager_releases_on_exception(self):
+        """Test that lock is released even if an exception occurs."""
+        lock_manager = LockManager()
+
+        # Mock the lock_file_path to simulate being in a git repository
+        with patch.object(lock_manager, "lock_file_path", Path("/tmp/test_lock_exception.lock")):
+            # Ensure clean state
+            if lock_manager.lock_file_path.exists():
+                lock_manager.lock_file_path.unlink()
+
+            # Test that lock is released even with exception
+            with pytest.raises(ValueError):
+                with lock_manager:
+                    assert lock_manager.is_locked() is True
+                    raise ValueError("Test exception")
+
+            # Lock should be released even after exception
+            assert lock_manager.is_locked() is False
+
+    def test_context_manager_raises_on_acquire_failure(self):
+        """Test that __enter__ raises RuntimeError if lock cannot be acquired."""
+        lock_manager = LockManager()
+
+        # Mock the lock_file_path to simulate being in a git repository
+        with patch.object(lock_manager, "lock_file_path", Path("/tmp/test_lock_fail.lock")):
+            # Create a lock first
+            lock_manager.acquire_lock()
+
+            # Try to acquire lock again with a new manager instance
+            lock_manager2 = LockManager()
+            with patch.object(lock_manager2, "lock_file_path", Path("/tmp/test_lock_fail.lock")):
+                with pytest.raises(RuntimeError, match="Failed to acquire lock"):
+                    with lock_manager2:
+                        pass
+
+            # Clean up
+            lock_manager.release_lock()
+
 
 class TestLockCLI:
     """Integration tests for CLI lock commands."""
