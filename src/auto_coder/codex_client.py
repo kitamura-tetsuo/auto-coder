@@ -105,8 +105,13 @@ class CodexClient(LLMClientBase):
                 "-s",
                 "workspace-write",
                 "--dangerously-bypass-approvals-and-sandbox",
-                escaped_prompt,
             ]
+
+            # Add --model flag if model_name is specified
+            if self.model_name:
+                cmd.extend(["--model", self.model_name])
+
+            cmd.append(escaped_prompt)
 
             usage_markers = (
                 "rate limit",
