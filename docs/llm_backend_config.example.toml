@@ -6,32 +6,57 @@
 
 [backend]
 # Default backend to use when multiple are available
-default = "qwen"
+default = "qwen-openrouter"
 
 # Order of backends to try (only enabled backends will be used)
-order = ["qwen", "gemini", "codex", "claude"]
+order = ["qwen-openrouter", "qwen", "gemini", "codex", "claude"]
 
 [message_backend]
 # Separate configuration for message generation (commit messages, PR descriptions)
 # If not specified, falls back to general backend configuration
-default = "qwen"
-order = ["qwen", "gemini"]
+default = "qwen-openrouter"
+order = ["qwen-openrouter", "qwen", "gemini"]
 
 [backends]
 
-# Qwen Configuration
-# ------------------
-# Qwen client uses the 'qwen' CLI and authenticates via OAuth. No API keys needed.
+# Qwen Configuration - Two Methods
+# =================================
+
+# Method 1: Qwen CLI (OAuth) - Direct Qwen Usage
+# ----------------------------------------------
+# Use backend_type = "qwen" for native Qwen CLI authentication
 [qwen]
 enabled = true
 model = "qwen3-coder-plus"
 
+# No API keys needed - uses OAuth with Qwen CLI
+# Note: This requires Qwen CLI to be installed and authenticated
+
+# Backend type identifier - "qwen" for native CLI
+backend_type = "qwen"
+
 # Additional options to pass to the Qwen CLI
+# These options will be added to the command line when calling qwen
 # Example: ["-o", "stream", "false", "--debug"]
 options = []
 
-# Backend type identifier
-backend_type = "qwen"
+
+# Method 2: Qwen via OpenRouter (OpenAI-Compatible API)
+# -----------------------------------------------------
+# Use backend_type = "codex" for OpenAI-compatible providers
+[qwen-openrouter]
+enabled = true
+model = "qwen/qwen3-coder:free"
+
+# OpenAI-compatible API settings (required for OpenRouter, Azure, etc.)
+openai_api_key = "sk-or-v1-your-openrouter-key-here"
+openai_base_url = "https://openrouter.ai/api/v1"
+
+# Backend type identifier - "codex" for OpenAI-compatible client
+backend_type = "codex"
+
+# Optional: Add custom headers for tracking usage
+options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
 # Gemini Configuration
 # --------------------
@@ -66,42 +91,158 @@ openai_base_url = "your-openai-base-url-here"
 options = []
 backend_type = "codex"
 
-# --- Custom Alias Examples ---
+# Custom Alias Examples
+# --------------------
+# You can create custom aliases that point to underlying backend types
+# This allows you to have multiple configurations for the same backend
 
-# OpenRouter with Codex Backend Type
-# ----------------------------------
-# This example shows how to configure a generic OpenRouter model using `backend_type = "codex"`.
-# This allows you to use any model from OpenRouter that is OpenAI-compatible.
-[openrouter-grok]
-enabled = true
-model = "groq/llama3-8b-8192" # The model identifier from OpenRouter
-backend_type = "codex" # Use the codex client for this
-openai_api_key = "sk-or-v1-your-openrouter-key"
-openai_base_url = "https://openrouter.ai/api/v1"
-# You can add custom headers required by the provider in the options
-options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
-
-# Custom Qwen Alias
-# -----------------
+# Example 1: Qwen via OpenRouter with faster model
 [qwen-fast]
 enabled = true
-model = "qwen-turbo"
-backend_type = "qwen"
+model = "qwen/qwen-2.5-plus"
+openai_api_key = "sk-or-v1-your-openrouter-key-here"
+openai_base_url = "https://openrouter.ai/api/v1"
+
+# Use 'codex' backend type (OpenAI-compatible)
+backend_type = "codex"
+
+# Custom options for faster responses
 options = ["-o", "timeout", "30", "-o", "stream", "true"]
 
 
-# Notes:
-# ------
-# 1. The `options` field is used by `qwen` and `codex` backends to pass
-#    command-line arguments to their respective CLI tools.
+# Example 2: Qwen via OpenRouter with premium model
+[qwen-premium]
+enabled = true
+model = "qwen/qwen-2.5-coder-72b-instruct"
+openai_api_key = "sk-or-v1-your-openrouter-key-here"
+openai_base_url = "https://openrouter.ai/api/v1"
+
+# Use 'codex' backend type (OpenAI-compatible)
+backend_type = "codex"
+
+# Premium model with additional options
+options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+
+
+# Example 3: Azure OpenAI with Qwen model
+[qwen-azure]
+enabled = false  # Set to true if using Azure
+model = "qwen-35-coder"
+openai_api_key = "your-azure-openai-key"
+openai_base_url = "https://your-resource.openai.azure.com"
+
+# Use 'codex' backend type for Azure OpenAI
+backend_type = "codex"
+
+# Azure-specific options
+options = ["-o", "api_version", "2024-02-01"]
+
+
+# Example 4: Custom OpenAI-compatible endpoint
+[qwen-custom]
+enabled = false  # Set to true if using custom endpoint
+model = "qwen-2.5-coder-32k-instruct"
+openai_api_key = "your-custom-endpoint-key"
+openai_base_url = "https://api.example.com/v1"
+
+# Use 'codex' backend type for OpenAI-compatible providers
+backend_type = "codex"
+
+# Additional Backend Examples (Non-Qwen)
+# ======================================
+
+[gemini]
+enabled = true
+model = "gemini-2.5-pro"
+
+# Gemini API settings
+api_key = "your-gemini-api-key-here"
+base_url = "https://generativelanguage.googleapis.com"
+
+# Optional retry configuration for usage limits
+usage_limit_retry_count = 3
+usage_limit_retry_wait_seconds = 30
+# Rotate to the next backend after every successful call to stay under strict execution limits
+always_switch_after_execution = true
+
+# Gemini doesn't support custom options in the same way as qwen/codex
+# Options field is mainly used for qwen/codex backends
+options = []
+backend_type = "gemini"
+
+[codex]
+enabled = true
+model = "codex"
+# Codex typically doesn't need API keys as it's handled by providers
+options = []
+backend_type = "codex"
+
+# Notes and Best Practices
+# ========================
+
+# IMPORTANT: backend_type Configuration
+# ---------------------------------------
+# The `backend_type` field is crucial for proper configuration:
 #
-# 2. The `backend_type` field allows you to create custom aliases that
-#    map to underlying backend implementations (`qwen`, `gemini`, `codex`, `claude`).
+# 1. "qwen" - Use native Qwen CLI (OAuth authentication)
+#    - No API keys required
+#    - Requires Qwen CLI installation and authentication
+#    - Limited to models available through Qwen CLI
 #
-# 3. Environment variables can override configuration values:
+# 2. "codex" - Use OpenAI-compatible client (API keys required)
+#    - Required for OpenRouter, Azure OpenAI, and similar providers
+#    - Requires openai_api_key and openai_base_url
+#    - Access to all models offered by the provider
+#
+# 3. "gemini" - Use Gemini client
+#    - Requires api_key and base_url
+#    - Direct Google API integration
+#
+# 4. "claude" - Use Claude client
+#    - Anthropic API integration
+#
+# 5. "codex" (for default codex backend) - Use Codex client
+#    - Default OpenAI Codex integration
+
+# Backend Aliases
+# ---------------
+# You can create multiple configurations for the same backend type by using
+# different backend names with the same backend_type. This is useful for:
+# - Using multiple models from the same provider
+# - Different configurations for different use cases
+# - Fallback configurations with different models
+
+# Configuration Inheritance and Options
+# -------------------------------------
+# 1. The `options` field is primarily used by qwen/codex backends to pass
+#    command-line arguments to the CLI tools.
+#
+# 2. Only qwen and codex backends currently utilize the `options` field in their
+#    subprocess calls. Other backends may ignore this field.
+#
+# 3. The `backend_type` field allows you to create custom aliases that
+#    map to underlying backend implementations. This is useful when you
+#    want multiple configurations for the same backend type.
+
+# Environment Variables
+# --------------------
+# Environment variables can override configuration values:
 #    - AUTO_CODER_DEFAULT_BACKEND
 #    - AUTO_CODER_MESSAGE_DEFAULT_BACKEND
 #    - AUTO_CODER_<BACKEND>_API_KEY (e.g., AUTO_CODER_GEMINI_API_KEY)
 #    - AUTO_CODER_<BACKEND>_OPENAI_API_KEY (e.g., AUTO_CODER_CODEX_OPENAI_API_KEY)
 #    - AUTO_CODER_<BACKEND>_OPENAI_BASE_URL
 
+# Provider-Specific Configurations
+# --------------------------------
+# 1. OpenAI-compatible providers (OpenRouter, Azure OpenAI, custom endpoints)
+#    should use:
+#    - openai_api_key
+#    - openai_base_url
+#    - backend_type = "codex"
+#
+# 2. Native providers (Gemini, Claude)
+#    should use:
+#    - api_key
+#    - base_url
+#    - backend_type matching the provider name
