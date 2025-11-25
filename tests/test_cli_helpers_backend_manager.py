@@ -185,6 +185,74 @@ class TestBuildBackendManager:
                 assert call_kwargs["model_name"] == "open-router/grok-4.1-fast"
                 assert call_kwargs["backend_name"] == "my-openrouter-model"
 
+    def test_build_backend_manager_with_default_codex_config(self):
+        """Test that CodexClient receives config for the default 'codex' backend."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config for the default codex backend
+            config = LLMBackendConfiguration()
+            config.backends["codex"] = BackendConfig(
+                name="codex",
+                model="some-codex-model",
+                backend_type="codex",
+                api_key="default-codex-key",
+                base_url="https://default.codex.com",
+            )
+            mock_get_config.return_value = config
+
+            with patch("src.auto_coder.cli_helpers.CodexClient") as mock_codex_class:
+                mock_codex_instance = MagicMock()
+                mock_codex_class.return_value = mock_codex_instance
+
+                # Call build_backend_manager with the default codex backend
+                build_backend_manager(
+                    selected_backends=["codex"],
+                    primary_backend="codex",
+                    models={"codex": "some-codex-model"},
+                    enable_graphrag=False,
+                )
+
+                assert mock_codex_class.call_count == 1
+                call_kwargs = mock_codex_class.call_args.kwargs
+
+                # Verify api_key and base_url were passed
+                assert call_kwargs["api_key"] == "default-codex-key"
+                assert call_kwargs["base_url"] == "https://default.codex.com"
+                assert call_kwargs["backend_name"] == "codex"
+
+    def test_build_backend_manager_with_default_qwen_config(self):
+        """Test that QwenClient receives config for the default 'qwen' backend."""
+        with patch("src.auto_coder.cli_helpers.get_llm_config") as mock_get_config:
+            # Setup mock config for the default qwen backend
+            config = LLMBackendConfiguration()
+            config.backends["qwen"] = BackendConfig(
+                name="qwen",
+                model="qwen-model",
+                backend_type="qwen",
+                api_key="default-qwen-key",
+                base_url="https://default.qwen.com",
+            )
+            mock_get_config.return_value = config
+
+            with patch("src.auto_coder.cli_helpers.QwenClient") as mock_qwen_class:
+                mock_qwen_instance = MagicMock()
+                mock_qwen_class.return_value = mock_qwen_instance
+
+                # Call build_backend_manager with the default qwen backend
+                build_backend_manager(
+                    selected_backends=["qwen"],
+                    primary_backend="qwen",
+                    models={"qwen": "qwen-model"},
+                    enable_graphrag=False,
+                )
+
+                assert mock_qwen_class.call_count == 1
+                call_kwargs = mock_qwen_class.call_args.kwargs
+
+                # Verify api_key and base_url were passed
+                assert call_kwargs["api_key"] == "default-qwen-key"
+                assert call_kwargs["base_url"] == "https://default.qwen.com"
+                assert call_kwargs["backend_name"] == "qwen"
+
 
 class TestBuildBackendManagerFromConfig:
     """Test cases for build_backend_manager_from_config function."""

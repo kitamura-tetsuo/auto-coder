@@ -404,15 +404,18 @@ def build_backend_manager(
 
     # Create factory functions that support both direct backend names and aliases
     def _create_qwen_client(backend_name: str):
-        """Create a QwenClient with options from config if it's an alias."""
+        """Create a QwenClient with options from config."""
         backend_config = config.get_backend_config(backend_name)
-        options = backend_config.options if backend_config else None
         return QwenClient(
             model_name=models.get(backend_name),
             backend_name=backend_name,
             use_env_vars=True,
             preserve_existing_env=False,
-            options=options,
+            options=backend_config.options if backend_config else None,
+            api_key=backend_config.api_key if backend_config else None,
+            base_url=backend_config.base_url if backend_config else None,
+            openai_api_key=backend_config.openai_api_key if backend_config else None,
+            openai_base_url=backend_config.openai_base_url if backend_config else None,
         )
 
     def _create_gemini_client(backend_name: str):
@@ -420,40 +423,30 @@ def build_backend_manager(
         return GeminiClient(effective_gemini_api_key, model_name=models.get(backend_name)) if effective_gemini_api_key else GeminiClient(model_name=models.get(backend_name))
 
     def _create_claude_client(backend_name: str):
-        """Create a ClaudeClient."""
-        # Get the backend config to check if it's an alias
+        """Create a ClaudeClient with optional configuration for aliases."""
         backend_config = config.get_backend_config(backend_name)
-        if backend_config and backend_config.backend_type == "claude":
-            # It's an alias with backend_type "claude", pass backend_name
-            return ClaudeClient(model_name=models.get(backend_name), backend_name=backend_name)
-        else:
-            # It's the default claude backend
-            return ClaudeClient(model_name=models.get(backend_name))
+        return ClaudeClient(
+            model_name=models.get(backend_name),
+            backend_name=backend_name,
+            api_key=backend_config.api_key if backend_config else None,
+            base_url=backend_config.base_url if backend_config else None,
+        )
 
     def _create_auggie_client(backend_name: str):
         """Create an AuggieClient."""
         return AuggieClient(model_name=models.get(backend_name))
 
     def _create_codex_client(backend_name: str):
-        """Create a CodexClient."""
-        # Get the backend config
+        """Create a CodexClient with optional configuration for aliases."""
         backend_config = config.get_backend_config(backend_name)
-        if backend_config and backend_config.backend_type == "codex":
-            # It's an alias with backend_type "codex", pass configuration values
-            return CodexClient(
-                model_name=models.get(backend_name, "codex"),
-                backend_name=backend_name,
-                api_key=backend_config.api_key,
-                base_url=backend_config.base_url,
-                openai_api_key=backend_config.openai_api_key,
-                openai_base_url=backend_config.openai_base_url,
-            )
-        else:
-            # It's the default codex backend
-            return CodexClient(
-                model_name=models.get(backend_name, "codex"),
-                backend_name=backend_name,
-            )
+        return CodexClient(
+            model_name=models.get(backend_name, "codex"),
+            backend_name=backend_name,
+            api_key=backend_config.api_key if backend_config else None,
+            base_url=backend_config.base_url if backend_config else None,
+            openai_api_key=backend_config.openai_api_key if backend_config else None,
+            openai_base_url=backend_config.openai_base_url if backend_config else None,
+        )
 
     def _create_codex_mcp_client(backend_name: str):
         """Create a CodexMCPClient."""

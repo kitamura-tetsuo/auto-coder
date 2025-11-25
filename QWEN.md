@@ -178,6 +178,65 @@ model = "codex"
 backend_type = "codex"
 ```
 
+## Generic OpenRouter Model Support with Aliases
+
+The system also supports arbitrary OpenAI-compatible models (like Grok, Claude, etc.) by using `backend_type = "codex"` with custom names.
+
+### Using Generic OpenAI-Compatible Models
+
+You can configure any OpenAI-compatible model as a custom backend using `backend_type = "codex"`:
+
+```toml
+# Using Grok models via OpenRouter
+[backends.grok-4.1-fast]
+enabled = true
+model = "x-ai/grok-4.1-fast"
+openai_api_key = "sk-or-v1-your-openrouter-key"
+openai_base_url = "https://openrouter.ai/api/v1"
+backend_type = "codex"
+
+# Using Claude models via OpenRouter
+[backends.claude-sonnet-4]
+enabled = true
+model = "anthropic/claude-sonnet-4"
+openai_api_key = "sk-or-v1-your-openrouter-key"
+openai_base_url = "https://openrouter.ai/api/v1"
+backend_type = "codex"
+
+# Using Mistral models
+[backends.mistral-large]
+enabled = true
+model = "mistralai/mistral-large"
+openai_api_key = "sk-or-v1-your-key"
+openai_base_url = "https://openrouter.ai/api/v1"
+backend_type = "codex"
+```
+
+### Using Generic Claude-Compatible Models
+
+For Claude models that support OpenAI-compatible API, you can use `backend_type = "claude"`:
+
+```toml
+# Using Claude models via OpenRouter (when using ClaudeClient)
+[backends.minimax-coder]
+enabled = true
+model = "minimax-coder"
+api_key = "your-minimax-api-key"
+base_url = "https://api.minimaxi.com/v1"
+backend_type = "claude"
+```
+
+### How Backend Type Aliases Work
+
+The configuration system allows you to use arbitrary names for your backends and specify the underlying technology:
+
+- **`backend_type = "codex"`**: Uses CodexClient, which accepts OpenAI-compatible API keys and base URLs
+- **`backend_type = "claude"`**: Uses ClaudeClient, which accepts Claude-specific API keys and base URLs
+- **`backend_type = "qwen"`**: Uses QwenClient, which uses OAuth-based authentication only
+- **`backend_type = "gemini"`**: Uses GeminiClient, which requires Gemini-specific API keys
+
+This allows you to create intuitive aliases for different models while using the appropriate underlying client technology.
+
 ## Environment Variables
 
 You can override configuration with environment variables:

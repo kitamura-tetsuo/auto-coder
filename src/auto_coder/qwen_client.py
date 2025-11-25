@@ -40,6 +40,10 @@ class QwenClient(LLMClientBase):
         use_env_vars: bool = True,
         preserve_existing_env: bool = False,
         options: Optional[List[str]] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
     ) -> None:
         """Initialize QwenClient.
 
@@ -51,6 +55,10 @@ class QwenClient(LLMClientBase):
             preserve_existing_env: If True, preserve existing OPENAI_* env vars.
                                   If False, clear them before setting new values (default: False)
             options: Additional options to pass to the CLI tool (e.g., ["-o", "yolo", "true"])
+            api_key: API key for the backend (optional, for custom backends).
+            base_url: Base URL for the backend (optional, for custom backends).
+            openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
+            openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
         """
         config = get_llm_config()
         if backend_name:
@@ -68,6 +76,11 @@ class QwenClient(LLMClientBase):
         self.preserve_existing_env = preserve_existing_env
         # Store options for CLI commands
         self.options = options or (config_backend and config_backend.options) or []
+
+        self.api_key = api_key or (config_backend and config_backend.api_key)
+        self.base_url = base_url or (config_backend and config_backend.base_url)
+        self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
+        self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url)
 
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()
@@ -115,12 +128,20 @@ class QwenClient(LLMClientBase):
         provider_model = os.environ.get("QWEN_MODEL")
 
         # Always use OAuth path (native Qwen CLI)
-        return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
+        return self._run_qwen_cli(escaped_prompt, provider_model)
 
-    def _run_qwen_oauth_cli(self, escaped_prompt: str, model: Optional[str]) -> str:
+    def _run_qwen_cli(self, escaped_prompt: str, model: Optional[str]) -> str:
         """Run qwen CLI for OAuth (no provider credentials)."""
         env = os.environ.copy()
 
+        if self.api_key:
+            env["QWEN_API_KEY"] = self.api_key
+        if self.base_url:
+            env["QWEN_BASE_URL"] = self.base_url
+        if self.openai_api_key:
+            env["OPENAI_API_KEY"] = self.openai_api_key
+        if self.openai_base_url:
+            env["OPENAI_BASE_URL"] = self.openai_base_url
         model_to_use = model or self.default_model
 
         if not self.preserve_existing_env:
@@ -272,26 +293,6 @@ class QwenClient(LLMClientBase):
         if "openai api streaming error: 429 provider returned error" in low:
             return True
         return False
-
-    def _run_llm_cli(self, prompt: str) -> str:
-        """Execute LLM with the given prompt.
-
-        This method is called by BackendManager which handles provider rotation.
-        Environment variables for the current provider are set by BackendManager.
-
-        Args:
-            prompt: The prompt to send to the LLM
-
-        Returns:
-            The LLM's response as a string
-        """
-        escaped_prompt = self._escape_prompt(prompt)
-
-        # Get model from environment or use default
-        provider_model = os.environ.get("QWEN_MODEL")
-
-        # Always use OAuth path (native Qwen CLI)
-        return self._run_qwen_oauth_cli(escaped_prompt, provider_model)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:

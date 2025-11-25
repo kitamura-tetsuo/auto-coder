@@ -92,7 +92,14 @@ class TestCLICreateFeatureIssues:
         assert result.exit_code == 0
         # GitHubClient is now a singleton using get_instance()
         mock_github_client_class.get_instance.assert_called_once_with("test_token", disable_labels=False)
-        mock_codex_client_class.assert_called_once_with(model_name="codex")
+        mock_codex_client_class.assert_called_once_with(
+            model_name="codex",
+            backend_name="codex",
+            api_key=None,
+            base_url=None,
+            openai_api_key=None,
+            openai_base_url=None,
+        )
         assert mock_automation_engine_class.call_count == 1
         args, kwargs = mock_automation_engine_class.call_args
         assert args[0] is mock_github_client

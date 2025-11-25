@@ -133,3 +133,28 @@ class TestQwenClient:
         # Should have model flag
         assert "-m" in args
         assert "custom-qwen-model" in args
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_cli_invocation_with_openrouter_config(self, mock_run_command, mock_run):
+        """Test that API key and base URL are passed as environment variables."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        client = QwenClient(
+            api_key="qwen-key",
+            base_url="https://qwen.example.com",
+            openai_api_key="openai-key",
+            openai_base_url="https://openai.example.com",
+        )
+
+        client._run_llm_cli("test prompt")
+
+        # Verify environment variables are correctly set for the subprocess
+        _, kwargs = mock_run_command.call_args
+        env = kwargs.get("env", {})
+
+        assert env.get("QWEN_API_KEY") == "qwen-key"
+        assert env.get("QWEN_BASE_URL") == "https://qwen.example.com"
+        assert env.get("OPENAI_API_KEY") == "openai-key"
+        assert env.get("OPENAI_BASE_URL") == "https://openai.example.com"

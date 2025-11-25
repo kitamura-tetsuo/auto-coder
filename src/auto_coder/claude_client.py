@@ -21,6 +21,10 @@ class ClaudeClient(LLMClientBase):
         self,
         model_name: Optional[str] = None,
         backend_name: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        openai_api_key: Optional[str] = None,
+        openai_base_url: Optional[str] = None,
     ) -> None:
         """Initialize Claude CLI client.
 
@@ -29,18 +33,30 @@ class ClaudeClient(LLMClientBase):
                       If None and backend_name is provided, will use config for backend_name.
             backend_name: Backend name to use for configuration lookup (optional).
                          If provided along with model_name=None, will use config for this backend.
+            api_key: API key for the backend (optional, for custom backends).
+            base_url: Base URL for the backend (optional, for custom backends).
+            openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
+            openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
         """
         config = get_llm_config()
 
         # If backend_name is provided, get config from that backend
         if backend_name:
             config_backend = config.get_backend_config(backend_name)
-            # Use provided model_name, fall back to backend config, then to default
+            # Use provided values, fall back to config, then to default
             self.model_name = model_name or (config_backend and config_backend.model) or "sonnet"
+            self.api_key = api_key or (config_backend and config_backend.api_key)
+            self.base_url = base_url or (config_backend and config_backend.base_url)
+            self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
+            self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url)
         else:
             # Fall back to default claude config
             config_backend = config.get_backend_config("claude")
             self.model_name = model_name or (config_backend and config_backend.model) or "sonnet"
+            self.api_key = api_key
+            self.base_url = base_url
+            self.openai_api_key = openai_api_key
+            self.openai_base_url = openai_base_url
 
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
@@ -83,6 +99,17 @@ class ClaudeClient(LLMClientBase):
                 escaped_prompt,
             ]
 
+            # Prepare environment variables for subprocess
+            env = os.environ.copy()
+            if self.api_key:
+                env["CLAUDE_API_KEY"] = self.api_key
+            if self.base_url:
+                env["CLAUDE_BASE_URL"] = self.base_url
+            if self.openai_api_key:
+                env["OPENAI_API_KEY"] = self.openai_api_key
+            if self.openai_base_url:
+                env["OPENAI_BASE_URL"] = self.openai_base_url
+
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
             logger.info(f"🤖 Running: claude --print --dangerously-skip-permissions " f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]")
@@ -93,6 +120,7 @@ class ClaudeClient(LLMClientBase):
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
+                env=env if len(env) > len(os.environ) else None,
             )
             logger.info("=" * 60)
             stdout = (result.stdout or "").strip()
