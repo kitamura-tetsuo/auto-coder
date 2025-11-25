@@ -149,6 +149,15 @@ class BackendManager(LLMBackendManagerBase):
             pass
 
     def switch_to_next_backend(self) -> None:
+        """Switch to the next backend in the rotation.
+
+        This method rotates to the next backend and saves the new state
+        for persistence and auto-reset functionality.
+
+        The backend state is saved with the current timestamp to track
+        when the switch occurred, enabling the auto-reset feature to
+        reset back to the default backend after 2 hours.
+        """
         self._switch_to_index(self._current_idx + 1)
         # Save the new backend state
         current_backend = self._current_backend_name()
@@ -156,6 +165,20 @@ class BackendManager(LLMBackendManagerBase):
         self._state_manager.save_state(current_backend, current_time)
 
     def switch_to_default_backend(self) -> None:
+        """Switch to the default backend.
+
+        This method resets the backend to the configured default and saves
+        the new state for persistence and auto-reset functionality.
+
+        The backend state is saved with the current timestamp to track
+        when the switch occurred, enabling the auto-reset feature to
+        maintain consistency across application restarts.
+
+        This is typically called when:
+        - A different test file is encountered
+        - Auto-reset is triggered after 2 hours
+        - Manual reset is needed
+        """
         # To the default position
         try:
             idx = self._all_backends.index(self._default_backend)
