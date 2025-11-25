@@ -145,7 +145,9 @@ def setup_logger(
         format_string = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | " "<level>{level: <8}</level> | " "<cyan>{name}</cyan> - " "<level>{message}</level>"
 
     # Use non-enqueue mode during pytest to avoid background queue growth
-    use_enqueue = False if os.environ.get("PYTEST_CURRENT_TEST") else True
+    # Also check for pytest plugins and test runner indicators
+    in_test = bool(os.environ.get("PYTEST_CURRENT_TEST")) or bool(os.environ.get("PYTEST_RUNNER")) or bool(os.environ.get("_PYTEST_CURRENT_TEST")) or "pytest" in sys.modules or "unittest" in sys.modules
+    use_enqueue = False if in_test else True
 
     # Prefer caller-provided stream; fall back to stdout when verbose logging is
     # enabled so tests capturing stdout can see the trace, otherwise stderr to

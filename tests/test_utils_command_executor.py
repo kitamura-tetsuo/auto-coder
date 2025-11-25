@@ -50,13 +50,13 @@ def test_run_command_streams_output(monkeypatch):
     assert result.stderr == "STDERR\n"
 
 
-def test_should_stream_when_debugger_attached(monkeypatch):
+def test_should_stream_when_debugger_attached(monkeypatch, _use_real_streaming_logic):
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
     monkeypatch.setattr(sys, "gettrace", lambda: object())
     assert utils.CommandExecutor._should_stream_output(None) is True
 
 
-def test_should_stream_when_env_forced(monkeypatch):
+def test_should_stream_when_env_forced(monkeypatch, _use_real_streaming_logic):
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
     monkeypatch.setattr(sys, "gettrace", lambda: None)
     assert utils.CommandExecutor._should_stream_output(None) is False
@@ -66,7 +66,7 @@ def test_should_stream_when_env_forced(monkeypatch):
 
 
 @pytest.mark.parametrize("marker", utils.CommandExecutor.DEBUGGER_ENV_MARKERS)
-def test_should_stream_for_debugger_markers(monkeypatch, marker):
+def test_should_stream_for_debugger_markers(monkeypatch, marker, _use_real_streaming_logic):
     monkeypatch.delenv("AUTOCODER_STREAM_COMMANDS", raising=False)
     monkeypatch.setattr(sys, "gettrace", lambda: None)
     for env_key in utils.CommandExecutor.DEBUGGER_ENV_MARKERS:

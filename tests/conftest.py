@@ -2,19 +2,19 @@
 Pytest configuration and fixtures for Auto-Coder tests.
 """
 
+import atexit
+import os
 import sys
 from pathlib import Path
+from unittest.mock import Mock
+
+import pytest
 
 # Ensure 'src' directory is on sys.path so 'auto_coder' package is importable everywhere
 _repo_root = Path(__file__).resolve().parents[1]
 _src_path = _repo_root / "src"
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
-
-import os
-from unittest.mock import Mock
-
-import pytest
 
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
@@ -50,6 +50,50 @@ def _reset_github_client_singleton():
     GitHubClient.reset_singleton()
     yield
     GitHubClient.reset_singleton()
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_loguru_handlers():
+    """Clean up loguru handlers after each test to prevent queue hangs."""
+    from loguru import logger as loguru_logger
+
+    # Store all handlers before test
+    handlers_before = list(loguru_logger._core.handlers.values())
+
+    yield
+
+    # Remove ALL handlers after each test
+    loguru_logger.remove()
+
+    # Ensure all writer threads are terminated by clearing the handlers' queues
+    for handler in handlers_before:
+        try:
+            # Access the queue if it exists and close it
+            if hasattr(handler, "_queue"):
+                queue = handler._queue
+                if hasattr(queue, "close"):
+                    queue.close()
+                if hasattr(queue, "join"):
+                    try:
+                        queue.join()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    # Re-add minimal console handler to avoid issues in subsequent tests
+    # Use enqueue=False to prevent any background threads
+    loguru_logger.add(
+        sys.stderr,
+        format="{time:HH:mm:ss} | {level: <8} | {name}:{line} - {message}",
+        level="WARNING",
+        enqueue=False,
+        colorize=True,
+        catch=True,
+    )
+
+    # Register final cleanup at exit
+    atexit.register(lambda: loguru_logger.remove())
 
 
 @pytest.fixture
@@ -218,21 +262,57 @@ def _use_custom_subprocess_mock():
     pass
 
 
+@pytest.fixture
+def _use_real_streaming_logic():
+    """Marker fixture to indicate test should use real streaming logic.
+
+    Tests that use this fixture will use the original _should_stream_output
+    implementation instead of the stubbed version. This is useful for tests
+    that specifically validate debugger detection and streaming logic.
+    """
+    pass
+
+
 # Stub to prevent actual git/gh commands from being executed during testing
 @pytest.fixture(autouse=True)
 def stub_git_and_gh_commands(monkeypatch, request):
     import subprocess
     import types
 
+    # Use real streaming logic for tests that need it
+    use_real_streaming = "_use_real_streaming_logic" in request.fixturenames
+
     # Skip command stubbing for tests that need real commands
+    skip_stub = False
     if "_use_real_commands" in request.fixturenames:
         print("DEBUG: Skipping stub - _use_real_commands fixture found", file=__import__("sys").stderr)
-        return
+        skip_stub = True
 
     # Skip command stubbing for tests that use custom subprocess mocking
     if "_use_custom_subprocess_mock" in request.fixturenames:
         print("DEBUG: Skipping stub - _use_custom_subprocess_mock fixture found", file=__import__("sys").stderr)
-        return
+        skip_stub = True
+
+    # Disable streaming for git commands to avoid queue timeout issues
+    from src.auto_coder.utils import CommandExecutor
+
+    orig_should_stream = CommandExecutor._should_stream_output
+
+    def patched_should_stream(stream_output):
+        # For tests that need to validate the actual streaming logic (e.g., debugger detection),
+        # use the original implementation
+        if use_real_streaming:
+            return orig_should_stream(stream_output)
+
+        # If streaming is requested for a git command, disable it in tests
+        if stream_output is None:
+            # Check if we're in a context where git commands are being called
+            # For tests, always disable streaming to avoid queue issues
+            return False
+        return orig_should_stream(stream_output)
+
+    if not skip_stub:
+        CommandExecutor._should_stream_output = staticmethod(patched_should_stream)
 
     orig_run = subprocess.run
     orig_popen = subprocess.Popen
@@ -465,19 +545,85 @@ def stub_git_and_gh_commands(monkeypatch, request):
             program = cmd[0] if isinstance(cmd, (list, tuple)) and cmd else None
             if program in ("git", "gh", "gemini", "codex", "uv", "node"):
 
+                class MockStream:
+                    def __init__(self, content):
+                        import io
+
+                        if isinstance(content, bytes):
+                            self._stream = io.BytesIO(content)
+                            self._is_bytes = True
+                        else:
+                            self._stream = io.StringIO(content)
+                            self._is_bytes = False
+                        self._closed = False
+
+                    def readline(self, *args, **kwargs):
+                        if self._closed:
+                            return b"" if self._is_bytes else ""
+                        result = self._stream.readline(*args, **kwargs)
+                        # If we got an empty result and there was content, we might be at EOF
+                        # Reset the stream to allow re-reading
+                        if not result and self._stream.tell() > 0:
+                            self._stream.seek(0)
+                            result = self._stream.readline(*args, **kwargs)
+                        return result
+
+                    def __iter__(self):
+                        return self
+
+                    def __next__(self):
+                        if self._closed:
+                            raise StopIteration
+                        line = self.readline()
+                        if not line:
+                            raise StopIteration
+                        return line
+
+                    def read(self, *args):
+                        if self._closed:
+                            return b"" if self._is_bytes else ""
+                        result = self._stream.read(*args)
+                        # Reset after reading to allow re-reading
+                        if not result and self._stream.tell() > 0:
+                            self._stream.seek(0)
+                            result = self._stream.read(*args)
+                        return result
+
+                    def close(self):
+                        self._closed = True
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, exc_type, exc_val, exc_tb):
+                        self.close()
+                        return False
+
                 class DummyPopen:
                     def __init__(self):
-                        # Make stdout an iterator, safely end sequential reading
-                        self._lines = [""]
-                        self.stdout = iter(self._lines)
-                        self.stderr = iter([""])
+                        # Create streams that have readline() method like real file objects
+                        self.stdout = MockStream("")
+                        self.stderr = MockStream("")
                         self.pid = 0
+                        self.returncode = None
 
-                    def wait(self):
-                        return 0
+                    def wait(self, timeout=None):
+                        if self.returncode is None:
+                            self.returncode = 0
+                        return self.returncode
 
                     def poll(self):
-                        return 0
+                        return self.returncode
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, exc_type, exc_val, exc_tb):
+                        if hasattr(self.stdout, "close"):
+                            self.stdout.close()
+                        if hasattr(self.stderr, "close"):
+                            self.stderr.close()
+                        return False
 
                 return DummyPopen()
             # universal_newlines is synonymous with text in Python3.12. Avoid conflicts with both specified
@@ -505,8 +651,16 @@ def stub_git_and_gh_commands(monkeypatch, request):
                 env=env,
             )
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    if not skip_stub:
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    # Cleanup: restore original function after test
+    yield
+
+    # Restore the original _should_stream_output method if we modified it
+    if not skip_stub:
+        CommandExecutor._should_stream_output = orig_should_stream
 
 
 # GraphRAG Session Management Test Fixtures

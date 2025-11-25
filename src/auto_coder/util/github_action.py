@@ -1950,6 +1950,9 @@ def check_github_actions_and_exit_if_in_progress(
 
         return True
 
+    except SystemExit:
+        # Re-raise SystemExit to allow the program to exit properly
+        raise
     except Exception as e:
         logger.error(f"Error checking GitHub Actions status: {e}")
         return True  # Continue processing on error
@@ -2005,6 +2008,9 @@ def check_and_handle_closed_state(
 
         return False  # Don't exit, continue processing
 
+    except SystemExit:
+        # Re-raise SystemExit to allow the program to exit properly
+        raise
     except Exception as e:
         logger.warning(f"Failed to check/handle closed item state: {e}")
         return False  # Continue on error
