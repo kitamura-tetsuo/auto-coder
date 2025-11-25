@@ -2,6 +2,7 @@
 Claude CLI client for Auto-Coder.
 """
 
+import os
 import subprocess
 from typing import Optional
 

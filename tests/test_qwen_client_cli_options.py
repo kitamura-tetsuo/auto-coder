@@ -23,7 +23,7 @@ def test_qwen_client_options_parameter(mock_run_command, mock_run):
         options=["-o", "yolo", "true", "--debug"],
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure codex command is used
     assert mock_run_command.call_count == 1
@@ -63,7 +63,7 @@ def test_qwen_client_options_parameter_qwen_mode(mock_run_command, mock_run):
         options=["-o", "yolo", "true", "--debug"],
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure qwen command is used
     assert mock_run_command.call_count == 1
@@ -96,7 +96,7 @@ def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
         use_env_vars=False,  # Use CLI options instead of env vars
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure codex command is used
     assert mock_run_command.call_count == 1
@@ -133,7 +133,7 @@ def test_qwen_client_preserve_env_mode(mock_run_command, mock_run):
         preserve_existing_env=True,  # Preserve existing env vars
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure codex command is used
     assert mock_run_command.call_count == 1
@@ -167,7 +167,7 @@ def test_qwen_client_default_env_mode(mock_run_command, mock_run):
         # preserve_existing_env=False (default)
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure codex command is used
     assert mock_run_command.call_count == 1
@@ -202,7 +202,7 @@ def test_qwen_client_codex_mode_with_options(mock_run_command, mock_run):
         options=["-o", "yolo", "true", "--debug"],
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure codex command is used
     assert mock_run_command.call_count == 1
@@ -229,7 +229,7 @@ def test_qwen_client_oauth_mode_with_options(mock_run_command, mock_run):
         options=["-o", "stream", "false"],
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure qwen command is used
     assert mock_run_command.call_count == 1
@@ -257,7 +257,7 @@ def test_qwen_client_options_empty_by_default(mock_run_command, mock_run):
         # No options provided
     )
 
-    _ = client._run_qwen_cli("probe")
+    _ = client._run_qwen_cli("probe", None)
 
     # Ensure qwen command is used
     assert mock_run_command.call_count == 1

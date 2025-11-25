@@ -17,7 +17,7 @@ def test_qwen_raises_usage_limit_on_message(mock_run_command, mock_run):
 
     client = QwenClient(model_name="Qwen2.5-Coder-32B-Instruct")
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_qwen_cli("hello")
+        client._run_qwen_cli("hello", None)
 
 
 @patch("subprocess.run")
@@ -28,7 +28,7 @@ def test_qwen_raises_usage_limit_on_nonzero_429(mock_run_command, mock_run):
 
     client = QwenClient(model_name="Qwen2.5-Coder-32B-Instruct")
     with pytest.raises(AutoCoderUsageLimitError):
-        client._run_qwen_cli("hello")
+        client._run_qwen_cli("hello", None)
 
 
 @patch("subprocess.run")

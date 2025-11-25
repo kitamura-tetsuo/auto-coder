@@ -11,7 +11,7 @@ def test_run_prompt_includes_model_flag_when_model_set(mock_run_command, mock_ru
     mock_run_command.return_value = CommandResult(True, "", "", 0)
 
     client = QwenClient(model_name="qwen3-coder-plus")
-    _ = client._run_qwen_cli("hello world")
+    _ = client._run_qwen_cli("hello world", None)
 
     assert mock_run_command.call_count == 1
     args = mock_run_command.call_args[0][0]
