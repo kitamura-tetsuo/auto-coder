@@ -26,8 +26,14 @@ github-sub-issue create --parent 100 --title "Create login UI" --label "frontend
 ### 3. Add existing issue as sub-issue
 
 ```bash
-# Add existing issue #95 as sub-issue
+# Add single sub-issue
 github-sub-issue add 100 95
+
+# Add multiple existing issues as sub-issues (batch operation)
+github-sub-issue add 100 95 96 97 98
+
+# Mix of issue numbers and URLs
+github-sub-issue add 100 95 https://github.com/owner/repo/issues/96
 ```
 
 ### 4. Check progress
@@ -56,6 +62,54 @@ github-sub-issue remove 100 95 96 97 --force
 ```
 
 ## Advanced Usage Examples
+
+### Batch Operations: Adding Multiple Sub-issues
+
+```bash
+# Add multiple sub-issues in one command
+github-sub-issue add 100 101 102 103 104 105
+
+# Add multiple sub-issues with mixed formats
+github-sub-issue add 100 \
+  101 \
+  102 \
+  https://github.com/owner/repo/issues/103 \
+  https://github.com/owner/repo/issues/104
+
+# Add sub-issues from different repositories
+github-sub-issue add https://github.com/owner/repo1/issues/100 \
+  https://github.com/owner/repo1/issues/200 \
+  https://github.com/owner/repo2/issues/300
+
+# Example output:
+# ✅ Added sub-issue #101 to parent #100
+#    Parent: Feature: User Authentication System
+#    Sub-issue: Design database schema
+# ✅ Added sub-issue #102 to parent #100
+#    Parent: Feature: User Authentication System
+#    Sub-issue: Implement JWT tokens
+# ✅ Added sub-issue #103 to parent #100
+#    Parent: Feature: User Authentication System
+#    Sub-issue: Create login UI
+#
+# ✅ Successfully added 3 sub-issue(s).
+```
+
+### Efficient Project Management with Batch Operations
+
+```bash
+# Create a parent issue for a sprint
+SPRINT_ISSUE=$(gh issue create --title "Sprint 15: Feature X" \
+  --body "Implement Feature X across the stack" | grep -oP '\d+$')
+
+# Add existing issues as sub-issues in batch
+github-sub-issue add "$SPRINT_ISSUE" 450 451 452 453 454
+
+# Or create new sub-issues and add existing ones together
+github-sub-issue create --parent "$SPRINT_ISSUE" --title "API Design" --label "backend"
+github-sub-issue create --parent "$SPRINT_ISSUE" --title "Database Schema" --label "backend"
+github-sub-issue add "$SPRINT_ISSUE" 440 441  # Add existing issues
+```
 
 ### Cross-repository sub-issues
 
@@ -166,12 +220,26 @@ gh auth login
 
 ## Best Practices
 
-### 1. Create sub-issues with appropriate granularity
+### 1. Use batch operations for efficiency
+
+```bash
+# Add multiple sub-issues in a single command instead of running multiple commands
+github-sub-issue add 100 101 102 103 104 105
+
+# This is more efficient than:
+# github-sub-issue add 100 101
+# github-sub-issue add 100 102
+# github-sub-issue add 100 103
+# github-sub-issue add 100 104
+# github-sub-issue add 100 105
+```
+
+### 2. Create sub-issues with appropriate granularity
 
 - Avoid sub-issues that are too large (ideal size: can be completed in 1-3 days)
 - Avoid sub-issues that are too small (checklists may be sufficient)
 
-### 2. Use labels effectively
+### 3. Use labels effectively
 
 ```bash
 github-sub-issue create --parent 100 \
@@ -179,7 +247,7 @@ github-sub-issue create --parent 100 \
   --label "backend,api,priority-high"
 ```
 
-### 3. Clearly assign issues
+### 4. Clearly assign issues
 
 ```bash
 github-sub-issue create --parent 100 \
@@ -187,7 +255,7 @@ github-sub-issue create --parent 100 \
   --assignee "@me"
 ```
 
-### 4. Check progress regularly
+### 5. Check progress regularly
 
 ```bash
 # Daily progress check
