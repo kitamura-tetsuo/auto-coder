@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .backend_provider_manager import BackendProviderManager
+from .backend_state_manager import BackendStateManager
 from .exceptions import AutoCoderUsageLimitError
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
@@ -97,6 +98,9 @@ class BackendManager(LLMBackendManagerBase):
         # for the same backend (e.g., qwen-open-router vs qwen-azure vs qwen-direct)
         self._provider_manager: BackendProviderManager = provider_manager or BackendProviderManager.get_default_manager()
 
+        # State manager for persistence of backend state (e.g., for auto-reset functionality)
+        self._state_manager = BackendStateManager()
+
     @property
     def provider_manager(self) -> BackendProviderManager:
         """
@@ -146,6 +150,10 @@ class BackendManager(LLMBackendManagerBase):
 
     def switch_to_next_backend(self) -> None:
         self._switch_to_index(self._current_idx + 1)
+        # Save the new backend state
+        current_backend = self._current_backend_name()
+        current_time = time.time()
+        self._state_manager.save_state(current_backend, current_time)
 
     def switch_to_default_backend(self) -> None:
         # To the default position
@@ -154,6 +162,64 @@ class BackendManager(LLMBackendManagerBase):
         except ValueError:
             idx = 0
         self._switch_to_index(idx)
+        # Save the new backend state
+        current_backend = self._current_backend_name()
+        current_time = time.time()
+        self._state_manager.save_state(current_backend, current_time)
+
+    def check_and_reset_backend_if_needed(self) -> None:
+        """
+        Check if an auto-reset is needed based on the saved state.
+
+        This method loads the saved backend state and checks if:
+        1. The current backend is different from the default backend
+        2. More than 2 hours (7200 seconds) have passed since the last switch
+
+        If both conditions are met, it resets to the default backend.
+        Otherwise, it syncs the current index to match the saved state.
+
+        The auto-reset logic prevents getting stuck on a non-default backend
+        for extended periods, which could happen if an error occurs during
+        backend switching or if the application is left running for a long time.
+        """
+        # Load the saved state
+        state = self._state_manager.load_state()
+
+        # If no state file exists, nothing to do
+        if not state:
+            return
+
+        # Extract state information
+        saved_backend = state.get("current_backend")
+        last_switch_timestamp = state.get("last_switch_timestamp")
+
+        # Validate state data
+        if not saved_backend or not last_switch_timestamp:
+            return
+
+        # Check if we're currently on a non-default backend
+        current_backend = self._current_backend_name()
+        if current_backend == self._default_backend:
+            # Already on default, no reset needed
+            return
+
+        # Check if we should reset to default backend
+        time_since_switch = time.time() - last_switch_timestamp
+        if time_since_switch >= 7200:  # 2 hours
+            # Auto-reset to default backend
+            logger.info(f"Auto-resetting backend to default after {time_since_switch:.0f} seconds. " f"Saved backend: {saved_backend}, Current backend: {current_backend}")
+            self.switch_to_default_backend()
+        else:
+            # Sync the current index to match the saved backend
+            try:
+                saved_backend_index = self._all_backends.index(saved_backend)
+                if saved_backend_index != self._current_idx:
+                    logger.debug(f"Syncing backend index to match saved state: {self._current_idx} -> {saved_backend_index}")
+                    self._current_idx = saved_backend_index
+            except ValueError:
+                # Saved backend is not in our current list, ignore
+                logger.debug(f"Saved backend '{saved_backend}' not found in current backend list")
+                pass
 
     def _get_current_provider_name(self, backend_name: str) -> Optional[str]:
         """
@@ -172,6 +238,9 @@ class BackendManager(LLMBackendManagerBase):
     def _run_llm_cli(self, prompt: str) -> str:
         """Normal execution (circular retry on usage limit with provider rotation)."""
         from .utils import TemporaryEnvironment
+
+        # Check if we need to auto-reset the backend based on saved state
+        self.check_and_reset_backend_if_needed()
 
         attempts = 0
         tried: set[int] = set()
