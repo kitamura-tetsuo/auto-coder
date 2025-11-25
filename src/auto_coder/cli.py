@@ -27,7 +27,7 @@ except ImportError:
 from . import __version__ as AUTO_CODER_VERSION
 from .cli_commands_config import config_group
 from .cli_commands_graphrag import graphrag_group
-from .cli_commands_lock import lock_group
+from .cli_commands_lock import lock_group, unlock
 from .cli_commands_main import create_feature_issues, fix_to_pass_tests_command, process_issues
 from .cli_commands_mcp import mcp_group
 from .cli_commands_mcp_pdb import mcp_pdb_group
@@ -132,16 +132,19 @@ main.name = "auto-coder"
 main.add_command(process_issues)
 main.add_command(create_feature_issues)
 main.add_command(fix_to_pass_tests_command)
+
+# Register commands and command groups
+main.add_command(config_group)
+main.add_command(graphrag_group)
+main.add_command(lock_group)  # Keep for backward compatibility
+main.add_command(mcp_group)
+main.add_command(mcp_pdb_group)
+
+# Register top-level utility commands
 main.add_command(get_actions_logs)
 main.add_command(auth_status)
 main.add_command(migrate_branches)
-
-# Register command groups
-main.add_command(config_group)
-main.add_command(graphrag_group)
-main.add_command(lock_group)
-main.add_command(mcp_group)
-main.add_command(mcp_pdb_group)
+main.add_command(unlock)
 
 
 if __name__ == "__main__":
