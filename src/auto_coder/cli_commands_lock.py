@@ -5,13 +5,7 @@ import click
 from .lock_manager import LockManager
 
 
-@click.group(invoke_without_command=False)
-def lock_group():
-    """Lock management commands."""
-    pass
-
-
-@lock_group.command()
+@click.command()
 @click.option(
     "--force",
     is_flag=True,
@@ -43,3 +37,14 @@ def unlock(force: bool):
 
     lock_manager.release_lock()
     click.echo("Lock file removed successfully.")
+
+
+# Keep lock_group for backward compatibility (deprecated)
+@click.group(invoke_without_command=False)
+def lock_group():
+    """Lock management commands.
+
+    .. deprecated::
+        The lock_group is deprecated. Use 'auto-coder unlock' directly.
+    """
+    pass
