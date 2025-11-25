@@ -29,14 +29,20 @@ pip install -e .
 ### Add existing issue as sub-issue
 
 ```bash
-# Using issue numbers (add existing issue 456 to parent issue 123)
+# Add single sub-issue using issue numbers
 github-sub-issue add 123 456
 
+# Add multiple sub-issues at once (new feature)
+github-sub-issue add 123 456 457 458
+
 # Using URL
-github-sub-issue add https://github.com/owner/repo/issues/123 456
+github-sub-issue add https://github.com/owner/repo/issues/123 456 457
 
 # Specify repository
-github-sub-issue add 123 456 --repo owner/repo
+github-sub-issue add 123 456 457 --repo owner/repo
+
+# Mix of issue numbers and URLs
+github-sub-issue add 123 456 https://github.com/owner/repo/issues/457
 ```
 
 ### Create new sub-issue

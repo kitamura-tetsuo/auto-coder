@@ -25,27 +25,43 @@ def main(ctx: click.Context, verbose: bool, repo: Optional[str]) -> None:
 
 @main.command()
 @click.argument("parent")
-@click.argument("sub_issue")
+@click.argument("sub_issues", nargs=-1, required=True)
 @click.option("--replace-parent", is_flag=True, help="Replace existing parent")
 @click.pass_context
-def add(ctx: click.Context, parent: str, sub_issue: str, replace_parent: bool) -> None:
+def add(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], replace_parent: bool) -> None:
     """Add existing issue as sub-issue.
 
     PARENT: Parent issue number or URL
-    SUB_ISSUE: Sub-issue number or URL
+    SUB_ISSUES: Sub-issue number(s) or URL(s) to add (can be specified multiple times)
     """
     try:
         api = GitHubSubIssueAPI(repo=ctx.obj["repo"])
-        result = api.add_sub_issue(parent, sub_issue, replace_parent)
-        
-        parent_info = result.get("data", {}).get("addSubIssue", {}).get("issue", {})
-        sub_issue_info = result.get("data", {}).get("addSubIssue", {}).get("subIssue", {})
-        
-        click.echo(f"✅ Added sub-issue #{sub_issue_info.get('number')} to parent #{parent_info.get('number')}")
-        click.echo(f"   Parent: {parent_info.get('title')}")
-        click.echo(f"   Sub-issue: {sub_issue_info.get('title')}")
+
+        successful = 0
+        failed = 0
+
+        for sub_issue in sub_issues:
+            try:
+                result = api.add_sub_issue(parent, sub_issue, replace_parent)
+
+                parent_info = result.get("data", {}).get("addSubIssue", {}).get("issue", {})
+                sub_issue_info = result.get("data", {}).get("addSubIssue", {}).get("subIssue", {})
+
+                click.echo(f"✅ Added sub-issue #{sub_issue_info.get('number')} to parent #{parent_info.get('number')}")
+                click.echo(f"   Parent: {parent_info.get('title')}")
+                click.echo(f"   Sub-issue: {sub_issue_info.get('title')}")
+                successful += 1
+            except Exception as e:
+                logger.error(f"Failed to add sub-issue {sub_issue}: {e}")
+                failed += 1
+                continue
+
+        click.echo(f"\n✅ Successfully added {successful} sub-issue(s).")
+        if failed > 0:
+            click.echo(f"❌ Failed to add {failed} sub-issue(s).")
+            sys.exit(1)
     except Exception as e:
-        logger.error(f"Failed to add sub-issue: {e}")
+        logger.error(f"Failed to add sub-issues: {e}")
         sys.exit(1)
 
 
