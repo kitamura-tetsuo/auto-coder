@@ -190,38 +190,36 @@ class TestLockCLI:
         assert result.exit_code == 0
 
     def test_lock_cleanup_on_exit(self):
-        """Test that lock is properly released on program exit."""
-        import atexit
+        """Test that lock is properly released when using context manager."""
         from unittest.mock import MagicMock, patch
 
-        from src.auto_coder.cli import _cleanup_lock, main
+        from src.auto_coder.cli import lock_manager_context
 
-        # Test that _cleanup_lock function exists and can be called
-        with patch("src.auto_coder.cli._lock_manager") as mock_lock_manager:
-            mock_lock_manager.release_lock = MagicMock()
+        # Test that the context manager properly releases the lock
+        with patch("src.auto_coder.cli.LockManager") as MockLockManager:
+            mock_lock_instance = MagicMock()
+            MockLockManager.return_value = mock_lock_instance
+            mock_lock_instance.acquire_lock.return_value = True
 
-            # Call cleanup function directly
-            _cleanup_lock()
+            # Use the context manager
+            with lock_manager_context(force=False):
+                # Verify acquire_lock was called
+                mock_lock_instance.acquire_lock.assert_called_once_with(force=False)
 
-            # Verify release_lock was called
-            mock_lock_manager.release_lock.assert_called_once()
+            # Verify release_lock was called after exiting the context
+            mock_lock_instance.release_lock.assert_called_once()
 
-        # Test atexit registration
-        with patch("atexit.register") as mock_atexit_register:
-            from click.testing import CliRunner
+        # Test that lock is released even when an exception occurs
+        with patch("src.auto_coder.cli.LockManager") as MockLockManager:
+            mock_lock_instance = MagicMock()
+            MockLockManager.return_value = mock_lock_instance
+            mock_lock_instance.acquire_lock.return_value = True
 
-            runner = CliRunner()
-            with runner.isolated_filesystem():
-                # Initialize a git repository
-                subprocess.run(["git", "init"], capture_output=True, check=True)
-                subprocess.run(["git", "config", "user.email", "test@test.com"], capture_output=True, check=True)
-                subprocess.run(["git", "config", "user.name", "Test User"], capture_output=True, check=True)
+            try:
+                with lock_manager_context(force=False):
+                    raise ValueError("Test exception")
+            except ValueError:
+                pass
 
-                # Try to run a command that would acquire a lock
-                # We use a read-only command to avoid actual execution
-                result = runner.invoke(main, ["--help"])
-                assert result.exit_code == 0
-
-                # Check if atexit.register was called during initialization
-                # This is implicitly tested by the fact that atexit is imported
-                # and our code uses it
+            # Verify release_lock was still called even with exception
+            mock_lock_instance.release_lock.assert_called_once()

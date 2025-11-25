@@ -1,6 +1,6 @@
 """Command Line Interface for Auto-Coder."""
 
-import atexit
+import contextlib
 import os
 import sys
 from os import PathLike
@@ -39,8 +39,17 @@ from .update_manager import maybe_run_auto_update, record_startup_options
 # Load environment variables
 load_dotenv()
 
-# Global lock manager instance
-_lock_manager: LockManager | None = None
+
+@contextlib.contextmanager
+def lock_manager_context(force: bool = False):
+    """Context manager wrapper for LockManager that handles force flag."""
+    lock_manager = LockManager()
+    if not lock_manager.acquire_lock(force=force):
+        raise RuntimeError("Failed to acquire lock")
+    try:
+        yield lock_manager
+    finally:
+        lock_manager.release_lock()
 
 
 @click.group(
@@ -61,10 +70,6 @@ def main(ctx: click.Context, force: bool) -> None:
     has_help_flag = any(help_flag in sys.argv for help_flag in help_flags)
 
     if not has_help_flag:
-        # Check for lock file before proceeding
-        global _lock_manager
-        _lock_manager = LockManager()
-
         # Determine which command is being invoked
         invoked_cmd = ctx.invoked_subcommand if hasattr(ctx, "invoked_subcommand") else None
 
@@ -72,12 +77,13 @@ def main(ctx: click.Context, force: bool) -> None:
         read_only_commands = ["config", "auth-status", "unlock", "get-actions-logs", "mcp-pdb"]
         is_unlock = invoked_cmd == "unlock" or "unlock" in sys.argv
 
-        # Track whether we acquired a lock so we can clean it up properly
-        lock_acquired = False
-
         if not (invoked_cmd in read_only_commands or has_help_flag or is_unlock):
-            if _lock_manager.is_locked():
-                lock_info = _lock_manager.get_lock_info_obj()
+            # Create LockManager and check for existing lock
+            lock_manager = LockManager()
+
+            # Check for existing lock before attempting to acquire
+            if lock_manager.is_locked() and not force:
+                lock_info = lock_manager.get_lock_info_obj()
                 if lock_info:
                     click.echo("Error: auto-coder is already running!", err=True)
                     click.echo("", err=True)
@@ -88,7 +94,7 @@ def main(ctx: click.Context, force: bool) -> None:
                     click.echo("", err=True)
 
                     # Check if the process is still running
-                    if _lock_manager._is_process_running(lock_info.pid):
+                    if lock_manager._is_process_running(lock_info.pid):
                         click.echo("The process is still running. Please wait for it to complete.", err=True)
                     else:
                         click.echo("The process is no longer running (stale lock).", err=True)
@@ -100,28 +106,17 @@ def main(ctx: click.Context, force: bool) -> None:
                     click.echo("Error: Lock file exists but is corrupted.", err=True)
                     if force:
                         click.echo("Removing corrupted lock file...", err=True)
-                        _lock_manager.release_lock()
+                        lock_manager.release_lock()
                     else:
                         click.echo("Use '--force' to remove the corrupted lock file.", err=True)
                         sys.exit(1)
 
-            # Try to acquire the lock for non-read-only commands
-            if not _lock_manager.acquire_lock(force=force):
-                click.echo("Error: Could not acquire lock.", err=True)
-                sys.exit(1)
-
-            # Register cleanup handler to release lock on exit
-            lock_acquired = True
-            atexit.register(_cleanup_lock)
+            # Use LockManager as a context manager with force flag
+            # Store in ctx.with_resource to keep it alive for the entire command execution
+            ctx.with_resource(lock_manager_context(force))
 
         record_startup_options(sys.argv, os.environ)
         maybe_run_auto_update()
-
-
-def _cleanup_lock() -> None:
-    """Release the lock file on program exit."""
-    if _lock_manager is not None:
-        _lock_manager.release_lock()
 
 
 # Set the command name to 'auto-coder' when used as a CLI
