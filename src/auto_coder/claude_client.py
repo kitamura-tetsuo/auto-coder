@@ -17,17 +17,31 @@ logger = get_logger(__name__)
 class ClaudeClient(LLMClientBase):
     """Claude CLI client for analyzing issues and generating solutions."""
 
-    def __init__(self, model_name: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        backend_name: Optional[str] = None,
+    ) -> None:
         """Initialize Claude CLI client.
 
         Args:
-            model_name: Model to use (e.g., 'sonnet', 'opus', or full model name)
+            model_name: Model to use (e.g., 'sonnet', 'opus', or full model name).
+                      If None and backend_name is provided, will use config for backend_name.
+            backend_name: Backend name to use for configuration lookup (optional).
+                         If provided along with model_name=None, will use config for this backend.
         """
         config = get_llm_config()
-        config_backend = config.get_backend_config("claude")
 
-        # Use provided value, fall back to config, then to default
-        self.model_name = model_name or (config_backend and config_backend.model) or "sonnet"
+        # If backend_name is provided, get config from that backend
+        if backend_name:
+            config_backend = config.get_backend_config(backend_name)
+            # Use provided model_name, fall back to backend config, then to default
+            self.model_name = model_name or (config_backend and config_backend.model) or "sonnet"
+        else:
+            # Fall back to default claude config
+            config_backend = config.get_backend_config("claude")
+            self.model_name = model_name or (config_backend and config_backend.model) or "sonnet"
+
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
         self.timeout = None

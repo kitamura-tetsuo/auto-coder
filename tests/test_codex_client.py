@@ -3,8 +3,9 @@ Tests for Codex client functionality.
 """
 
 import json
+import os
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -68,12 +69,16 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None: None):
+        with patch.object(CodexClient, "__init__", lambda self, model_name=None, api_key=None, base_url=None, openai_api_key=None, openai_base_url=None: None):
             client = CodexClient()
             from src.auto_coder.llm_output_logger import LLMOutputLogger
 
             client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
             client.model_name = "codex"  # Set model_name since we mocked __init__
+            client.api_key = None
+            client.base_url = None
+            client.openai_api_key = None
+            client.openai_base_url = None
 
             # Execute the method
             output = client._run_llm_cli("test prompt")
@@ -106,12 +111,16 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(False, "", "boom", 1)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None: None):
+        with patch.object(CodexClient, "__init__", lambda self, model_name=None, api_key=None, base_url=None, openai_api_key=None, openai_base_url=None: None):
             client = CodexClient()
             from src.auto_coder.llm_output_logger import LLMOutputLogger
 
             client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
             client.model_name = "codex"
+            client.api_key = None
+            client.base_url = None
+            client.openai_api_key = None
+            client.openai_base_url = None
 
             # Execute the method and expect exception
             with pytest.raises(RuntimeError):
@@ -191,12 +200,16 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         log_file = tmp_path / "test_log.jsonl"
-        with patch.object(CodexClient, "__init__", lambda self, model_name=None: None):
+        with patch.object(CodexClient, "__init__", lambda self, model_name=None, api_key=None, base_url=None, openai_api_key=None, openai_base_url=None: None):
             client = CodexClient()
             from src.auto_coder.llm_output_logger import LLMOutputLogger
 
             client.output_logger = LLMOutputLogger(log_path=log_file, enabled=True)
             client.model_name = "codex"
+            client.api_key = None
+            client.base_url = None
+            client.openai_api_key = None
+            client.openai_base_url = None
 
             # Execute the method multiple times
             for i in range(3):
@@ -233,3 +246,97 @@ class TestCodexClient:
 
             # Should have 3 "Codex CLI Execution Summary" entries (one per call)
             assert summary_text.count("Codex CLI Execution Summary") == 3
+
+    @patch("subprocess.run")
+    def test_init_with_custom_config(self, mock_run):
+        """CodexClient should accept and store custom configuration values."""
+        mock_run.return_value.returncode = 0
+        client = CodexClient(
+            model_name="custom-codex",
+            api_key="test_api_key",
+            base_url="https://test.example.com",
+            openai_api_key="test_openai_key",
+            openai_base_url="https://openai.test.example.com",
+        )
+        assert client.model_name == "custom-codex"
+        assert client.api_key == "test_api_key"
+        assert client.base_url == "https://test.example.com"
+        assert client.openai_api_key == "test_openai_key"
+        assert client.openai_base_url == "https://openai.test.example.com"
+
+    @patch("subprocess.run")
+    def test_init_falls_back_to_config_when_no_custom_config(self, mock_run):
+        """CodexClient should fall back to config when no custom values provided."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+
+        # Mock the config
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "config-model"
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient()
+            assert client.model_name == "config-model"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_run_injects_env_vars(self, mock_run_command, mock_run):
+        """CodexClient should inject environment variables into subprocess."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        client = CodexClient(
+            api_key="test_api_key",
+            base_url="https://test.example.com",
+            openai_api_key="test_openai_key",
+            openai_base_url="https://openai.test.example.com",
+        )
+
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
+
+        # Verify CommandExecutor.run_command was called with env
+        assert mock_run_command.called
+        call_kwargs = mock_run_command.call_args[1]
+        # The env parameter should be passed
+        assert "env" in call_kwargs
+        env = call_kwargs["env"]
+        assert env["CODEX_API_KEY"] == "test_api_key"
+        assert env["CODEX_BASE_URL"] == "https://test.example.com"
+        assert env["OPENAI_API_KEY"] == "test_openai_key"
+        assert env["OPENAI_BASE_URL"] == "https://openai.test.example.com"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_run_skips_env_vars_when_not_provided(self, mock_run_command, mock_run):
+        """CodexClient should not inject environment variables when not provided."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        client = CodexClient(model_name="codex")
+
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
+
+        # Verify CommandExecutor.run_command was called without env
+        assert mock_run_command.called
+        call_kwargs = mock_run_command.call_args[1]
+        # The env parameter should not be passed (or should be None)
+        if "env" in call_kwargs:
+            # Only os.environ should be used, no custom env
+            assert call_kwargs["env"] is None or call_kwargs["env"] is os.environ.copy()
+
+    @patch("subprocess.run")
+    def test_model_name_default_with_custom_config(self, mock_run):
+        """CodexClient should use default model when model_name is None with custom config."""
+        mock_run.return_value.returncode = 0
+        client = CodexClient(
+            api_key="test_api_key",
+            base_url="https://test.example.com",
+        )
+        assert client.model_name == "codex"  # Default when model_name is None
+        assert client.api_key == "test_api_key"
+        assert client.base_url == "https://test.example.com"
