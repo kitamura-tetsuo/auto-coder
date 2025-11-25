@@ -119,6 +119,9 @@ class AutomationEngine:
             logger.debug(f"{item_type.capitalize()} #{item_number} is open, continuing processing")
             return True
 
+        except SystemExit:
+            # Re-raise SystemExit to allow the program to exit properly
+            raise
         except Exception as e:
             logger.warning(f"Failed to check/handle closed branch state: {e}")
             # Continue processing on error
