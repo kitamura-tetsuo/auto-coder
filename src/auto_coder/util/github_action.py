@@ -20,7 +20,6 @@ from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
 from ..gh_logger import get_gh_logger
-from ..git_branch import branch_context
 from ..github_client import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
