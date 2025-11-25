@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gh_sub_issue.github_api import GitHubSubIssueAPI
+from github_sub_issue.github_api import GitHubSubIssueAPI
 
 
 class TestGitHubSubIssueAPI:
