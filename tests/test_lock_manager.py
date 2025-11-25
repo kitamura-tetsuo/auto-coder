@@ -113,7 +113,7 @@ class TestLockCLI:
         runner = CliRunner()
         with runner.isolated_filesystem():
             # Not in a git repo, so no lock file should exist
-            result = runner.invoke(main, ["lock", "unlock"])
+            result = runner.invoke(main, ["unlock"])
             assert result.exit_code == 0
             assert "No lock file found" in result.output
 
@@ -129,8 +129,8 @@ class TestLockCLI:
         result = runner.invoke(main, ["lock", "--help"])
         assert result.exit_code == 0
 
-        # Test unlock subcommand exists
-        result = runner.invoke(main, ["lock", "unlock", "--help"])
+        # Test top-level unlock command exists
+        result = runner.invoke(main, ["unlock", "--help"])
         assert result.exit_code == 0
 
     def test_lock_cleanup_on_exit(self):
