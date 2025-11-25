@@ -20,7 +20,6 @@ from auto_coder.progress_decorators import progress_stage
 
 from ..automation_config import AutomationConfig
 from ..gh_logger import get_gh_logger
-from ..git_branch import branch_context
 from ..github_client import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
@@ -1934,15 +1933,20 @@ def check_github_actions_and_exit_if_in_progress(
         # If GitHub Actions are still in progress
         if detailed_checks.has_in_progress:
             if switch_branch_on_in_progress:
-                # Issue processor pattern: switch to main and exit
+                # Issue processor pattern: switch to main and return to main loop
                 logger.info(f"GitHub Actions checks are still in progress for {item_type} #{number}, switching to main branch")
 
                 # Switch to main branch with pull
-                with branch_context(config.MAIN_BRANCH):
+                from ..git_branch import switch_to_branch
+
+                switch_result = switch_to_branch(branch_name=config.MAIN_BRANCH, pull_after_switch=True)
+                if not switch_result.success:
+                    logger.warning(f"Failed to switch to {config.MAIN_BRANCH}: {switch_result.stderr}")
+                else:
                     logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-                # Exit the program
-                logger.info(f"Exiting due to GitHub Actions in progress for {item_type} #{number}")
-                sys.exit(0)
+                # Return to allow main loop to continue processing
+                logger.info(f"Continuing to next item after {item_type} #{number} (GitHub Actions in progress)")
+                return False
             else:
                 # PR processor pattern: just return early
                 logger.info(f"GitHub Actions checks are still in progress for {item_type} #{number}, skipping to next {item_type}")
@@ -1950,9 +1954,6 @@ def check_github_actions_and_exit_if_in_progress(
 
         return True
 
-    except SystemExit:
-        # Re-raise SystemExit to allow the program to exit properly
-        raise
     except Exception as e:
         logger.error(f"Error checking GitHub Actions status: {e}")
         return True  # Continue processing on error
@@ -2000,17 +2001,19 @@ def check_and_handle_closed_state(
             logger.info(f"{item_type.capitalize()} #{item_number} is closed, switching to main branch")
 
             # Switch to main branch with pull
-            with branch_context(config.MAIN_BRANCH):
+            from ..git_branch import switch_to_branch
+
+            switch_result = switch_to_branch(branch_name=config.MAIN_BRANCH, pull_after_switch=True)
+            if not switch_result.success:
+                logger.warning(f"Failed to switch to {config.MAIN_BRANCH}: {switch_result.stderr}")
+            else:
                 logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
-            # Exit the program
-            logger.info(f"Exiting after closing {item_type} #{item_number}")
-            sys.exit(0)
+            # Return True to indicate exit should occur
+            logger.info(f"Item {item_type} #{item_number} is closed, returning to main loop")
+            return True
 
         return False  # Don't exit, continue processing
 
-    except SystemExit:
-        # Re-raise SystemExit to allow the program to exit properly
-        raise
     except Exception as e:
         logger.warning(f"Failed to check/handle closed item state: {e}")
         return False  # Continue on error

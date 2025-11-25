@@ -2579,27 +2579,27 @@ class TestCheckAndHandleClosedBranch:
         mock_repo.get_issue.return_value = mock_issue
         mock_github_client.get_issue_details.return_value = {"state": "closed"}
 
-        # Mock sys.exit to raise SystemExit (simulating real behavior)
-        mock_sys_exit.side_effect = SystemExit(0)
+        # Mock check_and_handle_closed_state to return True (indicating should exit)
+        with patch("src.auto_coder.automation_engine.check_and_handle_closed_state") as mock_check_closed:
+            mock_check_closed.return_value = True
 
-        # Mock branch_context to prevent actual git operations
-        mock_branch_context.return_value.__enter__ = Mock()
-        mock_branch_context.return_value.__exit__ = Mock(return_value=False)
+            # Mock branch_context to prevent actual git operations
+            mock_branch_context.return_value.__enter__ = Mock()
+            mock_branch_context.return_value.__exit__ = Mock(return_value=False)
 
-        engine = AutomationEngine(mock_github_client)
+            engine = AutomationEngine(mock_github_client)
 
-        # Execute - SystemExit will be raised
-        with pytest.raises(SystemExit) as exc_info:
-            engine._check_and_handle_closed_branch("test/repo")
+            # Execute - should return True (indicating should exit)
+            result = engine._check_and_handle_closed_branch("test/repo")
 
-        # Assert
-        assert exc_info.value.code == 0
-        mock_sys_exit.assert_called_once_with(0)
-        mock_get_current_branch.assert_called_once()
-        mock_extract_number.assert_called_once_with("issue-123")
-        mock_github_client.get_repository.assert_called_once_with("test/repo")
-        mock_repo.get_issue.assert_called_once_with(123)
-        mock_github_client.get_issue_details.assert_called_once_with(mock_issue)
+            # Assert
+            assert result is True
+            mock_get_current_branch.assert_called_once()
+            mock_extract_number.assert_called_once_with("issue-123")
+            mock_github_client.get_repository.assert_called_once_with("test/repo")
+            mock_repo.get_issue.assert_called_once_with(123)
+            mock_github_client.get_issue_details.assert_called_once_with(mock_issue)
+            mock_check_closed.assert_called_once()
 
     @patch("src.auto_coder.automation_engine.get_current_branch")
     @patch("src.auto_coder.automation_engine.extract_number_from_branch")
@@ -2625,27 +2625,27 @@ class TestCheckAndHandleClosedBranch:
         mock_repo.get_pull.return_value = mock_pr
         mock_github_client.get_pr_details.return_value = {"state": "closed"}
 
-        # Mock sys.exit to raise SystemExit (simulating real behavior)
-        mock_sys_exit.side_effect = SystemExit(0)
+        # Mock check_and_handle_closed_state to return True (indicating should exit)
+        with patch("src.auto_coder.automation_engine.check_and_handle_closed_state") as mock_check_closed:
+            mock_check_closed.return_value = True
 
-        # Mock branch_context to prevent actual git operations
-        mock_branch_context.return_value.__enter__ = Mock()
-        mock_branch_context.return_value.__exit__ = Mock(return_value=False)
+            # Mock branch_context to prevent actual git operations
+            mock_branch_context.return_value.__enter__ = Mock()
+            mock_branch_context.return_value.__exit__ = Mock(return_value=False)
 
-        engine = AutomationEngine(mock_github_client)
+            engine = AutomationEngine(mock_github_client)
 
-        # Execute - SystemExit will be raised
-        with pytest.raises(SystemExit) as exc_info:
-            engine._check_and_handle_closed_branch("test/repo")
+            # Execute - should return True (indicating should exit)
+            result = engine._check_and_handle_closed_branch("test/repo")
 
-        # Assert
-        assert exc_info.value.code == 0
-        mock_sys_exit.assert_called_once_with(0)
-        mock_get_current_branch.assert_called_once()
-        mock_extract_number.assert_called_once_with("pr-456")
-        mock_github_client.get_repository.assert_called_once_with("test/repo")
-        mock_repo.get_pull.assert_called_once_with(456)
-        mock_github_client.get_pr_details.assert_called_once_with(mock_pr)
+            # Assert
+            assert result is True
+            mock_get_current_branch.assert_called_once()
+            mock_extract_number.assert_called_once_with("pr-456")
+            mock_github_client.get_repository.assert_called_once_with("test/repo")
+            mock_repo.get_pull.assert_called_once_with(456)
+            mock_github_client.get_pr_details.assert_called_once_with(mock_pr)
+            mock_check_closed.assert_called_once()
 
     @patch("src.auto_coder.automation_engine.get_current_branch")
     @patch("src.auto_coder.automation_engine.extract_number_from_branch")
