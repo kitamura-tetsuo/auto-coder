@@ -63,6 +63,19 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 
 ## Specification Notes (Operational Key Points)
 
+### Backend State Persistence and Auto-Reset
+
+* **Backend State Persistence:** The system persists the current backend selection across application restarts by saving state to `~/.auto-coder/backend_state.json`.
+* **Auto-Reset Behavior:** After 2 hours (7200 seconds) of being on a non-default backend, the system automatically resets to the default backend to prevent getting stuck on a specific backend for extended periods.
+* **State Schema:** The state file contains:
+  - `current_backend`: The name of the currently active backend
+  - `last_switch_timestamp`: Unix timestamp of when the backend was last switched
+* **Thread Safety:** Backend state operations are thread-safe using locks.
+* **Automatic Sync:** On startup, the system checks the saved state and either:
+  - Resets to default backend if > 2 hours have passed and current backend ≠ default
+  - Syncs to the saved backend if < 2 hours have passed
+  - Starts with default backend if no state file exists
+
 * **PR Handling:** If PR checks fail, the default behavior skips merging from the base branch and proceeds directly to fixing (`--skip-main-update`).
   To revert to the old behavior, specify `--no-skip-main-update`.
 * **Analysis Phase Prohibited:** Do not call LLMs solely for analysis (e.g., `analyze_issue`).
