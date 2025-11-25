@@ -2006,6 +2006,8 @@ def check_and_handle_closed_state(
             switch_result = switch_to_branch(branch_name=config.MAIN_BRANCH, pull_after_switch=True)
             if not switch_result.success:
                 logger.warning(f"Failed to switch to {config.MAIN_BRANCH}: {switch_result.stderr}")
+                logger.warning(f"Exiting due to failed switch to {config.MAIN_BRANCH}. Item {item_type} #{item_number} is closed.")
+                sys.exit(0)
             else:
                 logger.info(f"Successfully switched to {config.MAIN_BRANCH} branch")
             # Return True to indicate exit should occur
