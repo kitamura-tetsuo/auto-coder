@@ -40,6 +40,8 @@ def generate_work_branch_name(issue_number: int, attempt: int) -> str:
     Note:
         Uses underscore separator (_) instead of slash (/) to avoid Git ref namespace conflicts.
         Format: issue-<number>_attempt-<attempt>
+        This is the new format introduced in v1.x.x to replace the legacy slash format (issue-<number>/attempt-<attempt>)
+        Both formats are supported for backward compatibility.
     """
     if attempt > 0:
         return f"issue-{issue_number}_attempt-{attempt}"
