@@ -34,7 +34,7 @@ order = ["qwen-openrouter", "qwen", "gemini"]
 # ----------------------------------------------
 # Use backend_type = "qwen" for native Qwen CLI authentication
 [qwen]
-# enabled = true is the default
+# enabled = true is the default (no need to specify)
 model = "qwen3-coder-plus"
 
 # No API keys needed - uses OAuth with Qwen CLI
@@ -53,7 +53,7 @@ options = []
 # -----------------------------------------------------
 # Use backend_type = "codex" for OpenAI-compatible providers
 [qwen-openrouter]
-# enabled = true is the default
+# enabled = true is the default (no need to specify)
 model = "qwen/qwen3-coder:free"
 
 # OpenAI-compatible API settings (required for OpenRouter, Azure, etc.)
@@ -69,7 +69,7 @@ options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Cod
 # Gemini Configuration
 # --------------------
 [gemini]
-# enabled = true is the default
+# enabled = true is the default (no need to specify)
 model = "gemini-2.5-pro"
 
 # Gemini API settings
@@ -88,7 +88,7 @@ backend_type = "gemini"
 # -------------------
 # Codex client can be used for generic OpenAI-compatible APIs like OpenRouter.
 [codex]
-# enabled = true is the default
+# enabled = true is the default (no need to specify)
 model = "codex" # Placeholder, model is usually set by the provider
 # Generic API key and base URL for providers that don't use OpenAI-specific env vars
 api_key = "your-api-key-here"
@@ -106,7 +106,7 @@ backend_type = "codex"
 
 # Example 1: Qwen via OpenRouter with faster model
 [qwen-fast]
-# enabled = true is the default
+# enabled = true is the default (no need to specify)
 model = "qwen/qwen-2.5-plus"
 openai_api_key = "sk-or-v1-your-openrouter-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -120,7 +120,7 @@ options = ["-o", "timeout", "30", "-o", "stream", "true"]
 
 # Example 2: Qwen via OpenRouter with premium model
 [qwen-premium]
-# enabled = true is the default
+# enabled = true is the default (no need to specify)
 model = "qwen/qwen-2.5-coder-72b-instruct"
 openai_api_key = "sk-or-v1-your-openrouter-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
