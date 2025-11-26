@@ -497,8 +497,9 @@ class LabelManager:
             False: skip processing (label already exists)
         """
         try:
-            # Prefer dedicated has_label() only when using a real GitHubClient instance
-            if isinstance(self.github_client, GitHubClient):
+            # Prefer dedicated has_label() when using a real GitHubClient instance or a mock with has_label
+            # Check if client is a GitHubClient instance OR has a callable has_label method
+            if isinstance(self.github_client, GitHubClient) or (hasattr(self.github_client, "has_label") and callable(getattr(self.github_client, "has_label", None))):
                 exists = self.github_client.has_label(
                     self.repo_name,
                     int(self.item_number),
