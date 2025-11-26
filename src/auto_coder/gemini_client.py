@@ -28,22 +28,29 @@ logger = get_logger(__name__)
 class GeminiClient(LLMClientBase):
     """Gemini client that uses google.generativeai SDK primarily in tests and a CLI fallback."""
 
-    def __init__(self, api_key: Optional[str] = None, model_name: Optional[str] = None) -> None:
+    def __init__(self, backend_name: Optional[str] = None) -> None:
         """Initialize Gemini client.
 
         In tests, genai is patched and used. In production, we still verify gemini CLI presence
         for the CLI-based paths used elsewhere in the tool.
 
         Args:
-            api_key: API key (optional, will be loaded from config if not provided)
-            model_name: Model name (optional, will be loaded from config if not provided)
+            backend_name: Backend name to use for configuration lookup (optional).
+                         If provided, will use config for this backend.
         """
         config = get_llm_config()
-        config_backend = config.get_backend_config("gemini")
 
-        # Use provided values, fall back to config, then to default
-        self.api_key = api_key or (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
-        self.model_name = model_name or (config_backend and config_backend.model) or "gemini-2.5-pro"
+        if backend_name:
+            config_backend = config.get_backend_config(backend_name)
+            # Use backend config, fall back to default "gemini"
+            self.api_key = (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
+            self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
+        else:
+            # Fall back to default gemini config
+            config_backend = config.get_backend_config("gemini")
+            self.api_key = (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
+            self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
+
         self.default_model = self.model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
         self.timeout = None  # No timeout - let gemini CLI run as long as needed

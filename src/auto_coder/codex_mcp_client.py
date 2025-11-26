@@ -85,14 +85,18 @@ class CodexMCPClient(LLMClientBase):
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
+        backend_name: Optional[str] = None,
         enable_graphrag: bool = False,
     ) -> None:
         config = get_llm_config()
-        config_backend = config.get_backend_config("codex-mcp")
 
-        # Use provided value, fall back to config, then to default
-        self.model_name = model_name or (config_backend and config_backend.model) or "codex-mcp"
+        if backend_name:
+            config_backend = config.get_backend_config(backend_name)
+            self.model_name = (config_backend and config_backend.model) or "codex-mcp"
+        else:
+            config_backend = config.get_backend_config("codex-mcp")
+            self.model_name = (config_backend and config_backend.model) or "codex-mcp"
+
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.proc: Optional[subprocess.Popen] = None

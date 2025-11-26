@@ -25,6 +25,13 @@ def test_handshake_timeout_uses_configured_limit(monkeypatch):
     mock_popen = mock.MagicMock(return_value=fake_proc)
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.Popen", mock_popen)
 
+    # Mock config
+    mock_config = mock.MagicMock()
+    mock_backend = mock.MagicMock()
+    mock_backend.model = "codex-mcp"
+    mock_config.get_backend_config.return_value = mock_backend
+    monkeypatch.setattr("src.auto_coder.codex_mcp_client.get_llm_config", mock.MagicMock(return_value=mock_config))
+
     with mock.patch.object(CodexMCPClient, "_rpc_call", side_effect=TimeoutError("timeout")) as mock_rpc:
         client = CodexMCPClient()
 

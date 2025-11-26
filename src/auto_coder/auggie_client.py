@@ -35,12 +35,16 @@ class AuggieClient(LLMClientBase):
 
     DAILY_CALL_LIMIT = _DAILY_LIMIT
 
-    def __init__(self, model_name: Optional[str] = None) -> None:
+    def __init__(self, backend_name: Optional[str] = None) -> None:
         config = get_llm_config()
-        config_backend = config.get_backend_config("auggie")
 
-        # Use provided value, fall back to config, then to default
-        self.model_name = model_name or (config_backend and config_backend.model) or "GPT-5"
+        if backend_name:
+            config_backend = config.get_backend_config(backend_name)
+            self.model_name = (config_backend and config_backend.model) or "GPT-5"
+        else:
+            config_backend = config.get_backend_config("auggie")
+            self.model_name = (config_backend and config_backend.model) or "GPT-5"
+
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None

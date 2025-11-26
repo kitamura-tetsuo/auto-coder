@@ -424,42 +424,30 @@ def build_backend_manager(
     # Create factory functions that support both direct backend names and aliases
     def _create_qwen_client(backend_name: str):
         """Create a QwenClient with options from config."""
-        backend_config = config.get_backend_config(backend_name)
         return QwenClient(
-            model_name=models.get(backend_name),
             backend_name=backend_name,
             use_env_vars=True,
             preserve_existing_env=False,
-            options=backend_config.options if backend_config else None,
-            api_key=backend_config.api_key if backend_config else None,
-            base_url=backend_config.base_url if backend_config else None,
-            openai_api_key=backend_config.openai_api_key if backend_config else None,
-            openai_base_url=backend_config.openai_base_url if backend_config else None,
         )
 
     def _create_gemini_client(backend_name: str):
         """Create a GeminiClient."""
-        return GeminiClient(effective_gemini_api_key, model_name=models.get(backend_name)) if effective_gemini_api_key else GeminiClient(model_name=models.get(backend_name))
+        return GeminiClient(backend_name=backend_name)
 
     def _create_claude_client(backend_name: str):
         """Create a ClaudeClient with optional configuration for aliases."""
-        backend_config = config.get_backend_config(backend_name)
         return ClaudeClient(
-            model_name=models.get(backend_name),
             backend_name=backend_name,
-            api_key=backend_config.api_key if backend_config else None,
-            base_url=backend_config.base_url if backend_config else None,
         )
 
     def _create_auggie_client(backend_name: str):
         """Create an AuggieClient."""
-        return AuggieClient(model_name=models.get(backend_name))
+        return AuggieClient(backend_name=backend_name)
 
     def _create_codex_client(backend_name: str):
         """Create a CodexClient with optional configuration for aliases."""
         backend_config = config.get_backend_config(backend_name)
         return CodexClient(
-            model_name=models.get(backend_name, "codex"),
             backend_name=backend_name,
             api_key=backend_config.api_key if backend_config else None,
             base_url=backend_config.base_url if backend_config else None,
@@ -469,7 +457,7 @@ def build_backend_manager(
 
     def _create_codex_mcp_client(backend_name: str):
         """Create a CodexMCPClient."""
-        return CodexMCPClient(model_name=models.get(backend_name, "codex-mcp"), enable_graphrag=enable_graphrag)
+        return CodexMCPClient(backend_name=backend_name, enable_graphrag=enable_graphrag)
 
     # Mapping of backend types to factory functions
     backend_type_factories = {

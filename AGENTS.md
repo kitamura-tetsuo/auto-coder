@@ -63,6 +63,13 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 
 ## Specification Notes (Operational Key Points)
 
+### Backend Configuration System Update
+
+* **Client Initialization Changes:** LLM clients (CodexClient, ClaudeClient, GeminiClient, QwenClient, AuggieClient) now accept `backend_name` parameter during initialization instead of direct `model_name` parameter.
+* **Configuration-Based Model Selection:** The client classes now retrieve model names and other configuration values from the backend configuration system rather than accepting them directly.
+* **Backward Compatibility:** The system continues to support default configurations while allowing for more flexible backend-specific configurations.
+* **Test Adaptations:** Unit tests have been updated to reflect the new initialization pattern, using mocked configurations to test different backend scenarios.
+
 ### Backend State Persistence and Auto-Reset
 
 * **Backend State Persistence:** The system persists the current backend selection across application restarts by saving state to `~/.auto-coder/backend_state.json`.

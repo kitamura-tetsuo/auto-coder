@@ -235,19 +235,31 @@ class TestCodexClient:
     def test_init_with_custom_config(self, mock_run):
         """CodexClient should accept and store custom configuration values."""
         mock_run.return_value.returncode = 0
-        client = CodexClient(
-            model_name="custom-codex",
-            backend_name="custom-backend",
-            api_key="test_api_key",
-            base_url="https://test.example.com",
-            openai_api_key="test_openai_key",
-            openai_base_url="https://openai.test.example.com",
-        )
-        assert client.model_name == "custom-codex"
-        assert client.api_key == "test_api_key"
-        assert client.base_url == "https://test.example.com"
-        assert client.openai_api_key == "test_openai_key"
-        assert client.openai_base_url == "https://openai.test.example.com"
+        
+        # Mock config to return specific model
+        from unittest.mock import MagicMock
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-codex"
+        mock_backend_config.api_key = "test_api_key"
+        mock_backend_config.base_url = "https://test.example.com"
+        mock_backend_config.openai_api_key = "test_openai_key"
+        mock_backend_config.openai_base_url = "https://openai.test.example.com"
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(
+                backend_name="custom-backend",
+                api_key="test_api_key",
+                base_url="https://test.example.com",
+                openai_api_key="test_openai_key",
+                openai_base_url="https://openai.test.example.com",
+            )
+            assert client.model_name == "custom-codex"
+            assert client.api_key == "test_api_key"
+            assert client.base_url == "https://test.example.com"
+            assert client.openai_api_key == "test_openai_key"
+            assert client.openai_base_url == "https://openai.test.example.com"
 
     @patch("subprocess.run")
     def test_init_falls_back_to_config_when_no_custom_config(self, mock_run):
@@ -273,19 +285,27 @@ class TestCodexClient:
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
-        client = CodexClient(model_name="custom-model")
+        # Mock config to return specific model
+        from unittest.mock import MagicMock
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_config.get_backend_config.return_value = mock_backend_config
 
-        # Execute the method
-        output = client._run_llm_cli("test prompt")
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="custom-backend")
 
-        # Verify CommandExecutor.run_command was called
-        assert mock_run_command.called
-        cmd = mock_run_command.call_args[0][0]
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
 
-        # Verify --model flag is in the command
-        assert "--model" in cmd
-        model_index = cmd.index("--model")
-        assert cmd[model_index + 1] == "custom-model"
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify --model flag is in the command
+            assert "--model" in cmd
+            model_index = cmd.index("--model")
+            assert cmd[model_index + 1] == "custom-model"
 
         # Verify command structure
         assert cmd[0] == "codex"
@@ -299,14 +319,15 @@ class TestCodexClient:
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
-        # Create client with model_name=None
+        # Create client with model_name=None via config
         with patch("src.auto_coder.codex_client.get_llm_config") as mock_config:
             mock_backend = MagicMock()
             mock_backend.model = None
             mock_config.return_value.get_backend_config.return_value = mock_backend
 
             client = CodexClient()
-            client.model_name = None  # Explicitly set to None
+            # Force model_name to None (it defaults to "codex" in init if config is None)
+            client.model_name = None
 
             # Execute the method
             output = client._run_llm_cli("test prompt")
@@ -353,7 +374,7 @@ class TestCodexClient:
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
-        client = CodexClient(model_name="codex")
+        client = CodexClient()
 
         # Execute the method
         output = client._run_llm_cli("test prompt")
@@ -393,12 +414,24 @@ class TestCodexClient:
         # [my-openrouter-model]
         # model = "open-router/grok-4.1-fast"
         # backend_type = "codex"
-        client = CodexClient(
-            model_name="open-router/grok-4.1-fast",
-            backend_name="my-openrouter-model",
-            openai_api_key="sk-or-v1-test-key",
-            openai_base_url="https://openrouter.ai/api/v1",
-        )
+        
+        # Mock config to return specific model
+        from unittest.mock import MagicMock
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "open-router/grok-4.1-fast"
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = "sk-or-v1-test-key"
+        mock_backend_config.openai_base_url = "https://openrouter.ai/api/v1"
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(
+                backend_name="my-openrouter-model",
+                openai_api_key="sk-or-v1-test-key",
+                openai_base_url="https://openrouter.ai/api/v1",
+            )
 
         # Verify model is set correctly
         assert client.model_name == "open-router/grok-4.1-fast"
@@ -433,12 +466,24 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         # Simulate MiniMax-M2 model configuration
-        client = CodexClient(
-            model_name="MiniMax-M2",
-            backend_name="my-minimax",
-            openai_api_key="test-key",
-            openai_base_url="https://api.minimax.com/v1",
-        )
+        
+        # Mock config to return specific model
+        from unittest.mock import MagicMock
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "MiniMax-M2"
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = "test-key"
+        mock_backend_config.openai_base_url = "https://api.minimax.com/v1"
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(
+                backend_name="my-minimax",
+                openai_api_key="test-key",
+                openai_base_url="https://api.minimax.com/v1",
+            )
 
         # Verify model is set correctly
         assert client.model_name == "MiniMax-M2"
