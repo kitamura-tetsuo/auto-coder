@@ -163,3 +163,15 @@ class TestExtractAttemptFromBranch:
         """Test that attempt extraction is case-insensitive."""
         assert extract_attempt_from_branch("issue-123_Attempt-1") == 1
         assert extract_attempt_from_branch("issue-456_ATTEMPT-2") == 2
+
+    def test_extract_attempt_from_branch_legacy_slash_format(self):
+        """Test extracting attempt number from legacy slash format."""
+        assert extract_attempt_from_branch("issue-123/attempt-1") == 1
+        assert extract_attempt_from_branch("issue-456/attempt-2") == 2
+        assert extract_attempt_from_branch("issue-789/attempt-10") == 10
+        assert extract_attempt_from_branch("feature/issue-123/attempt-3") == 3
+
+    def test_extract_attempt_from_branch_legacy_slash_case_insensitive(self):
+        """Test that legacy slash format attempt extraction is case-insensitive."""
+        assert extract_attempt_from_branch("issue-123/Attempt-1") == 1
+        assert extract_attempt_from_branch("issue-456/ATTEMPT-2") == 2
