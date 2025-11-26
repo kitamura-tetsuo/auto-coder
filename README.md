@@ -316,9 +316,42 @@ Auto-Coder detects stale locks by checking if the process associated with the lo
 
 ## Configuration
 
+### Configuration File Locations
+
+Auto-Coder supports configuration files in multiple locations with the following priority:
+
+1. **Local configuration** (highest priority): `.auto-coder/llm_config.toml` in the current directory
+2. **Home configuration**: `~/.auto-coder/llm_config.toml` in your home directory
+3. **Default configuration**: Auto-generated if no configuration file exists
+
+#### When to Use Local Configuration
+
+Use local configuration (`.auto-coder/llm_config.toml`) when:
+- You need project-specific LLM backend settings
+- You want to version-control your configuration with your project
+- You're working in a team and want to share configuration
+- You're testing different configurations without affecting global settings
+- You're working in container/CI environments where configuration should be part of the project
+
+#### When to Use Home Configuration
+
+Use home configuration (`~/.auto-coder/llm_config.toml`) when:
+- You want the same configuration across all projects
+- You're working on personal projects with consistent settings
+- You want to keep API keys and credentials out of project repositories
+
+#### Configuration Search Behavior
+
+When Auto-Coder starts, it searches for configuration files in this order:
+1. Checks if `.auto-coder/llm_config.toml` exists in the current working directory
+2. If not found, falls back to `~/.auto-coder/llm_config.toml` in the home directory
+3. If neither exists, creates a default configuration in the home directory
+
+This approach is **backward compatible**: existing users with only home directory configs will see no change in behavior.
+
 ### Configuration File (TOML)
 
-Auto-Coder uses a TOML configuration file for backend settings. The configuration file is located at `~/.auto-coder/llm_config.toml` by default.
+Auto-Coder uses a TOML configuration file for backend settings. You can place this file in either location mentioned above.
 
 #### Custom Backend Names
 
@@ -367,7 +400,7 @@ auto-coder config examples
 auto-coder config migrate
 ```
 
-Example configuration file (`~/.auto-coder/llm_config.toml`):
+Example configuration file (`.auto-coder/llm_config.toml` or `~/.auto-coder/llm_config.toml`):
 ```toml
 version = "1.0.0"
 created_at = "2023-01-01T00:00:00"

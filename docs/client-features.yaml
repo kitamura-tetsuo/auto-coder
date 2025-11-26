@@ -36,6 +36,42 @@ The auto-coder system supports multiple LLM backends:
           QWEN_API_KEY = "your-api-key"
 ```
 
+##### Configuration File Priority
+
+  configuration_priority:
+    description: "Auto-coder supports local project-specific configurations that override global settings"
+    priority_order:
+      - priority: 1
+        location: "Explicitly provided config_path argument"
+        usage: "LLMBackendConfiguration.load_from_file('/path/to/config.toml')"
+      - priority: 2
+        location: ".auto-coder/llm_config.toml in current working directory"
+        usage: "Automatically detected when running auto-coder from project directory"
+        benefits:
+          - "Per-project backend configurations"
+          - "Team collaboration with version-controlled configs"
+          - "Testing with different configurations"
+          - "Container/CI environments with project-specific settings"
+      - priority: 3
+        location: "~/.auto-coder/llm_config.toml in home directory"
+        usage: "Global fallback configuration for all projects"
+    backward_compatibility: "Users with only home directory configs see no change in behavior"
+    example_workflow: |
+      # Create project-specific configuration
+      mkdir -p .auto-coder
+      cat > .auto-coder/llm_config.toml << EOF
+      [backend]
+      default = "qwen"
+      order = ["qwen", "gemini"]
+
+      [backends.qwen]
+      enabled = true
+      model = "qwen3-coder-plus"
+      EOF
+
+      # Auto-coder will now use the local config when run in this directory
+      auto-coder process-issues
+
 #### Backend Management
 
     nested_managers:
