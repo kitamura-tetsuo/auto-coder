@@ -498,15 +498,15 @@ class GitHubClient:
             logger.error(f"Failed to get closing issues for PR #{pr_number}: {e}")
             return []
 
-    def get_parent_issue(self, repo_name: str, issue_number: int) -> Optional[int]:
-        """Get parent issue number for a given issue using GitHub GraphQL API.
+    def get_parent_issue_details(self, repo_name: str, issue_number: int) -> Optional[Dict[str, Any]]:
+        """Get parent issue details for a given issue using GitHub GraphQL API.
 
         Args:
             repo_name: Repository name in format 'owner/repo'
             issue_number: Issue number to check for parent issue
 
         Returns:
-            Parent issue number if exists, None otherwise.
+            Parent issue details dict if exists, None otherwise.
         """
         try:
             owner, repo = repo_name.split("/")
@@ -560,9 +560,8 @@ class GitHubClient:
             parent_issue = data.get("data", {}).get("repository", {}).get("issue", {}).get("parent")
 
             if parent_issue:
-                parent_number = parent_issue.get("number")
-                logger.info(f"Issue #{issue_number} has parent issue #{parent_number}: {parent_issue.get('title')}")
-                return int(parent_number) if parent_number is not None else None
+                logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')}: {parent_issue.get('title')}")
+                return parent_issue
 
             return None
 
@@ -572,6 +571,23 @@ class GitHubClient:
         except Exception as e:
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
+
+    def get_parent_issue(self, repo_name: str, issue_number: int) -> Optional[int]:
+        """Get parent issue number for a given issue.
+
+        Wrapper around get_parent_issue_details for backward compatibility.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue number to check for parent issue
+
+        Returns:
+            Parent issue number if exists, None otherwise.
+        """
+        parent_details = self.get_parent_issue_details(repo_name, issue_number)
+        if parent_details:
+            return int(parent_details["number"])
+        return None
 
     def create_issue(self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None) -> Issue.Issue:
         """Create a new issue in the repository."""
