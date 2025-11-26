@@ -432,6 +432,70 @@ class TestLabelManager:
             mock_github_client.try_add_labels.assert_not_called()
         mock_github_client.remove_labels.assert_not_called()
 
+    def test_label_manager_with_check_labels_true_default(self):
+        """Test that check_labels=True (default) performs label existence check."""
+        # Setup mocks - need to use spec=GitHubClient to trigger isinstance check
+        from src.auto_coder.github_client import GitHubClient
+
+        mock_github_client = Mock(spec=GitHubClient)
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+
+        # Use LabelManager with default check_labels=True
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, check_labels=True) as should_process:
+            assert should_process is True
+            # Should check if label exists
+            mock_github_client.has_label.assert_called_once()
+            # Should add label
+            mock_github_client.try_add_labels.assert_called_once()
+
+        # Label should be removed
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
+
+    def test_label_manager_with_check_labels_false_skips_check(self):
+        """Test that check_labels=False skips label existence check and proceeds."""
+        # Setup mocks - can use regular Mock since check_labels=False won't call has_label
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+
+        # Use LabelManager with check_labels=False
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, check_labels=False) as should_process:
+            assert should_process is True
+            # Should NOT check if label exists (has_label should not be called)
+            mock_github_client.has_label.assert_not_called()
+            # Should still add label
+            mock_github_client.try_add_labels.assert_called_once()
+
+        # Label should be removed
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
+
+    def test_label_manager_check_labels_false_with_existing_label(self):
+        """Test that check_labels=False skips check even when label already exists."""
+        # Setup mocks - label already exists but check_labels=False should skip the check
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.try_add_labels.return_value = True
+        # has_label would return True if it were called, but it shouldn't be
+
+        config = AutomationConfig()
+
+        # Use LabelManager with check_labels=False - should proceed even though label might exist
+        with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, check_labels=False) as should_process:
+            assert should_process is True
+            # Should NOT check if label exists (skip the check)
+            mock_github_client.has_label.assert_not_called()
+            # Should still add label (attempt to add)
+            mock_github_client.try_add_labels.assert_called_once()
+
+        # Label should be removed
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "issue")
+
 
 class TestSemanticLabelFunctions:
     """Test semantic label detection and priority resolution functions."""
