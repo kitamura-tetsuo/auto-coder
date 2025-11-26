@@ -423,11 +423,11 @@ Supported `backend_type` values: `codex`, `codex-mcp`, `gemini`, `qwen`, `auggie
 
 For detailed configuration examples and troubleshooting, see [Custom Backend Configuration](docs/Custom_Backend_Configuration.md).
 
-#### Configuring Model Provider
+## Configuring Model Provider
 
 For backends using `backend_type = "codex"`, you can specify the model provider using the `model_provider` field. This tells the codex CLI which provider to use when making API calls.
 
-##### Example: Using OpenRouter
+### Example: Using OpenRouter
 
 ```toml
 [grok-4.1-fast]
@@ -442,7 +442,7 @@ This configuration is equivalent to running:
 codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter
 ```
 
-##### Supported Providers
+### Supported Providers
 
 The `model_provider` field supports any provider that the codex CLI recognizes, such as:
 - `openrouter` - For OpenRouter API
@@ -451,7 +451,7 @@ The `model_provider` field supports any provider that the codex CLI recognizes, 
 
 > **Note:** You still need to configure provider-specific settings (like API endpoints and authentication) in your codex configuration file (`~/.codex/config.toml`) or via environment variables. The `model_provider` field simply tells codex which provider configuration to use.
 
-##### Complete Example with OpenRouter
+### Complete Example with OpenRouter
 
 Here's a complete example showing how to configure a custom backend with OpenRouter:
 
