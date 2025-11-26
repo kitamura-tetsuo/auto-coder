@@ -424,6 +424,59 @@ Supported `backend_type` values: `codex`, `codex-mcp`, `gemini`, `qwen`, `auggie
 
 For detailed configuration examples and troubleshooting, see [Custom Backend Configuration](docs/Custom_Backend_Configuration.md).
 
+#### Configuring Model Provider
+
+For backends using `backend_type = "codex"`, you can specify the model provider using the `model_provider` field. This tells the codex CLI which provider to use when making API calls.
+
+##### Example: Using OpenRouter
+
+```toml
+[grok-4.1-fast]
+enabled = true
+model = "x-ai/grok-4.1-fast:free"
+backend_type = "codex"
+model_provider = "openrouter"
+```
+
+This configuration is equivalent to running:
+```bash
+codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter
+```
+
+##### Supported Providers
+
+The `model_provider` field supports any provider that the codex CLI recognizes, such as:
+- `openrouter` - For OpenRouter API
+- `anthropic` - For Anthropic Claude
+- `openai` - For OpenAI models
+
+> **Note:** You still need to configure provider-specific settings (like API endpoints and authentication) in your codex configuration file (`~/.codex/config.toml`) or via environment variables. The `model_provider` field simply tells codex which provider configuration to use.
+
+##### Complete Example with OpenRouter
+
+Here's a complete example showing how to configure a custom backend with OpenRouter:
+
+```toml
+[backends.openrouter-grok]
+enabled = true
+backend_type = "codex"
+model = "x-ai/grok-4.1-fast:free"
+model_provider = "openrouter"
+openai_api_key = "sk-or-v1-..."  # Your OpenRouter API key
+openai_base_url = "https://openrouter.ai/api/v1"
+```
+
+Make sure your codex configuration file (`~/.codex/config.toml`) contains the appropriate provider settings. For example:
+
+```toml
+# ~/.codex/config.toml
+[openrouter]
+api_base = "https://openrouter.ai/api/v1"
+default_model = "x-ai/grok-4.1-fast:free"
+```
+
+Check the codex CLI documentation for the full list of supported providers and their configuration options.
+
 #### Configuration Management
 
 To manage the configuration file, use the built-in config commands:
