@@ -81,7 +81,6 @@ The system supports extensive backend configuration options. Key fields include:
       example:
         toml_example: |
           [backends.gemini]
-          enabled = true
           model = "gemini-2.5-pro"
           usage_limit_retry_count = 3
           usage_limit_retry_wait_seconds = 30
@@ -104,12 +103,10 @@ The system supports extensive backend configuration options. Key fields include:
           order = ["gemini", "qwen", "claude"]
 
           [backends.gemini]
-          enabled = true
           model = "gemini-2.5-pro"
           always_switch_after_execution = true
 
           [backends.qwen]
-          enabled = true
           model = "qwen3-coder-plus"
           always_switch_after_execution = true
       configuration_file: "~/.auto-coder/llm_config.toml"

@@ -775,3 +775,731 @@ class TestConfigErrorHandling:
 
         active = config.get_active_backends()
         assert len(active) == 0
+
+
+class TestResolveConfigPath:
+    """Test cases for resolve_config_path function."""
+
+    def test_explicit_path_takes_priority(self):
+        """Test that explicitly provided path takes highest priority."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            explicit_path = os.path.join(tmpdir, "explicit_config.toml")
+            result = resolve_config_path(explicit_path)
+
+            # Should return the absolute path of the explicit path
+            assert result == os.path.abspath(explicit_path)
+
+    def test_explicit_relative_path_converted_to_absolute(self):
+        """Test that explicit relative paths are converted to absolute paths."""
+        relative_path = "config/llm_config.toml"
+        result = resolve_config_path(relative_path)
+
+        # Should return an absolute path
+        assert os.path.isabs(result)
+        # Should end with the provided relative path
+        assert result.endswith("config/llm_config.toml")
+
+    def test_explicit_path_with_tilde_expansion(self):
+        """Test that explicit paths with ~ are expanded."""
+        explicit_path = "~/custom_config.toml"
+        result = resolve_config_path(explicit_path)
+
+        # Should not contain tilde
+        assert "~" not in result
+        # Should be absolute
+        assert os.path.isabs(result)
+        # Should contain expanded home directory
+        assert result.startswith(os.path.expanduser("~"))
+
+    def test_local_config_priority_over_home(self):
+        """Test that local .auto-coder/llm_config.toml takes priority over home config."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a local config directory and file
+            local_config_dir = os.path.join(tmpdir, ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+            Path(local_config_file).touch()
+
+            # Change to the temp directory
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                result = resolve_config_path()
+
+                # Should return the local config path
+                assert result == os.path.abspath(local_config_file)
+                assert ".auto-coder" in result
+                assert result.endswith("llm_config.toml")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_home_config_fallback_when_no_local(self):
+        """Test that home config is used when no local config exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Change to a directory without local config
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                result = resolve_config_path()
+
+                # Should return the home config path
+                expected_home = os.path.abspath(os.path.expanduser("~/.auto-coder/llm_config.toml"))
+                assert result == expected_home
+            finally:
+                os.chdir(original_cwd)
+
+    def test_all_three_priorities_in_order(self):
+        """Test all three priority levels in a single scenario."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a local config
+            local_config_dir = os.path.join(tmpdir, ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+            Path(local_config_file).touch()
+
+            # Create an explicit path
+            explicit_path = os.path.join(tmpdir, "explicit.toml")
+
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+
+                # Priority 1: Explicit path
+                result1 = resolve_config_path(explicit_path)
+                assert result1 == os.path.abspath(explicit_path)
+
+                # Priority 2: Local config (when no explicit path)
+                result2 = resolve_config_path()
+                assert result2 == os.path.abspath(local_config_file)
+
+                # Priority 3: Remove local config and verify home fallback
+                os.remove(local_config_file)
+                os.rmdir(local_config_dir)
+                result3 = resolve_config_path()
+                expected_home = os.path.abspath(os.path.expanduser("~/.auto-coder/llm_config.toml"))
+                assert result3 == expected_home
+            finally:
+                os.chdir(original_cwd)
+
+    def test_returns_absolute_paths(self):
+        """Test that function always returns absolute paths."""
+        # Test with explicit relative path
+        result1 = resolve_config_path("relative/path.toml")
+        assert os.path.isabs(result1)
+
+        # Test with no arguments
+        result2 = resolve_config_path()
+        assert os.path.isabs(result2)
+
+        # Test with tilde path
+        result3 = resolve_config_path("~/config.toml")
+        assert os.path.isabs(result3)
+
+    def test_handles_none_explicitly(self):
+        """Test that None is handled correctly."""
+        result = resolve_config_path(None)
+        assert os.path.isabs(result)
+        # Should fall back to local or home config
+        assert "llm_config.toml" in result
+
+    def test_local_config_detection_case_sensitivity(self):
+        """Test that local config detection works correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Test without local config
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                result_no_local = resolve_config_path()
+
+                # Should be home config
+                assert "~" not in result_no_local  # Should be expanded
+                expected_home = os.path.abspath(os.path.expanduser("~/.auto-coder/llm_config.toml"))
+                assert result_no_local == expected_home
+
+                # Create local config
+                local_config_dir = os.path.join(tmpdir, ".auto-coder")
+                os.makedirs(local_config_dir, exist_ok=True)
+                local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+                Path(local_config_file).touch()
+
+                result_with_local = resolve_config_path()
+
+                # Should now be local config
+                assert result_with_local == os.path.abspath(local_config_file)
+                assert tmpdir in result_with_local
+            finally:
+                os.chdir(original_cwd)
+
+    def test_empty_string_treated_as_relative_path(self):
+        """Test that empty string is treated as a relative path."""
+        result = resolve_config_path("")
+        # Empty string becomes current directory when converted to absolute
+        assert os.path.isabs(result)
+
+    def test_windows_style_path_handling(self):
+        """Test that function handles Windows-style paths correctly."""
+        # This test works on all platforms but validates path normalization
+        if os.name == "nt":  # Windows
+            result = resolve_config_path("C:\\Users\\test\\config.toml")
+            assert os.path.isabs(result)
+            assert result.startswith("C:")
+        else:  # Unix-like
+            # Just verify absolute path handling works
+            result = resolve_config_path("/tmp/config.toml")
+            assert os.path.isabs(result)
+            assert result == "/tmp/config.toml"
+
+    def test_nested_relative_path_explicit(self):
+        """Test nested relative paths in explicit argument."""
+        nested_path = "a/b/c/config.toml"
+        result = resolve_config_path(nested_path)
+
+        assert os.path.isabs(result)
+        assert result.endswith("a/b/c/config.toml") or result.endswith("a\\b\\c\\config.toml")
+
+
+class TestConfigurationPriorityLogic:
+    """Test cases for configuration file priority logic with load_from_file()."""
+
+    def test_load_from_file_with_no_config_files(self):
+        """Test that load_from_file() creates default config when no files exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create an isolated home config path
+            isolated_home = os.path.join(tmpdir, "home", ".auto-coder", "llm_config.toml")
+
+            original_cwd = os.getcwd()
+            try:
+                # Change to a directory without local config
+                work_dir = os.path.join(tmpdir, "work")
+                os.makedirs(work_dir, exist_ok=True)
+                os.chdir(work_dir)
+
+                # Load configuration (should create default at home path)
+                config = LLMBackendConfiguration.load_from_file(isolated_home)
+
+                # Verify default configuration
+                assert config.default_backend == "codex"
+                assert "gemini" in config.backends
+                assert "codex" in config.backends
+                assert "qwen" in config.backends
+
+                # Verify file was created at the specified path
+                assert os.path.exists(isolated_home)
+            finally:
+                os.chdir(original_cwd)
+
+    def test_load_from_file_with_only_home_config(self):
+        """Test that load_from_file() loads from home config when only home config exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create home config with specific settings
+            home_config_dir = os.path.join(tmpdir, "home", ".auto-coder")
+            os.makedirs(home_config_dir, exist_ok=True)
+            home_config_file = os.path.join(home_config_dir, "llm_config.toml")
+
+            # Create config with specific values
+            config = LLMBackendConfiguration()
+            config.default_backend = "gemini"
+            config.get_backend_config("gemini").model = "home-gemini-model"
+            config.get_backend_config("gemini").api_key = "home-api-key"
+            config.save_to_file(home_config_file)
+
+            original_cwd = os.getcwd()
+            try:
+                # Change to work directory without local config
+                work_dir = os.path.join(tmpdir, "work")
+                os.makedirs(work_dir, exist_ok=True)
+                os.chdir(work_dir)
+
+                # Mock the home directory path resolution
+                with patch("os.path.expanduser") as mock_expand:
+
+                    def side_effect(path):
+                        if path.startswith("~"):
+                            return path.replace("~", os.path.join(tmpdir, "home"))
+                        return path
+
+                    mock_expand.side_effect = side_effect
+
+                    # Load configuration
+                    loaded_config = LLMBackendConfiguration.load_from_file()
+
+                    # Verify it loaded from home config
+                    assert loaded_config.default_backend == "gemini"
+                    assert loaded_config.get_backend_config("gemini").model == "home-gemini-model"
+                    assert loaded_config.get_backend_config("gemini").api_key == "home-api-key"
+            finally:
+                os.chdir(original_cwd)
+
+    def test_load_from_file_with_only_local_config(self):
+        """Test that load_from_file() loads from local config when only local config exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create local config with specific settings
+            local_config_dir = os.path.join(tmpdir, ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+
+            # Create config with specific values
+            config = LLMBackendConfiguration()
+            config.default_backend = "qwen"
+            config.get_backend_config("qwen").model = "local-qwen-model"
+            config.get_backend_config("qwen").api_key = "local-api-key"
+            config.backend_order = ["qwen", "gemini"]
+            config.save_to_file(local_config_file)
+
+            original_cwd = os.getcwd()
+            try:
+                # Change to the directory with local config
+                os.chdir(tmpdir)
+
+                # Load configuration
+                loaded_config = LLMBackendConfiguration.load_from_file()
+
+                # Verify it loaded from local config
+                assert loaded_config.default_backend == "qwen"
+                assert loaded_config.get_backend_config("qwen").model == "local-qwen-model"
+                assert loaded_config.get_backend_config("qwen").api_key == "local-api-key"
+                assert loaded_config.backend_order == ["qwen", "gemini"]
+            finally:
+                os.chdir(original_cwd)
+
+    def test_load_from_file_local_config_prioritized_over_home(self):
+        """Test that local config takes priority over home config when both exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create home config
+            home_config_dir = os.path.join(tmpdir, "home", ".auto-coder")
+            os.makedirs(home_config_dir, exist_ok=True)
+            home_config_file = os.path.join(home_config_dir, "llm_config.toml")
+
+            home_config = LLMBackendConfiguration()
+            home_config.default_backend = "gemini"
+            home_config.get_backend_config("gemini").model = "home-model"
+            home_config.get_backend_config("gemini").temperature = 0.5
+            home_config.save_to_file(home_config_file)
+
+            # Create local config with different values
+            local_config_dir = os.path.join(tmpdir, "work", ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+
+            local_config = LLMBackendConfiguration()
+            local_config.default_backend = "codex"
+            local_config.get_backend_config("codex").model = "local-model"
+            local_config.get_backend_config("codex").temperature = 0.8
+            local_config.backend_order = ["codex", "qwen"]
+            local_config.save_to_file(local_config_file)
+
+            original_cwd = os.getcwd()
+            try:
+                # Change to work directory with local config
+                os.chdir(os.path.join(tmpdir, "work"))
+
+                # Mock expanduser to use our test home
+                with patch("os.path.expanduser") as mock_expand:
+
+                    def side_effect(path):
+                        if path.startswith("~"):
+                            return path.replace("~", os.path.join(tmpdir, "home"))
+                        return path
+
+                    mock_expand.side_effect = side_effect
+
+                    # Load configuration
+                    loaded_config = LLMBackendConfiguration.load_from_file()
+
+                    # Verify it loaded from local config, NOT home config
+                    assert loaded_config.default_backend == "codex"
+                    assert loaded_config.get_backend_config("codex").model == "local-model"
+                    assert loaded_config.get_backend_config("codex").temperature == 0.8
+                    assert loaded_config.backend_order == ["codex", "qwen"]
+
+                    # Verify home config values were NOT loaded
+                    assert loaded_config.default_backend != "gemini"
+                    gemini_config = loaded_config.get_backend_config("gemini")
+                    assert gemini_config.model != "home-model"
+            finally:
+                os.chdir(original_cwd)
+
+    def test_load_from_file_explicit_path_overrides_both_local_and_home(self):
+        """Test that explicit path overrides both local and home configs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create home config
+            home_config_dir = os.path.join(tmpdir, "home", ".auto-coder")
+            os.makedirs(home_config_dir, exist_ok=True)
+            home_config_file = os.path.join(home_config_dir, "llm_config.toml")
+
+            home_config = LLMBackendConfiguration()
+            home_config.default_backend = "gemini"
+            home_config.get_backend_config("gemini").model = "home-model"
+            home_config.save_to_file(home_config_file)
+
+            # Create local config
+            local_config_dir = os.path.join(tmpdir, "work", ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+
+            local_config = LLMBackendConfiguration()
+            local_config.default_backend = "codex"
+            local_config.get_backend_config("codex").model = "local-model"
+            local_config.save_to_file(local_config_file)
+
+            # Create explicit config with different values
+            explicit_config_file = os.path.join(tmpdir, "custom", "my_config.toml")
+            os.makedirs(os.path.dirname(explicit_config_file), exist_ok=True)
+
+            explicit_config = LLMBackendConfiguration()
+            explicit_config.default_backend = "qwen"
+            explicit_config.get_backend_config("qwen").model = "explicit-model"
+            explicit_config.get_backend_config("qwen").api_key = "explicit-key"
+            explicit_config.backend_order = ["qwen"]
+            explicit_config.save_to_file(explicit_config_file)
+
+            original_cwd = os.getcwd()
+            try:
+                # Change to work directory (which has local config)
+                os.chdir(os.path.join(tmpdir, "work"))
+
+                # Load with explicit path
+                loaded_config = LLMBackendConfiguration.load_from_file(explicit_config_file)
+
+                # Verify it loaded from explicit path, NOT local or home
+                assert loaded_config.default_backend == "qwen"
+                assert loaded_config.get_backend_config("qwen").model == "explicit-model"
+                assert loaded_config.get_backend_config("qwen").api_key == "explicit-key"
+                assert loaded_config.backend_order == ["qwen"]
+
+                # Verify it did NOT load local or home values
+                assert loaded_config.default_backend != "codex"
+                assert loaded_config.default_backend != "gemini"
+            finally:
+                os.chdir(original_cwd)
+
+    def test_load_from_file_values_correctly_loaded_from_prioritized_file(self):
+        """Test that configuration values are correctly loaded from the prioritized file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create local config with comprehensive settings
+            local_config_dir = os.path.join(tmpdir, ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+
+            # Create config with various settings to test
+            config = LLMBackendConfiguration()
+            config.default_backend = "gemini"
+            config.backend_order = ["gemini", "qwen", "codex"]
+            config.message_backend_order = ["codex"]
+            config.message_default_backend = "codex"
+
+            # Set detailed backend configs
+            config.get_backend_config("gemini").model = "gemini-test-model"
+            config.get_backend_config("gemini").api_key = "test-gemini-key"
+            config.get_backend_config("gemini").temperature = 0.7
+            config.get_backend_config("gemini").timeout = 60
+            config.get_backend_config("gemini").max_retries = 5
+            config.get_backend_config("gemini").providers = ["gemini-provider-1", "gemini-provider-2"]
+            config.get_backend_config("gemini").usage_limit_retry_count = 3
+            config.get_backend_config("gemini").usage_limit_retry_wait_seconds = 30
+            config.get_backend_config("gemini").options = ["option1", "option2"]
+            config.get_backend_config("gemini").backend_type = "custom_gemini"
+            config.get_backend_config("gemini").always_switch_after_execution = True
+
+            config.get_backend_config("qwen").enabled = False
+            config.get_backend_config("qwen").model = "qwen-test-model"
+            config.get_backend_config("qwen").extra_args = {"QWEN_CUSTOM": "value123"}
+
+            config.save_to_file(local_config_file)
+
+            original_cwd = os.getcwd()
+            try:
+                # Change to the directory with local config
+                os.chdir(tmpdir)
+
+                # Load configuration
+                loaded_config = LLMBackendConfiguration.load_from_file()
+
+                # Verify all values were correctly loaded
+                assert loaded_config.default_backend == "gemini"
+                assert loaded_config.backend_order == ["gemini", "qwen", "codex"]
+                assert loaded_config.message_backend_order == ["codex"]
+                assert loaded_config.message_default_backend == "codex"
+
+                # Verify gemini backend settings
+                gemini = loaded_config.get_backend_config("gemini")
+                assert gemini.model == "gemini-test-model"
+                assert gemini.api_key == "test-gemini-key"
+                assert gemini.temperature == 0.7
+                assert gemini.timeout == 60
+                assert gemini.max_retries == 5
+                assert gemini.providers == ["gemini-provider-1", "gemini-provider-2"]
+                assert gemini.usage_limit_retry_count == 3
+                assert gemini.usage_limit_retry_wait_seconds == 30
+                assert gemini.options == ["option1", "option2"]
+                assert gemini.backend_type == "custom_gemini"
+                assert gemini.always_switch_after_execution is True
+
+                # Verify qwen backend settings
+                qwen = loaded_config.get_backend_config("qwen")
+                assert qwen.enabled is False
+                assert qwen.model == "qwen-test-model"
+                assert qwen.extra_args == {"QWEN_CUSTOM": "value123"}
+            finally:
+                os.chdir(original_cwd)
+
+    def test_priority_logic_with_different_working_directories(self):
+        """Test that priority logic works correctly when changing working directories."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create two different project directories with their own local configs
+            project1_dir = os.path.join(tmpdir, "project1")
+            project2_dir = os.path.join(tmpdir, "project2")
+            os.makedirs(project1_dir, exist_ok=True)
+            os.makedirs(project2_dir, exist_ok=True)
+
+            # Project 1 config
+            project1_config_dir = os.path.join(project1_dir, ".auto-coder")
+            os.makedirs(project1_config_dir, exist_ok=True)
+            project1_config_file = os.path.join(project1_config_dir, "llm_config.toml")
+
+            project1_config = LLMBackendConfiguration()
+            project1_config.default_backend = "gemini"
+            project1_config.get_backend_config("gemini").model = "project1-model"
+            project1_config.save_to_file(project1_config_file)
+
+            # Project 2 config
+            project2_config_dir = os.path.join(project2_dir, ".auto-coder")
+            os.makedirs(project2_config_dir, exist_ok=True)
+            project2_config_file = os.path.join(project2_config_dir, "llm_config.toml")
+
+            project2_config = LLMBackendConfiguration()
+            project2_config.default_backend = "qwen"
+            project2_config.get_backend_config("qwen").model = "project2-model"
+            project2_config.save_to_file(project2_config_file)
+
+            original_cwd = os.getcwd()
+            try:
+                # Load from project 1
+                os.chdir(project1_dir)
+                config1 = LLMBackendConfiguration.load_from_file()
+                assert config1.default_backend == "gemini"
+                assert config1.get_backend_config("gemini").model == "project1-model"
+
+                # Load from project 2
+                os.chdir(project2_dir)
+                config2 = LLMBackendConfiguration.load_from_file()
+                assert config2.default_backend == "qwen"
+                assert config2.get_backend_config("qwen").model == "project2-model"
+
+                # Verify configs are different
+                assert config1.default_backend != config2.default_backend
+            finally:
+                os.chdir(original_cwd)
+
+    def test_backward_compatibility_existing_behavior_unchanged(self):
+        """Test that existing behavior is unchanged for backward compatibility."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a config file
+            config_file = os.path.join(tmpdir, "test_config.toml")
+
+            # Create and save a config
+            original_config = LLMBackendConfiguration()
+            original_config.default_backend = "gemini"
+            original_config.get_backend_config("gemini").model = "test-model"
+            original_config.backend_order = ["gemini", "codex"]
+            original_config.save_to_file(config_file)
+
+            # Load it back with explicit path (this was always supported)
+            loaded_config = LLMBackendConfiguration.load_from_file(config_file)
+
+            # Verify it matches
+            assert loaded_config.default_backend == original_config.default_backend
+            assert loaded_config.backend_order == original_config.backend_order
+            assert loaded_config.get_backend_config("gemini").model == original_config.get_backend_config("gemini").model
+
+            # Test that loading non-existent file creates default (existing behavior)
+            nonexistent_file = os.path.join(tmpdir, "nonexistent.toml")
+            default_config = LLMBackendConfiguration.load_from_file(nonexistent_file)
+
+            assert default_config.default_backend == "codex"
+            assert os.path.exists(nonexistent_file)
+
+    def test_toml_save_and_load_model_provider(self):
+        """Test that model_provider field is properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_model_provider.toml"
+
+            # Create configuration with model_provider settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").model_provider = "openrouter"
+            config.get_backend_config("qwen").model_provider = "anthropic"
+            config.get_backend_config("codex").model_provider = None
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify model_provider was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.model_provider == "openrouter"
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.model_provider == "anthropic"
+
+            codex_config = loaded_config.get_backend_config("codex")
+            assert codex_config.model_provider is None
+
+    def test_load_from_file_with_model_provider(self):
+        """Test loading a TOML file with model_provider field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "model_provider_config.toml"
+            data = {
+                "backend": {"default": "grok-4.1-fast", "order": ["grok-4.1-fast"]},
+                "backends": {
+                    "grok-4.1-fast": {
+                        "enabled": True,
+                        "model": "x-ai/grok-4.1-fast:free",
+                        "backend_type": "codex",
+                        "model_provider": "openrouter",
+                    }
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            grok_config = config.get_backend_config("grok-4.1-fast")
+
+            assert grok_config is not None
+            assert grok_config.model == "x-ai/grok-4.1-fast:free"
+            assert grok_config.backend_type == "codex"
+            assert grok_config.model_provider == "openrouter"
+
+    def test_load_from_file_parses_dotted_keys_with_model_provider(self):
+        """Test that dotted keys with model_provider are correctly identified as backends."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "dotted_model_provider.toml"
+            # This structure mimics [grok-4.1-fast] which TOML parses as nested dicts
+            data = {"grok-4": {"1-fast": {"enabled": True, "model": "x-ai/grok-4.1-fast:free", "backend_type": "codex", "model_provider": "openrouter"}}}
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify grok-4.1-fast was found and has model_provider
+            grok_config = config.get_backend_config("grok-4.1-fast")
+            assert grok_config is not None
+            assert grok_config.backend_type == "codex"
+            assert grok_config.model == "x-ai/grok-4.1-fast:free"
+            assert grok_config.model_provider == "openrouter"
+
+    def test_backward_compatibility_old_toml_without_model_provider(self):
+        """Test loading old TOML files that don't have model_provider field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_without_model_provider.toml"
+
+            # Create a TOML file with the old structure (without model_provider field)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "backend_type": "codex",
+                        "temperature": 0.7,
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify model_provider has default None value when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.model_provider is None
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.model_provider is None
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
+
+    def test_enabled_defaults_to_true(self):
+        """Test that enabled defaults to true when not specified in configuration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            config_file.write_text(
+                """
+[backend]
+default = "test-backend"
+
+[backends.test-backend]
+model = "test-model"
+backend_type = "codex"
+"""
+            )
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            backend_config = config.get_backend_config("test-backend")
+
+            assert backend_config is not None
+            assert backend_config.enabled is True
+
+    def test_explicit_enabled_false(self):
+        """Test that explicit enabled = false is respected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            config_file.write_text(
+                """
+[backend]
+default = "test-backend"
+
+[backends.test-backend]
+model = "test-model"
+backend_type = "codex"
+enabled = false
+"""
+            )
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            backend_config = config.get_backend_config("test-backend")
+
+            assert backend_config is not None
+            assert backend_config.enabled is False
+
+            # Verify get_active_backends excludes this backend
+            active = config.get_active_backends()
+            assert "test-backend" not in active
+
+    def test_explicit_enabled_true(self):
+        """Test that explicit enabled = true is respected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            config_file.write_text(
+                """
+[backend]
+default = "test-backend"
+
+[backends.test-backend]
+model = "test-model"
+backend_type = "codex"
+enabled = true
+"""
+            )
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            backend_config = config.get_backend_config("test-backend")
+
+            assert backend_config is not None
+            assert backend_config.enabled is True
+
+            # Verify get_active_backends includes this backend
+            active = config.get_active_backends()
+            assert "test-backend" in active
