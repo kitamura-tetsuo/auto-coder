@@ -360,7 +360,7 @@ def extract_number_from_branch(branch_name: str) -> Optional[int]:
     Supports patterns like:
     - issue-123
     - pr-456
-    - issue-123/attempt-1
+    - issue-123_attempt-1
     - feature/issue-789
     - fix/pr-101
 
@@ -392,8 +392,8 @@ def extract_attempt_from_branch(branch_name: str) -> Optional[int]:
     Extract attempt number from branch name.
 
     Supports patterns like:
-    - issue-123/attempt-1
-    - issue-456/attempt-2
+    - issue-123_attempt-1
+    - issue-456_attempt-2
     - issue-789 (returns 0 for no attempt suffix)
 
     Args:
@@ -405,8 +405,8 @@ def extract_attempt_from_branch(branch_name: str) -> Optional[int]:
     if not branch_name:
         return None
 
-    # Match issue-XXX/attempt-Y pattern
-    match = re.search(r"issue-\d+/attempt-(\d+)", branch_name, re.IGNORECASE)
+    # Match issue-XXX_attempt-Y pattern
+    match = re.search(r"issue-\d+_attempt-(\d+)", branch_name, re.IGNORECASE)
     if match:
         return int(match.group(1))
 

@@ -751,7 +751,7 @@ class TestGenerateWorkBranchName:
 
     def test_generate_branch_with_attempt(self):
         """Branch includes attempt segment when attempt is positive."""
-        assert generate_work_branch_name(42, 3) == "issue-42/attempt-3"
+        assert generate_work_branch_name(42, 3) == "issue-42_attempt-3"
 
 
 class TestExtractAttemptFromBranch:
@@ -759,21 +759,21 @@ class TestExtractAttemptFromBranch:
 
     def test_extract_attempt_from_branch_with_attempt(self):
         """Test extracting attempt number from branch with attempt suffix."""
-        branch_name = "issue-123/attempt-1"
+        branch_name = "issue-123_attempt-1"
         attempt = extract_attempt_from_branch(branch_name)
 
         assert attempt == 1
 
     def test_extract_attempt_from_branch_attempt_2(self):
         """Test extracting attempt number 2."""
-        branch_name = "issue-456/attempt-2"
+        branch_name = "issue-456_attempt-2"
         attempt = extract_attempt_from_branch(branch_name)
 
         assert attempt == 2
 
     def test_extract_attempt_from_branch_attempt_10(self):
         """Test extracting higher attempt number."""
-        branch_name = "issue-789/attempt-10"
+        branch_name = "issue-789_attempt-10"
         attempt = extract_attempt_from_branch(branch_name)
 
         assert attempt == 10
@@ -807,39 +807,39 @@ class TestExtractAttemptFromBranch:
 
     def test_extract_attempt_from_branch_case_insensitive(self):
         """Test that extraction is case insensitive."""
-        branch_name = "issue-123/ATTEMPT-5"
+        branch_name = "issue-123_ATTEMPT-5"
         attempt = extract_attempt_from_branch(branch_name)
 
         assert attempt == 5
 
     def test_extract_attempt_from_branch_mixed_case(self):
         """Test extraction with mixed case."""
-        branch_name = "Issue-456/AtTeMpT-3"
+        branch_name = "Issue-456_AtTeMpT-3"
         attempt = extract_attempt_from_branch(branch_name)
 
         assert attempt == 3
 
     def test_extract_attempt_from_branch_special_chars(self):
         """Test extraction when branch has multiple segments (returns None due to strict pattern)."""
-        # The pattern requires attempt- to come immediately after issue-XXX/
+        # The pattern requires attempt- to come immediately after issue-XXX_
         # So this won't match because there are extra segments
-        branch_name = "issue-123/special-chars/attempt-7"
+        branch_name = "issue-123/special-chars_attempt-7"
         attempt = extract_attempt_from_branch(branch_name)
 
-        # Pattern is strict: issue-\d+/attempt-(\d+)
+        # Pattern is strict: issue-\d+_attempt-(\d+)
         # So this returns None
         assert attempt is None
 
     def test_extract_attempt_from_branch_with_feature_prefix(self):
         """Test extraction from branch with valid feature/ prefix."""
-        branch_name = "feature/issue-456/attempt-3"
+        branch_name = "feature/issue-456_attempt-3"
         attempt = extract_attempt_from_branch(branch_name)
 
         assert attempt == 3
 
     def test_extract_attempt_from_branch_multiple_attempt_patterns(self):
         """Test extraction when multiple attempt patterns exist."""
-        branch_name = "issue-123/attempt-1/attempt-2"
+        branch_name = "issue-123_attempt-1_attempt-2"
         attempt = extract_attempt_from_branch(branch_name)
 
         # Should match the first attempt pattern
@@ -848,8 +848,8 @@ class TestExtractAttemptFromBranch:
     def test_extract_attempt_from_branch_complex_name(self):
         """Test extraction from complex branch name (returns None due to strict pattern)."""
         # The pattern is strict and doesn't allow extra segments
-        branch_name = "feature/issue-789/complex-name/attempt-4"
+        branch_name = "feature/issue-789/complex-name_attempt-4"
         attempt = extract_attempt_from_branch(branch_name)
 
-        # Pattern requires exact format: issue-\d+/attempt-(\d+)
+        # Pattern requires exact format: issue-\d+_attempt-(\d+)
         assert attempt is None
