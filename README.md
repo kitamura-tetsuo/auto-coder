@@ -432,10 +432,10 @@ For backends using `backend_type = "codex"`, you can specify the model provider 
 
 ```toml
 [grok-4.1-fast]
-enabled = true
 model = "x-ai/grok-4.1-fast:free"
 backend_type = "codex"
 model_provider = "openrouter"
+# Note: enabled = true is the default
 ```
 
 This configuration is equivalent to running:
@@ -458,12 +458,12 @@ Here's a complete example showing how to configure a custom backend with OpenRou
 
 ```toml
 [backends.openrouter-grok]
-enabled = true
 backend_type = "codex"
 model = "x-ai/grok-4.1-fast:free"
 model_provider = "openrouter"
 openai_api_key = "sk-or-v1-..."  # Your OpenRouter API key
 openai_base_url = "https://openrouter.ai/api/v1"
+# Note: enabled = true is the default
 ```
 
 Make sure your codex configuration file (`~/.codex/config.toml`) contains the appropriate provider settings. For example:
