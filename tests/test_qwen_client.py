@@ -18,7 +18,7 @@ class TestQwenClient:
     @patch("subprocess.run")
     def test_init_checks_cli(self, mock_run, mock_get_config):
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_config = MagicMock()
         mock_backend = MagicMock()

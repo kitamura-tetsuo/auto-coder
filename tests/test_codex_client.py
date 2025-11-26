@@ -235,9 +235,10 @@ class TestCodexClient:
     def test_init_with_custom_config(self, mock_run):
         """CodexClient should accept and store custom configuration values."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config to return specific model
         from unittest.mock import MagicMock
+
         mock_config = MagicMock()
         mock_backend_config = MagicMock()
         mock_backend_config.model = "custom-codex"
@@ -287,6 +288,7 @@ class TestCodexClient:
 
         # Mock config to return specific model
         from unittest.mock import MagicMock
+
         mock_config = MagicMock()
         mock_backend_config = MagicMock()
         mock_backend_config.model = "custom-model"
@@ -414,9 +416,10 @@ class TestCodexClient:
         # [my-openrouter-model]
         # model = "open-router/grok-4.1-fast"
         # backend_type = "codex"
-        
+
         # Mock config to return specific model
         from unittest.mock import MagicMock
+
         mock_config = MagicMock()
         mock_backend_config = MagicMock()
         mock_backend_config.model = "open-router/grok-4.1-fast"
@@ -466,9 +469,10 @@ class TestCodexClient:
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
         # Simulate MiniMax-M2 model configuration
-        
+
         # Mock config to return specific model
         from unittest.mock import MagicMock
+
         mock_config = MagicMock()
         mock_backend_config = MagicMock()
         mock_backend_config.model = "MiniMax-M2"

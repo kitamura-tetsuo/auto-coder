@@ -17,7 +17,7 @@ class TestClaudeClient:
     def test_init_checks_cli(self, mock_run, mock_get_config):
         """ClaudeClient should check claude --version at init."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_config = MagicMock()
         mock_backend = MagicMock()
@@ -33,7 +33,7 @@ class TestClaudeClient:
     def test_init_with_model_name(self, mock_run, mock_get_config):
         """ClaudeClient should use provided model name from config."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_config = MagicMock()
         mock_backend = MagicMock()
@@ -60,8 +60,6 @@ class TestClaudeClient:
             client = ClaudeClient(backend_name="custom-claude")
             assert client.model_name == "custom-sonnet"
 
-
-
     @patch("subprocess.run")
     def test_init_falls_back_to_default_claude_config(self, mock_run):
         """ClaudeClient should fall back to default claude config when no backend_name."""
@@ -84,7 +82,7 @@ class TestClaudeClient:
     def test_switch_to_conflict_model(self, mock_run, mock_get_config):
         """ClaudeClient should switch to conflict model."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_config = MagicMock()
         mock_backend = MagicMock()
@@ -106,7 +104,7 @@ class TestClaudeClient:
     def test_switch_back_to_default_model(self, mock_run, mock_get_config):
         """ClaudeClient should switch back to default model."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_config = MagicMock()
         mock_backend = MagicMock()
@@ -129,7 +127,7 @@ class TestClaudeClient:
     def test_escape_prompt(self, mock_run, mock_get_config):
         """ClaudeClient should escape @ in prompts."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_config = MagicMock()
         mock_backend = MagicMock()
@@ -147,7 +145,7 @@ class TestClaudeClient:
     def test_escape_prompt_trims_whitespace(self, mock_run, mock_get_config):
         """ClaudeClient should trim whitespace from prompts."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_config = MagicMock()
         mock_backend = MagicMock()
