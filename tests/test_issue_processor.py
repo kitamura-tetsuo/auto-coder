@@ -53,12 +53,7 @@ def test_parent_issue_branch_creation_uses_main_base():
                 # Minimal GitHub client mock
                 github_client = MagicMock()
                 # Mock get_parent_issue_details to return OPEN parent
-                github_client.get_parent_issue_details.return_value = {
-                    "number": parent_issue_number,
-                    "title": "Parent Issue",
-                    "state": "OPEN",
-                    "url": "http://url"
-                }
+                github_client.get_parent_issue_details.return_value = {"number": parent_issue_number, "title": "Parent Issue", "state": "OPEN", "url": "http://url"}
 
                 # Avoid deeper execution
                 class DummyLLM:
