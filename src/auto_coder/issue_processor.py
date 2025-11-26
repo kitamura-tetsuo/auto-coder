@@ -65,6 +65,7 @@ def _process_issue_jules_mode(
             issue_number,
             item_type="issue",
             skip_label_add=True,
+            check_labels=config.CHECK_LABELS,
         ) as should_process:
             if not should_process:
                 logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
@@ -97,7 +98,7 @@ def _process_issue_jules_mode(
                     logger.info(f"All dependencies for issue #{issue_number} are resolved")
 
         # Use LabelManager context manager to handle @auto-coder label automatically
-        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config, check_labels=config.CHECK_LABELS) as should_process:
             if not should_process:
                 return ProcessedIssueResult(
                     issue_data=issue_data,
@@ -440,7 +441,7 @@ def _apply_issue_actions_directly(
 
         # Now perform all work on the target branch using branch_context
         assert target_branch is not None, "target_branch must be set before using branch_context"
-        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config) as should_process:
+        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config, check_labels=config.CHECK_LABELS) as should_process:
             if not should_process:
                 return actions
 
