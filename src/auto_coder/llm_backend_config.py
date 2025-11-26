@@ -102,10 +102,7 @@ class LLMBackendConfiguration:
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "LLMBackendConfiguration":
         """Load configuration from TOML file."""
-        if config_path is None:
-            config_path = os.path.expanduser("~/.auto-coder/llm_config.toml")
-        else:
-            config_path = os.path.expanduser(config_path)
+        config_path = resolve_config_path(config_path)
 
         if not os.path.exists(config_path):
             # Create a default configuration file if none exists
