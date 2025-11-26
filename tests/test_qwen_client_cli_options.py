@@ -51,16 +51,30 @@ def test_qwen_client_options_parameter(mock_run_command, mock_run):
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_options_parameter_qwen_mode(mock_run_command, mock_run):
+@patch("src.auto_coder.qwen_client.get_llm_config")
+def test_qwen_client_options_parameter_qwen_mode(mock_get_config, mock_run_command, mock_run):
     """Test that options parameter is properly passed to qwen OAuth CLI commands."""
     # Pretend qwen --version works
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "done\n", "", 0)
 
-    # Test with options parameter in qwen OAuth mode (no API key)
+    # Mock config to provide options
+    from unittest.mock import Mock
+
+    mock_config = Mock()
+    mock_backend_config = Mock()
+    mock_backend_config.model = "qwen3-coder-plus"
+    mock_backend_config.options = ["-o", "yolo", "true", "--debug"]
+    mock_backend_config.api_key = None
+    mock_backend_config.base_url = None
+    mock_backend_config.openai_api_key = None
+    mock_backend_config.openai_base_url = None
+    mock_config.get_backend_config.return_value = mock_backend_config
+    mock_get_config.return_value = mock_config
+
+    # Test with options from config in qwen OAuth mode (no API key)
     client = QwenClient(
-        model_name="qwen3-coder-plus",
-        options=["-o", "yolo", "true", "--debug"],
+        backend_name="qwen",
     )
 
     _ = client._run_qwen_cli("probe", None)
@@ -217,16 +231,30 @@ def test_qwen_client_codex_mode_with_options(mock_run_command, mock_run):
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_oauth_mode_with_options(mock_run_command, mock_run):
+@patch("src.auto_coder.qwen_client.get_llm_config")
+def test_qwen_client_oauth_mode_with_options(mock_get_config, mock_run_command, mock_run):
     """Test that options are passed to qwen OAuth CLI when no API key is provided."""
     # Pretend qwen --version works
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "done\n", "", 0)
 
+    # Mock config to provide options
+    from unittest.mock import Mock
+
+    mock_config = Mock()
+    mock_backend_config = Mock()
+    mock_backend_config.model = "qwen3-coder-plus"
+    mock_backend_config.options = ["-o", "stream", "false"]
+    mock_backend_config.api_key = None
+    mock_backend_config.base_url = None
+    mock_backend_config.openai_api_key = None
+    mock_backend_config.openai_base_url = None
+    mock_config.get_backend_config.return_value = mock_backend_config
+    mock_get_config.return_value = mock_config
+
     client = QwenClient(
-        model_name="qwen3-coder-plus",
+        backend_name="qwen",
         use_env_vars=True,
-        options=["-o", "stream", "false"],
     )
 
     _ = client._run_qwen_cli("probe", None)
@@ -252,7 +280,7 @@ def test_qwen_client_options_empty_by_default(mock_run_command, mock_run):
     mock_run_command.return_value = CommandResult(True, "done\n", "", 0)
 
     client = QwenClient(
-        model_name="qwen3-coder-plus",
+        backend_name="qwen",
         use_env_vars=True,
         # No options provided
     )
