@@ -39,6 +39,7 @@ class ClaudeClient(LLMClientBase):
             self.base_url = config_backend and config_backend.base_url
             self.openai_api_key = config_backend and config_backend.openai_api_key
             self.openai_base_url = config_backend and config_backend.openai_base_url
+            self.settings = config_backend and config_backend.settings
         else:
             # Fall back to default claude config
             config_backend = config.get_backend_config("claude")
@@ -47,6 +48,7 @@ class ClaudeClient(LLMClientBase):
             self.base_url = config_backend and config_backend.base_url
             self.openai_api_key = config_backend and config_backend.openai_api_key
             self.openai_base_url = config_backend and config_backend.openai_base_url
+            self.settings = config_backend and config_backend.settings
 
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
@@ -86,8 +88,12 @@ class ClaudeClient(LLMClientBase):
                 "--allow-dangerously-skip-permissions",
                 "--model",
                 self.model_name,
-                escaped_prompt,
             ]
+
+            if self.settings:
+                cmd.extend(["--settings", self.settings])
+
+            cmd.append(escaped_prompt)
 
             # Prepare environment variables for subprocess
             env = os.environ.copy()
