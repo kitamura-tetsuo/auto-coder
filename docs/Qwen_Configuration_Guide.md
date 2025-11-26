@@ -5,6 +5,8 @@ This guide explains how to configure Qwen for use with Auto-Coder. There are two
 1. **Qwen CLI (OAuth)** - Native Qwen CLI authentication
 2. **OpenAI-Compatible Providers** - Using Qwen models through providers like OpenRouter, Azure OpenAI, etc.
 
+**Note:** By default, all backends have `enabled = true`. You only need to specify `enabled = false` to disable a backend.
+
 ## Quick Start
 
 ### Option 1: Qwen CLI (OAuth) - Direct Qwen Usage
@@ -13,7 +15,6 @@ Configure using `backend_type = "qwen"`:
 
 ```toml
 [backends.qwen]
-enabled = true
 model = "qwen3-coder-plus"
 backend_type = "qwen"
 
@@ -26,7 +27,6 @@ Configure using `backend_type = "codex"`:
 
 ```toml
 [backends.qwen-openrouter]
-enabled = true
 model = "qwen/qwen3-coder:free"
 openai_api_key = "sk-or-v1-your-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -50,7 +50,6 @@ This method uses the native Qwen CLI with OAuth authentication. No API keys are 
 
 ```toml
 [backends.qwen]
-enabled = true
 model = "qwen3-coder-plus"
 backend_type = "qwen"
 ```
@@ -75,7 +74,6 @@ This method uses OpenAI-compatible API endpoints to access Qwen models through p
 
 ```toml
 [backends.qwen-openrouter]
-enabled = true
 model = "qwen/qwen3-coder:free"
 openai_api_key = "sk-or-v1-your-openrouter-key"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -89,7 +87,6 @@ options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Cod
 
 ```toml
 [backends.qwen-azure]
-enabled = true
 model = "qwen-35-coder"
 openai_api_key = "your-azure-openai-key"
 openai_base_url = "https://your-resource.openai.azure.com"
@@ -103,7 +100,6 @@ options = ["-o", "api_version", "2024-02-01"]
 
 ```toml
 [backends.qwen-custom]
-enabled = true
 model = "qwen-2.5-coder-32k-instruct"
 openai_api_key = "your-api-key"
 openai_base_url = "https://api.example.com/v1"
@@ -154,7 +150,6 @@ default = "qwen-openrouter"
 order = ["qwen-openrouter", "qwen", "gemini", "codex"]
 
 [backends.qwen-openrouter]
-enabled = true
 model = "qwen/qwen3-coder:free"
 openai_api_key = "sk-or-v1-your-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -162,18 +157,15 @@ backend_type = "codex"
 options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
 [backends.qwen]
-enabled = true
 model = "qwen3-coder-plus"
 backend_type = "qwen"
 
 [backends.gemini]
-enabled = true
 model = "gemini-2.5-pro"
 api_key = "your-gemini-api-key"
 backend_type = "gemini"
 
 [backends.codex]
-enabled = true
 model = "codex"
 backend_type = "codex"
 ```
@@ -189,7 +181,6 @@ You can configure any OpenAI-compatible model as a custom backend using `backend
 ```toml
 # Using Grok models via OpenRouter
 [backends.grok-4.1-fast]
-enabled = true
 model = "x-ai/grok-4.1-fast"
 openai_api_key = "sk-or-v1-your-openrouter-key"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -197,7 +188,6 @@ backend_type = "codex"
 
 # Using Claude models via OpenRouter
 [backends.claude-sonnet-4]
-enabled = true
 model = "anthropic/claude-sonnet-4"
 openai_api_key = "sk-or-v1-your-openrouter-key"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -205,7 +195,6 @@ backend_type = "codex"
 
 # Using Mistral models
 [backends.mistral-large]
-enabled = true
 model = "mistralai/mistral-large"
 openai_api_key = "sk-or-v1-your-key"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -219,7 +208,6 @@ For Claude models that support OpenAI-compatible API, you can use `backend_type 
 ```toml
 # Using Claude models via OpenRouter (when using ClaudeClient)
 [backends.minimax-coder]
-enabled = true
 model = "minimax-coder"
 api_key = "your-minimax-api-key"
 base_url = "https://api.minimaxi.com/v1"
