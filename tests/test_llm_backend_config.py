@@ -1430,3 +1430,76 @@ class TestConfigurationPriorityLogic:
             assert gemini_config.model_provider is None
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
+
+    def test_enabled_defaults_to_true(self):
+        """Test that enabled defaults to true when not specified in configuration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            config_file.write_text(
+                """
+[backend]
+default = "test-backend"
+
+[backends.test-backend]
+model = "test-model"
+backend_type = "codex"
+"""
+            )
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            backend_config = config.get_backend_config("test-backend")
+
+            assert backend_config is not None
+            assert backend_config.enabled is True
+
+    def test_explicit_enabled_false(self):
+        """Test that explicit enabled = false is respected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            config_file.write_text(
+                """
+[backend]
+default = "test-backend"
+
+[backends.test-backend]
+model = "test-model"
+backend_type = "codex"
+enabled = false
+"""
+            )
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            backend_config = config.get_backend_config("test-backend")
+
+            assert backend_config is not None
+            assert backend_config.enabled is False
+
+            # Verify get_active_backends excludes this backend
+            active = config.get_active_backends()
+            assert "test-backend" not in active
+
+    def test_explicit_enabled_true(self):
+        """Test that explicit enabled = true is respected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            config_file.write_text(
+                """
+[backend]
+default = "test-backend"
+
+[backends.test-backend]
+model = "test-model"
+backend_type = "codex"
+enabled = true
+"""
+            )
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            backend_config = config.get_backend_config("test-backend")
+
+            assert backend_config is not None
+            assert backend_config.enabled is True
+
+            # Verify get_active_backends includes this backend
+            active = config.get_active_backends()
+            assert "test-backend" in active
