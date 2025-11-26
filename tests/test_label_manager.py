@@ -974,3 +974,44 @@ class TestLabelFamilies:
 
         with pytest.raises(ValueError, match="PR_LABEL_MAX_COUNT must be between 0 and 10"):
             config.validate_pr_label_config()
+
+    def test_label_manager_default_check_labels_true(self):
+        """Test default `check_labels` behavior is True."""
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 123, "pr", config=config) as should_process:
+            assert should_process is True
+
+        mock_github_client.has_label.assert_called()
+
+    def test_label_manager_check_labels_true_respects_label(self):
+        """Test `check_labels=True` (default) respects existing label."""
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = True
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 123, "pr", config=config, check_labels=True) as should_process:
+            assert should_process is False
+
+        mock_github_client.try_add_labels.assert_not_called()
+
+    def test_label_manager_check_labels_false_bypasses(self):
+        """Test `check_labels=False` bypasses existing label check."""
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = True  # Already has label
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+
+        with LabelManager(mock_github_client, "owner/repo", 123, "pr", config=config, check_labels=False) as should_process:
+            assert should_process is True
+            mock_github_client.try_add_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], item_type="pr")
+
+        mock_github_client.remove_labels.assert_called_once_with("owner/repo", 123, ["@auto-coder"], "pr")
