@@ -314,6 +314,55 @@ If the status shows "stale lock" (the process is no longer running), you can saf
 **Stale Lock Detection:**
 Auto-Coder detects stale locks by checking if the process associated with the lock is still active. If the process has terminated but left behind a lock file, you can remove it without the `--force` flag. The system will automatically detect that the process is no longer running.
 
+## Branch Naming Convention
+
+### Standard Branches
+
+- **Issue branches**: `issue-<number>` (e.g., `issue-699`)
+  - Used for initial work on an issue
+
+### Attempt Branches
+
+- **Format**: `issue-<number>_attempt-<number>` (e.g., `issue-699_attempt-1`)
+  - Used when retrying work after a failed PR merge or regression
+  - Uses underscore (`_`) separator to avoid Git ref namespace conflicts
+
+> **Note**: Prior to v1.x.x, attempt branches used slash separator (`issue-699/attempt-1`).
+> The new underscore format prevents Git errors when both base and attempt branches exist.
+> Both formats are supported for backward compatibility.
+
+### Examples
+
+```bash
+# Standard issue branch
+issue-699
+
+# First attempt (after initial PR failed)
+issue-699_attempt-1
+
+# Second attempt
+issue-699_attempt-2
+```
+
+### Migration from Legacy Format
+
+If you have existing branches with the old slash format (`issue-X/attempt-Y`), they will
+continue to work. However, new attempt branches will use the underscore format.
+
+For detailed migration instructions, see the [Branch Naming Migration Guide](docs/MIGRATION_GUIDE_BRANCH_NAMING.md).
+
+To migrate an existing branch manually:
+```bash
+# Rename local branch
+git branch -m issue-699/attempt-1 issue-699_attempt-1
+
+# Delete old remote branch
+git push origin --delete issue-699/attempt-1
+
+# Push renamed branch
+git push origin issue-699_attempt-1
+```
+
 ## Configuration
 
 ### Configuration File Locations

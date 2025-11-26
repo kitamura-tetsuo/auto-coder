@@ -142,10 +142,10 @@ class TestExtractAttemptFromBranch:
 
     def test_extract_attempt_from_branch_with_attempt(self):
         """Test extracting attempt number from branch with attempt suffix."""
-        assert extract_attempt_from_branch("issue-123/attempt-1") == 1
-        assert extract_attempt_from_branch("issue-456/attempt-2") == 2
-        assert extract_attempt_from_branch("issue-789/attempt-10") == 10
-        assert extract_attempt_from_branch("feature/issue-123/attempt-3") == 3
+        assert extract_attempt_from_branch("issue-123_attempt-1") == 1
+        assert extract_attempt_from_branch("issue-456_attempt-2") == 2
+        assert extract_attempt_from_branch("issue-789_attempt-10") == 10
+        assert extract_attempt_from_branch("feature/issue-123_attempt-3") == 3
 
     def test_extract_attempt_from_branch_without_attempt(self):
         """Test extracting attempt number from branch without attempt suffix."""
@@ -161,5 +161,31 @@ class TestExtractAttemptFromBranch:
 
     def test_extract_attempt_from_branch_case_insensitive(self):
         """Test that attempt extraction is case-insensitive."""
+        assert extract_attempt_from_branch("issue-123_Attempt-1") == 1
+        assert extract_attempt_from_branch("issue-456_ATTEMPT-2") == 2
+
+    def test_extract_attempt_from_branch_legacy_slash_format(self):
+        """Test extracting attempt number from legacy slash format."""
+        assert extract_attempt_from_branch("issue-123/attempt-1") == 1
+        assert extract_attempt_from_branch("issue-456/attempt-2") == 2
+        assert extract_attempt_from_branch("issue-789/attempt-10") == 10
+        assert extract_attempt_from_branch("feature/issue-123/attempt-3") == 3
+
+    def test_extract_attempt_from_branch_legacy_slash_case_insensitive(self):
+        """Test that legacy slash format attempt extraction is case-insensitive."""
         assert extract_attempt_from_branch("issue-123/Attempt-1") == 1
         assert extract_attempt_from_branch("issue-456/ATTEMPT-2") == 2
+
+
+class TestBackwardCompatibility:
+    """Test backward compatibility with old slash format."""
+
+    def test_extract_attempt_legacy_format(self):
+        """Legacy slash format should still work."""
+        assert extract_attempt_from_branch("issue-100/attempt-5") == 5
+        assert extract_attempt_from_branch("issue-200/attempt-1") == 1
+
+    def test_extract_attempt_new_format_preferred(self):
+        """New underscore format should be standard."""
+        assert extract_attempt_from_branch("issue-100_attempt-5") == 5
+        assert extract_attempt_from_branch("issue-200_attempt-1") == 1
