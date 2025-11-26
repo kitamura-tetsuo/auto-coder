@@ -1,5 +1,7 @@
 # Migration Guide: v2025.11.26
 
+**Note:** By default, all backends have `enabled = true`. You only need to specify `enabled = false` to disable a backend.
+
 ## Breaking Changes
 
 ### Backend Prerequisites Check Enhancement
@@ -49,7 +51,6 @@ If you're using custom backend names (aliases), you **must** add a `backend_type
 ```toml
 # ~/.auto-coder/llm_config.toml
 [backends.my-custom-backend]
-enabled = true
 model = "qwen3-coder-plus"
 openai_api_key = "your-key"
 openai_base_url = "https://api.example.com"
@@ -62,7 +63,6 @@ This configuration would **fail** with the new version because `my-custom-backen
 ```toml
 # ~/.auto-coder/llm_config.toml
 [backends.my-custom-backend]
-enabled = true
 backend_type = "qwen"  # ← Required: specify which backend type this uses
 model = "qwen3-coder-plus"
 openai_api_key = "your-key"
@@ -85,7 +85,6 @@ The `backend_type` field must be one of these known backend types:
 
 ```toml
 [backends.my-openrouter]
-enabled = true
 backend_type = "codex"  # OpenRouter is OpenAI-compatible
 model = "openrouter/grok-4.1-fast"
 api_key = "your-openrouter-key"
@@ -96,7 +95,6 @@ base_url = "https://openrouter.ai/api/v1"
 
 ```toml
 [backends.gemini-flash-alias]
-enabled = true
 backend_type = "gemini"
 model = "gemini-2.5-flash"
 api_key = "your-gemini-key"
@@ -106,7 +104,6 @@ api_key = "your-gemini-key"
 
 ```toml
 [backends.qwen-turbo]
-enabled = true
 backend_type = "qwen"
 model = "qwen3-coder-plus"
 openai_api_key = "your-key"

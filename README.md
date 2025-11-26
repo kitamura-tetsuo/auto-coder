@@ -402,6 +402,8 @@ This approach is **backward compatible**: existing users with only home director
 
 Auto-Coder uses a TOML configuration file for backend settings. You can place this file in either location mentioned above.
 
+**Note:** By default, all backends have `enabled = true`. You only need to specify `enabled = false` to disable a backend.
+
 #### Custom Backend Names
 
 You can define custom backend names using the `backend_type` field. This is useful for:
@@ -412,7 +414,6 @@ You can define custom backend names using the `backend_type` field. This is usef
 Example:
 ```toml
 [backends.grok-4.1-fast]
-enabled = true
 backend_type = "codex"  # Use codex CLI for OpenAI-compatible APIs
 model = "grok-4.1-fast"
 openai_api_key = "your-openrouter-api-key"
@@ -460,7 +461,6 @@ order = ["gemini", "qwen", "claude"]
 default = "gemini"
 
 [backends.codex]
-enabled = true
 api_key = ""
 base_url = ""
 model = "codex"
@@ -471,7 +471,6 @@ usage_limit_retry_count = 0
 usage_limit_retry_wait_seconds = 0
 
 [backends.codex_mcp]
-enabled = true
 api_key = ""
 base_url = ""
 model = "codex-mcp"
@@ -482,7 +481,6 @@ usage_limit_retry_count = 0
 usage_limit_retry_wait_seconds = 0
 
 [backends.gemini]
-enabled = true
 api_key = "your-gemini-api-key"  # Alternatively use GEMINI_API_KEY env var
 base_url = ""
 model = "gemini-2.5-pro"
@@ -494,7 +492,6 @@ usage_limit_retry_wait_seconds = 30
 always_switch_after_execution = false
 
 [backends.qwen]
-enabled = true
 api_key = "your-qwen-api-key"  # Alternatively use OPENAI_API_KEY env var
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"  # Or your OpenAI-compatible endpoint
 model = "qwen3-coder-plus"
@@ -506,7 +503,6 @@ usage_limit_retry_wait_seconds = 60
 always_switch_after_execution = false
 
 [backends.claude]
-enabled = true
 api_key = "your-claude-api-key"  # Alternatively use ANTHROPIC_API_KEY env var
 base_url = ""
 model = "sonnet"
@@ -517,7 +513,6 @@ usage_limit_retry_count = 5
 usage_limit_retry_wait_seconds = 45
 
 [backends.auggie]
-enabled = true
 api_key = ""
 base_url = ""
 model = "GPT-5"
@@ -616,12 +611,10 @@ order = ["gemini", "qwen", "claude"]
 default = "gemini"
 
 [backends.gemini]
-enabled = true
 model = "gemini-2.5-pro"
 always_switch_after_execution = true  # switch to qwen after each gemini call
 
 [backends.qwen]
-enabled = true
 model = "qwen3-coder-plus"
 always_switch_after_execution = true  # continue rotation to claude next
 ```
@@ -1220,7 +1213,6 @@ If you see this error with a custom backend name:
 **Example fix:**
 ```toml
 [backends.my-custom-backend]
-enabled = true
 backend_type = "codex"  # Add this line
 model = "grok-4.1-fast"
 openai_api_key = "your-key"

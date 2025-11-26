@@ -1,5 +1,7 @@
 # OpenRouter Setup Guide
 
+**Note:** By default, all backends have `enabled = true`. You only need to specify `enabled = false` to disable a backend.
+
 ## Overview
 
 OpenRouter provides access to various AI models through a unified OpenAI-compatible API. This guide explains how to configure Auto-Coder to use Qwen and other models via OpenRouter.
@@ -24,7 +26,6 @@ default = "qwen-openrouter"
 order = ["qwen-openrouter", "codex", "gemini"]
 
 [backends.qwen-openrouter]
-enabled = true
 model = "qwen/qwen3-coder:free"
 openai_api_key = "sk-or-v1-your-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -48,7 +49,6 @@ The key is setting `backend_type = "codex"` to use Auto-Coder's OpenAI-compatibl
 
 ```toml
 [backends.qwen-openrouter]
-enabled = true
 model = "qwen/qwen3-coder:free"
 openai_api_key = "sk-or-v1-your-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -79,14 +79,12 @@ You can configure multiple OpenRouter backends with different models:
 
 ```toml
 [backends.qwen-openrouter-free]
-enabled = true
 model = "qwen/qwen3-coder:free"
 openai_api_key = "sk-or-v1-your-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
 backend_type = "codex"
 
 [backends.qwen-openrouter-plus]
-enabled = true
 model = "qwen/qwen-2.5-plus"
 openai_api_key = "sk-or-v1-your-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
