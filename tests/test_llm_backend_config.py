@@ -667,6 +667,104 @@ class TestLLMBackendConfiguration:
             with pytest.raises(ValueError, match="Error loading configuration"):
                 LLMBackendConfiguration.load_from_file(str(config_file))
 
+    def test_toml_save_and_load_model_provider(self):
+        """Test that model_provider field is properly saved and loaded from TOML."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_model_provider.toml"
+
+            # Create configuration with model_provider settings
+            config = LLMBackendConfiguration()
+            # Use existing backends and add model_provider to them
+            config.get_backend_config("codex").model_provider = "openrouter"
+            config.get_backend_config("codex").model = "x-ai/grok-4.1-fast:free"
+            config.get_backend_config("gemini").model_provider = "anthropic"
+            config.get_backend_config("gemini").model = "claude-3-sonnet"
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify model_provider was persisted correctly
+            codex_config = loaded_config.get_backend_config("codex")
+            assert codex_config is not None
+            assert codex_config.model_provider == "openrouter"
+            assert codex_config.model == "x-ai/grok-4.1-fast:free"
+
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.model_provider == "anthropic"
+            assert gemini_config.model == "claude-3-sonnet"
+
+    def test_load_from_file_parses_model_provider(self):
+        """Test that model_provider is correctly parsed from TOML file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_parse_model_provider.toml"
+            # Create TOML file with model_provider field
+            data = {
+                "backend": {"default": "openrouter-backend", "order": ["openrouter-backend"]},
+                "backends": {
+                    "openrouter-backend": {
+                        "enabled": True,
+                        "model": "x-ai/grok-4.1-fast:free",
+                        "backend_type": "codex",
+                        "model_provider": "openrouter",
+                        "openai_base_url": "https://openrouter.ai/api/v1",
+                    }
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            backend_config = config.get_backend_config("openrouter-backend")
+
+            assert backend_config is not None
+            assert backend_config.model_provider == "openrouter"
+            assert backend_config.model == "x-ai/grok-4.1-fast:free"
+            assert backend_config.backend_type == "codex"
+
+    def test_backward_compatibility_old_toml_without_model_provider(self):
+        """Test loading old TOML files that don't have model_provider field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_no_model_provider.toml"
+
+            # Create a TOML file with old structure (without model_provider)
+            data = {
+                "backend": {"default": "gemini", "order": ["gemini", "codex"]},
+                "backends": {
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "temperature": 0.7,
+                    },
+                    "codex": {
+                        "enabled": True,
+                        "model": "codex",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify model_provider has default value when not present in old TOML
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.model_provider is None
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.temperature == 0.7
+
+            codex_config = config.get_backend_config("codex")
+            assert codex_config is not None
+            assert codex_config.model_provider is None
+            assert codex_config.model == "codex"
+            assert codex_config.timeout == 30
+
 
 class TestGlobalConfigInstance:
     """Test cases for global configuration instance."""
