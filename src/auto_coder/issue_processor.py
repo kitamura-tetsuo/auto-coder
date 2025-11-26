@@ -36,9 +36,13 @@ def generate_work_branch_name(issue_number: int, attempt: int) -> str:
 
     Returns:
         The generated work branch name.
+
+    Note:
+        Uses underscore separator (_) instead of slash (/) to avoid Git ref namespace conflicts.
+        Format: issue-<number>_attempt-<attempt>
     """
     if attempt > 0:
-        return f"issue-{issue_number}/attempt-{attempt}"
+        return f"issue-{issue_number}_attempt-{attempt}"
     return f"issue-{issue_number}"
 
 
@@ -384,7 +388,7 @@ def _apply_issue_actions_directly(
                 # Check if parent issue has attempts and use the appropriate parent branch
                 parent_attempt = get_current_attempt(repo_name, parent_issue_number)
                 if parent_attempt > 0:
-                    parent_branch = f"issue-{parent_issue_number}/attempt-{parent_attempt}"
+                    parent_branch = f"issue-{parent_issue_number}_attempt-{parent_attempt}"
                 else:
                     parent_branch = f"issue-{parent_issue_number}"
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
