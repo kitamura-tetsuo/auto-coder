@@ -393,7 +393,7 @@ def extract_attempt_from_branch(branch_name: str) -> Optional[int]:
     Extract attempt number from branch name.
 
     Supports patterns like:
-    - issue-123_attempt-1 (new format with underscore)
+    - issue-123_attempt-1 (new format with underscore) - introduced in v1.x.x to avoid Git ref namespace conflicts
     - issue-456_attempt-2
     - issue-123/attempt-1 (legacy format with slash, for backward compatibility)
     - issue-456/attempt-2 (legacy)
