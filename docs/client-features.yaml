@@ -36,6 +36,23 @@ The auto-coder system supports multiple LLM backends:
           QWEN_API_KEY = "your-api-key"
 ```
 
+#### Backend Configuration Fields
+
+The system supports extensive backend configuration options. Key fields include:
+
+- **model_provider**: Specifies the model provider for backends using `backend_type = "codex"`
+  - Purpose: Allows users to configure providers like OpenRouter, Anthropic, etc.
+  - Example:
+    ```toml
+    [grok-4.1-fast]
+    enabled = true
+    model = "x-ai/grok-4.1-fast:free"
+    backend_type = "codex"
+    model_provider = "openrouter"
+    ```
+  - This translates to: `codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter`
+  - Optional field: Backward compatible with existing configurations
+
 #### Backend Management
 
     nested_managers:
