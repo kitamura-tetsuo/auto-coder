@@ -11,6 +11,35 @@ from urllib.parse import urlparse
 import toml
 
 
+def resolve_config_path(config_path: Optional[str] = None) -> str:
+    """Resolve the configuration file path with priority rules.
+
+    Priority (highest to lowest):
+    1. Explicitly provided config_path argument
+    2. .auto-coder/llm_config.toml in current directory
+    3. ~/.auto-coder/llm_config.toml in home directory
+
+    Args:
+        config_path: Optional explicit path to configuration file
+
+    Returns:
+        Absolute path to the configuration file to use
+    """
+    # Priority 1: Explicitly provided config_path
+    if config_path is not None:
+        expanded_path = os.path.expanduser(config_path)
+        return os.path.abspath(expanded_path)
+
+    # Priority 2: Local .auto-coder/llm_config.toml
+    local_config = os.path.join(os.getcwd(), ".auto-coder", "llm_config.toml")
+    if os.path.exists(local_config):
+        return os.path.abspath(local_config)
+
+    # Priority 3: Home directory ~/.auto-coder/llm_config.toml
+    home_config = os.path.expanduser("~/.auto-coder/llm_config.toml")
+    return os.path.abspath(home_config)
+
+
 @dataclass
 class BackendConfig:
     """Configuration for a single backend."""
@@ -45,6 +74,8 @@ class BackendConfig:
     model_provider: Optional[str] = None
     # Always switch to next backend after execution
     always_switch_after_execution: bool = False
+    # Path to settings file (for Claude backend)
+    settings: Optional[str] = None
 
 
 @dataclass
@@ -75,10 +106,7 @@ class LLMBackendConfiguration:
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "LLMBackendConfiguration":
         """Load configuration from TOML file."""
-        if config_path is None:
-            config_path = os.path.expanduser("~/.auto-coder/llm_config.toml")
-        else:
-            config_path = os.path.expanduser(config_path)
+        config_path = resolve_config_path(config_path)
 
         if not os.path.exists(config_path):
             # Create a default configuration file if none exists
@@ -119,6 +147,7 @@ class LLMBackendConfiguration:
                     backend_type=config_data.get("backend_type"),
                     model_provider=config_data.get("model_provider"),
                     always_switch_after_execution=config_data.get("always_switch_after_execution", False),
+                    settings=config_data.get("settings"),
                 )
 
             # 1. Parse explicit [backends] section
@@ -132,7 +161,7 @@ class LLMBackendConfiguration:
             def is_potential_backend_config(d: dict) -> bool:
                 # Heuristic: if it has specific backend keys, it's likely a config
                 # We check for keys that are commonly used in backend definitions
-                common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution"}
+                common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings"}
                 # Also check if 'enabled' is present, but it's very common so we combine it
                 # with the fact that we are looking for backends.
                 # If a dict has 'enabled' and is in the top-level (or nested from top-level),
@@ -208,6 +237,7 @@ class LLMBackendConfiguration:
                 "backend_type": config.backend_type,
                 "model_provider": config.model_provider,
                 "always_switch_after_execution": config.always_switch_after_execution,
+                "settings": config.settings,
             }
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}

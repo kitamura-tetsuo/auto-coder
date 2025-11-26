@@ -24,7 +24,6 @@ class CodexClient(LLMClientBase):
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
         backend_name: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -34,10 +33,8 @@ class CodexClient(LLMClientBase):
         """Initialize Codex CLI client.
 
         Args:
-            model_name: Model name (not used by codex CLI, accepted for interface compatibility).
-                        If None, will use the configuration value, then fall back to default.
             backend_name: Backend name to use for configuration lookup (optional).
-                         If provided along with model_name=None, will use config for this backend.
+                         If provided, will use config for this backend.
             api_key: API key for the backend (optional, for custom backends).
             base_url: Base URL for the backend (optional, for custom backends).
             openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
@@ -48,8 +45,8 @@ class CodexClient(LLMClientBase):
         # If backend_name is provided, get config from that backend
         if backend_name:
             config_backend = config.get_backend_config(backend_name)
-            # Use provided model_name, fall back to backend config, then to default
-            self.model_name = model_name or (config_backend and config_backend.model) or "codex"
+            # Use backend config model, fall back to default "codex"
+            self.model_name = (config_backend and config_backend.model) or "codex"
             self.api_key = api_key or (config_backend and config_backend.api_key)
             self.base_url = base_url or (config_backend and config_backend.base_url)
             self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
@@ -58,7 +55,7 @@ class CodexClient(LLMClientBase):
         else:
             # Fall back to default codex config
             config_backend = config.get_backend_config("codex")
-            self.model_name = model_name or (config_backend and config_backend.model) or "codex"
+            self.model_name = (config_backend and config_backend.model) or "codex"
             self.api_key = api_key
             self.base_url = base_url
             self.openai_api_key = openai_api_key

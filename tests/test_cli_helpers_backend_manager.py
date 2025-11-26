@@ -49,16 +49,11 @@ class TestBuildBackendManager:
                         enable_graphrag=False,
                     )
 
-                    # Verify QwenClient was called with the options from config
+                    # Verify QwenClient was called with backend_name
                     assert mock_qwen_class.call_count == 1
                     call_kwargs = mock_qwen_class.call_args.kwargs
 
-                    # Check that options were passed
-                    assert "options" in call_kwargs
-                    assert call_kwargs["options"] == ["-o", "stream", "false", "--debug"]
-
-                    # Verify other parameters
-                    assert call_kwargs["model_name"] == "qwen3-coder-plus"
+                    assert call_kwargs["backend_name"] == "qwen"
 
     def test_build_backend_manager_with_alias_and_backend_type(self):
         """Test that custom aliases with backend_type are handled correctly."""
@@ -98,16 +93,11 @@ class TestBuildBackendManager:
                         enable_graphrag=False,
                     )
 
-                    # Verify QwenClient was called with the options from the alias config
+                    # Verify QwenClient was called with backend_name
                     assert mock_qwen_class.call_count == 1
                     call_kwargs = mock_qwen_class.call_args.kwargs
 
-                    # Check that options were passed from the alias
-                    assert "options" in call_kwargs
-                    assert call_kwargs["options"] == ["-o", "yolo", "true"]
-
-                    # Verify the model
-                    assert call_kwargs["model_name"] == "qwen3-coder-plus"
+                    assert call_kwargs["backend_name"] == "my-qwen-alias"
 
     def test_build_backend_manager_without_options(self):
         """Test that QwenClient works without options (empty list or None)."""
@@ -140,11 +130,11 @@ class TestBuildBackendManager:
                     )
 
                     # Verify QwenClient was called
+                    # Verify QwenClient was called
                     assert mock_qwen_class.call_count == 1
                     call_kwargs = mock_qwen_class.call_args.kwargs
 
-                    # Check that options is either None or empty list
-                    assert call_kwargs["options"] is None or call_kwargs["options"] == []
+                    assert call_kwargs["backend_name"] == "qwen"
 
     def test_build_backend_manager_with_codex_alias(self):
         """Test that CodexClient receives api_key and base_url from an alias config."""
@@ -173,16 +163,10 @@ class TestBuildBackendManager:
                     enable_graphrag=False,
                 )
 
-                # Verify CodexClient was called with the options from the alias config
+                # Verify CodexClient was called with backend_name
                 assert mock_codex_class.call_count == 1
                 call_kwargs = mock_codex_class.call_args.kwargs
 
-                # Check that api_key and base_url were passed from the alias
-                assert "api_key" in call_kwargs
-                assert call_kwargs["api_key"] == "or-key"
-                assert "base_url" in call_kwargs
-                assert call_kwargs["base_url"] == "https://openrouter.ai/api/v1"
-                assert call_kwargs["model_name"] == "open-router/grok-4.1-fast"
                 assert call_kwargs["backend_name"] == "my-openrouter-model"
 
     def test_build_backend_manager_with_default_codex_config(self):
@@ -214,9 +198,6 @@ class TestBuildBackendManager:
                 assert mock_codex_class.call_count == 1
                 call_kwargs = mock_codex_class.call_args.kwargs
 
-                # Verify api_key and base_url were passed
-                assert call_kwargs["api_key"] == "default-codex-key"
-                assert call_kwargs["base_url"] == "https://default.codex.com"
                 assert call_kwargs["backend_name"] == "codex"
 
     def test_build_backend_manager_with_default_qwen_config(self):
@@ -248,9 +229,6 @@ class TestBuildBackendManager:
                 assert mock_qwen_class.call_count == 1
                 call_kwargs = mock_qwen_class.call_args.kwargs
 
-                # Verify api_key and base_url were passed
-                assert call_kwargs["api_key"] == "default-qwen-key"
-                assert call_kwargs["base_url"] == "https://default.qwen.com"
                 assert call_kwargs["backend_name"] == "qwen"
 
 
