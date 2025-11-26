@@ -193,6 +193,45 @@ class TestLLMBackendConfiguration:
             assert qwen_config.extra_args["AZURE_ENDPOINT"] == "https://llm.example.net"
             assert qwen_config.extra_args["QWEN_API_KEY"] == "example-key"
 
+    def test_load_from_file_parses_dotted_keys_recursive(self):
+        """Test that top-level dotted keys (which TOML parses as nested dicts) are correctly identified as backends."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "dotted_keys.toml"
+            # This structure mimics [grok-4.1-fast] which TOML parses as nested dicts
+            data = {
+                "grok-4": {
+                    "1-fast": {
+                        "enabled": True,
+                        "model": "x-ai/grok-4.1-fast:free",
+                        "backend_type": "codex",
+                        "openai_base_url": "https://openrouter.ai/api/v1"
+                    }
+                },
+                "deepseek": {
+                    "coder": {
+                        "v2": {
+                            "enabled": True,
+                            "backend_type": "codex"
+                        }
+                    }
+                }
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            
+            # Verify grok-4.1-fast was found
+            grok_config = config.get_backend_config("grok-4.1-fast")
+            assert grok_config is not None
+            assert grok_config.backend_type == "codex"
+            assert grok_config.model == "x-ai/grok-4.1-fast:free"
+            
+            # Verify deepseek.coder.v2 was found
+            deepseek_config = config.get_backend_config("deepseek.coder.v2")
+            assert deepseek_config is not None
+            assert deepseek_config.backend_type == "codex"
+
     def test_load_from_nonexistent_file_creates_default(self):
         """Test that loading a nonexistent file creates a default configuration."""
         with tempfile.TemporaryDirectory() as tmpdir:
