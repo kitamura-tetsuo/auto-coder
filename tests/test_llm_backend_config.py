@@ -13,6 +13,7 @@ from src.auto_coder.llm_backend_config import (
     LLMBackendConfiguration,
     get_llm_config,
     reset_llm_config,
+    resolve_config_path,
 )
 
 
@@ -771,3 +772,184 @@ class TestConfigErrorHandling:
 
         active = config.get_active_backends()
         assert len(active) == 0
+
+
+class TestResolveConfigPath:
+    """Test cases for resolve_config_path function."""
+
+    def test_explicit_path_takes_priority(self):
+        """Test that explicitly provided path takes highest priority."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            explicit_path = os.path.join(tmpdir, "explicit_config.toml")
+            result = resolve_config_path(explicit_path)
+
+            # Should return the absolute path of the explicit path
+            assert result == os.path.abspath(explicit_path)
+
+    def test_explicit_relative_path_converted_to_absolute(self):
+        """Test that explicit relative paths are converted to absolute paths."""
+        relative_path = "config/llm_config.toml"
+        result = resolve_config_path(relative_path)
+
+        # Should return an absolute path
+        assert os.path.isabs(result)
+        # Should end with the provided relative path
+        assert result.endswith("config/llm_config.toml")
+
+    def test_explicit_path_with_tilde_expansion(self):
+        """Test that explicit paths with ~ are expanded."""
+        explicit_path = "~/custom_config.toml"
+        result = resolve_config_path(explicit_path)
+
+        # Should not contain tilde
+        assert "~" not in result
+        # Should be absolute
+        assert os.path.isabs(result)
+        # Should contain expanded home directory
+        assert result.startswith(os.path.expanduser("~"))
+
+    def test_local_config_priority_over_home(self):
+        """Test that local .auto-coder/llm_config.toml takes priority over home config."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a local config directory and file
+            local_config_dir = os.path.join(tmpdir, ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+            Path(local_config_file).touch()
+
+            # Change to the temp directory
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                result = resolve_config_path()
+
+                # Should return the local config path
+                assert result == os.path.abspath(local_config_file)
+                assert ".auto-coder" in result
+                assert result.endswith("llm_config.toml")
+            finally:
+                os.chdir(original_cwd)
+
+    def test_home_config_fallback_when_no_local(self):
+        """Test that home config is used when no local config exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Change to a directory without local config
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                result = resolve_config_path()
+
+                # Should return the home config path
+                expected_home = os.path.abspath(os.path.expanduser("~/.auto-coder/llm_config.toml"))
+                assert result == expected_home
+            finally:
+                os.chdir(original_cwd)
+
+    def test_all_three_priorities_in_order(self):
+        """Test all three priority levels in a single scenario."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a local config
+            local_config_dir = os.path.join(tmpdir, ".auto-coder")
+            os.makedirs(local_config_dir, exist_ok=True)
+            local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+            Path(local_config_file).touch()
+
+            # Create an explicit path
+            explicit_path = os.path.join(tmpdir, "explicit.toml")
+
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+
+                # Priority 1: Explicit path
+                result1 = resolve_config_path(explicit_path)
+                assert result1 == os.path.abspath(explicit_path)
+
+                # Priority 2: Local config (when no explicit path)
+                result2 = resolve_config_path()
+                assert result2 == os.path.abspath(local_config_file)
+
+                # Priority 3: Remove local config and verify home fallback
+                os.remove(local_config_file)
+                os.rmdir(local_config_dir)
+                result3 = resolve_config_path()
+                expected_home = os.path.abspath(os.path.expanduser("~/.auto-coder/llm_config.toml"))
+                assert result3 == expected_home
+            finally:
+                os.chdir(original_cwd)
+
+    def test_returns_absolute_paths(self):
+        """Test that function always returns absolute paths."""
+        # Test with explicit relative path
+        result1 = resolve_config_path("relative/path.toml")
+        assert os.path.isabs(result1)
+
+        # Test with no arguments
+        result2 = resolve_config_path()
+        assert os.path.isabs(result2)
+
+        # Test with tilde path
+        result3 = resolve_config_path("~/config.toml")
+        assert os.path.isabs(result3)
+
+    def test_handles_none_explicitly(self):
+        """Test that None is handled correctly."""
+        result = resolve_config_path(None)
+        assert os.path.isabs(result)
+        # Should fall back to local or home config
+        assert "llm_config.toml" in result
+
+    def test_local_config_detection_case_sensitivity(self):
+        """Test that local config detection works correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Test without local config
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                result_no_local = resolve_config_path()
+
+                # Should be home config
+                assert "~" not in result_no_local  # Should be expanded
+                expected_home = os.path.abspath(os.path.expanduser("~/.auto-coder/llm_config.toml"))
+                assert result_no_local == expected_home
+
+                # Create local config
+                local_config_dir = os.path.join(tmpdir, ".auto-coder")
+                os.makedirs(local_config_dir, exist_ok=True)
+                local_config_file = os.path.join(local_config_dir, "llm_config.toml")
+                Path(local_config_file).touch()
+
+                result_with_local = resolve_config_path()
+
+                # Should now be local config
+                assert result_with_local == os.path.abspath(local_config_file)
+                assert tmpdir in result_with_local
+            finally:
+                os.chdir(original_cwd)
+
+    def test_empty_string_treated_as_relative_path(self):
+        """Test that empty string is treated as a relative path."""
+        result = resolve_config_path("")
+        # Empty string becomes current directory when converted to absolute
+        assert os.path.isabs(result)
+
+    def test_windows_style_path_handling(self):
+        """Test that function handles Windows-style paths correctly."""
+        # This test works on all platforms but validates path normalization
+        if os.name == "nt":  # Windows
+            result = resolve_config_path("C:\\Users\\test\\config.toml")
+            assert os.path.isabs(result)
+            assert result.startswith("C:")
+        else:  # Unix-like
+            # Just verify absolute path handling works
+            result = resolve_config_path("/tmp/config.toml")
+            assert os.path.isabs(result)
+            assert result == "/tmp/config.toml"
+
+    def test_nested_relative_path_explicit(self):
+        """Test nested relative paths in explicit argument."""
+        nested_path = "a/b/c/config.toml"
+        result = resolve_config_path(nested_path)
+
+        assert os.path.isabs(result)
+        assert result.endswith("a/b/c/config.toml") or result.endswith("a\\b\\c\\config.toml")

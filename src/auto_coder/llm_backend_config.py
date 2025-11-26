@@ -11,6 +11,35 @@ from urllib.parse import urlparse
 import toml
 
 
+def resolve_config_path(config_path: Optional[str] = None) -> str:
+    """Resolve the configuration file path with priority rules.
+
+    Priority (highest to lowest):
+    1. Explicitly provided config_path argument
+    2. .auto-coder/llm_config.toml in current directory
+    3. ~/.auto-coder/llm_config.toml in home directory
+
+    Args:
+        config_path: Optional explicit path to configuration file
+
+    Returns:
+        Absolute path to the configuration file to use
+    """
+    # Priority 1: Explicitly provided config_path
+    if config_path is not None:
+        expanded_path = os.path.expanduser(config_path)
+        return os.path.abspath(expanded_path)
+
+    # Priority 2: Local .auto-coder/llm_config.toml
+    local_config = os.path.join(os.getcwd(), ".auto-coder", "llm_config.toml")
+    if os.path.exists(local_config):
+        return os.path.abspath(local_config)
+
+    # Priority 3: Home directory ~/.auto-coder/llm_config.toml
+    home_config = os.path.expanduser("~/.auto-coder/llm_config.toml")
+    return os.path.abspath(home_config)
+
+
 @dataclass
 class BackendConfig:
     """Configuration for a single backend."""
