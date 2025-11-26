@@ -25,6 +25,7 @@ __all__ = [
     # Function names
     "branch_context",
     "branch_exists",
+    "detect_branch_name_conflict",
     "extract_number_from_branch",
     "extract_attempt_from_branch",
     "get_all_branches",
@@ -460,6 +461,41 @@ def branch_exists(branch_name: str, cwd: Optional[str] = None) -> bool:
     return result.success and bool(result.stdout.strip())
 
 
+def detect_branch_name_conflict(branch_name: str, cwd: Optional[str] = None) -> Optional[str]:
+    """
+    Detect if the branch name conflicts with existing branches.
+
+    This function checks for Git ref namespace collisions where creating a
+    branch would fail due to naming conflicts. For example:
+    - If 'issue-699' branch exists, 'issue-699/attempt-1' cannot be created
+    - If 'issue-699/*' branches exist, 'issue-699' branch cannot be created
+
+    Args:
+        branch_name: Name of the branch to check for conflicts
+        cwd: Optional working directory for the git command
+
+    Returns:
+        Name of the conflicting branch, or None if no conflict detected
+    """
+    # Check if parent path exists as a branch
+    # e.g., for "issue-699/attempt-1", check if "issue-699" exists
+    if "/" in branch_name:
+        parent_branch = branch_name.rsplit("/", 1)[0]
+        if branch_exists(parent_branch, cwd):
+            return parent_branch
+
+    # Check if any child branches would conflict
+    # e.g., for "issue-699", check if "issue-699/*" exists
+    # For branch names with slashes (e.g., "feature/issue-123"), this checks
+    # if any child branches would conflict at the same level
+    pattern = f"{branch_name}/*"
+    matching_branches = get_branches_by_pattern(pattern, cwd=cwd, remote=False)
+    if matching_branches:
+        return matching_branches[0]
+
+    return None
+
+
 def git_checkout_branch(
     branch_name: str,
     create_new: bool = False,
@@ -559,6 +595,25 @@ def git_checkout_branch(
             except (StopIteration, Exception):
                 # In test mocks or error cases, assume branch doesn't exist remotely
                 branch_exists_remotely = False
+
+        # Check for branch name conflicts before attempting to create
+        if create_new and not branch_exists_locally_after_fetch and not branch_exists_remotely:
+            conflict = detect_branch_name_conflict(branch_name, cwd)
+            if conflict:
+                error_msg = (
+                    f"Cannot create branch '{branch_name}': conflicts with existing branch '{conflict}'.\n\n"
+                    f"Resolution options:\n"
+                    f"1. Delete the conflicting branch: git branch -D {conflict}\n"
+                    f"2. Use a different branch name\n"
+                    f"3. If '{conflict}' contains important work, merge or back it up first"
+                )
+                logger.error(error_msg)
+                return CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr=f"Branch name conflict: '{conflict}' exists",
+                    returncode=1,
+                )
 
         # If branch exists (either locally or remotely), switch to it instead of creating
         if branch_exists_locally_after_fetch or branch_exists_remotely:
