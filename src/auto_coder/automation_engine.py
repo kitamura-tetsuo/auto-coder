@@ -157,7 +157,14 @@ class AutomationEngine:
                 continue
 
             # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-            with LabelManager(self.github, repo_name, pr_number, item_type="pr", skip_label_add=True) as should_process:
+            with LabelManager(
+                self.github,
+                repo_name,
+                pr_number,
+                item_type="pr",
+                skip_label_add=True,
+                check_labels=self.config.CHECK_LABELS,
+            ) as should_process:
                 if not should_process:
                     continue
 
@@ -247,6 +254,7 @@ class AutomationEngine:
                     number,
                     item_type="issue",
                     skip_label_add=True,
+                    check_labels=self.config.CHECK_LABELS,
                 ) as should_process:
                     if not should_process:
                         continue
