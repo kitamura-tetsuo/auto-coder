@@ -382,38 +382,44 @@ def _apply_issue_actions_directly(
             logger.info(f"Determining work branch for issue: {work_branch}")
 
             # Check for parent issue
-            parent_issue_number = github_client.get_parent_issue(repo_name, issue_number)
+            parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
 
             base_branch = config.MAIN_BRANCH
-            if parent_issue_number:
-                # If parent issue exists, use parent issue branch as base
-                # Check if parent issue has attempts and use the appropriate parent branch
-                parent_attempt = get_current_attempt(repo_name, parent_issue_number)
-                if parent_attempt > 0:
-                    parent_branch = f"issue-{parent_issue_number}_attempt-{parent_attempt}"
+            if parent_issue_details:
+                parent_issue_number = parent_issue_details["number"]
+                parent_state = parent_issue_details.get("state", "OPEN").upper()
+
+                if parent_state == "OPEN":
+                    # If parent issue exists and is OPEN, use parent issue branch as base
+                    # Check if parent issue has attempts and use the appropriate parent branch
+                    parent_attempt = get_current_attempt(repo_name, parent_issue_number)
+                    if parent_attempt > 0:
+                        parent_branch = f"issue-{parent_issue_number}_attempt-{parent_attempt}"
+                    else:
+                        parent_branch = f"issue-{parent_issue_number}"
+                    logger.info(f"Issue #{issue_number} has OPEN parent issue #{parent_issue_number}, using branch {parent_branch} as base")
+
+                    # Check if parent issue branch exists
+                    check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
+
+                    if check_parent_branch.returncode == 0:
+                        # Use parent issue branch if it exists
+                        base_branch = parent_branch
+                        pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
+                        logger.info(f"Parent branch {parent_branch} exists, using it as base")
+                    else:
+                        # Create parent issue branch if it doesn't exist
+                        logger.info(f"Parent branch {parent_branch} does not exist, creating it")
+
+                        # Create parent issue branch from the configured main branch (automatically pushed to remote)
+                        with branch_context(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
+                            actions.append(f"Created and published parent branch: {parent_branch}")
+                            logger.info(f"Successfully created and published parent branch: {parent_branch}")
+
+                        base_branch = parent_branch
+                        pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
                 else:
-                    parent_branch = f"issue-{parent_issue_number}"
-                logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number}, using branch {parent_branch} as base")
-
-                # Check if parent issue branch exists
-                check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
-
-                if check_parent_branch.returncode == 0:
-                    # Use parent issue branch if it exists
-                    base_branch = parent_branch
-                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
-                    logger.info(f"Parent branch {parent_branch} exists, using it as base")
-                else:
-                    # Create parent issue branch if it doesn't exist
-                    logger.info(f"Parent branch {parent_branch} does not exist, creating it")
-
-                    # Create parent issue branch from the configured main branch (automatically pushed to remote)
-                    with branch_context(parent_branch, create_new=True, base_branch=config.MAIN_BRANCH):
-                        actions.append(f"Created and published parent branch: {parent_branch}")
-                        logger.info(f"Successfully created and published parent branch: {parent_branch}")
-
-                    base_branch = parent_branch
-                    pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
+                    logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number} but it is {parent_state}. Ignoring parent branch and using {config.MAIN_BRANCH} as base.")
 
             # Check if work branch already exists
             check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])

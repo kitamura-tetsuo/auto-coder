@@ -52,7 +52,13 @@ def test_parent_issue_branch_creation_uses_main_base():
             with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
-                github_client.get_parent_issue.return_value = parent_issue_number
+                # Mock get_parent_issue_details to return OPEN parent
+                github_client.get_parent_issue_details.return_value = {
+                    "number": parent_issue_number,
+                    "title": "Parent Issue",
+                    "state": "OPEN",
+                    "url": "http://url"
+                }
 
                 # Avoid deeper execution
                 class DummyLLM:
@@ -109,7 +115,7 @@ def test_existing_work_branch_not_recreated():
             with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
-                github_client.get_parent_issue.return_value = None  # No parent issue
+                github_client.get_parent_issue_details.return_value = None  # No parent issue
 
                 # Avoid deeper execution
                 class DummyLLM:
@@ -164,7 +170,7 @@ def test_missing_work_branch_created_with_correct_base():
             with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
                 # Minimal GitHub client mock
                 github_client = MagicMock()
-                github_client.get_parent_issue.return_value = None  # No parent issue
+                github_client.get_parent_issue_details.return_value = None  # No parent issue
 
                 # Avoid deeper execution
                 class DummyLLM:
