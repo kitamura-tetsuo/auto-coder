@@ -326,6 +326,7 @@ class LabelManager:
         max_retries: int = 3,
         retry_delay: float = 1.0,
         skip_label_add: bool = False,
+        check_labels: bool = True,
     ):
         """Initialize LabelManager context manager.
 
@@ -339,6 +340,7 @@ class LabelManager:
             max_retries: Maximum number of retries for label operations
             retry_delay: Delay in seconds between retries
             skip_label_add: When True, only check for existing labels without adding.
+            check_labels: When False, skip the existing label check to bypass label verification.
         Returns True if label does not exist (should process), False if label exists (should not process).
         """
         self.github_client = github_client
@@ -350,6 +352,7 @@ class LabelManager:
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.skip_label_add = skip_label_add
+        self.check_labels = check_labels
         self._lock = threading.Lock()
         self._label_added = False
         self._reentered = False
@@ -391,15 +394,19 @@ class LabelManager:
                 return should_process
 
             # Normal mode: add label with retry logic
-            # First, pre-check if the label already exists to avoid redundant edits
-            try:
-                should_process = self._check_label_exists()
-                if not should_process:
-                    logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label already exists")
-                    return False
-            except Exception:
-                # _check_label_exists() is defensive and should not raise, but guard anyway
-                pass
+            # When check_labels=False (WIP mode), skip pre-check and proceed
+            if self.check_labels:
+                # First, pre-check if the label already exists to avoid redundant edits
+                try:
+                    should_process = self._check_label_exists()
+                    if not should_process:
+                        logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label already exists")
+                        return False
+                except Exception:
+                    # _check_label_exists() is defensive and should not raise, but guard anyway
+                    pass
+            else:
+                logger.debug(f"check_labels=False - skipping existing label check for {self.item_type} #{self.item_number}")
 
             # Try to add the label with retry logic
             for attempt in range(self.max_retries):
@@ -490,8 +497,9 @@ class LabelManager:
             False: skip processing (label already exists)
         """
         try:
-            # Prefer dedicated has_label() only when using a real GitHubClient instance
-            if isinstance(self.github_client, GitHubClient):
+            # Prefer dedicated has_label() when using a real GitHubClient instance or a mock with has_label
+            # Check if client is a GitHubClient instance OR has a callable has_label method
+            if isinstance(self.github_client, GitHubClient) or (hasattr(self.github_client, "has_label") and callable(getattr(self.github_client, "has_label", None))):
                 exists = self.github_client.has_label(
                     self.repo_name,
                     int(self.item_number),

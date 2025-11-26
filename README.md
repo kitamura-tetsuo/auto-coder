@@ -363,6 +363,43 @@ git push origin --delete issue-699/attempt-1
 git push origin issue-699_attempt-1
 ```
 
+## Work-in-Progress (WIP) Branch Resumption
+
+When you run `auto-coder process` from a non-main branch, the system automatically detects work in progress and resumes processing:
+
+### Automatic WIP Detection
+
+1. Detects current branch is not `main`
+2. Searches for open PR with matching head branch
+3. If PR found, resumes work on that PR
+4. If no PR found, extracts issue number from branch name (e.g., `fix/123-description` → issue #123)
+
+### Label Handling in WIP Mode
+
+**Important**: When resuming WIP branches, `auto-coder` **ignores** the `\@auto-coder` label state:
+- Processing continues even if `\@auto-coder` label already exists on the PR/issue
+- This allows you to retry/continue work without manually removing labels
+- The label will be re-added if not present, or left as-is if already present
+
+**Regular Mode** (not on WIP branch):
+- Checks for `\@auto-coder` label before processing
+- Skips processing if label already exists (prevents concurrent work)
+- Use `--check-labels=false` to override this behavior
+
+### Example Usage
+
+```bash
+# On branch 'fix/toml-parsing' with PR #704
+auto-coder process
+# → Automatically resumes PR #704, ignoring existing \@auto-coder label
+
+# Explicit target (bypasses label checks)
+auto-coder process --only 704
+
+# Force label checking even on WIP branch (not recommended)
+auto-coder process --check-labels
+```
+
 ## Configuration
 
 ### Configuration File Locations

@@ -447,7 +447,11 @@ def create_feature_issues(
 
     check_graphrag_mcp_for_backends(selected_backends, client=manager)
 
-    automation_engine = AutomationEngine(github_client)  # type: ignore[arg-type]
+    # Configure engine behavior flags
+    engine_config = AutomationConfig()
+    engine_config.DISABLE_LABELS = bool(disable_labels)
+
+    automation_engine = AutomationEngine(github_client, config=engine_config)  # type: ignore[arg-type]
 
     # Analyze and create feature issues
     automation_engine.create_feature_issues(repo_name)
