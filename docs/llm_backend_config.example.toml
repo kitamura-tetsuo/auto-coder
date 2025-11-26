@@ -19,6 +19,14 @@ order = ["qwen-openrouter", "qwen", "gemini"]
 
 [backends]
 
+# Backend Configuration
+# =====================
+# Note: enabled = true is the default behavior for all backends.
+# Only specify "enabled = false" to disable a backend.
+# Only the following backends are disabled by default (optional services):
+# - qwen-azure: Azure OpenAI (optional)
+# - qwen-custom: Custom OpenAI-compatible endpoint (optional)
+
 # Qwen Configuration - Two Methods
 # =================================
 
@@ -26,7 +34,7 @@ order = ["qwen-openrouter", "qwen", "gemini"]
 # ----------------------------------------------
 # Use backend_type = "qwen" for native Qwen CLI authentication
 [qwen]
-enabled = true
+# enabled = true is the default
 model = "qwen3-coder-plus"
 
 # No API keys needed - uses OAuth with Qwen CLI
@@ -45,7 +53,7 @@ options = []
 # -----------------------------------------------------
 # Use backend_type = "codex" for OpenAI-compatible providers
 [qwen-openrouter]
-enabled = true
+# enabled = true is the default
 model = "qwen/qwen3-coder:free"
 
 # OpenAI-compatible API settings (required for OpenRouter, Azure, etc.)
@@ -61,7 +69,7 @@ options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Cod
 # Gemini Configuration
 # --------------------
 [gemini]
-enabled = true
+# enabled = true is the default
 model = "gemini-2.5-pro"
 
 # Gemini API settings
@@ -80,7 +88,7 @@ backend_type = "gemini"
 # -------------------
 # Codex client can be used for generic OpenAI-compatible APIs like OpenRouter.
 [codex]
-enabled = true
+# enabled = true is the default
 model = "codex" # Placeholder, model is usually set by the provider
 # Generic API key and base URL for providers that don't use OpenAI-specific env vars
 api_key = "your-api-key-here"
@@ -98,7 +106,7 @@ backend_type = "codex"
 
 # Example 1: Qwen via OpenRouter with faster model
 [qwen-fast]
-enabled = true
+# enabled = true is the default
 model = "qwen/qwen-2.5-plus"
 openai_api_key = "sk-or-v1-your-openrouter-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -112,7 +120,7 @@ options = ["-o", "timeout", "30", "-o", "stream", "true"]
 
 # Example 2: Qwen via OpenRouter with premium model
 [qwen-premium]
-enabled = true
+# enabled = true is the default
 model = "qwen/qwen-2.5-coder-72b-instruct"
 openai_api_key = "sk-or-v1-your-openrouter-key-here"
 openai_base_url = "https://openrouter.ai/api/v1"
@@ -125,8 +133,9 @@ options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Cod
 
 
 # Example 3: Azure OpenAI with Qwen model
+# NOTE: Disabled by default (optional service)
 [qwen-azure]
-enabled = false  # Set to true if using Azure
+enabled = false
 model = "qwen-35-coder"
 openai_api_key = "your-azure-openai-key"
 openai_base_url = "https://your-resource.openai.azure.com"
@@ -139,42 +148,14 @@ options = ["-o", "api_version", "2024-02-01"]
 
 
 # Example 4: Custom OpenAI-compatible endpoint
+# NOTE: Disabled by default (optional service)
 [qwen-custom]
-enabled = false  # Set to true if using custom endpoint
+enabled = false
 model = "qwen-2.5-coder-32k-instruct"
 openai_api_key = "your-custom-endpoint-key"
 openai_base_url = "https://api.example.com/v1"
 
 # Use 'codex' backend type for OpenAI-compatible providers
-backend_type = "codex"
-
-# Additional Backend Examples (Non-Qwen)
-# ======================================
-
-[gemini]
-enabled = true
-model = "gemini-2.5-pro"
-
-# Gemini API settings
-api_key = "your-gemini-api-key-here"
-base_url = "https://generativelanguage.googleapis.com"
-
-# Optional retry configuration for usage limits
-usage_limit_retry_count = 3
-usage_limit_retry_wait_seconds = 30
-# Rotate to the next backend after every successful call to stay under strict execution limits
-always_switch_after_execution = true
-
-# Gemini doesn't support custom options in the same way as qwen/codex
-# Options field is mainly used for qwen/codex backends
-options = []
-backend_type = "gemini"
-
-[codex]
-enabled = true
-model = "codex"
-# Codex typically doesn't need API keys as it's handled by providers
-options = []
 backend_type = "codex"
 
 # Notes and Best Practices
