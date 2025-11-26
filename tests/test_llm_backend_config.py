@@ -39,6 +39,7 @@ class TestBackendConfig:
         assert config.usage_limit_retry_wait_seconds == 0
         assert config.options == []
         assert config.backend_type is None
+        assert config.model_provider is None
         assert config.always_switch_after_execution is False
 
     def test_backend_config_with_custom_values(self):
@@ -60,6 +61,7 @@ class TestBackendConfig:
             usage_limit_retry_wait_seconds=30,
             options=["option1", "option2"],
             backend_type="custom_type",
+            model_provider="openrouter",
             always_switch_after_execution=True,
         )
         assert config.name == "gemini"
@@ -78,6 +80,7 @@ class TestBackendConfig:
         assert config.usage_limit_retry_wait_seconds == 30
         assert config.options == ["option1", "option2"]
         assert config.backend_type == "custom_type"
+        assert config.model_provider == "openrouter"
         assert config.always_switch_after_execution is True
 
     def test_backend_config_extra_args_default(self):
@@ -1315,3 +1318,115 @@ class TestConfigurationPriorityLogic:
 
             assert default_config.default_backend == "codex"
             assert os.path.exists(nonexistent_file)
+
+    def test_toml_save_and_load_model_provider(self):
+        """Test that model_provider field is properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_model_provider.toml"
+
+            # Create configuration with model_provider settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").model_provider = "openrouter"
+            config.get_backend_config("qwen").model_provider = "anthropic"
+            config.get_backend_config("codex").model_provider = None
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify model_provider was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.model_provider == "openrouter"
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.model_provider == "anthropic"
+
+            codex_config = loaded_config.get_backend_config("codex")
+            assert codex_config.model_provider is None
+
+    def test_load_from_file_with_model_provider(self):
+        """Test loading a TOML file with model_provider field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "model_provider_config.toml"
+            data = {
+                "backend": {"default": "grok-4.1-fast", "order": ["grok-4.1-fast"]},
+                "backends": {
+                    "grok-4.1-fast": {
+                        "enabled": True,
+                        "model": "x-ai/grok-4.1-fast:free",
+                        "backend_type": "codex",
+                        "model_provider": "openrouter",
+                    }
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+            grok_config = config.get_backend_config("grok-4.1-fast")
+
+            assert grok_config is not None
+            assert grok_config.model == "x-ai/grok-4.1-fast:free"
+            assert grok_config.backend_type == "codex"
+            assert grok_config.model_provider == "openrouter"
+
+    def test_load_from_file_parses_dotted_keys_with_model_provider(self):
+        """Test that dotted keys with model_provider are correctly identified as backends."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "dotted_model_provider.toml"
+            # This structure mimics [grok-4.1-fast] which TOML parses as nested dicts
+            data = {"grok-4": {"1-fast": {"enabled": True, "model": "x-ai/grok-4.1-fast:free", "backend_type": "codex", "model_provider": "openrouter"}}}
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify grok-4.1-fast was found and has model_provider
+            grok_config = config.get_backend_config("grok-4.1-fast")
+            assert grok_config is not None
+            assert grok_config.backend_type == "codex"
+            assert grok_config.model == "x-ai/grok-4.1-fast:free"
+            assert grok_config.model_provider == "openrouter"
+
+    def test_backward_compatibility_old_toml_without_model_provider(self):
+        """Test loading old TOML files that don't have model_provider field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_without_model_provider.toml"
+
+            # Create a TOML file with the old structure (without model_provider field)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "backend_type": "codex",
+                        "temperature": 0.7,
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify model_provider has default None value when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.model_provider is None
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.model_provider is None
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30

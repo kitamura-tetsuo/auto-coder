@@ -54,6 +54,7 @@ class CodexClient(LLMClientBase):
             self.base_url = base_url or (config_backend and config_backend.base_url)
             self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
             self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url)
+            self.model_provider = config_backend and config_backend.model_provider
         else:
             # Fall back to default codex config
             config_backend = config.get_backend_config("codex")
@@ -62,6 +63,7 @@ class CodexClient(LLMClientBase):
             self.base_url = base_url
             self.openai_api_key = openai_api_key
             self.openai_base_url = openai_base_url
+            self.model_provider = None
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name
@@ -110,6 +112,10 @@ class CodexClient(LLMClientBase):
             # Add --model flag if model_name is specified
             if self.model_name:
                 cmd.extend(["--model", self.model_name])
+
+            # Add model_provider as -c flag if specified
+            if self.model_provider:
+                cmd.extend(["-c", f"model_provider={self.model_provider}"])
 
             cmd.append(escaped_prompt)
 

@@ -452,3 +452,133 @@ class TestCodexClient:
         assert "--model" in cmd
         model_index = cmd.index("--model")
         assert cmd[model_index + 1] == "MiniMax-M2"
+
+    @patch("subprocess.run")
+    def test_init_with_model_provider(self, mock_run):
+        """CodexClient should store model_provider from backend config."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+
+        # Mock the config with model_provider
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "test-model"
+        mock_backend_config.model_provider = "openrouter"
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="test-backend")
+            assert client.model_provider == "openrouter"
+
+    @patch("subprocess.run")
+    def test_init_without_model_provider(self, mock_run):
+        """CodexClient should have None model_provider when not configured."""
+        mock_run.return_value.returncode = 0
+
+        # Create client without backend_name
+        client = CodexClient()
+        assert client.model_provider is None
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_model_provider_passed_to_cli(self, mock_run_command, mock_run):
+        """CodexClient should pass model_provider as -c flag when specified."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock the config with model_provider
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "test-model"
+        mock_backend_config.model_provider = "anthropic"
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="test-backend")
+
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify -c flag with model_provider is in the command
+            assert "-c" in cmd
+            c_index = cmd.index("-c")
+            assert cmd[c_index + 1] == "model_provider=anthropic"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_model_provider_not_passed_when_none(self, mock_run_command, mock_run):
+        """CodexClient should not pass -c flag when model_provider is None."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        client = CodexClient()
+        client.model_provider = None
+
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
+
+        # Verify CommandExecutor.run_command was called
+        assert mock_run_command.called
+        cmd = mock_run_command.call_args[0][0]
+
+        # Verify -c flag is NOT in the command
+        # Note: There might be other -c flags, but model_provider should not be there
+        cmd_str = " ".join(cmd)
+        assert "model_provider=" not in cmd_str
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_model_and_model_provider_both_passed(self, mock_run_command, mock_run):
+        """CodexClient should pass both --model and -c model_provider when both are specified."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock the config with both model and model_provider
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "grok-4.1-fast"
+        mock_backend_config.model_provider = "openrouter"
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="test-backend")
+
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify both --model and -c flags are in the command
+            assert "--model" in cmd
+            model_index = cmd.index("--model")
+            assert cmd[model_index + 1] == "grok-4.1-fast"
+
+            assert "-c" in cmd
+            c_index = cmd.index("-c")
+            assert cmd[c_index + 1] == "model_provider=openrouter"
+
+            # Verify the order: --model comes before -c
+            assert model_index < c_index
