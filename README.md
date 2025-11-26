@@ -349,7 +349,9 @@ issue-699_attempt-2
 If you have existing branches with the old slash format (`issue-X/attempt-Y`), they will
 continue to work. However, new attempt branches will use the underscore format.
 
-To migrate an existing branch:
+For detailed migration instructions, see the [Branch Naming Migration Guide](docs/MIGRATION_GUIDE_BRANCH_NAMING.md).
+
+To migrate an existing branch manually:
 ```bash
 # Rename local branch
 git branch -m issue-699/attempt-1 issue-699_attempt-1
