@@ -88,6 +88,6 @@ class _FakeCompleted:
 @patch("subprocess.Popen", new=_FakePopen)
 def test_streaming_detects_usage_limit_and_aborts_early(mock_run):
     mock_run.return_value = _FakeCompleted()
-    client = GeminiClient(model_name="gemini-2.5-pro")
+    client = GeminiClient(backend_name="gemini")
     with pytest.raises(AutoCoderUsageLimitError):
         client._run_llm_cli("hello")

@@ -45,7 +45,7 @@ def test_auggie_usage_counter_persists(monkeypatch, tmp_path):
     RecordingPopen.calls = []
     _patch_subprocess(monkeypatch, RecordingPopen)
 
-    client = AuggieClient(model_name="GPT-5")
+    client = AuggieClient()
     output1 = client._run_auggie_cli("first prompt")
     output2 = client._run_auggie_cli("second prompt")
 

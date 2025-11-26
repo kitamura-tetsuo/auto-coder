@@ -35,52 +35,45 @@ class QwenClient(LLMClientBase):
 
     def __init__(
         self,
-        model_name: Optional[str] = None,
         backend_name: Optional[str] = None,
         use_env_vars: bool = True,
         preserve_existing_env: bool = False,
-        options: Optional[List[str]] = None,
-        api_key: Optional[str] = None,
-        base_url: Optional[str] = None,
-        openai_api_key: Optional[str] = None,
-        openai_base_url: Optional[str] = None,
     ) -> None:
         """Initialize QwenClient.
 
         Args:
-            model_name: Model name to use (will use config default if not provided)
             backend_name: Backend name to use for configuration lookup (optional).
             use_env_vars: If True, pass credentials via environment variables.
                          If False, use command-line options (default: True)
             preserve_existing_env: If True, preserve existing OPENAI_* env vars.
                                   If False, clear them before setting new values (default: False)
-            options: Additional options to pass to the CLI tool (e.g., ["-o", "yolo", "true"])
-            api_key: API key for the backend (optional, for custom backends).
-            base_url: Base URL for the backend (optional, for custom backends).
-            openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
-            openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
         """
         config = get_llm_config()
         if backend_name:
             config_backend = config.get_backend_config(backend_name)
+            # Use backend config, fall back to default "qwen"
+            self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
+            self.options = (config_backend and config_backend.options) or []
+            self.api_key = config_backend and config_backend.api_key
+            self.base_url = config_backend and config_backend.base_url
+            self.openai_api_key = config_backend and config_backend.openai_api_key
+            self.openai_base_url = config_backend and config_backend.openai_base_url
         else:
+            # Fall back to default qwen config
             config_backend = config.get_backend_config("qwen")
+            self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
+            self.options = (config_backend and config_backend.options) or []
+            self.api_key = config_backend and config_backend.api_key
+            self.base_url = config_backend and config_backend.base_url
+            self.openai_api_key = config_backend and config_backend.openai_api_key
+            self.openai_base_url = config_backend and config_backend.openai_base_url
 
-        # Use provided values, fall back to config, then to default
-        self.model_name = model_name or (config_backend and config_backend.model) or "qwen3-coder-plus"
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
         self.conflict_model = self.model_name
         self.timeout: Optional[int] = None
         self.use_env_vars = use_env_vars
         self.preserve_existing_env = preserve_existing_env
-        # Store options for CLI commands
-        self.options = options or (config_backend and config_backend.options) or []
-
-        self.api_key = api_key or (config_backend and config_backend.api_key)
-        self.base_url = base_url or (config_backend and config_backend.base_url)
-        self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
-        self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url)
 
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()

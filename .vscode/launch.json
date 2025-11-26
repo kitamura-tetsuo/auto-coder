@@ -64,7 +64,7 @@
                 "--no-jules-mode",
                 "--no-check-labels",
                 // "--force-reindex",
-                // "--disable-graphrag",
+                "--disable-graphrag",
             ],
             "python": "${command:python.interpreterPath}",
             "env": {

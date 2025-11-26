@@ -12,7 +12,7 @@ def test_gemini_client_run_llm_cli_delegates(mock_run_command, mock_run, mock_ge
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "gem ok\n", "", 0)
 
-    client = GeminiClient(mock_gemini_api_key, model_name="gemini-2.5-pro")
+    client = GeminiClient(backend_name="gemini")
     out = client._run_llm_cli("hello")
     assert "gem ok" in out
 
@@ -23,7 +23,7 @@ def test_qwen_client_run_llm_cli_delegates(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "qwen ok\n", "", 0)
 
-    client = QwenClient(model_name="qwen3-coder-plus")
+    client = QwenClient(backend_name="qwen")
     out = client._run_llm_cli("hello")
     assert "qwen ok" in out
 
@@ -38,6 +38,6 @@ def test_codex_client_run_llm_cli_delegates(mock_run_command, mock_run):
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "codex ok\n", "", 0)
 
-    client = CodexClient(model_name="codex")
+    client = CodexClient(backend_name="codex")
     out = client._run_llm_cli("hello")
     assert "codex ok" in out
