@@ -686,7 +686,22 @@ def git_checkout_branch(
             returncode=1,
         )
 
-    current_branch = verify_result.stdout.strip()
+    # Extract branch name from output - handle cases where git includes tracking info
+    # Normal output: "new-feature"
+    # With tracking info: "Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'."
+    output = verify_result.stdout.strip()
+    if not output:
+        current_branch = ""
+    elif "branch '" in output.lower():
+        # Extract branch name from tracking message like "Branch 'branch-name' set up to track..."
+        import re
+
+        match = re.search(r"branch\s+'([^']+)'", output, re.IGNORECASE)
+        current_branch = match.group(1) if match else output.split()[0]
+    else:
+        # Normal case: just the branch name
+        current_branch = output.split()[0]
+
     if current_branch != branch_name:
         error_msg = f"Branch mismatch after checkout: expected '{branch_name}', but currently on '{current_branch}'"
         logger.error(error_msg)
