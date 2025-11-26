@@ -175,3 +175,17 @@ class TestExtractAttemptFromBranch:
         """Test that legacy slash format attempt extraction is case-insensitive."""
         assert extract_attempt_from_branch("issue-123/Attempt-1") == 1
         assert extract_attempt_from_branch("issue-456/ATTEMPT-2") == 2
+
+
+class TestBackwardCompatibility:
+    """Test backward compatibility with old slash format."""
+
+    def test_extract_attempt_legacy_format(self):
+        """Legacy slash format should still work."""
+        assert extract_attempt_from_branch("issue-100/attempt-5") == 5
+        assert extract_attempt_from_branch("issue-200/attempt-1") == 1
+
+    def test_extract_attempt_new_format_preferred(self):
+        """New underscore format should be standard."""
+        assert extract_attempt_from_branch("issue-100_attempt-5") == 5
+        assert extract_attempt_from_branch("issue-200_attempt-1") == 1

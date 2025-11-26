@@ -853,3 +853,13 @@ class TestExtractAttemptFromBranch:
 
         # Pattern requires exact format: issue-\d+_attempt-(\d+)
         assert attempt is None
+
+    def test_extract_attempt_legacy_slash_format(self):
+        """Test that legacy slash format is still supported."""
+        branch_name = "issue-123/attempt-1"
+        assert extract_attempt_from_branch(branch_name) == 1
+
+    def test_extract_attempt_new_underscore_format(self):
+        """Test new underscore format."""
+        branch_name = "issue-123_attempt-1"
+        assert extract_attempt_from_branch(branch_name) == 1
