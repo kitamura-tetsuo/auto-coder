@@ -45,11 +45,15 @@ class GeminiClient(LLMClientBase):
             # Use backend config, fall back to default "gemini"
             self.api_key = (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
             self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
         else:
             # Fall back to default gemini config
             config_backend = config.get_backend_config("gemini")
             self.api_key = (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
             self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
 
         self.default_model = self.model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
@@ -136,12 +140,17 @@ class GeminiClient(LLMClientBase):
             full_output = full_output.strip()
             low = full_output.lower()
 
-            usage_markers = (
-                "rate limit",
-                "resource_exhausted",
-                "too many requests",
-                "[api error: you have exhausted your capacity on this model. your quota will reset after ",
-            )
+            # Use configured usage_markers if available, otherwise fall back to defaults
+            if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
+                usage_markers = self.usage_markers
+            else:
+                # Default hardcoded usage markers
+                usage_markers = (
+                    "rate limit",
+                    "resource_exhausted",
+                    "too many requests",
+                    "[api error: you have exhausted your capacity on this model. your quota will reset after ",
+                )
 
             if result.returncode != 0:
                 if any(m in low for m in usage_markers):
