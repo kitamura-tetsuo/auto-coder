@@ -41,9 +41,13 @@ class AuggieClient(LLMClientBase):
         if backend_name:
             config_backend = config.get_backend_config(backend_name)
             self.model_name = (config_backend and config_backend.model) or "GPT-5"
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
         else:
             config_backend = config.get_backend_config("auggie")
             self.model_name = (config_backend and config_backend.model) or "GPT-5"
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name
@@ -181,11 +185,19 @@ class AuggieClient(LLMClientBase):
         logger.info("=" * 60)
         full_output = "\n".join(output_lines).strip()
         low = full_output.lower()
+
+        # Use configured usage_markers if available, otherwise fall back to defaults
+        if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
+            usage_markers = self.usage_markers
+        else:
+            # Default hardcoded usage markers
+            usage_markers = ("rate limit", "quota", "429")
+
         if return_code != 0:
-            if ("rate limit" in low) or ("quota" in low) or ("429" in low):
+            if any(marker in low for marker in usage_markers):
                 raise AutoCoderUsageLimitError(full_output)
             raise RuntimeError(f"auggie CLI failed with return code {return_code}\n{full_output}")
-        if ("rate limit" in low) or ("quota" in low):
+        if any(marker in low for marker in usage_markers):
             raise AutoCoderUsageLimitError(full_output)
         return full_output
 

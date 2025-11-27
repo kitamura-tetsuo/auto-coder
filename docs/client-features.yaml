@@ -53,6 +53,39 @@ The system supports extensive backend configuration options. Key fields include:
   - This translates to: `codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter`
   - Optional field: Backward compatible with existing configurations
 
+- **usage_markers**: Configurable strings to detect rate limits or usage errors in CLI output
+  - Purpose: Enables users to handle different localizations or new error messages without modifying source code
+  - Supported by: ClaudeClient, GeminiClient, CodexClient, AuggieClient, QwenClient
+  - Default behavior: Each client has built-in default markers (e.g., "rate limit", "quota", "429")
+  - Example:
+    ```toml
+    [backends.gemini]
+    model = "gemini-2.5-pro"
+    usage_markers = ["rate limit", "quota exceeded", "custom error message"]
+
+    [backends.claude]
+    model = "sonnet"
+    usage_markers = ["api error: 429", "usage limit exceeded", "5-hour limit reached"]
+
+    [backends.codex]
+    model = "codex"
+    usage_markers = ["rate limit", "usage limit", "upgrade to pro"]
+
+    [backends.auggie]
+    model = "GPT-5"
+    usage_markers = ["rate limit", "quota", "429"]
+
+    [backends.qwen]
+    model = "qwen3-coder-plus"
+    usage_markers = ["rate limit", "quota", "too many requests", "custom marker"]
+    ```
+  - Behavior:
+    - When configured, the specified markers are used to detect usage limit errors
+    - When not configured, clients fall back to their built-in default markers
+    - Markers are matched case-insensitively against the CLI output
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Backward compatible with existing configurations
+
 #### Backend Management
 
     nested_managers:

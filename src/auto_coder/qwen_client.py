@@ -58,6 +58,8 @@ class QwenClient(LLMClientBase):
             self.base_url = config_backend and config_backend.base_url
             self.openai_api_key = config_backend and config_backend.openai_api_key
             self.openai_base_url = config_backend and config_backend.openai_base_url
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
         else:
             # Fall back to default qwen config
             config_backend = config.get_backend_config("qwen")
@@ -67,6 +69,8 @@ class QwenClient(LLMClientBase):
             self.base_url = config_backend and config_backend.base_url
             self.openai_api_key = config_backend and config_backend.openai_api_key
             self.openai_base_url = config_backend and config_backend.openai_base_url
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
 
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
@@ -268,24 +272,26 @@ class QwenClient(LLMClientBase):
                 print(f"Error: {error_message[:200]}..." if len(error_message) > 200 else f"Error: {error_message}")
             print("=" * 60 + "\n")
 
-    @staticmethod
-    def _is_usage_limit(message: str, returncode: int) -> bool:
+    def _is_usage_limit(self, message: str, returncode: int) -> bool:
         """Check if the error message indicates a usage limit."""
         low = message.lower()
-        # rate limit with Qwen OAuth
-        if "rate limit" in low or "quota" in low:
-            return True
-        if returncode != 0 and ("429" in low or "too many requests" in low):
-            return True
-        # rate limit with 'Alibaba Cloud ModelStudio compatible endpoint'
-        if "error: 400 model access denied." in low:
-            return True
-        if "openai api streaming error: 429 free allocated quota exceeded." in low:
-            return True
-        # rate limit with 'OpenRouter free tier compatible endpoint'
-        if "openai api streaming error: 429 provider returned error" in low:
-            return True
-        return False
+
+        # Use configured usage_markers if available, otherwise fall back to defaults
+        if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
+            usage_markers = self.usage_markers
+        else:
+            # Default hardcoded usage markers
+            usage_markers = (
+                "rate limit",
+                "quota",
+                "429",
+                "too many requests",
+                "error: 400 model access denied.",
+                "openai api streaming error: 429 free allocated quota exceeded.",
+                "openai api streaming error: 429 provider returned error",
+            )
+
+        return any(marker in low for marker in usage_markers)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:
