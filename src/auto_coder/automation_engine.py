@@ -180,13 +180,19 @@ class AutomationEngine:
 
             # Handle dependency-bot PRs based on configuration
             is_dependency_bot = _is_dependabot_pr(pr_data)
-            if self.config.IGNORE_DEPENDABOT_PRS and is_dependency_bot:
-                # When IGNORE_DEPENDABOT_PRS is enabled, only process dependency-bot
-                # PRs that are fully green and mergeable (auto-merge candidates).
-                # Non-ready dependency-bot PRs are skipped to avoid expensive fix loops.
-                if not (checks.success and bool(mergeable)):
-                    logger.debug(f"Skipping dependency-bot PR #{pr_number} - IGNORE_DEPENDABOT_PRS enabled and PR " "is not green/mergeable")
+            if is_dependency_bot:
+                if self.config.IGNORE_DEPENDABOT_PRS:
+                    # When IGNORE_DEPENDABOT_PRS is True: Skip ALL Dependabot PRs
+                    logger.debug(f"Skipping dependency-bot PR #{pr_number} - IGNORE_DEPENDABOT_PRS is enabled")
                     continue
+                elif self.config.AUTO_MERGE_DEPENDABOT_PRS:
+                    # When AUTO_MERGE_DEPENDABOT_PRS is True:
+                    # - If passing & mergeable: Process (allow auto-merge)
+                    # - Else: Skip (ignore)
+                    if not (checks.success and bool(mergeable)):
+                        logger.debug(f"Skipping dependency-bot PR #{pr_number} - AUTO_MERGE_DEPENDABOT_PRS is enabled but PR is not passing/mergeable")
+                        continue
+                # If both flags are False: Process all Dependabot PRs (try to fix failing)
 
             # Count only PRs that we will actually consider as candidates
             candidates_count += 1
