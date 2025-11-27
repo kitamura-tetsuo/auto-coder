@@ -344,3 +344,333 @@ class TestGitCheckoutBranchWithConflictDetection:
                 result = git_checkout_branch("issue-123", create_new=True, base_branch="main")
 
                 assert result.success is True
+
+
+class TestBranchExistence:
+    """Test branch existence checking."""
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_switch_to_existing_local_branch(self):
+        """Test switching to a branch that exists locally."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status
+                CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'feature'\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git checkout
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),  # git rev-parse
+            ]
+
+            result = git_checkout_branch("feature", create_new=False)
+
+            assert result.success is True
+            assert mock_cmd.run_command.call_count == 3
+            assert mock_cmd.run_command.call_args_list[1][0][0] == [
+                "git",
+                "checkout",
+                "feature",
+            ]
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_switch_to_existing_remote_branch(self):
+        """Test switching to a branch that exists only on remote."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # For create_new=False, it doesn't fetch, so remote branch checkout needs create_new=True
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list (doesn't exist locally)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git fetch
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list (still doesn't exist locally)
+                CommandResult(success=True, stdout="abc123 refs/heads/feature\n", stderr="", returncode=0),  # git ls-remote (exists remotely)
+                CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'feature'\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git checkout -b origin/feature
+                CommandResult(success=True, stdout="feature", stderr="", returncode=0),  # git rev-parse (verify current branch)
+            ]
+
+            # Use create_new=True to enable remote branch tracking logic
+            result = git_checkout_branch("feature", create_new=True, base_branch="main")
+
+            assert result.success is True
+            # Should have created tracking branch from origin/feature
+            calls = mock_cmd.run_command.call_args_list
+            assert any("checkout" in str(call) and ("-b" in str(call) or "-B" in str(call)) for call in calls)
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_switch_to_nonexistent_branch_with_create_new(self):
+        """Test switching to a non-existent branch with create_new=True."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list (doesn't exist)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git fetch
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list (after fetch)
+                CommandResult(success=False, stdout="", stderr="fatal: couldn't find remote ref", returncode=1),  # git ls-remote
+                CommandResult(success=False, stdout="", stderr="fatal: ref not found", returncode=1),  # git rev-parse refs/remotes/origin/main
+                CommandResult(success=True, stdout="abc123\n", stderr="", returncode=0),  # git rev-parse main
+                CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'issue-456'\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git checkout -B
+                CommandResult(success=True, stdout="issue-456\n", stderr="", returncode=0),  # git rev-parse
+                CommandResult(
+                    success=True,
+                    stdout="Branch 'issue-456' set up to track remote branch",
+                    stderr="",
+                    returncode=0,
+                ),  # git push -u
+            ]
+
+            with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+                mock_exists.return_value = False
+                mock_pattern.return_value = []
+
+                result = git_checkout_branch("issue-456", create_new=True, base_branch="main")
+
+                assert result.success is True
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_switch_to_existing_branch_with_create_new(self):
+        """Test switching to an existing branch with create_new=True should not fail."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),  # git branch --list (exists)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git fetch
+                CommandResult(success=True, stdout="feature\n", stderr="", returncode=0),  # git branch --list (after fetch)
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git ls-remote
+                CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'feature'\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git checkout
+                CommandResult(success=True, stdout="feature", stderr="", returncode=0),  # git rev-parse
+            ]
+
+            result = git_checkout_branch("feature", create_new=True, base_branch="main")
+
+            assert result.success is True
+            # When branch exists locally, it should just checkout without -B flag
+            calls = mock_cmd.run_command.call_args_list
+            # Find the checkout command and verify it's a simple checkout (no -B or -b flag)
+            # The git checkout command should not have -B or -b in it
+            checkout_found = False
+            for call in calls:
+                cmd_args = call[0][0]
+                if cmd_args[0] == "git" and cmd_args[1] == "checkout":
+                    checkout_found = True
+                    assert "-b" not in cmd_args
+                    assert "-B" not in cmd_args
+                    assert cmd_args == ["git", "checkout", "feature"]
+                    break
+            assert checkout_found, "Git checkout command should have been called"
+
+
+class TestBranchConflicts:
+    """Test branch name conflict detection."""
+
+    def test_conflict_parent_exists(self):
+        """Test creating child branch when parent exists."""
+        with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+            # Setup: create 'issue-123' branch
+            mock_exists.return_value = True
+            mock_pattern.return_value = []
+
+            # Test: try to create 'issue-123/attempt-1'
+            result = detect_branch_name_conflict("issue-123/attempt-1")
+
+            # Verify: fails with conflict detection
+            assert result == "issue-123"
+            mock_exists.assert_called_once_with("issue-123", None)
+
+    def test_conflict_child_exists(self):
+        """Test creating parent branch when child exists."""
+        with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+            # Setup: create 'issue-123/attempt-1' branch
+            mock_exists.return_value = False
+            mock_pattern.return_value = ["issue-123/attempt-1"]
+
+            # Test: try to create 'issue-123'
+            result = detect_branch_name_conflict("issue-123")
+
+            # Verify: fails with conflict detection
+            assert result == "issue-123/attempt-1"
+            mock_pattern.assert_called_once_with("issue-123/*", cwd=None, remote=False)
+
+    def test_detect_branch_name_conflict(self):
+        """Test conflict detection function."""
+        with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+            # Setup: create 'issue-123'
+            mock_exists.return_value = True
+            mock_pattern.return_value = []
+
+            # Test: detect_branch_name_conflict('issue-123/attempt-1')
+            result = detect_branch_name_conflict("issue-123/attempt-1")
+
+            # Verify: returns 'issue-123'
+            assert result == "issue-123"
+
+    def test_detect_conflict_with_multiple_child_branches(self):
+        """Test conflict detection when multiple child branches exist."""
+        with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+            # Setup: multiple child branches exist
+            mock_exists.return_value = False
+            mock_pattern.return_value = ["issue-123/attempt-1", "issue-123/attempt-2", "issue-123/attempt-3"]
+
+            # Test: detect conflict for 'issue-123'
+            result = detect_branch_name_conflict("issue-123")
+
+            # Verify: returns first conflicting child branch
+            assert result == "issue-123/attempt-1"
+            mock_pattern.assert_called_once_with("issue-123/*", cwd=None, remote=False)
+
+    def test_detect_conflict_with_nested_branch_hierarchy(self):
+        """Test conflict detection with multiple levels of branch hierarchy."""
+        with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+            # Setup: nested branch hierarchy
+            mock_exists.return_value = False
+            mock_pattern.return_value = ["feature/issue-123/attempt-1"]
+
+            # Test: detect conflict for 'feature/issue-123'
+            result = detect_branch_name_conflict("feature/issue-123")
+
+            # Verify: returns first conflicting branch at that level
+            assert result == "feature/issue-123/attempt-1"
+            mock_pattern.assert_called_once_with("feature/issue-123/*", cwd=None, remote=False)
+
+
+class TestBranchEdgeCases:
+    """Test branch edge cases."""
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_branch_with_special_characters(self):
+        """Test branch with special characters."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git fetch
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list
+                CommandResult(success=False, stdout="", stderr="fatal: couldn't find remote ref", returncode=1),  # git ls-remote
+                CommandResult(success=False, stdout="", stderr="fatal: ref not found", returncode=1),  # git rev-parse refs/remotes/origin/main
+                CommandResult(success=True, stdout="abc123\n", stderr="", returncode=0),  # git rev-parse main
+                CommandResult(
+                    success=True,
+                    stdout="Switched to branch 'feature/issue-123_test'\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git checkout -B
+                CommandResult(success=True, stdout="feature/issue-123_test\n", stderr="", returncode=0),  # git rev-parse
+                CommandResult(success=True, stdout="Branch 'feature/issue-123_test' set up to track remote branch", stderr="", returncode=0),  # git push
+            ]
+
+            with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+                mock_exists.return_value = False
+                mock_pattern.return_value = []
+
+                result = git_checkout_branch("feature/issue-123_test", create_new=True, base_branch="main")
+
+                assert result.success is True
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_very_long_branch_name(self):
+        """Test branch with very long name."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            # Long branch name
+            long_branch_name = "feature/very-long-branch-name-with-many-words-and-numbers-123456789"
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git fetch
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list
+                CommandResult(success=False, stdout="", stderr="fatal: couldn't find remote ref", returncode=1),  # git ls-remote
+                CommandResult(success=False, stdout="", stderr="fatal: ref not found", returncode=1),  # git rev-parse refs/remotes/origin/main
+                CommandResult(success=True, stdout="abc123\n", stderr="", returncode=0),  # git rev-parse main
+                CommandResult(
+                    success=True,
+                    stdout=f"Switched to branch '{long_branch_name}'\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git checkout -B
+                CommandResult(success=True, stdout=f"{long_branch_name}\n", stderr="", returncode=0),  # git rev-parse
+                CommandResult(success=True, stdout=f"Branch '{long_branch_name}' set up to track remote branch", stderr="", returncode=0),  # git push
+            ]
+
+            with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+                mock_exists.return_value = False
+                mock_pattern.return_value = []
+
+                result = git_checkout_branch(long_branch_name, create_new=True, base_branch="main")
+
+                assert result.success is True
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_branch_with_multiple_path_separators(self):
+        """Test branch names with multiple path separators."""
+        with patch("src.auto_coder.git_branch.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            branch_name = "feature/sub/issue-123"
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git status
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git fetch
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git branch --list
+                CommandResult(success=False, stdout="", stderr="fatal: couldn't find remote ref", returncode=1),  # git ls-remote
+                CommandResult(success=False, stdout="", stderr="fatal: ref not found", returncode=1),  # git rev-parse refs/remotes/origin/main
+                CommandResult(success=True, stdout="abc123\n", stderr="", returncode=0),  # git rev-parse main
+                CommandResult(
+                    success=True,
+                    stdout=f"Switched to branch '{branch_name}'\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git checkout -B
+                CommandResult(success=True, stdout=f"{branch_name}\n", stderr="", returncode=0),  # git rev-parse
+                CommandResult(success=True, stdout=f"Branch '{branch_name}' set up to track remote branch", stderr="", returncode=0),  # git push
+            ]
+
+            with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+                mock_exists.return_value = False
+                mock_pattern.return_value = []
+
+                result = git_checkout_branch(branch_name, create_new=True, base_branch="main")
+
+                assert result.success is True
+
+    @pytest.mark.usefixtures("_use_custom_subprocess_mock")
+    def test_detect_conflict_with_nested_paths(self):
+        """Test conflict detection with nested path separators."""
+        with patch("src.auto_coder.git_branch.branch_exists") as mock_exists, patch("src.auto_coder.git_branch.get_branches_by_pattern") as mock_pattern:
+            # Setup: parent branch exists for nested path
+            # The function checks the immediate parent using rsplit("/", 1)[0]
+            # So for "feature/sub/issue-123/attempt-1", it checks "feature/sub/issue-123"
+            mock_exists.side_effect = lambda name, _: name == "feature/sub/issue-123"
+            mock_pattern.return_value = []
+
+            # Test: try to create nested child branch
+            result = detect_branch_name_conflict("feature/sub/issue-123/attempt-1")
+
+            # Verify: detects immediate parent branch conflict
+            assert result == "feature/sub/issue-123"
+            mock_exists.assert_called_once_with("feature/sub/issue-123", None)
