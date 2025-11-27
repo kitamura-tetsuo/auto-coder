@@ -12,7 +12,7 @@ import tempfile
 import time
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
 from auto_coder.github_client import GitHubClient
@@ -31,6 +31,7 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
+from .test_log_utils import extract_first_failed_test
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, log_action
@@ -1368,6 +1369,9 @@ def _fix_pr_issues_with_testing(
     actions = []
     pr_number = pr_data["number"]
 
+    # Track history of previous attempts for context
+    attempt_history: List[Dict[str, Any]] = []
+
     try:
         # Step 1: Initial fix using GitHub Actions logs
         actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
@@ -1416,8 +1420,18 @@ def _fix_pr_issues_with_testing(
                         _trigger_fallback_for_pr_failure(repo_name, pr_data, f"Max fix attempts ({attempts_limit}) reached")
                         break
                     else:
-                        local_fix_actions = _apply_local_test_fix(repo_name, pr_data, config, test_result)
+                        local_fix_actions, llm_response = _apply_local_test_fix(repo_name, pr_data, config, test_result, attempt_history)
                         actions.extend(local_fix_actions)
+
+                        # Store this attempt in history for future reference
+                        if llm_response:
+                            attempt_history.append(
+                                {
+                                    "attempt_number": attempt,
+                                    "llm_output": llm_response,
+                                    "test_result": test_result,
+                                }
+                            )
 
     except Exception as e:
         actions.append(f"Error fixing PR issues with testing for PR #{pr_number}: {e}")
@@ -1506,15 +1520,27 @@ def _apply_local_test_fix(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     test_result: Dict[str, Any],
-) -> List[str]:
+    attempt_history: List[Dict[str, Any]],
+) -> Tuple[List[str], str]:
     """Apply fix using local test failure logs.
 
     This function uses the LLM backend manager to apply fixes based on local test failures,
     similar to apply_workspace_test_fix in fix_to_pass_tests_runner.py.
+
+    Args:
+        repo_name: Repository name
+        pr_data: PR data dictionary
+        config: AutomationConfig instance
+        test_result: Test result dictionary from run_local_tests
+        attempt_history: List of previous attempts with LLM outputs and test results
+
+    Returns:
+        Tuple of (actions_list, llm_response)
     """
     with ProgressStage(f"Local test fix"):
         actions = []
         pr_number = pr_data["number"]
+        llm_response = ""
 
         try:
             # Extract important error information (convert legacy dict to TestResult)
@@ -1534,10 +1560,25 @@ def _apply_local_test_fix(
             if not error_summary:
                 actions.append(f"No actionable errors found in local test output for PR #{pr_number}")
                 logger.info("Skipping LLM local test fix because no actionable errors were extracted")
-                return actions
+                return actions, llm_response
 
             # Get commit log since branch creation
             commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
+
+            # Format attempt history for inclusion in prompt
+            history_text = ""
+            if attempt_history:
+                history_parts = []
+                for hist in attempt_history:
+                    attempt_num = hist.get("attempt_number", "N/A")
+                    llm_output = hist.get("llm_output", "No output")
+                    test_out = hist.get("test_result", {})
+                    test_errors = test_out.get("errors", "") or test_out.get("output", "")
+                    # Truncate long outputs
+                    test_errors_truncated = (test_errors[:500] + "...") if len(test_errors) > 500 else test_errors
+                    llm_output_truncated = (llm_output[:300] + "...") if len(str(llm_output)) > 300 else llm_output
+                    history_parts.append(f"Attempt {attempt_num}:\n" f"  LLM Output: {llm_output_truncated}\n" f"  Test Result: {test_errors_truncated}")
+                history_text = "\n\n".join(history_parts)
 
             # Create prompt for local test error fix
             fix_prompt = render_prompt(
@@ -1548,6 +1589,7 @@ def _apply_local_test_fix(
                 error_summary=error_summary[: config.MAX_PROMPT_SIZE],
                 test_command=test_result.get("command", "pytest -q --maxfail=1"),
                 commit_log=commit_log or "(No commit history)",
+                attempt_history=history_text,
             )
             logger.debug(
                 "Prepared local test fix prompt for PR #%s (preview: %s)",
@@ -1560,11 +1602,15 @@ def _apply_local_test_fix(
             # or fall back to _run_llm_cli
             logger.info(f"Requesting LLM local test fix for PR #{pr_number}")
 
-            # BackendManager with test file tracking
-            response = get_llm_backend_manager().run_test_fix_prompt(fix_prompt, current_test_file=None)
+            # If test_file is not in the result, try to extract it from the output
+            if not tr.test_file:
+                tr.test_file = extract_first_failed_test(tr.output, tr.errors)
 
-            if response:
-                response_preview = response.strip()[: config.MAX_RESPONSE_SIZE] if response.strip() else "No response"
+            # BackendManager with test file tracking
+            llm_response = get_llm_backend_manager().run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
+
+            if llm_response:
+                response_preview = llm_response.strip()[: config.MAX_RESPONSE_SIZE] if llm_response.strip() else "No response"
                 actions.append(f"Applied local test fix: {response_preview}...")
             else:
                 actions.append("No response from LLM for local test fix")
@@ -1573,4 +1619,4 @@ def _apply_local_test_fix(
             actions.append(f"Error applying local test fix for PR #{pr_number}: {e}")
             logger.error(f"Error applying local test fix for PR #{pr_number}: {e}", exc_info=True)
 
-        return actions
+        return actions, llm_response
