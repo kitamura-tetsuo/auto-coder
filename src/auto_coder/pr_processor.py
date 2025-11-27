@@ -31,6 +31,7 @@ from .logger_config import get_logger
 from .progress_decorators import progress_stage
 from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
+from .test_log_utils import extract_first_failed_test
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, log_action
@@ -1520,7 +1521,7 @@ def _apply_local_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
     attempt_history: List[Dict[str, Any]],
-) -> List[str]:
+) -> Tuple[List[str], str]:
     """Apply fix using local test failure logs.
 
     This function uses the LLM backend manager to apply fixes based on local test failures,
@@ -1601,8 +1602,12 @@ def _apply_local_test_fix(
             # or fall back to _run_llm_cli
             logger.info(f"Requesting LLM local test fix for PR #{pr_number}")
 
+            # If test_file is not in the result, try to extract it from the output
+            if not tr.test_file:
+                tr.test_file = extract_first_failed_test(tr.output, tr.errors)
+
             # BackendManager with test file tracking
-            llm_response = get_llm_backend_manager().run_test_fix_prompt(fix_prompt, current_test_file=None)
+            llm_response = get_llm_backend_manager().run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
 
             if llm_response:
                 response_preview = llm_response.strip()[: config.MAX_RESPONSE_SIZE] if llm_response.strip() else "No response"
