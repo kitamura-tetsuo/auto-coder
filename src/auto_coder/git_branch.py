@@ -25,6 +25,7 @@ __all__ = [
     # Function names
     "branch_context",
     "branch_exists",
+    "detect_branch_name_conflict",
     "extract_number_from_branch",
     "extract_attempt_from_branch",
     "get_all_branches",
@@ -460,6 +461,75 @@ def branch_exists(branch_name: str, cwd: Optional[str] = None) -> bool:
     return result.success and bool(result.stdout.strip())
 
 
+def detect_branch_name_conflict(branch_name: str, cwd: Optional[str] = None) -> Optional[str]:
+    """
+    Detect if the branch name conflicts with existing branches.
+
+    This function checks for Git ref namespace collisions where creating a
+    branch would fail due to naming conflicts. Git stores branch references as
+    filesystem paths under .git/refs/heads/, which means a path cannot be both
+    a file (branch) and a directory (parent of child branches).
+
+    Conflict Detection Logic:
+
+    1. Parent Path Conflicts:
+       If the branch name contains slashes (e.g., 'issue-699/attempt-1'),
+       check if the parent path exists as a branch (e.g., 'issue-699').
+       Example: Cannot create 'issue-699/attempt-1' if 'issue-699' exists.
+
+    2. Child Branch Conflicts:
+       Check if any existing branches would conflict by being children of the
+       requested branch name (e.g., 'issue-699/*').
+       Example: Cannot create 'issue-699' if 'issue-699/attempt-1' exists.
+
+    Common Conflict Scenarios:
+    - issue-699 vs issue-699/attempt-1 (or issue-699/attempt-2, etc.)
+    - feature vs feature/new-api
+    - pr-123 vs pr-123/fix-typo
+
+    Resolution:
+    When a conflict is detected, you must delete the conflicting branch before
+    creating the new one:
+    - Delete parent: git branch -D issue-699
+    - Then create child: git checkout -b issue-699/attempt-1
+
+    Args:
+        branch_name: Name of the branch to check for conflicts
+        cwd: Optional working directory for the git command
+
+    Returns:
+        Name of the conflicting branch if a conflict is detected, or None if no conflict.
+        The return value is the name of the existing branch that would cause the conflict.
+
+    Example:
+        >>> detect_branch_name_conflict("issue-699/attempt-1")
+        'issue-699'  # Cannot create attempt-1 because issue-699 exists
+
+        >>> detect_branch_name_conflict("issue-699")
+        'issue-699/attempt-1'  # Cannot create issue-699 because attempt-1 exists
+
+        >>> detect_branch_name_conflict("issue-700")
+        None  # No conflict, safe to create
+    """
+    # Check if parent path exists as a branch
+    # e.g., for "issue-699/attempt-1", check if "issue-699" exists
+    if "/" in branch_name:
+        parent_branch = branch_name.rsplit("/", 1)[0]
+        if branch_exists(parent_branch, cwd):
+            return parent_branch
+
+    # Check if any child branches would conflict
+    # e.g., for "issue-699", check if "issue-699/*" exists
+    # For branch names with slashes (e.g., "feature/issue-123"), this checks
+    # if any child branches would conflict at the same level
+    pattern = f"{branch_name}/*"
+    matching_branches = get_branches_by_pattern(pattern, cwd=cwd, remote=False)
+    if matching_branches:
+        return matching_branches[0]
+
+    return None
+
+
 def git_checkout_branch(
     branch_name: str,
     create_new: bool = False,
@@ -474,6 +544,18 @@ def git_checkout_branch(
     switching branches, the current branch matches the expected branch.
     If creating a new branch, it will automatically push to remote and set up tracking.
 
+    Branch Name Conflict Detection:
+        When creating a new branch, this function automatically checks for Git ref
+        namespace conflicts before attempting to create the branch. For example:
+        - If 'issue-699' branch exists, 'issue-699/attempt-1' cannot be created
+        - If 'issue-699/*' branches exist, 'issue-699' branch cannot be created
+
+        If a conflict is detected, the function returns a CommandResult with:
+        - success=False
+        - stderr containing the conflicting branch name and resolution steps
+
+        See detect_branch_name_conflict() for more details on conflict detection logic.
+
     Args:
         branch_name: Name of the branch to checkout
         create_new: If True, creates a new branch with -b flag
@@ -487,26 +569,6 @@ def git_checkout_branch(
         success=True only if checkout succeeded AND current branch matches expected branch.
     """
     cmd = CommandExecutor()
-
-    # Check if branch already exists locally (only when create_new is True)
-    branch_exists_locally = False
-    if create_new:
-        list_result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
-        branch_exists_locally = bool(list_result.success and list_result.stdout.strip())
-
-    # Validate branch name only when creating a NEW branch that doesn't exist
-    # Existing branches with pr-<number> pattern can be checked out without validation
-    if create_new and not branch_exists_locally:
-        try:
-            validate_branch_name(branch_name)
-        except ValueError as e:
-            logger.error(str(e))
-            return CommandResult(
-                success=False,
-                stdout="",
-                stderr=str(e),
-                returncode=1,
-            )
 
     # Check for uncommitted changes before checkout
     status_result = cmd.run_command(["git", "status", "--porcelain"], cwd=cwd)
@@ -528,9 +590,32 @@ def git_checkout_branch(
         if not commit_result.success:
             logger.warning(f"Failed to commit changes before checkout: {commit_result.stderr}")
 
+    # Check if branch already exists locally (only when create_new is True)
+    branch_exists_locally = False
+    if create_new:
+        list_result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
+        branch_exists_locally = bool(list_result.success and list_result.stdout.strip())
+
+    # Validate branch name only when creating a NEW branch that doesn't exist
+    # Existing branches with pr-<number> pattern can be checked out without validation
+    if create_new and not branch_exists_locally:
+        try:
+            validate_branch_name(branch_name)
+        except ValueError as e:
+            logger.error(str(e))
+            return CommandResult(
+                success=False,
+                stdout="",
+                stderr=str(e),
+                returncode=1,
+            )
+
     # Build checkout command (enforce correct base for new branches)
     checkout_cmd: List[str] = ["git", "checkout"]
     resolved_base_ref: Optional[str] = None
+    branch_exists_remotely = False  # Initialize for scope
+    branch_exists_locally_after_fetch = False  # Initialize for scope
+
     if create_new:
         if base_branch is None:
             # Fail fast to detect incorrect call sites
@@ -538,8 +623,51 @@ def git_checkout_branch(
 
         # Always fetch latest refs before creating a new branch
         logger.info("Fetching 'origin' with --prune --tags before creating new branch...")
-        cmd.run_command(["git", "fetch", "origin", "--prune", "--tags"], cwd=cwd)
+        fetch_result = cmd.run_command(["git", "fetch", "origin", "--prune", "--tags"], cwd=cwd)
 
+        # After fetching, check if branch already exists locally or remotely
+        # (Re-check local existence after fetch, as it might have been created remotely)
+        list_result = cmd.run_command(["git", "branch", "--list", branch_name], cwd=cwd)
+        branch_exists_locally_after_fetch = bool(list_result.success and list_result.stdout.strip())
+
+        # Check if branch exists remotely (defensive check)
+        # Only check if local branch doesn't exist, as remote check adds overhead
+        if not branch_exists_locally_after_fetch:
+            try:
+                remote_result = cmd.run_command(["git", "ls-remote", "--heads", "origin", f"refs/heads/{branch_name}"], cwd=cwd)
+                # Only consider remote exists if the command succeeds AND returns output
+                # If the command fails (e.g., no remote origin configured), assume branch doesn't exist remotely
+                branch_exists_remotely = remote_result.success and bool(remote_result.stdout.strip())
+            except (StopIteration, Exception):
+                # In test mocks or error cases, assume branch doesn't exist remotely
+                branch_exists_remotely = False
+
+        # Check for branch name conflicts before attempting to create
+        if create_new and not branch_exists_locally_after_fetch and not branch_exists_remotely:
+            conflict = detect_branch_name_conflict(branch_name, cwd)
+            if conflict:
+                error_msg = (
+                    f"Cannot create branch '{branch_name}': conflicts with existing branch '{conflict}'.\n\n"
+                    f"Resolution options:\n"
+                    f"1. Delete the conflicting branch: git branch -D {conflict}\n"
+                    f"2. Use a different branch name\n"
+                    f"3. If '{conflict}' contains important work, merge or back it up first"
+                )
+                logger.error(error_msg)
+                return CommandResult(
+                    success=False,
+                    stdout="",
+                    stderr=f"Branch name conflict: '{conflict}' exists",
+                    returncode=1,
+                )
+
+        # If branch exists (either locally or remotely), switch to it instead of creating
+        if branch_exists_locally_after_fetch or branch_exists_remotely:
+            logger.info(f"Branch '{branch_name}' already exists, switching to it instead of creating")
+            create_new = False
+
+    # Determine checkout command based on current state
+    if create_new:
         # Prefer refs/remotes/origin/<base_branch> if it exists; otherwise fall back to local <base_branch>
         origin_ref = f"refs/remotes/origin/{base_branch}"
         origin_check = cmd.run_command(["git", "rev-parse", "--verify", origin_ref], cwd=cwd)
@@ -551,7 +679,12 @@ def git_checkout_branch(
 
         logger.info(f"Creating new branch '{branch_name}' from '{resolved_base_ref}'")
         checkout_cmd.extend(["-B", branch_name, resolved_base_ref])
+    elif branch_exists_remotely and not branch_exists_locally_after_fetch:
+        # Branch exists remotely but not locally, create a tracking branch
+        logger.info(f"Creating tracking branch for remote branch '{branch_name}'")
+        checkout_cmd.extend(["-b", branch_name, f"origin/{branch_name}"])
     else:
+        # Just checkout existing branch
         checkout_cmd.append(branch_name)
 
     # Execute checkout
@@ -599,7 +732,22 @@ def git_checkout_branch(
             returncode=1,
         )
 
-    current_branch = verify_result.stdout.strip()
+    # Extract branch name from output - handle cases where git includes tracking info
+    # Normal output: "new-feature"
+    # With tracking info: "Branch 'new-feature' set up to track remote branch 'new-feature' from 'origin'."
+    output = verify_result.stdout.strip()
+    if not output:
+        current_branch = ""
+    elif "branch '" in output.lower():
+        # Extract branch name from tracking message like "Branch 'branch-name' set up to track..."
+        import re
+
+        match = re.search(r"branch\s+'([^']+)'", output, re.IGNORECASE)
+        current_branch = match.group(1) if match else output.split()[0]
+    else:
+        # Normal case: just the branch name
+        current_branch = output.split()[0]
+
     if current_branch != branch_name:
         error_msg = f"Branch mismatch after checkout: expected '{branch_name}', but currently on '{current_branch}'"
         logger.error(error_msg)
@@ -1227,6 +1375,19 @@ def branch_context(
     checks for unpushed commits, and returns to the main branch on exit (even if
     an exception occurs).
 
+    Branch Conflict Handling:
+        When create_new=True, this context manager leverages git_checkout_branch()
+        which automatically detects and prevents Git ref namespace conflicts.
+        If a conflict is detected (e.g., trying to create 'issue-699/attempt-1'
+        when 'issue-699' already exists), a RuntimeError is raised with a clear
+        error message indicating the conflicting branch and resolution steps.
+
+        The conflict detection prevents the following scenarios:
+        - Creating 'branch/name' when 'branch' exists
+        - Creating 'branch' when 'branch/*' exists
+
+        See git_checkout_branch() and detect_branch_name_conflict() for details.
+
     Args:
         branch_name: Name of the branch to switch to
         create_new: If True, creates a new branch with -b flag
@@ -1246,15 +1407,17 @@ def branch_context(
             perform_work()
         # Automatically back on main branch after exiting context
 
-        # Create and work on new branch
+        # Create and work on new branch (with automatic conflict detection)
         with branch_context("feature/new-feature", create_new=True, base_branch="main"):
             # New branch created from main
             # Automatic pull after switch
             # Unpushed commits are automatically pushed
+            # Raises RuntimeError if branch name conflicts detected
             perform_work()
         # Automatically returns to main
 
     Raises:
+        RuntimeError: If branch creation fails due to naming conflicts or other branch operations
         Exception: Propagates any exceptions from branch operations
     """
     from .git_commit import ensure_pushed

@@ -314,35 +314,122 @@ If the status shows "stale lock" (the process is no longer running), you can saf
 **Stale Lock Detection:**
 Auto-Coder detects stale locks by checking if the process associated with the lock is still active. If the process has terminated but left behind a lock file, you can remove it without the `--force` flag. The system will automatically detect that the process is no longer running.
 
-## Branch Naming Convention
+## Branch Naming Best Practices
 
-### Standard Branches
+### Naming Conventions
 
-- **Issue branches**: `issue-<number>` (e.g., `issue-699`)
-  - Used for initial work on an issue
+#### Issue Branches
 
-### Attempt Branches
+- **Format**: `issue-<number>` (e.g., `issue-699`)
+- **Use case**: Use for main development work on an issue
+- **Example**:
+  ```bash
+  git checkout -b issue-699
+  ```
+
+#### Attempt Branches
 
 - **Format**: `issue-<number>_attempt-<number>` (e.g., `issue-699_attempt-1`)
-  - Used when retrying work after a failed PR merge or regression
-  - Uses underscore (`_`) separator to avoid Git ref namespace conflicts
+- **Use case**: Use when retrying work after a failed PR merge or regression
+- **Example**:
+  ```bash
+  git checkout -b issue-699_attempt-1
+  ```
 
 > **Note**: Prior to v1.x.x, attempt branches used slash separator (`issue-699/attempt-1`).
 > The new underscore format prevents Git errors when both base and attempt branches exist.
 > Both formats are supported for backward compatibility.
 
-### Examples
+### Git Ref Namespace Limitations
+
+Git stores branch references as filesystem paths under `.git/refs/heads/`. This creates
+a limitation: **a path cannot be both a file and a directory**.
+
+#### Conflicting Names ❌
+
+The following branch name combinations will conflict:
+
+- Having both `issue-699` AND `issue-699/attempt-1` (legacy format)
+- Having both `feature` AND `feature/new-api`
+- Having both `pr-123` AND `pr-123/fix-typo`
+
+#### Resolution
+
+If you encounter a branch name conflict:
+
+1. **Delete the parent branch**:
+   ```bash
+   git branch -D issue-699
+   ```
+
+2. **Then create the child branch**:
+   ```bash
+   git checkout -b issue-699/attempt-1
+   ```
+
+3. **Alternative**: Use a different branch name that doesn't conflict
+
+#### Prevention
+
+- Plan your branch naming hierarchy in advance
+- Clean up old branches regularly
+- Use consistent naming patterns
+- Prefer the underscore format for attempt branches to avoid namespace conflicts
+
+### Common Scenarios
+
+#### When to Use Attempt Branches
+
+Use attempt branches when:
+
+- Your PR failed CI/CD checks and you need to retry
+- You discovered a regression after merging
+- You need to try a different approach to solving the same issue
+- You want to preserve the original attempt for reference
+
+#### How to Clean Up Old Branches
 
 ```bash
-# Standard issue branch
-issue-699
+# List all local branches
+git branch
 
-# First attempt (after initial PR failed)
-issue-699_attempt-1
+# Delete a local branch
+git branch -d issue-699_attempt-1
 
-# Second attempt
-issue-699_attempt-2
+# Delete a remote branch
+git push origin --delete issue-699_attempt-1
+
+# Bulk delete merged local branches
+git branch --merged | grep -v "\*" | xargs -n 1 git branch -d
 ```
+
+#### Recommended Workflow
+
+1. **Initial work**: Create `issue-<number>` branch
+2. **If PR fails**: Keep the original branch for reference
+3. **Retry attempt**: Create `issue-<number>_attempt-1` from the base branch
+4. **Subsequent attempts**: Continue with `issue-<number>_attempt-2`, etc.
+5. **After successful merge**: Delete old attempt branches locally and remotely
+
+### Automated Conflict Detection
+
+As of v1.x.x, `auto-coder` automatically detects branch name conflicts and
+provides clear error messages with resolution steps.
+
+```bash
+# If you see this error:
+ERROR: Cannot create branch 'issue-699/attempt-1': conflicts with existing branch 'issue-699'
+
+# Resolve by deleting the conflicting branch:
+git branch -D issue-699
+```
+
+The system checks for conflicts before creating new branches and will:
+
+1. **Detect parent-child conflicts**: Prevent creating `branch/name` if `branch` exists
+2. **Detect child conflicts**: Prevent creating `branch` if `branch/*` branches exist
+3. **Provide clear error messages**: Include the name of the conflicting branch
+4. **Suggest resolution steps**: Tell you exactly which branch to delete
 
 ### Migration from Legacy Format
 
@@ -353,7 +440,7 @@ For detailed migration instructions, see the [Branch Naming Migration Guide](doc
 
 To migrate an existing branch manually:
 ```bash
-# Rename local branch
+# Rename local branch (legacy slash to underscore)
 git branch -m issue-699/attempt-1 issue-699_attempt-1
 
 # Delete old remote branch
