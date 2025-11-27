@@ -57,6 +57,11 @@ logger = get_logger(__name__)
     help="Enable auto-merge of PRs when checks pass and PR is mergeable (default: enabled)",
 )
 @click.option(
+    "--auto-merge-dependabot-prs/--no-auto-merge-dependabot-prs",
+    default=True,
+    help="Enable auto-merge of Dependabot PRs when checks pass and PR is mergeable (default: enabled)",
+)
+@click.option(
     "--force-clean-before-checkout/--no-force-clean-before-checkout",
     default=False,
     help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
@@ -94,6 +99,7 @@ def process_issues(
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
     auto_merge: bool,
+    auto_merge_dependabot_prs: bool,
     force_clean_before_checkout: bool,
     only_target: Optional[str],
     enable_graphrag: bool,
@@ -148,6 +154,7 @@ def process_issues(
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
     logger.info(f"Auto-merge: {auto_merge}")
+    logger.info(f"Auto-merge Dependabot PRs: {auto_merge_dependabot_prs}")
     logger.info(f"Force clean before checkout: {force_clean_before_checkout}")
 
     # Explicitly show base branch update policy for PR checks failure
@@ -164,6 +171,7 @@ def process_issues(
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
     click.echo(f"Auto-merge: {auto_merge}")
+    click.echo(f"Auto-merge Dependabot PRs: {auto_merge_dependabot_prs}")
     click.echo(f"Force clean before checkout: {force_clean_before_checkout}")
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
@@ -218,6 +226,7 @@ def process_issues(
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
     engine_config.AUTO_MERGE = bool(auto_merge)
+    engine_config.AUTO_MERGE_DEPENDABOT_PRS = bool(auto_merge_dependabot_prs)
     engine_config.DISABLE_LABELS = bool(disable_labels)
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
 

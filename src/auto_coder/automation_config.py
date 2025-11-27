@@ -156,6 +156,7 @@ class AutomationConfig:
         object.__setattr__(self, "ENABLE_ACTIONS_HISTORY_FALLBACK", True)
         object.__setattr__(self, "MERGE_METHOD", "--squash")
         object.__setattr__(self, "MERGE_AUTO", True)
+        object.__setattr__(self, "AUTO_MERGE_DEPENDABOT_PRS", True)
         object.__setattr__(self, "PR_LABEL_COPYING_ENABLED", True)
         object.__setattr__(self, "PR_LABEL_MAX_COUNT", 3)
         object.__setattr__(
@@ -496,6 +497,10 @@ class AutomationConfig:
     # Enable/disable auto-merge feature
     # Default: True (auto-merge enabled)
     AUTO_MERGE: bool = True
+
+    # Enable/disable auto-merge for Dependabot PRs
+    # Default: True (auto-merge for Dependabot enabled)
+    AUTO_MERGE_DEPENDABOT_PRS: bool = True
 
     # PR label copying configuration
     # Enable or disable copying semantic labels from issues to PRs
