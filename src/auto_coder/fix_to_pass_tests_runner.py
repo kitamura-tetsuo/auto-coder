@@ -423,8 +423,20 @@ def apply_workspace_test_fix(
     test_result: Dict[str, Any],
     llm_backend_manager: "BackendManager",
     current_test_file: Optional[str] = None,
+    attempt_history: Optional[list[Dict[str, Any]]] = None,
 ) -> WorkspaceFixResult:
-    """Ask the LLM to apply workspace edits based on local test failures."""
+    """Ask the LLM to apply workspace edits based on local test failures.
+
+    Args:
+        config: AutomationConfig instance
+        test_result: Test result dictionary from run_local_tests
+        llm_backend_manager: Backend manager instance
+        current_test_file: Current test file being fixed
+        attempt_history: List of previous attempts with LLM outputs and test results
+
+    Returns:
+        WorkspaceFixResult containing the LLM response and metadata
+    """
 
     backend, provider, model = _extract_backend_model(llm_backend_manager)
 
@@ -442,10 +454,26 @@ def apply_workspace_test_fix(
                 model=model,
             )
 
+        # Format attempt history for inclusion in prompt
+        history_text = ""
+        if attempt_history:
+            history_parts = []
+            for hist in attempt_history:
+                attempt_num = hist.get("attempt_number", "N/A")
+                llm_output = hist.get("llm_output", "No output")
+                test_out = hist.get("test_result", {})
+                test_errors = test_out.get("errors", "") or test_out.get("output", "")
+                # Truncate long outputs
+                test_errors_truncated = (test_errors[:500] + "...") if len(test_errors) > 500 else test_errors
+                llm_output_truncated = (llm_output[:300] + "...") if len(str(llm_output)) > 300 else llm_output
+                history_parts.append(f"Attempt {attempt_num}:\n" f"  LLM Output: {llm_output_truncated}\n" f"  Test Result: {test_errors_truncated}")
+            history_text = "\n\n".join(history_parts)
+
         fix_prompt = render_prompt(
             "tests.workspace_fix",
             error_summary=error_summary[: config.MAX_PROMPT_SIZE],
             test_command=test_result.get("command", "pytest -q --maxfail=1"),
+            attempt_history=history_text,
         )
 
         # Use the LLM backend manager to run the prompt
@@ -455,11 +483,9 @@ def apply_workspace_test_fix(
         backend, provider, model = _extract_backend_model(llm_backend_manager)
         raw_response = response.strip() if response and response.strip() else None
         if raw_response:
-            logger.debug(f"0")
             first_line = raw_response.splitlines()[0]
             summary = first_line[: config.MAX_RESPONSE_SIZE]
         else:
-            logger.debug(f"0")
             summary = "LLM produced no response"
 
         logger.info(f"LLM workspace fix summary: {summary if summary else '<empty response>'}")
@@ -507,6 +533,9 @@ def fix_to_pass_tests(
 
     # Track the test file that is currently being fixed
     current_test_file: Optional[str] = None
+
+    # Track history of previous attempts for context
+    attempt_history: list[Dict[str, Any]] = []
 
     # Support infinite attempts (math.inf) by using a while loop
     attempt = 0  # counts actual test executions
@@ -568,9 +597,20 @@ def fix_to_pass_tests(
                 test_result,
                 llm_backend_manager,
                 current_test_file=current_test_file,
+                attempt_history=attempt_history,
             )
             action_msg = fix_response.summary
             summary["messages"].append(action_msg)
+
+            # Store this attempt in history for future reference
+            if fix_response.raw_response:
+                attempt_history.append(
+                    {
+                        "attempt_number": attempt,
+                        "llm_output": fix_response.raw_response,
+                        "test_result": test_result,
+                    }
+                )
 
         # Baseline (pre-fix) outputs for comparison
         baseline_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
