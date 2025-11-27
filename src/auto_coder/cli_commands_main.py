@@ -52,6 +52,11 @@ logger = get_logger(__name__)
     help="Skip non-ready dependency-bot PRs (Dependabot/Renovate/[bot]); still auto-merge when checks pass and PR is mergeable.",
 )
 @click.option(
+    "--auto-merge/--no-auto-merge",
+    default=True,
+    help="Enable auto-merge of PRs when checks pass and PR is mergeable (default: enabled)",
+)
+@click.option(
     "--force-clean-before-checkout/--no-force-clean-before-checkout",
     default=False,
     help="Force clean workspace (git reset --hard + git clean -fd) before PR checkout (default: do not force clean)",
@@ -88,6 +93,7 @@ def process_issues(
     check_labels: bool,
     skip_main_update: bool,
     ignore_dependabot_prs: bool,
+    auto_merge: bool,
     force_clean_before_checkout: bool,
     only_target: Optional[str],
     enable_graphrag: bool,
@@ -141,6 +147,7 @@ def process_issues(
     logger.info(f"Log level: {effective_log_level}")
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
+    logger.info(f"Auto-merge: {auto_merge}")
     logger.info(f"Force clean before checkout: {force_clean_before_checkout}")
 
     # Explicitly show base branch update policy for PR checks failure
@@ -156,6 +163,7 @@ def process_issues(
     click.echo(f"Check labels: {check_labels}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
     click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
+    click.echo(f"Auto-merge: {auto_merge}")
     click.echo(f"Force clean before checkout: {force_clean_before_checkout}")
     click.echo(f"Force reindex: {force_reindex}")
     click.echo(f"Verbose logging: {verbose}")
@@ -209,6 +217,7 @@ def process_issues(
     engine_config.CHECK_LABELS = effective_check_labels
     engine_config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL = bool(skip_main_update)
     engine_config.IGNORE_DEPENDABOT_PRS = bool(ignore_dependabot_prs)
+    engine_config.AUTO_MERGE = bool(auto_merge)
     engine_config.DISABLE_LABELS = bool(disable_labels)
     engine_config.FORCE_CLEAN_BEFORE_CHECKOUT = bool(force_clean_before_checkout)
 
