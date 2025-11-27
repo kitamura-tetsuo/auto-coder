@@ -147,6 +147,12 @@ pr:
     Local test command used:
     $test_command
 
+    $if(attempt_history)
+    Previous Fix Attempts (for context - avoid repeating the same mistakes):
+    $attempt_history
+
+    $endif
+
     BRANCH NAMING: If you need to create new branches for any reason, always use the 'issue-<number>' naming convention (e.g., 'issue-123'). NEVER create branches with 'pr-<number>' pattern (e.g., 'pr-123').
 
     Please analyze the test failures and provide specific code fixes.
