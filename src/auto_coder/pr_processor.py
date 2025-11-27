@@ -295,6 +295,11 @@ def _process_pr_for_merge(
             return processed_pr
 
         # Since Actions are passing, attempt direct merge
+        # Check if AUTO_MERGE is enabled before attempting merge
+        if not config.AUTO_MERGE:
+            processed_pr.actions_taken.append(f"Skipping merge for PR #{pr_data['number']} due to configuration (AUTO_MERGE=False)")
+            return processed_pr
+
         merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client)
         if merge_result:
             processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
@@ -624,6 +629,11 @@ def _handle_pr_merge(
         # Step 4: If GitHub Actions passed, merge directly
         if github_checks.success and detailed_checks.success:
             actions.append(f"All GitHub Actions checks passed for PR #{pr_number}")
+
+            # Check if AUTO_MERGE is enabled before attempting merge
+            if not config.AUTO_MERGE:
+                actions.append(f"Skipping merge for PR #{pr_number} due to configuration (AUTO_MERGE=False)")
+                return actions
 
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:
