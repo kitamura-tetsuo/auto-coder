@@ -40,6 +40,8 @@ class ClaudeClient(LLMClientBase):
             self.openai_api_key = config_backend and config_backend.openai_api_key
             self.openai_base_url = config_backend and config_backend.openai_base_url
             self.settings = config_backend and config_backend.settings
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
         else:
             # Fall back to default claude config
             config_backend = config.get_backend_config("claude")
@@ -49,6 +51,8 @@ class ClaudeClient(LLMClientBase):
             self.openai_api_key = config_backend and config_backend.openai_api_key
             self.openai_base_url = config_backend and config_backend.openai_base_url
             self.settings = config_backend and config_backend.settings
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
 
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
@@ -111,7 +115,12 @@ class ClaudeClient(LLMClientBase):
             logger.info(f"🤖 Running: claude --print --dangerously-skip-permissions " f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]")
             logger.info("=" * 60)
 
-            usage_markers = ('api error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"usage limit exceeded', "5-hour limit reached · resets")
+            # Use configured usage_markers if available, otherwise fall back to defaults
+            if self.usage_markers:
+                usage_markers = self.usage_markers
+            else:
+                # Default hardcoded usage markers
+                usage_markers = ('api error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"usage limit exceeded', "5-hour limit reached · resets")
 
             result = CommandExecutor.run_command(
                 cmd,

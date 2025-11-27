@@ -157,3 +157,41 @@ class TestClaudeClient:
 
         escaped = client._escape_prompt("  Hello world  ")
         assert escaped == "Hello world"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_usage_markers_from_config(self, mock_run, mock_get_config):
+        """ClaudeClient should use configured usage_markers from backend config."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.usage_markers = ["custom marker 1", "custom marker 2"]
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Should have loaded usage_markers from config
+        assert client.usage_markers == ["custom marker 1", "custom marker 2"]
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_usage_markers_fallback_to_empty(self, mock_run, mock_get_config):
+        """ClaudeClient should fall back to empty usage_markers when not configured."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.usage_markers = []
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Should have empty usage_markers when not configured
+        assert client.usage_markers == []

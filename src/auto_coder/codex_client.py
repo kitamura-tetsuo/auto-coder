@@ -52,6 +52,8 @@ class CodexClient(LLMClientBase):
             self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
             self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url)
             self.model_provider = config_backend and config_backend.model_provider
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
         else:
             # Fall back to default codex config
             config_backend = config.get_backend_config("codex")
@@ -61,6 +63,8 @@ class CodexClient(LLMClientBase):
             self.openai_api_key = openai_api_key
             self.openai_base_url = openai_base_url
             self.model_provider = None
+            # Store usage_markers from config
+            self.usage_markers = (config_backend and config_backend.usage_markers) or []
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name
@@ -116,12 +120,17 @@ class CodexClient(LLMClientBase):
 
             cmd.append(escaped_prompt)
 
-            usage_markers = (
-                "rate limit",
-                "usage limit",
-                "upgrade to pro",
-                "too many requests",
-            )
+            # Use configured usage_markers if available, otherwise fall back to defaults
+            if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
+                usage_markers = self.usage_markers
+            else:
+                # Default hardcoded usage markers
+                usage_markers = (
+                    "rate limit",
+                    "usage limit",
+                    "upgrade to pro",
+                    "too many requests",
+                )
 
             # Prepare environment variables for subprocess
             env = os.environ.copy()
