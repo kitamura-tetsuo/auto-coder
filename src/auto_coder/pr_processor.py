@@ -1520,7 +1520,7 @@ def _apply_local_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
     attempt_history: List[Dict[str, Any]],
-) -> tuple[List[str], str]:
+) -> List[str]:
     """Apply fix using local test failure logs.
 
     This function uses the LLM backend manager to apply fixes based on local test failures,
