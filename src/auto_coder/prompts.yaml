@@ -64,6 +64,34 @@ pr:
 
     Please proceed with resolving these merge conflicts now.
 
+  mergeability_check: |-
+    You are analyzing merge conflicts for PR #$pr_number: $pr_title
+
+    PR Description:
+    $pr_body...
+
+    Merge Conflict Information:
+    $conflict_info
+
+    Commit History Since Branch Creation:
+    $commit_log
+
+    Your task is to determine if this merge can be performed WITHOUT DEGRADING CODE QUALITY.
+
+    IMPORTANT: Be slightly pessimistic - favor re-implementation (skip merge) if unsure.
+
+    Return ONLY one of these exact responses:
+    - "SAFE_TO_MERGE" - if you are confident the merge can be done without code quality degradation
+    - "DEGRADING_MERGE" - if the merge might degrade code quality or introduce bugs, or if you're uncertain
+
+    Consider:
+    1. Are the conflicts in critical code paths?
+    2. Do the conflicting changes seem to have architectural implications?
+    3. Is there significant risk of introducing bugs or breaking functionality?
+    4. Would re-implementing the PR changes be safer?
+
+    Please analyze and respond with either "SAFE_TO_MERGE" or "DEGRADING_MERGE".
+
   github_actions_fix: |-
     Fix the following GitHub Actions test failures for PR #$pr_number:
 

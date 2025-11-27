@@ -190,6 +190,71 @@ def scan_conflict_markers() -> List[str]:
         return []
 
 
+def check_mergeability_with_llm(
+    pr_data: Dict[str, Any],
+    conflict_info: str,
+    config: AutomationConfig,
+) -> bool:
+    """Check if merge can be performed without degrading code quality.
+
+    Args:
+        pr_data: PR data dictionary
+        conflict_info: Merge conflict information
+        config: AutomationConfig instance
+
+    Returns:
+        True if safe to merge, False if merge would degrade code quality
+    """
+    try:
+        # Get commit log since branch creation
+        base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName") or config.MAIN_BRANCH
+        commit_log = get_commit_log(base_branch=base_branch)
+
+        # Create a prompt for LLM to check mergeability
+        prompt = render_prompt(
+            "pr.mergeability_check",
+            base_branch=base_branch,
+            pr_number=pr_data.get("number", "unknown"),
+            pr_title=pr_data.get("title", "Unknown"),
+            pr_body=(pr_data.get("body") or "")[:500],
+            conflict_info=conflict_info,
+            commit_log=commit_log or "(No commit history)",
+        )
+        logger.debug(
+            "Generated mergeability check prompt for PR #%s (preview: %s)",
+            pr_data.get("number", "unknown"),
+            prompt[:160].replace("\n", " "),
+        )
+
+        logger.info(f"Asking LLM to check mergeability for PR #{pr_data.get('number')}")
+
+        # Call LLM to check mergeability
+        response = run_llm_prompt(prompt)
+
+        # Parse the response
+        if response and len(response.strip()) > 0:
+            response_upper = response.strip().upper()
+            if "SAFE_TO_MERGE" in response_upper:
+                logger.info(f"LLM determined PR #{pr_data.get('number')} is safe to merge")
+                return True
+            elif "DEGRADING_MERGE" in response_upper:
+                logger.info(f"LLM determined PR #{pr_data.get('number')} would degrade code quality")
+                return False
+            else:
+                # Default to not safe (pessimistic) if unclear response
+                logger.warning(f"LLM returned unclear mergeability response for PR #{pr_data.get('number')}: {response[:100]}")
+                return False
+        else:
+            # Default to not safe (pessimistic) if no response
+            logger.warning(f"LLM did not provide a clear response for mergeability check PR #{pr_data.get('number')}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error checking mergeability with LLM: {e}")
+        # Default to not safe (pessimistic) on exception
+        return False
+
+
 def resolve_merge_conflicts_with_llm(
     pr_data: Dict[str, Any],
     conflict_info: str,
@@ -365,8 +430,8 @@ def _perform_base_branch_merge_and_conflict_resolution(
                     logger.error("Push failure detected during merge conflict resolution")
                     return False
         else:
-            # Merge conflicts detected, use LLM to resolve them
-            logger.info(f"Merge conflicts detected for PR #{pr_number}, using LLM to resolve")
+            # Merge conflicts detected, check if merge would degrade code quality
+            logger.info(f"Merge conflicts detected for PR #{pr_number}, checking mergeability")
 
             # Get conflict information
             conflict_info = "\n".join(scan_conflict_markers())
@@ -374,7 +439,23 @@ def _perform_base_branch_merge_and_conflict_resolution(
             # Ensure pr_data has the base_branch
             pr_data = {**pr_data, "base_branch": base_branch}
 
-            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, "\n".join(conflict_info), config)
+            # Check if merge would degrade code quality before attempting resolution
+            safe_to_merge = check_mergeability_with_llm(pr_data, conflict_info, config)
+
+            if not safe_to_merge:
+                logger.info(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
+                # Trigger fallback and signal to proceed to fixing
+                _trigger_fallback_for_conflict_failure(
+                    repo_name or "",
+                    pr_number,
+                    "LLM determined merge would degrade code quality",
+                )
+                return False
+
+            # Safe to merge, proceed with LLM conflict resolution
+            logger.info(f"LLM determined merge is safe for PR #{pr_number}, proceeding with resolution")
+
+            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config)
 
             # Log the resolution actions
             for action in resolve_actions:

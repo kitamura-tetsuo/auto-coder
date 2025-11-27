@@ -628,6 +628,7 @@ def _handle_pr_merge(
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
+                return actions
             else:
                 actions.append(f"Failed to merge PR #{pr_number}")
 
@@ -660,7 +661,21 @@ def _handle_pr_merge(
             update_actions = _update_with_base_branch(repo_name, pr_data, config)
             actions.extend(update_actions)
 
-            # Step 6: If base branch update required pushing changes, skip to next PR
+            # Step 6: Check for special cases from base branch update
+
+            # Check if LLM determined merge would degrade code quality
+            if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+                actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, proceeding to fix phase")
+                # Proceed to fixing phase - the PR content needs to be fixed
+                if failed_checks:
+                    github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
+                    actions.extend(fix_actions)
+                else:
+                    actions.append(f"No specific failed checks found for PR #{pr_number}")
+                return actions
+
+            # If base branch update required pushing changes, skip to next PR
             if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
                 actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
                 return actions
@@ -867,7 +882,7 @@ def _update_with_base_branch(
             actions.append(f"Merge conflict detected for PR #{pr_number}, using common subroutine for resolution...")
 
             # Use the common subroutine for conflict resolution
-            from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution
+            from .conflict_resolver import _perform_base_branch_merge_and_conflict_resolution, scan_conflict_markers
 
             conflict_resolved = _perform_base_branch_merge_and_conflict_resolution(
                 pr_number,
@@ -881,7 +896,13 @@ def _update_with_base_branch(
                 actions.append(f"Successfully resolved merge conflicts for PR #{pr_number}")
                 actions.append("ACTION_FLAG:SKIP_ANALYSIS")
             else:
-                actions.append(f"Failed to resolve merge conflicts for PR #{pr_number}")
+                # Check if conflicts are still present (indicating LLM determined degradation)
+                remaining_conflicts = scan_conflict_markers()
+                if remaining_conflicts:
+                    actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
+                    actions.append("ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE")
+                else:
+                    actions.append(f"Failed to resolve merge conflicts for PR #{pr_number}")
 
     except Exception as e:
         actions.append(f"Error updating with base branch for PR #{pr_number}: {e}")
