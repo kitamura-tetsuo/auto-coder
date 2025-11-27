@@ -854,7 +854,7 @@ class TestAutomationEngineExtended:
                 {"success": False, "output": "Test failed", "errors": "Error"},
                 {"success": True, "output": "All tests passed", "errors": ""},
             ]
-            mock_local_fix.return_value = ["Applied local test fix"]
+            mock_local_fix.return_value = (["Applied local test fix"], "LLM response: Fixed test issues")
 
             # Execute
             from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
