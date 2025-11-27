@@ -628,6 +628,7 @@ def _handle_pr_merge(
             merge_result = _merge_pr(repo_name, pr_number, analysis, config, github_client=github_client)
             if merge_result:
                 actions.append(f"Successfully merged PR #{pr_number}")
+                return actions
             else:
                 actions.append(f"Failed to merge PR #{pr_number}")
 
