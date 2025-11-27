@@ -420,6 +420,7 @@ def _apply_issue_actions_directly(
                         base_branch = parent_branch
                         pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
                 else:
+                    actions.append(f"Ignored parent issue #{parent_issue_number} branch due to closed state (expected OPEN, got {parent_state})")
                     logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number} but it is {parent_state}. Ignoring parent branch and using {config.MAIN_BRANCH} as base.")
 
             # Check if work branch already exists
