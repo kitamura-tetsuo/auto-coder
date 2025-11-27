@@ -493,6 +493,10 @@ class AutomationConfig:
     MERGE_METHOD: str = "--squash"
     MERGE_AUTO: bool = True
 
+    # Enable/disable auto-merge feature
+    # Default: True (auto-merge enabled)
+    AUTO_MERGE: bool = True
+
     # PR label copying configuration
     # Enable or disable copying semantic labels from issues to PRs
     PR_LABEL_COPYING_ENABLED: bool = True
