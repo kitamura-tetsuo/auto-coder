@@ -68,7 +68,7 @@ jobs:
           set -e
           # Add .venv/bin to PATH to access installed console scripts
           export PATH="$PWD/.venv/bin:$PATH"
-          OUTPUT=$(auto-coder --help)
+          OUTPUT=$(auto-coder --help 2>&1)
           echo "$OUTPUT"
           # Check for expected help content
           if ! echo "$OUTPUT" | grep -q "Usage:"; then
