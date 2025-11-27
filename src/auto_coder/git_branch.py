@@ -466,16 +466,50 @@ def detect_branch_name_conflict(branch_name: str, cwd: Optional[str] = None) -> 
     Detect if the branch name conflicts with existing branches.
 
     This function checks for Git ref namespace collisions where creating a
-    branch would fail due to naming conflicts. For example:
-    - If 'issue-699' branch exists, 'issue-699/attempt-1' cannot be created
-    - If 'issue-699/*' branches exist, 'issue-699' branch cannot be created
+    branch would fail due to naming conflicts. Git stores branch references as
+    filesystem paths under .git/refs/heads/, which means a path cannot be both
+    a file (branch) and a directory (parent of child branches).
+
+    Conflict Detection Logic:
+
+    1. Parent Path Conflicts:
+       If the branch name contains slashes (e.g., 'issue-699/attempt-1'),
+       check if the parent path exists as a branch (e.g., 'issue-699').
+       Example: Cannot create 'issue-699/attempt-1' if 'issue-699' exists.
+
+    2. Child Branch Conflicts:
+       Check if any existing branches would conflict by being children of the
+       requested branch name (e.g., 'issue-699/*').
+       Example: Cannot create 'issue-699' if 'issue-699/attempt-1' exists.
+
+    Common Conflict Scenarios:
+    - issue-699 vs issue-699/attempt-1 (or issue-699/attempt-2, etc.)
+    - feature vs feature/new-api
+    - pr-123 vs pr-123/fix-typo
+
+    Resolution:
+    When a conflict is detected, you must delete the conflicting branch before
+    creating the new one:
+    - Delete parent: git branch -D issue-699
+    - Then create child: git checkout -b issue-699/attempt-1
 
     Args:
         branch_name: Name of the branch to check for conflicts
         cwd: Optional working directory for the git command
 
     Returns:
-        Name of the conflicting branch, or None if no conflict detected
+        Name of the conflicting branch if a conflict is detected, or None if no conflict.
+        The return value is the name of the existing branch that would cause the conflict.
+
+    Example:
+        >>> detect_branch_name_conflict("issue-699/attempt-1")
+        'issue-699'  # Cannot create attempt-1 because issue-699 exists
+
+        >>> detect_branch_name_conflict("issue-699")
+        'issue-699/attempt-1'  # Cannot create issue-699 because attempt-1 exists
+
+        >>> detect_branch_name_conflict("issue-700")
+        None  # No conflict, safe to create
     """
     # Check if parent path exists as a branch
     # e.g., for "issue-699/attempt-1", check if "issue-699" exists
@@ -509,6 +543,18 @@ def git_checkout_branch(
     This function centralizes git checkout operations and ensures that after
     switching branches, the current branch matches the expected branch.
     If creating a new branch, it will automatically push to remote and set up tracking.
+
+    Branch Name Conflict Detection:
+        When creating a new branch, this function automatically checks for Git ref
+        namespace conflicts before attempting to create the branch. For example:
+        - If 'issue-699' branch exists, 'issue-699/attempt-1' cannot be created
+        - If 'issue-699/*' branches exist, 'issue-699' branch cannot be created
+
+        If a conflict is detected, the function returns a CommandResult with:
+        - success=False
+        - stderr containing the conflicting branch name and resolution steps
+
+        See detect_branch_name_conflict() for more details on conflict detection logic.
 
     Args:
         branch_name: Name of the branch to checkout
@@ -1329,6 +1375,19 @@ def branch_context(
     checks for unpushed commits, and returns to the main branch on exit (even if
     an exception occurs).
 
+    Branch Conflict Handling:
+        When create_new=True, this context manager leverages git_checkout_branch()
+        which automatically detects and prevents Git ref namespace conflicts.
+        If a conflict is detected (e.g., trying to create 'issue-699/attempt-1'
+        when 'issue-699' already exists), a RuntimeError is raised with a clear
+        error message indicating the conflicting branch and resolution steps.
+
+        The conflict detection prevents the following scenarios:
+        - Creating 'branch/name' when 'branch' exists
+        - Creating 'branch' when 'branch/*' exists
+
+        See git_checkout_branch() and detect_branch_name_conflict() for details.
+
     Args:
         branch_name: Name of the branch to switch to
         create_new: If True, creates a new branch with -b flag
@@ -1348,15 +1407,17 @@ def branch_context(
             perform_work()
         # Automatically back on main branch after exiting context
 
-        # Create and work on new branch
+        # Create and work on new branch (with automatic conflict detection)
         with branch_context("feature/new-feature", create_new=True, base_branch="main"):
             # New branch created from main
             # Automatic pull after switch
             # Unpushed commits are automatically pushed
+            # Raises RuntimeError if branch name conflicts detected
             perform_work()
         # Automatically returns to main
 
     Raises:
+        RuntimeError: If branch creation fails due to naming conflicts or other branch operations
         Exception: Propagates any exceptions from branch operations
     """
     from .git_commit import ensure_pushed
