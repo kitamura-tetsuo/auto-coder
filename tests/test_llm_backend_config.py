@@ -41,6 +41,7 @@ class TestBackendConfig:
         assert config.backend_type is None
         assert config.model_provider is None
         assert config.always_switch_after_execution is False
+        assert config.usage_markers == []
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -63,6 +64,7 @@ class TestBackendConfig:
             backend_type="custom_type",
             model_provider="openrouter",
             always_switch_after_execution=True,
+            usage_markers=["marker1", "marker2"],
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -82,6 +84,7 @@ class TestBackendConfig:
         assert config.backend_type == "custom_type"
         assert config.model_provider == "openrouter"
         assert config.always_switch_after_execution is True
+        assert config.usage_markers == ["marker1", "marker2"]
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -1503,3 +1506,67 @@ enabled = true
             # Verify get_active_backends includes this backend
             active = config.get_active_backends()
             assert "test-backend" in active
+
+    def test_toml_save_and_load_usage_markers(self):
+        """Test that usage_markers field is properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_usage_markers.toml"
+
+            # Create configuration with usage_markers settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").usage_markers = ["marker1", "marker2"]
+            config.get_backend_config("qwen").usage_markers = ["marker3"]
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify usage_markers was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.usage_markers == ["marker1", "marker2"]
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.usage_markers == ["marker3"]
+
+    def test_backward_compatibility_old_toml_without_usage_markers(self):
+        """Test loading old TOML files that don't have usage_markers field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_usage_markers.toml"
+
+            # Create a TOML file with the old structure (without usage_markers field)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify usage_markers has default empty list when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.usage_markers == []
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.usage_markers == []
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
