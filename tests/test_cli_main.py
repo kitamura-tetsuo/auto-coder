@@ -41,6 +41,12 @@ class TestCLIMain:
         # New option should appear in help
         assert "--ignore-dependabot-prs" in result.output
 
+    def test_process_issues_help_includes_auto_merge_dependabot_prs_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(process_issues, ["--help"])
+        assert result.exit_code == 0
+        assert "--auto-merge-dependabot-prs" in result.output
+
     def test_process_issues_help(self):
         """Test process-issues command help."""
         runner = CliRunner()
