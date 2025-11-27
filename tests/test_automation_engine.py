@@ -1777,6 +1777,176 @@ class TestGetCandidates:
 
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_auto_merge_dependabot_true_includes_passing(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """When AUTO_MERGE_DEPENDABOT_PRS is True, passing/mergeable Dependabot PRs are included."""
+        config = AutomationConfig()
+        config.IGNORE_DEPENDABOT_PRS = False
+        config.AUTO_MERGE_DEPENDABOT_PRS = True
+        engine = AutomationEngine(mock_github_client, config=config)
+
+        # Single passing/mergeable dependency-bot PR
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+        ]
+        mock_github_client.get_open_issues.return_value = []
+
+        pr_data = {
+            1: {
+                "number": 1,
+                "title": "Dependabot passing PR",
+                "body": "",
+                "head": {"ref": "bot-pr-1"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-01T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+        }
+
+        def get_pr_details_side_effect(pr):
+            return pr_data[pr.number]
+
+        mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
+
+        def check_actions_side_effect(repo_name, pr_details, config_obj):
+            return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+
+        mock_check_actions.side_effect = check_actions_side_effect
+
+        mock_extract_issues.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        with patch("src.auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            mock_label_mgr.return_value.__enter__.return_value = True
+
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Passing/mergeable Dependabot PR should be included
+        assert [c.data["number"] for c in candidates] == [1]
+        assert candidates[0].priority == 2  # Mergeable with successful checks
+
+    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_auto_merge_dependabot_true_excludes_failing(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """When AUTO_MERGE_DEPENDABOT_PRS is True, failing/non-mergeable Dependabot PRs are excluded."""
+        config = AutomationConfig()
+        config.IGNORE_DEPENDABOT_PRS = False
+        config.AUTO_MERGE_DEPENDABOT_PRS = True
+        engine = AutomationEngine(mock_github_client, config=config)
+
+        # Single failing/non-mergeable dependency-bot PR
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+        ]
+        mock_github_client.get_open_issues.return_value = []
+
+        pr_data = {
+            1: {
+                "number": 1,
+                "title": "Dependabot failing PR",
+                "body": "",
+                "head": {"ref": "bot-pr-1"},
+                "labels": [],
+                "mergeable": False,
+                "created_at": "2024-01-01T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+        }
+
+        def get_pr_details_side_effect(pr):
+            return pr_data[pr.number]
+
+        mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
+
+        def check_actions_side_effect(repo_name, pr_details, config_obj):
+            return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
+
+        mock_check_actions.side_effect = check_actions_side_effect
+
+        mock_extract_issues.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        with patch("src.auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            mock_label_mgr.return_value.__enter__.return_value = True
+
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Failing/non-mergeable Dependabot PR should be excluded
+        assert [c.data["number"] for c in candidates] == []
+
+    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_auto_merge_dependabot_false_includes_failing(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """When AUTO_MERGE_DEPENDABOT_PRS is False, failing Dependabot PRs are included (treated like normal PRs)."""
+        config = AutomationConfig()
+        config.IGNORE_DEPENDABOT_PRS = False
+        config.AUTO_MERGE_DEPENDABOT_PRS = False
+        engine = AutomationEngine(mock_github_client, config=config)
+
+        # Single failing/non-mergeable dependency-bot PR
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+        ]
+        mock_github_client.get_open_issues.return_value = []
+
+        pr_data = {
+            1: {
+                "number": 1,
+                "title": "Dependabot failing PR",
+                "body": "",
+                "head": {"ref": "bot-pr-1"},
+                "labels": [],
+                "mergeable": False,
+                "created_at": "2024-01-01T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+        }
+
+        def get_pr_details_side_effect(pr):
+            return pr_data[pr.number]
+
+        mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
+
+        def check_actions_side_effect(repo_name, pr_details, config_obj):
+            return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
+
+        mock_check_actions.side_effect = check_actions_side_effect
+
+        mock_extract_issues.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        with patch("src.auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            mock_label_mgr.return_value.__enter__.return_value = True
+
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # When AUTO_MERGE_DEPENDABOT_PRS is False, failing Dependabot PR should be included
+        assert [c.data["number"] for c in candidates] == [1]
+        assert candidates[0].priority == 2  # Unmergeable PR gets priority 2
+
+    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_items_with_auto_coder_label(
         self,
         mock_extract_issues,
