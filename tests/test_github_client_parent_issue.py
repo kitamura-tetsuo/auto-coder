@@ -119,3 +119,118 @@ class TestGitHubClientParentIssue:
         result = client.get_parent_issue("owner/repo", 100)
         # Should still return parent issue number even if closed
         assert result == 1
+
+    @patch("subprocess.run")
+    def test_get_parent_issue_details_exists(self, mock_subprocess_run):
+        """Test get_parent_issue_details when parent issue exists."""
+        client = GitHubClient.get_instance("test_token")
+
+        # Mock GraphQL response
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "number": 100,
+                        "title": "Sub-issue",
+                        "parent": {
+                            "number": 1,
+                            "title": "Parent issue",
+                            "state": "OPEN",
+                            "url": "https://github.com/owner/repo/issues/1",
+                        },
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_subprocess_run.return_value = mock_result
+
+        result = client.get_parent_issue_details("owner/repo", 100)
+        assert result is not None
+        assert result["number"] == 1
+        assert result["title"] == "Parent issue"
+        assert result["state"] == "OPEN"
+        assert result["url"] == "https://github.com/owner/repo/issues/1"
+
+        # Verify the GraphQL-Features header was included
+        mock_subprocess_run.assert_called_once()
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "-H" in call_args
+        header_index = call_args.index("-H")
+        assert call_args[header_index + 1] == "GraphQL-Features: sub_issues"
+
+    @patch("subprocess.run")
+    def test_get_parent_issue_details_no_parent(self, mock_subprocess_run):
+        """Test get_parent_issue_details when issue has no parent."""
+        client = GitHubClient.get_instance("test_token")
+
+        # Mock GraphQL response with no parent issue
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "number": 1,
+                        "title": "Top-level issue",
+                        "parent": None,
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_subprocess_run.return_value = mock_result
+
+        result = client.get_parent_issue_details("owner/repo", 1)
+        assert result is None
+
+    @patch("subprocess.run")
+    def test_get_parent_issue_details_graphql_error(self, mock_subprocess_run):
+        """Test get_parent_issue_details when GraphQL query fails."""
+        import subprocess
+
+        client = GitHubClient.get_instance("test_token")
+
+        # Mock subprocess error
+        mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")
+
+        result = client.get_parent_issue_details("owner/repo", 1)
+        # Should return None on error
+        assert result is None
+
+    @patch("subprocess.run")
+    def test_get_parent_issue_details_closed_parent(self, mock_subprocess_run):
+        """Test get_parent_issue_details when parent issue is closed."""
+        client = GitHubClient.get_instance("test_token")
+
+        # Mock GraphQL response with closed parent
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "number": 100,
+                        "title": "Sub-issue",
+                        "parent": {
+                            "number": 1,
+                            "title": "Parent issue",
+                            "state": "CLOSED",
+                            "url": "https://github.com/owner/repo/issues/1",
+                        },
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_subprocess_run.return_value = mock_result
+
+        result = client.get_parent_issue_details("owner/repo", 100)
+        # Should still return parent issue details even if closed
+        assert result is not None
+        assert result["number"] == 1
+        assert result["title"] == "Parent issue"
+        assert result["state"] == "CLOSED"
+        assert result["url"] == "https://github.com/owner/repo/issues/1"
