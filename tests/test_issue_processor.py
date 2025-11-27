@@ -718,3 +718,247 @@ class TestLabelBasedIssueProcessing:
         # Test that non-breaking labels are correctly identified
         assert _is_breaking_change_issue(["bug"]) is False
         assert _is_breaking_change_issue(["FEATURE"]) is False
+
+
+class TestParentIssueStateCheck:
+    """Tests for parent issue state handling and base_branch selection."""
+
+    def test_closed_parent_issue_uses_main_branch(self):
+        """When parent issue is CLOSED, should fall back to MAIN_BRANCH."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {"number": issue_number, "title": "Test Issue"}
+        config = AutomationConfig()
+        parent_issue_number = 100
+        parent_issue_state = "CLOSED"
+
+        # Capture calls to branch_context
+        captured_calls = []
+
+        @contextmanager
+        def fake_branch_context(*args, **kwargs):
+            captured_calls.append((args, kwargs))
+            yield
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield True
+
+        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+            # Simulate: work branch doesn't exist
+            mock_cmd.run_command.side_effect = [
+                _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+                _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+            ]
+
+            with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                    github_client = MagicMock()
+                    # Mock get_parent_issue_details to return CLOSED parent
+                    github_client.get_parent_issue_details.return_value = {
+                        "number": parent_issue_number,
+                        "title": "Parent Issue",
+                        "state": parent_issue_state,
+                        "url": "http://url",
+                    }
+
+                    class DummyLLM:
+                        def _run_llm_cli(self, *_args, **_kwargs):
+                            return None
+
+                    with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                        _apply_issue_actions_directly(
+                            repo_name,
+                            issue_data,
+                            config,
+                            github_client,
+                        )
+
+        # Verify base_branch selection
+        assert len(captured_calls) > 0
+        # The first branch_context call should be for creating the work branch from MAIN_BRANCH
+        first_args, first_kwargs = captured_calls[0]
+        assert first_args[0] == f"issue-{issue_number}"
+        assert first_kwargs.get("base_branch") == config.MAIN_BRANCH, f"Expected base_branch to be MAIN_BRANCH ({config.MAIN_BRANCH}) when parent is CLOSED, " f"but got {first_kwargs.get('base_branch')}"
+
+        # Verify parent issue details were called
+        github_client.get_parent_issue_details.assert_called_once_with(repo_name, issue_number)
+
+    def test_open_parent_issue_missing_branch_creates_parent_branch(self):
+        """When parent issue is OPEN and branch doesn't exist, should create parent branch and use it as base."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {"number": issue_number, "title": "Test Issue"}
+        config = AutomationConfig()
+        parent_issue_number = 100
+        parent_issue_state = "OPEN"
+
+        # Capture calls to branch_context
+        captured_calls = []
+
+        @contextmanager
+        def fake_branch_context(*args, **kwargs):
+            captured_calls.append((args, kwargs))
+            yield
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield True
+
+        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+            # Simulate: parent branch missing, work branch doesn't exist
+            mock_cmd.run_command.side_effect = [
+                _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+                _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse parent branch missing
+                _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+            ]
+
+            with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                    github_client = MagicMock()
+                    # Mock get_parent_issue_details to return OPEN parent
+                    github_client.get_parent_issue_details.return_value = {
+                        "number": parent_issue_number,
+                        "title": "Parent Issue",
+                        "state": parent_issue_state,
+                        "url": "http://url",
+                    }
+
+                    class DummyLLM:
+                        def _run_llm_cli(self, *_args, **_kwargs):
+                            return None
+
+                    with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                        _apply_issue_actions_directly(
+                            repo_name,
+                            issue_data,
+                            config,
+                            github_client,
+                        )
+
+        # Verify base_branch selection - should create parent branch from MAIN_BRANCH first
+        assert len(captured_calls) >= 2, f"Expected at least 2 branch_context calls, got {len(captured_calls)}"
+
+        # First call: create parent branch from MAIN_BRANCH
+        first_args, first_kwargs = captured_calls[0]
+        assert first_args[0] == f"issue-{parent_issue_number}"
+        assert first_kwargs.get("create_new") is True
+        assert first_kwargs.get("base_branch") == config.MAIN_BRANCH
+
+        # Second call: create work branch from parent branch
+        second_args, second_kwargs = captured_calls[1]
+        assert second_args[0] == f"issue-{issue_number}"
+        assert second_kwargs.get("base_branch") == f"issue-{parent_issue_number}"
+
+    def test_open_parent_issue_existing_branch_uses_parent_branch(self):
+        """When parent issue is OPEN and branch exists, should use existing parent branch as base."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {"number": issue_number, "title": "Test Issue"}
+        config = AutomationConfig()
+        parent_issue_number = 100
+        parent_issue_state = "OPEN"
+
+        # Capture calls to branch_context
+        captured_calls = []
+
+        @contextmanager
+        def fake_branch_context(*args, **kwargs):
+            captured_calls.append((args, kwargs))
+            yield
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield True
+
+        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+            # Simulate: parent branch exists, work branch doesn't exist
+            mock_cmd.run_command.side_effect = [
+                _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+                _cmd_result(success=True, stdout="", returncode=0),  # rev-parse parent branch exists
+                _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+            ]
+
+            with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                    github_client = MagicMock()
+                    # Mock get_parent_issue_details to return OPEN parent
+                    github_client.get_parent_issue_details.return_value = {
+                        "number": parent_issue_number,
+                        "title": "Parent Issue",
+                        "state": parent_issue_state,
+                        "url": "http://url",
+                    }
+
+                    class DummyLLM:
+                        def _run_llm_cli(self, *_args, **_kwargs):
+                            return None
+
+                    with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                        _apply_issue_actions_directly(
+                            repo_name,
+                            issue_data,
+                            config,
+                            github_client,
+                        )
+
+        # Verify base_branch selection - should only create work branch from parent branch
+        assert len(captured_calls) >= 1, f"Expected at least 1 branch_context call, got {len(captured_calls)}"
+
+        # First call: create work branch from parent branch (no need to create parent branch)
+        first_args, first_kwargs = captured_calls[0]
+        assert first_args[0] == f"issue-{issue_number}"
+        assert first_kwargs.get("base_branch") == f"issue-{parent_issue_number}"
+
+    def test_no_parent_issue_uses_main_branch(self):
+        """When no parent issue exists, should use MAIN_BRANCH."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {"number": issue_number, "title": "Test Issue"}
+        config = AutomationConfig()
+
+        # Capture calls to branch_context
+        captured_calls = []
+
+        @contextmanager
+        def fake_branch_context(*args, **kwargs):
+            captured_calls.append((args, kwargs))
+            yield
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield True
+
+        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+            # Simulate: work branch doesn't exist
+            mock_cmd.run_command.side_effect = [
+                _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+                _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+            ]
+
+            with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                    github_client = MagicMock()
+                    # Mock get_parent_issue_details to return None (no parent)
+                    github_client.get_parent_issue_details.return_value = None
+
+                    class DummyLLM:
+                        def _run_llm_cli(self, *_args, **_kwargs):
+                            return None
+
+                    with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                        _apply_issue_actions_directly(
+                            repo_name,
+                            issue_data,
+                            config,
+                            github_client,
+                        )
+
+        # Verify base_branch selection
+        assert len(captured_calls) > 0
+        first_args, first_kwargs = captured_calls[0]
+        assert first_args[0] == f"issue-{issue_number}"
+        assert first_kwargs.get("base_branch") == config.MAIN_BRANCH
+
+        # Verify parent issue details were called
+        github_client.get_parent_issue_details.assert_called_once_with(repo_name, issue_number)
