@@ -1,0 +1,11 @@
+services:
+  github-mcp:
+
+    networks:
+      graphrag-network:
+
+networks:
+  graphrag-network:
+    name: graphrag-network
+    driver: bridge
+    external: true
