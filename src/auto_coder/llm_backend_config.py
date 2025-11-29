@@ -200,6 +200,13 @@ class LLMBackendConfiguration:
 
             find_backends_recursive(potential_roots)
 
+            # Add default backends if they are not already in the configuration
+            # This ensures that backends like 'jules' are available even if not explicitly defined in the file
+            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
+            for backend_name in default_backends:
+                if backend_name not in backends:
+                    backends[backend_name] = BackendConfig(name=backend_name)
+
             # Parse message backend settings
             message_backend_order = data.get("message_backend", {}).get("order", [])
             message_default_backend = data.get("message_backend", {}).get("default")
