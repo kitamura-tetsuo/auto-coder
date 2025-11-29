@@ -10,3 +10,13 @@ class AutoCoderUsageLimitError(RuntimeError):
     """
 
     pass
+
+
+class AutoCoderTimeoutError(RuntimeError):
+    """Raised by an LLM client when a command timeout occurs.
+
+    This indicates that the LLM command exceeded the configured timeout
+    and was terminated.
+    """
+
+    pass

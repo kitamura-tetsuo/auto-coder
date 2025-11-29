@@ -6,7 +6,7 @@ import os
 import subprocess
 from typing import Optional
 
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
@@ -134,6 +134,11 @@ class ClaudeClient(LLMClientBase):
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
+
+            # Check for timeout (returncode -1 and "timed out" in stderr)
+            if result.returncode == -1 and "timed out" in low:
+                raise AutoCoderTimeoutError(full_output)
+
             if result.returncode != 0:
                 if any(marker in low for marker in usage_markers):
                     raise AutoCoderUsageLimitError(full_output)
