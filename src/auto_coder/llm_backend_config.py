@@ -352,3 +352,63 @@ def reset_llm_config() -> None:
     """Reset the global configuration instance (for testing)."""
     global _llm_config
     _llm_config = None
+
+
+def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
+    """Check if Jules is enabled via [jules].enabled in config.toml.
+
+    This function reads from ~/.auto-coder/config.toml (or local .auto-coder/config.toml)
+    and checks for a [jules] section with an 'enabled' field.
+
+    Args:
+        config_path: Optional explicit path to config.toml file. If not provided,
+                    will check standard locations.
+
+    Returns:
+        True if Jules is enabled (default), False if explicitly disabled.
+    """
+    import os
+
+    # If explicit path provided, check only that file
+    if config_path:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    data = toml.load(f)
+
+                jules_config = data.get("jules", {})
+                if "enabled" in jules_config:
+                    return bool(jules_config["enabled"])
+            except Exception as e:
+                # Log warning
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+
+        # If explicit path doesn't exist or has no [jules].enabled, return default
+        return True
+
+    # Try to find config.toml in standard locations
+    config_paths = [
+        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
+        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
+    ]
+
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    data = toml.load(f)
+
+                # Check for [jules] section
+                jules_config = data.get("jules", {})
+                if "enabled" in jules_config:
+                    return bool(jules_config["enabled"])
+
+            except Exception as e:
+                # Log warning but continue checking other paths
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+                continue
+
+    # If no config.toml found or no [jules].enabled setting, return default (enabled)
+    return True

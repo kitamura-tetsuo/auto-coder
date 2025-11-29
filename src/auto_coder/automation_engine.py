@@ -437,10 +437,17 @@ class AutomationEngine:
             Processing result
         """
         # Check if Jules mode should be used based on configuration
-        from .llm_backend_config import get_llm_config
+        from .llm_backend_config import get_jules_enabled_from_config, get_llm_config
 
+        # First check [backends.jules] in llm_config.toml
         jules_config = get_llm_config().get_backend_config("jules")
-        jules_mode = jules_config.enabled if jules_config else False
+        jules_backend_enabled = jules_config.enabled if jules_config else False
+
+        # Also check [jules].enabled in config.toml
+        jules_config_enabled = get_jules_enabled_from_config()
+
+        # Both must be true for Jules mode to be enabled
+        jules_mode = jules_backend_enabled and jules_config_enabled
 
         return self._process_single_candidate_unified(
             repo_name,
@@ -555,13 +562,18 @@ class AutomationEngine:
             Dictionary with processing results
         """
         # Check if Jules mode should be used based on configuration
-        from .llm_backend_config import get_llm_config
+        from .llm_backend_config import get_jules_enabled_from_config, get_llm_config
 
         jules_config = get_llm_config().get_backend_config("jules")
-        jules_enabled = jules_config.enabled if jules_config else False
+        jules_backend_enabled = jules_config.enabled if jules_config else False
 
-        # Only use Jules mode if it's both requested and enabled in config
-        jules_mode = jules_mode and jules_enabled
+        # Also check [jules].enabled in config.toml
+        jules_config_enabled = get_jules_enabled_from_config()
+
+        # Both must be true for Jules mode to be enabled
+        # jules_mode parameter is requested state, jules_backend_enabled is from llm_config.toml,
+        # and jules_config_enabled is from config.toml
+        jules_mode = jules_mode and jules_backend_enabled and jules_config_enabled
         from datetime import datetime
 
         with ProgressStage("Processing single PR/IS"):
