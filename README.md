@@ -798,6 +798,87 @@ always_switch_after_execution = true  # continue rotation to claude next
 
 If `always_switch_after_execution` is omitted or set to `false`, Auto-Coder keeps using the active backend until a retry/rotation condition is triggered.
 
+### Timeout Handling and Automatic Backend Fallback
+
+Auto-Coder includes automatic timeout handling that triggers fallback to the next configured backend when an LLM command exceeds its configured timeout. This ensures operations continue smoothly even when a backend becomes unresponsive or slow.
+
+#### How Timeout Fallback Works
+
+**When a timeout occurs:**
+1. The current backend command is terminated when it exceeds its configured timeout duration
+2. Auto-Coder catches the `AutoCoderTimeoutError` exception
+3. The system automatically switches to the next backend in the configured `backend.order` list
+4. The operation is retried with the new backend
+5. This continues through all configured backends until a successful response is received or all backends are exhausted
+
+**Timeout behavior varies by operation:**
+
+- **Normal Operations (`process-issues`, `create-feature-issues`)**:
+  - Timeouts trigger automatic fallback to the next backend
+  - System continues through all backends in order
+  - If all backends timeout, the last timeout error is raised
+
+- **Test Fix Operations (`fix-to-pass-tests`)**:
+  - Timeouts trigger immediate fallback to the next backend
+  - Operation is retried once with the new backend
+  - If the retry also times out, the error is propagated
+
+#### Example Scenario
+
+With the following configuration:
+```toml
+[backend]
+order = ["gemini", "qwen", "claude"]
+default = "gemini"
+
+[backends.gemini]
+model = "gemini-2.5-pro"
+timeout = 30
+
+[backends.qwen]
+model = "qwen3-coder-plus"
+timeout = 30
+
+[backends.claude]
+model = "sonnet"
+timeout = 30
+```
+
+**Execution flow:**
+1. First attempt uses `gemini` backend
+2. If `gemini` times out after 30 seconds → automatically switch to `qwen`
+3. If `qwen` times out after 30 seconds → automatically switch to `claude`
+4. If `claude` succeeds, return the result
+5. If `claude` also times out, raise the timeout error
+
+#### Configuration
+
+Timeout values are configured per backend in the TOML configuration file:
+
+```toml
+[backends.gemini]
+model = "gemini-2.5-pro"
+timeout = 30  # seconds
+```
+
+**Timeout recommendations by provider:**
+- **Gemini**: 30-60 seconds ( Google's API is generally fast)
+- **Claude**: 30-60 seconds (Anthropic's API is responsive)
+- **Qwen**: 60-120 seconds (Alibaba's API may need more time)
+- **Codex**: 30-60 seconds (OpenAI's Codex is typically fast)
+- **Auggie**: 60-120 seconds ( Auggie has daily call limits)
+
+Adjust timeout values based on your network conditions and the complexity of tasks you're running.
+
+#### Logging
+
+Timeout fallback events are logged for debugging:
+```
+WARNING - Timeout error on backend 'gemini', switching to next backend
+```
+
+Check the logs at `~/.auto-coder/logs/llm_output.jsonl` for detailed information about timeout occurrences and backend rotations.
+
 ### Environment Variables
 
 Environment variables can be used to override configuration file values or provide sensitive information like API keys:
