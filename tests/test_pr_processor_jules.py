@@ -7,7 +7,9 @@ import pytest
 from src.auto_coder.cloud_manager import CloudManager
 from src.auto_coder.pr_processor import (
     _extract_session_id_from_pr_body,
+    _is_jules_pr,
     _process_jules_pr,
+    _send_jules_error_feedback,
     _update_jules_pr_body,
 )
 
@@ -549,3 +551,186 @@ class TestProcessJulesPr:
         # Assert
         assert result is True
         mock_cloud_manager.get_issue_by_session.assert_called_once_with(long_session_id)
+
+
+class TestIsJulesPr:
+    """Test cases for _is_jules_pr function."""
+
+    def test_is_jules_pr_true(self):
+        """Test that Jules PRs are correctly identified."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": "google-labs-jules"},
+        }
+        assert _is_jules_pr(pr_data) is True
+
+    def test_is_jules_pr_false(self):
+        """Test that non-Jules PRs are correctly identified."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": "otheruser"},
+        }
+        assert _is_jules_pr(pr_data) is False
+
+    def test_is_jules_pr_no_user(self):
+        """Test that PRs without user are not identified as Jules PRs."""
+        pr_data = {
+            "number": 123,
+        }
+        assert _is_jules_pr(pr_data) is False
+
+    def test_is_jules_pr_empty_login(self):
+        """Test that PRs with empty login are not identified as Jules PRs."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": ""},
+        }
+        assert _is_jules_pr(pr_data) is False
+
+    def test_is_jules_pr_none_login(self):
+        """Test that PRs with None login are not identified as Jules PRs."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": None},
+        }
+        assert _is_jules_pr(pr_data) is False
+
+    def test_is_jules_pr_different_case(self):
+        """Test that login comparison is case-sensitive."""
+        pr_data = {
+            "number": 123,
+            "user": {"login": "Google-Labs-Jules"},
+        }
+        assert _is_jules_pr(pr_data) is False
+
+
+class TestSendJulesErrorFeedback:
+    """Test cases for _send_jules_error_feedback function."""
+
+    @patch("src.auto_coder.pr_processor._get_github_actions_logs")
+    @patch("src.auto_coder.jules_client.JulesClient")
+    def test_send_jules_error_feedback_success(self, mock_jules_client_class, mock_get_logs):
+        """Test successful sending of error feedback to Jules."""
+        # Setup
+        mock_jules_client = Mock()
+        mock_jules_client.send_message.return_value = "Acknowledged, will fix the issues"
+        mock_jules_client_class.return_value = mock_jules_client
+
+        mock_get_logs.return_value = "Error: Test failed\nStack trace here"
+
+        pr_data = {
+            "number": 123,
+            "title": "Fix authentication bug",
+            "user": {"login": "google-labs-jules"},
+            "_jules_session_id": "sessionABC123",
+        }
+
+        failed_checks = [{"name": "test", "status": "failed"}]
+        repo_name = "owner/repo"
+        config = Mock()
+
+        # Execute
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+
+        # Assert
+        assert len(actions) == 1
+        assert "Sent CI failure logs to Jules session 'sessionABC123' for PR #123" in actions[0]
+        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
+        mock_jules_client.send_message.assert_called_once()
+
+        # Check the message sent to Jules
+        call_args = mock_jules_client.send_message.call_args
+        assert call_args[0][0] == "sessionABC123"
+        message = call_args[0][1]
+        assert "CI checks failed for PR #123 in owner/repo" in message
+        assert "Error: Test failed" in message
+        assert "Fix authentication bug" in message
+
+    @patch("src.auto_coder.pr_processor._get_github_actions_logs")
+    @patch("src.auto_coder.jules_client.JulesClient")
+    def test_send_jules_error_feedback_no_session_id(self, mock_jules_client_class, mock_get_logs):
+        """Test that error is returned when no session ID is found."""
+        # Setup
+        pr_data = {
+            "number": 123,
+            "title": "Fix authentication bug",
+            "user": {"login": "google-labs-jules"},
+            # No _jules_session_id
+        }
+
+        failed_checks = [{"name": "test", "status": "failed"}]
+        repo_name = "owner/repo"
+        config = Mock()
+
+        # Execute
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+
+        # Assert
+        assert len(actions) == 1
+        assert "Cannot send error feedback to Jules for PR #123: no session ID found" in actions[0]
+        # JulesClient should not be instantiated
+        mock_jules_client_class.assert_not_called()
+
+    @patch("src.auto_coder.pr_processor._get_github_actions_logs")
+    @patch("src.auto_coder.jules_client.JulesClient")
+    def test_send_jules_error_feedback_exception(self, mock_jules_client_class, mock_get_logs):
+        """Test that exceptions are handled gracefully."""
+        # Setup
+        mock_jules_client = Mock()
+        mock_jules_client.send_message.side_effect = Exception("Connection error")
+        mock_jules_client_class.return_value = mock_jules_client
+
+        pr_data = {
+            "number": 123,
+            "title": "Fix authentication bug",
+            "user": {"login": "google-labs-jules"},
+            "_jules_session_id": "sessionABC123",
+        }
+
+        failed_checks = [{"name": "test", "status": "failed"}]
+        repo_name = "owner/repo"
+        config = Mock()
+
+        # Execute
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+
+        # Assert
+        assert len(actions) == 1
+        assert "Error sending Jules error feedback for PR #123" in actions[0]
+        assert "Connection error" in actions[0]
+
+    @patch("src.auto_coder.pr_processor._get_github_actions_logs")
+    @patch("src.auto_coder.jules_client.JulesClient")
+    def test_send_jules_error_feedback_with_empty_logs(self, mock_jules_client_class, mock_get_logs):
+        """Test sending error feedback with empty logs."""
+        # Setup
+        mock_jules_client = Mock()
+        mock_jules_client.send_message.return_value = "Will review"
+        mock_jules_client_class.return_value = mock_jules_client
+
+        mock_get_logs.return_value = ""
+
+        pr_data = {
+            "number": 456,
+            "title": "Update documentation",
+            "user": {"login": "google-labs-jules"},
+            "_jules_session_id": "sessionXYZ789",
+        }
+
+        failed_checks = []
+        repo_name = "owner/repo"
+        config = Mock()
+
+        # Execute
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+
+        # Assert
+        assert len(actions) == 1
+        assert "Sent CI failure logs to Jules session 'sessionXYZ789' for PR #456" in actions[0]
+        mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
+        mock_jules_client.send_message.assert_called_once()
+
+        # Check the message includes empty logs
+        call_args = mock_jules_client.send_message.call_args
+        message = call_args[0][1]
+        assert "CI checks failed for PR #456 in owner/repo" in message
