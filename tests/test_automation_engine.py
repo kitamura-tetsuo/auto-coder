@@ -59,8 +59,8 @@ class TestAutomationEngine:
 
         mock_create_feature_issues.assert_called_once()
 
-    # Note: _process_issues and _process_issues_jules_mode are now functions in issue_processor.py
-    # These tests are covered by test_issue_processor.py
+    # Note: Legacy _process_issues and _process_issues_jules_mode functions have been removed
+    # These tests are covered by test_automation_engine.py and other integration tests
 
     # Note: _resolve_merge_conflicts_with_gemini is now in conflict_resolver.py
     # These tests are covered by test_conflict_resolver.py
