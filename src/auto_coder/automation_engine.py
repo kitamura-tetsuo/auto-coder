@@ -436,10 +436,17 @@ class AutomationEngine:
         Returns:
             Processing result
         """
+        # Check if Jules mode should be used based on configuration
+        from .llm_backend_config import get_llm_config
+
+        jules_config = get_llm_config().get_backend_config("jules")
+        jules_mode = jules_config.enabled if jules_config else False
+
         return self._process_single_candidate_unified(
             repo_name,
             candidate,
             self.config,
+            jules_mode=jules_mode,
         )
 
     def run(self, repo_name: str) -> Dict[str, Any]:
@@ -547,6 +554,14 @@ class AutomationEngine:
         Returns:
             Dictionary with processing results
         """
+        # Check if Jules mode should be used based on configuration
+        from .llm_backend_config import get_llm_config
+
+        jules_config = get_llm_config().get_backend_config("jules")
+        jules_enabled = jules_config.enabled if jules_config else False
+
+        # Only use Jules mode if it's both requested and enabled in config
+        jules_mode = jules_mode and jules_enabled
         from datetime import datetime
 
         with ProgressStage("Processing single PR/IS"):
