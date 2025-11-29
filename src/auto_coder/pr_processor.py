@@ -655,10 +655,20 @@ def _handle_pr_merge(
             else:
                 actions.append(f"Failed to merge PR #{pr_number}")
 
-        # Step 4: GitHub Actions failed - checkout PR branch
+        # Step 4: GitHub Actions failed - handle Jules PR feedback loop
         failed_checks = detailed_checks.failed_checks
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
+        # Check if this is a Jules PR
+        if _is_jules_pr(pr_data):
+            actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
+            # Send error logs to Jules and skip local fixing - let Jules handle it
+            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+            actions.extend(jules_feedback_actions)
+            actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
+            return actions
+
+        # Step 5: Checkout PR branch for non-Jules PRs
         checkout_result = _checkout_pr_branch(repo_name, pr_data, config)
         if not checkout_result:
             actions.append(f"Failed to checkout PR #{pr_number} branch")
@@ -666,7 +676,7 @@ def _handle_pr_merge(
 
         actions.append(f"Checked out PR #{pr_number} branch")
 
-        # Step 5: Optionally update with latest base branch commits (configurable)
+        # Step 6: Optionally update with latest base branch commits (configurable)
         if config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL:
             actions.append(f"[Policy] Skipping base branch update for PR #{pr_number} (config: SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL=True)")
 
@@ -684,7 +694,7 @@ def _handle_pr_merge(
             update_actions = _update_with_base_branch(repo_name, pr_data, config)
             actions.extend(update_actions)
 
-            # Step 6: Check for special cases from base branch update
+            # Step 7: Check for special cases from base branch update
 
             # Check if LLM determined merge would degrade code quality
             if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
@@ -703,7 +713,7 @@ def _handle_pr_merge(
                 actions.append(f"Updated PR #{pr_number} with base branch, skipping to next PR for GitHub Actions check")
                 return actions
 
-            # Step 7: If no main branch updates were needed, the test failures are due to PR content
+            # Step 8: If no main branch updates were needed, the test failures are due to PR content
             # Get GitHub Actions error logs and ask Gemini to fix
             if any("up to date with" in action for action in update_actions):
                 actions.append(f"PR #{pr_number} is up to date with main branch, test failures are due to PR content")
@@ -1084,6 +1094,19 @@ def _update_jules_pr_body(
         return False
 
 
+def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
+    """Check if a PR is created by Jules (google-labs-jules).
+
+    Args:
+        pr_data: PR data dictionary
+
+    Returns:
+        True if the PR is created by Jules, False otherwise
+    """
+    pr_author = pr_data.get("user", {}).get("login", "")
+    return pr_author == "google-labs-jules"
+
+
 def _process_jules_pr(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -1119,7 +1142,10 @@ def _process_jules_pr(
 
         logger.info(f"Extracted session ID '{session_id}' from Jules PR #{pr_number}")
 
-        # Step 2: Use CloudManager to find the original issue number
+        # Step 2: Store session_id in pr_data for later use in the feedback loop
+        pr_data["_jules_session_id"] = session_id
+
+        # Step 3: Use CloudManager to find the original issue number
         cloud_manager = CloudManager(repo_name)
         issue_number = cloud_manager.get_issue_by_session(session_id)
 
@@ -1129,7 +1155,7 @@ def _process_jules_pr(
 
         logger.info(f"Found issue #{issue_number} for session ID '{session_id}' in Jules PR #{pr_number}")
 
-        # Step 3: Update PR body to include close #<issue_number> and link to issue
+        # Step 4: Update PR body to include close #<issue_number> and link to issue
         success = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         if success:
@@ -1203,6 +1229,67 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
 
     except Exception as e:
         logger.warning(f"Error processing linked issues for PR #{pr_number}: {e}")
+
+
+def _send_jules_error_feedback(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    failed_checks: List[Dict[str, Any]],
+    config: AutomationConfig,
+) -> List[str]:
+    """Send CI error logs to Jules session for Jules-created PRs.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        failed_checks: List of failed GitHub Actions checks
+        config: AutomationConfig instance
+
+    Returns:
+        List of action strings describing what was done
+    """
+    actions = []
+    pr_number = pr_data["number"]
+
+    try:
+        # Get the session ID from pr_data
+        session_id = pr_data.get("_jules_session_id")
+        if not session_id:
+            actions.append(f"Cannot send error feedback to Jules for PR #{pr_number}: no session ID found")
+            logger.error(f"No session ID found in PR #{pr_number} data for Jules error feedback")
+            return actions
+
+        # Get GitHub Actions error logs
+        github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)
+
+        # Format the message to send to Jules
+        message = f"""CI checks failed for PR #{pr_number} in {repo_name}.
+
+Please review and fix the following errors:
+
+{github_logs}
+
+PR Title: {pr_data.get('title', 'Unknown')}
+PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
+"""
+
+        # Import JulesClient here to avoid circular imports
+        from .jules_client import JulesClient
+
+        # Send the error logs to Jules
+        logger.info(f"Sending CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
+        jules_client = JulesClient()
+        response = jules_client.send_message(session_id, message)
+
+        actions.append(f"Sent CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
+        logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
+
+    except Exception as e:
+        error_msg = f"Error sending Jules error feedback for PR #{pr_number}: {e}"
+        logger.error(error_msg)
+        actions.append(error_msg)
+
+    return actions
 
 
 def _merge_pr(
