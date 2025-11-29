@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
@@ -155,6 +155,11 @@ class CodexClient(LLMClientBase):
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
+
+            # Check for timeout (returncode -1 and "timed out" in stderr)
+            if result.returncode == -1 and "timed out" in low:
+                raise AutoCoderTimeoutError(full_output)
+
             if result.returncode != 0:
                 if any(marker in low for marker in usage_markers):
                     status = "error"
@@ -172,6 +177,9 @@ class CodexClient(LLMClientBase):
             return full_output
         except AutoCoderUsageLimitError:
             # Re-raise without catching
+            raise
+        except AutoCoderTimeoutError:
+            # Re-raise timeout errors
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to run codex CLI: {e}")

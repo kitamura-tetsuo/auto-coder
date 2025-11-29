@@ -36,7 +36,7 @@ class RecordingPopen:
         type(self).calls.append(list(cmd))
         self.stdout = io.StringIO("stub-response line 1\nstub-response line 2\n")
 
-    def wait(self) -> int:
+    def wait(self, timeout=None) -> int:
         return 0
 
 

@@ -15,7 +15,7 @@ import subprocess
 import time
 from typing import Any, Dict, List, Optional
 
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
@@ -223,6 +223,12 @@ class QwenClient(LLMClientBase):
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
 
+            # Check for timeout (returncode -1 and "timed out" in stderr)
+            if result.returncode == -1 and "timed out" in full_output.lower():
+                status = "error"
+                error_message = full_output
+                raise AutoCoderTimeoutError(full_output)
+
             if self._is_usage_limit(full_output, result.returncode):
                 status = "error"
                 error_message = full_output
@@ -237,6 +243,9 @@ class QwenClient(LLMClientBase):
 
         except AutoCoderUsageLimitError:
             # Re-raise without catching
+            raise
+        except AutoCoderTimeoutError:
+            # Re-raise timeout errors
             raise
         except Exception as e:
             raise

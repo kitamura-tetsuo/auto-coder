@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import __version__ as AUTO_CODER_VERSION
+from .exceptions import AutoCoderTimeoutError
 from .graphrag_mcp_integration import GraphRAGMCPIntegration
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
@@ -437,27 +438,32 @@ class CodexMCPClient(LLMClientBase):
             logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
             logger.info("🤖 Running under MCP session: codex exec -s workspace-write " "--dangerously-bypass-approvals-and-sandbox [prompt]")
 
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            output_lines: List[str] = []
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.rstrip("\n")
-                output_lines.append(line)
-            return_code = proc.wait()
-            output = "\n".join(output_lines).strip()
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+                output_lines: List[str] = []
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    line = line.rstrip("\n")
+                    output_lines.append(line)
+                return_code = proc.wait(timeout=7200)  # 2 hour timeout
+                output = "\n".join(output_lines).strip()
 
-            # Log full response once using JSON format
-            self._log_fallback_event(cmd, output, return_code)
+                # Log full response once using JSON format
+                self._log_fallback_event(cmd, output, return_code)
 
-            if return_code != 0:
-                raise RuntimeError(f"codex exec failed with return code {return_code}")
-            return output
+                if return_code != 0:
+                    raise RuntimeError(f"codex exec failed with return code {return_code}")
+                return output
+            except subprocess.TimeoutExpired:
+                if proc:
+                    proc.kill()
+                raise AutoCoderTimeoutError("codex exec timed out after 7200 seconds")
         except Exception as e:
             raise RuntimeError(f"Failed to run codex exec under MCP session: {e}")
 
