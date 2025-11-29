@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .backend_provider_manager import BackendProviderManager
 from .backend_state_manager import BackendStateManager
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
 from .llm_client_base import LLMBackendManagerBase
 from .logger_config import get_logger, log_calls
@@ -337,6 +337,12 @@ class BackendManager(LLMBackendManagerBase):
                 self.switch_to_next_backend()
                 attempts += 1
                 continue
+            except AutoCoderTimeoutError as exc:
+                last_error = exc
+                logger.warning(f"Timeout error on backend '{backend_name}', switching to next backend")
+                self.switch_to_next_backend()
+                attempts += 1
+                continue
             except Exception as exc:
                 last_error = exc
                 break
@@ -428,7 +434,14 @@ class BackendManager(LLMBackendManagerBase):
             stage_label += f" (provider: {provider_for_stage})"
 
         with ProgressStage(stage_label):
-            out: str = self._run_llm_cli(prompt)
+            try:
+                out: str = self._run_llm_cli(prompt)
+            except AutoCoderTimeoutError as exc:
+                logger.warning(f"Timeout error on backend '{active_backend}', switching to next backend")
+                self.switch_to_next_backend()
+                # Try again with the next backend
+                with ProgressStage(f"Running LLM: {self._current_backend_name()}"):
+                    out = self._run_llm_cli(prompt)
 
         # Update state
         self._last_prompt = prompt
