@@ -94,6 +94,8 @@ class LLMBackendConfiguration:
     # Message backend configuration (separate from general LLM operations)
     message_backend_order: List[str] = field(default_factory=list)
     message_default_backend: Optional[str] = None
+    # Fallback backend configuration for failed PRs
+    backend_for_failed_pr: Optional[BackendConfig] = None
     # Environment variable overrides
     env_prefix: str = "AUTO_CODER_"
     # Configuration file path - relative to user's home directory
@@ -213,7 +215,15 @@ class LLMBackendConfiguration:
             message_backend_order = data.get("message_backend", {}).get("order", [])
             message_default_backend = data.get("message_backend", {}).get("default")
 
-            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, message_backend_order=message_backend_order, message_default_backend=message_default_backend, config_file_path=config_path)
+            # Parse backend_for_failed_pr section
+            backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
+            backend_for_failed_pr = None
+            if backend_for_failed_pr_data:
+                # Use "backend_for_failed_pr" as default name if not specified in data
+                fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
+                backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
+
+            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, message_backend_order=message_backend_order, message_default_backend=message_default_backend, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
 
             return config
         except Exception as e:
@@ -253,7 +263,38 @@ class LLMBackendConfiguration:
                 "usage_markers": config.usage_markers,
             }
 
+        # Prepare backend_for_failed_pr data
+        backend_for_failed_pr_data = {}
+        if self.backend_for_failed_pr:
+            config = self.backend_for_failed_pr
+            backend_for_failed_pr_data = {
+                "name": config.name,
+                "enabled": config.enabled,
+                "model": config.model,
+                "api_key": config.api_key,
+                "base_url": config.base_url,
+                "temperature": config.temperature,
+                "timeout": config.timeout,
+                "max_retries": config.max_retries,
+                "openai_api_key": config.openai_api_key,
+                "openai_base_url": config.openai_base_url,
+                "extra_args": config.extra_args,
+                "providers": config.providers,
+                "usage_limit_retry_count": config.usage_limit_retry_count,
+                "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
+                "options": config.options,
+                "backend_type": config.backend_type,
+                "model_provider": config.model_provider,
+                "always_switch_after_execution": config.always_switch_after_execution,
+                "settings": config.settings,
+                "usage_markers": config.usage_markers,
+            }
+
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}
+
+        # Add backend_for_failed_pr section if configured
+        if backend_for_failed_pr_data:
+            data["backend_for_failed_pr"] = backend_for_failed_pr_data
 
         # Write TOML file
         with open(config_path, "w") as f:
@@ -299,6 +340,23 @@ class LLMBackendConfiguration:
         has_message_config = bool(self.message_backend_order or self.message_default_backend)
         has_general_config = bool(self.backend_order or self.default_backend)
         return has_message_config and has_general_config
+
+    def get_backend_for_failed_pr(self) -> Optional[BackendConfig]:
+        """Get the fallback backend configuration for failed PRs.
+
+        Returns the backend_for_failed_pr configuration if configured, None otherwise.
+        """
+        return self.backend_for_failed_pr
+
+    def get_model_for_failed_pr_backend(self) -> Optional[str]:
+        """Get the model for the fallback backend for failed PRs.
+
+        Returns the model name if a fallback backend is configured and has a model,
+        None otherwise.
+        """
+        if self.backend_for_failed_pr and self.backend_for_failed_pr.model:
+            return self.backend_for_failed_pr.model
+        return None
 
     def get_model_for_backend(self, backend_name: str) -> Optional[str]:
         """Get the model for a specific backend, with fallback to backend defaults."""

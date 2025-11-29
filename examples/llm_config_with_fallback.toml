@@ -1,0 +1,78 @@
+# Example LLM Configuration with Fallback Backend for Failed PRs
+#
+# This configuration demonstrates the new [backend_for_failed_pr] section
+# that allows you to specify a fallback backend to use when PR processing fails.
+
+[backend]
+# Default backend to use for normal operations
+default = "codex"
+
+# Order of backends to try (first enabled backend is used)
+order = ["codex", "gemini", "qwen"]
+
+# Individual backend configurations
+[backends.codex]
+enabled = true
+model = "codex"
+
+[backends.gemini]
+enabled = true
+model = "gemini-2.5-pro"
+api_key = "your-gemini-api-key"
+
+[backends.qwen]
+enabled = true
+model = "qwen3-coder-plus"
+api_key = "your-qwen-api-key"
+
+# Fallback backend for failed PRs
+# This backend will be used as a fallback when the primary backends fail
+# to process a PR successfully. This is useful for resilience and ensuring
+# that PR processing can continue even when the default backend is unavailable.
+[backend_for_failed_pr]
+# The name is optional and used for identification purposes
+name = "gemini-fallback"
+
+# Backend should be enabled (default: true)
+enabled = true
+
+# Model to use for the fallback backend
+model = "gemini-2.5-flash"
+
+# Optional: API key (can also be set via environment variable)
+api_key = "your-fallback-api-key"
+
+# Optional: Override default temperature (0.0 to 1.0)
+temperature = 0.2
+
+# Optional: Override default timeout (in seconds)
+timeout = 120
+
+# Optional: Backend type (e.g., "codex", "gemini", "qwen")
+backend_type = "gemini"
+
+# Optional: List of providers for this backend
+providers = ["google"]
+
+# Optional: OpenAI-compatible configuration
+openai_api_key = "your-openai-key"
+openai_base_url = "https://api.openai.com/v1"
+
+# Optional: Usage limit retry configuration
+usage_limit_retry_count = 3
+usage_limit_retry_wait_seconds = 30
+
+# Optional: Additional options
+options = ["stream", "json_mode"]
+
+# Optional: Model provider (e.g., "openrouter", "anthropic", "google")
+model_provider = "google"
+
+# Optional: Always switch to next backend after execution
+always_switch_after_execution = false
+
+# Optional: Path to settings file (for Claude backend)
+# settings = "path/to/settings.json"
+
+# Optional: Usage markers for tracking
+usage_markers = ["fallback", "high_availability"]
