@@ -184,3 +184,28 @@ class CloudManager:
         except Exception as e:
             logger.error(f"Failed to check if issue #{issue_number} is managed: {e}")
             return False
+
+    def get_issue_by_session(self, session_id: str) -> Optional[int]:
+        """
+        Get the issue number for a given session ID (reverse lookup).
+
+        Args:
+            session_id: Session ID to look up
+
+        Returns:
+            Issue number if found, None otherwise
+        """
+        try:
+            sessions = self._read_sessions()
+            # Reverse lookup: find issue number for given session_id
+            for issue_number_str, stored_session_id in sessions.items():
+                if stored_session_id == session_id:
+                    issue_number = int(issue_number_str)
+                    logger.debug(f"Found issue #{issue_number} for session_id={session_id}")
+                    return issue_number
+
+            logger.debug(f"No issue found for session_id={session_id}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to lookup issue by session {session_id}: {e}")
+            return None
