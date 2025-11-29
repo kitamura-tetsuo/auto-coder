@@ -9,7 +9,7 @@ from src.auto_coder.backend_provider_manager import (
     BackendProviderMetadata,
     ProviderMetadata,
 )
-from src.auto_coder.exceptions import AutoCoderUsageLimitError
+from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
 
@@ -24,6 +24,8 @@ class DummyClient:
         self.calls.append(self.name)
         if self.behavior == "limit":
             raise AutoCoderUsageLimitError("rate limit")
+        if self.behavior == "timeout":
+            raise AutoCoderTimeoutError("timeout")
         if self.behavior == "error":
             raise RuntimeError("other error")
         return f"{self.name}:{prompt}"
@@ -244,6 +246,73 @@ def test_no_retry_on_other_exceptions(mock_llm_config):
         mgr._run_llm_cli("test")
 
     assert calls == ["a"]
+
+
+def test_timeout_fallback_to_next_backend(mock_llm_config):
+    """Test that BackendManager switches to next backend when timeout occurs."""
+    mock_llm_config.backends["a"] = BackendConfig(name="a", usage_limit_retry_count=0)
+    mock_llm_config.backends["b"] = BackendConfig(name="b", usage_limit_retry_count=0)
+
+    calls = []
+    client_a = DummyClient("a", "m1", "timeout", calls)
+    client_b = DummyClient("b", "m2", "ok", calls)
+
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client_a,
+        factories={"a": lambda: client_a, "b": lambda: client_b},
+        order=["a", "b"],
+    )
+
+    result = mgr._run_llm_cli("test")
+    assert result == "b:test"
+    assert calls == ["a", "b"]
+
+
+def test_timeout_fallback_multiple_backends(mock_llm_config):
+    """Test timeout fallback with multiple backend rotations."""
+    mock_llm_config.backends["a"] = BackendConfig(name="a", usage_limit_retry_count=0)
+    mock_llm_config.backends["b"] = BackendConfig(name="b", usage_limit_retry_count=0)
+    mock_llm_config.backends["c"] = BackendConfig(name="c", usage_limit_retry_count=0)
+
+    calls = []
+    client_a = DummyClient("a", "m1", "timeout", calls)
+    client_b = DummyClient("b", "m2", "timeout", calls)
+    client_c = DummyClient("c", "m3", "ok", calls)
+
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client_a,
+        factories={"a": lambda: client_a, "b": lambda: client_b, "c": lambda: client_c},
+        order=["a", "b", "c"],
+    )
+
+    result = mgr._run_llm_cli("test")
+    assert result == "c:test"
+    assert calls == ["a", "b", "c"]
+
+
+def test_timeout_fallback_exhausts_all_backends(mock_llm_config):
+    """Test that all backends timeout raises the last timeout error."""
+    mock_llm_config.backends["a"] = BackendConfig(name="a", usage_limit_retry_count=0)
+    mock_llm_config.backends["b"] = BackendConfig(name="b", usage_limit_retry_count=0)
+
+    calls = []
+    client_a = DummyClient("a", "m1", "timeout", calls)
+    client_b = DummyClient("b", "m2", "timeout", calls)
+
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client_a,
+        factories={"a": lambda: client_a, "b": lambda: client_b},
+        order=["a", "b"],
+    )
+
+    with pytest.raises(AutoCoderTimeoutError):
+        mgr._run_llm_cli("test")
+
+    # Both backends should have been tried
+    assert calls == ["a", "b"]
 
 
 def test_backend_switch_after_execution_with_flag_enabled(mock_llm_config):
