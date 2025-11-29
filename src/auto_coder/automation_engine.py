@@ -364,7 +364,7 @@ class AutomationEngine:
             repo_name: Repository name
             candidate: Target candidate to process
             config: AutomationConfig instance
-            jules_mode: Whether Jules mode is enabled
+            jules_mode: Whether to use Jules mode for processing (default: False)
 
         Returns:
             Processing result
@@ -395,16 +395,21 @@ class AutomationEngine:
                     result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
                     return result
 
-                if jules_mode and item_type == "issue":
-                    # Jules mode: only add 'jules' label
-                    from .issue_processor import _process_issue_jules_mode
+                if item_type == "issue":
+                    # Issue processing
+                    if jules_mode:
+                        # Use Jules mode for issue processing
+                        from .issue_processor import _process_issue_jules_mode
 
-                    jules_result = _process_issue_jules_mode(self.github, config, repo_name, candidate.data)
-                    result.actions = jules_result.actions_taken
-                    result.success = True
-                elif item_type == "issue":
-                    # Regular issue processing
-                    result.actions = self._take_issue_actions(repo_name, candidate.data)
+                        result.actions = _process_issue_jules_mode(
+                            repo_name,
+                            candidate.data,
+                            config,
+                            self.github,
+                        )
+                    else:
+                        # Regular issue processing
+                        result.actions = self._take_issue_actions(repo_name, candidate.data)
                     result.success = True
                 elif item_type == "pr":
                     # PR processing
@@ -421,13 +426,12 @@ class AutomationEngine:
 
         return result
 
-    def _process_single_candidate(self, repo_name: str, candidate: Candidate, jules_mode: bool = False) -> CandidateProcessingResult:
+    def _process_single_candidate(self, repo_name: str, candidate: Candidate) -> CandidateProcessingResult:
         """Process a single candidate (issue/PR).
 
         Args:
             repo_name: Repository name
             candidate: Target candidate to process
-            jules_mode: Whether Jules mode is enabled
 
         Returns:
             Processing result
@@ -436,10 +440,9 @@ class AutomationEngine:
             repo_name,
             candidate,
             self.config,
-            jules_mode=jules_mode,
         )
 
-    def run(self, repo_name: str, jules_mode: bool = False) -> Dict[str, Any]:
+    def run(self, repo_name: str) -> Dict[str, Any]:
         """Run the main automation process."""
         logger.info(f"Starting automation for repository: {repo_name}")
 
@@ -450,7 +453,6 @@ class AutomationEngine:
             return {
                 "repository": repo_name,
                 "timestamp": datetime.now().isoformat(),
-                "jules_mode": jules_mode,
                 "issues_processed": [],
                 "prs_processed": [],
                 "errors": ["Exited due to closed item on current branch"],
@@ -462,7 +464,6 @@ class AutomationEngine:
         results = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
-            "jules_mode": jules_mode,
             "llm_backend": llm_backend_info["backend"],
             "llm_provider": llm_backend_info["provider"],
             "llm_model": llm_backend_info["model"],
@@ -490,7 +491,7 @@ class AutomationEngine:
                         logger.info(f"Processing {candidate.type} #{candidate.data.get('number', 'N/A')}")
 
                         # Process the candidate
-                        result = self._process_single_candidate(repo_name, candidate, jules_mode)
+                        result = self._process_single_candidate(repo_name, candidate)
 
                         # Track results
                         # Convert dataclass to dict for backward compatibility with existing code
@@ -541,7 +542,7 @@ class AutomationEngine:
             repo_name: Repository name
             target_type: Type of target ('issue' or 'pr')
             number: Issue or PR number
-            jules_mode: Whether Jules mode is enabled
+            jules_mode: Whether to use Jules mode for processing (default: False)
 
         Returns:
             Dictionary with processing results
@@ -556,7 +557,6 @@ class AutomationEngine:
                 return {
                     "repository": repo_name,
                     "timestamp": datetime.now().isoformat(),
-                    "jules_mode": jules_mode,
                     "issues_processed": [],
                     "prs_processed": [],
                     "errors": ["Exited due to closed item on current branch"],
@@ -566,7 +566,6 @@ class AutomationEngine:
             result = ProcessResult(
                 repository=repo_name,
                 timestamp=datetime.now().isoformat(),
-                jules_mode=jules_mode,
             )
 
             try:
@@ -579,7 +578,6 @@ class AutomationEngine:
                     return {
                         "repository": result.repository,
                         "timestamp": result.timestamp,
-                        "jules_mode": result.jules_mode,
                         "issues_processed": result.issues_processed,
                         "prs_processed": result.prs_processed,
                         "errors": result.errors,
@@ -590,7 +588,7 @@ class AutomationEngine:
                     repo_name,
                     candidate,
                     self.config,
-                    jules_mode=jules_mode,
+                    jules_mode,
                 )
 
                 # Only add to processed list if there was no error
@@ -666,7 +664,6 @@ class AutomationEngine:
         return {
             "repository": result.repository,
             "timestamp": result.timestamp,
-            "jules_mode": result.jules_mode,
             "issues_processed": result.issues_processed,
             "prs_processed": result.prs_processed,
             "errors": result.errors,

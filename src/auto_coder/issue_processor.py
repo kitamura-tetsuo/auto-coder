@@ -11,11 +11,13 @@ from auto_coder.util.github_action import _check_github_actions_status, check_an
 from .attempt_manager import get_current_attempt
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .backend_manager import get_llm_backend_manager, run_llm_message_prompt
+from .cloud_manager import CloudManager
 from .gh_logger import get_gh_logger
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
 from .github_client import GitHubClient
+from .jules_client import JulesClient
 from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
@@ -48,89 +50,6 @@ def generate_work_branch_name(issue_number: int, attempt: int) -> str:
     return f"issue-{issue_number}"
 
 
-def _process_issue_jules_mode(
-    github_client: GitHubClient,
-    config: AutomationConfig,
-    repo_name: str,
-    issue_data: Dict[str, Any],
-) -> ProcessedIssueResult:
-    """Process a single issue in jules mode - only add 'jules' label."""
-    try:
-        issue_number = issue_data["number"]
-
-        # Check if issue already has @auto-coder label (being processed by another instance)
-        with LabelManager(
-            github_client,
-            repo_name,
-            issue_number,
-            item_type="issue",
-            skip_label_add=True,
-            check_labels=config.CHECK_LABELS,
-        ) as should_process:
-            if not should_process:
-                logger.info(f"Skipping issue #{issue_number} - already has @auto-coder label")
-                return ProcessedIssueResult(
-                    issue_data=issue_data,
-                    actions_taken=["Skipped - already being processed (@auto-coder label present)"],
-                )
-
-        # Skip if issue has open sub-issues
-        open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
-        if open_sub_issues:
-            logger.info(f"Skipping issue #{issue_number} - has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
-            return ProcessedIssueResult(
-                issue_data=issue_data,
-                actions_taken=[f"Skipped - has open sub-issues: {open_sub_issues}"],
-            )
-
-        # Skip if issue has unresolved dependencies
-        if config.CHECK_DEPENDENCIES:
-            dependencies = github_client.get_issue_dependencies(issue_data.get("body", ""), repo_name, issue_number)
-            if dependencies:
-                unresolved = github_client.check_issue_dependencies_resolved(repo_name, dependencies)
-                if unresolved:
-                    logger.info(f"Skipping issue #{issue_number} - has {len(unresolved)} unresolved dependency(ies): {unresolved}")
-                    return ProcessedIssueResult(
-                        issue_data=issue_data,
-                        actions_taken=[f"Skipped - has unresolved dependencies: {unresolved}"],
-                    )
-                else:
-                    logger.info(f"All dependencies for issue #{issue_number} are resolved")
-
-        # Use LabelManager context manager to handle @auto-coder label automatically
-        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config, check_labels=config.CHECK_LABELS) as should_process:
-            if not should_process:
-                return ProcessedIssueResult(
-                    issue_data=issue_data,
-                    actions_taken=["Skipped - another instance started processing (@auto-coder label added)"],
-                )
-
-            actions_taken: List[str] = []
-
-            # Check if 'jules' label already exists
-            current_labels = issue_data.get("labels", [])
-            if "jules" not in current_labels:
-                # Add 'jules' label to the issue
-                github_client.add_labels(repo_name, issue_number, ["jules"], item_type="issue")
-                actions_taken.append(f"Added 'jules' label to issue #{issue_number}")
-                logger.info(f"Added 'jules' label to issue #{issue_number}")
-            else:
-                actions_taken.append(f"Issue #{issue_number} already has 'jules' label")
-                logger.info(f"Issue #{issue_number} already has 'jules' label")
-
-            return ProcessedIssueResult(
-                issue_data=issue_data,
-                actions_taken=actions_taken,
-            )
-
-    except Exception as e:
-        logger.error(f"Failed to process issue #{issue_data.get('number', 'unknown')} in jules mode: {e}")
-        return ProcessedIssueResult(
-            issue_data=issue_data,
-            error=str(e),
-        )
-
-
 def _take_issue_actions(
     repo_name: str,
     issue_data: Dict[str, Any],
@@ -154,6 +73,85 @@ def _take_issue_actions(
     except Exception as e:
         logger.error(f"Error taking actions on issue #{issue_number}: {e}")
         actions.append(f"Error processing issue #{issue_number}: {e}")
+
+    return actions
+
+
+def _process_issue_jules_mode(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+) -> List[str]:
+    """Process an issue using Jules API for session-based AI interaction.
+
+    This function:
+    1. Starts a Jules session for the issue
+    2. Saves the session ID to cloud.csv
+    3. Comments on the issue with the session ID
+    4. Uses Jules to process the issue
+    5. Creates a PR if changes are made
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        issue_data: Issue data dictionary
+        config: AutomationConfig instance
+        github_client: GitHub client for API operations
+
+    Returns:
+        List of action strings describing what was done
+    """
+    actions = []
+    issue_number = issue_data["number"]
+    issue_title = issue_data.get("title", "Unknown")
+    issue_body = issue_data.get("body", "")
+
+    try:
+        # Initialize Jules client
+        jules_client = JulesClient()
+
+        # Prepare the prompt for Jules
+        action_prompt = render_prompt(
+            "issue.issue_action",
+            issue_number=issue_number,
+            issue_title=issue_title,
+            issue_body=issue_body,
+        )
+
+        logger.info(f"Starting Jules session for issue #{issue_number}")
+
+        # Start Jules session
+        session_id = jules_client.start_session(action_prompt)
+
+        # Store session ID in cloud.csv
+        cloud_manager = CloudManager(repo_name)
+        success = cloud_manager.add_session(issue_number, session_id)
+
+        if not success:
+            logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
+            actions.append(f"Warning: Could not save session ID for issue #{issue_number}")
+        else:
+            logger.info(f"Saved session ID '{session_id}' for issue #{issue_number}")
+
+        # Comment on the issue with session ID
+        try:
+            comment_body = f"I started a Jules session to work on this issue. Session ID: `{session_id}`\n\nPlease track progress in the Jules session."
+            github_client.add_comment_to_issue(repo_name, issue_number, comment_body)
+            actions.append(f"Commented on issue #{issue_number} with Jules session ID")
+            logger.info(f"Added comment with session ID to issue #{issue_number}")
+        except Exception as e:
+            logger.warning(f"Failed to add comment to issue #{issue_number}: {e}")
+            actions.append(f"Warning: Could not comment on issue #{issue_number}")
+
+        # For Jules mode, we don't immediately process the issue here
+        # Instead, Jules will create a PR that will be detected and processed by _process_jules_pr
+        # This is the feedback loop - Jules processes the issue and creates a PR
+        actions.append(f"Started Jules session '{session_id}' for issue #{issue_number}")
+        logger.info(f"Jules session started successfully for issue #{issue_number}")
+
+    except Exception as e:
+        logger.error(f"Error processing issue #{issue_number} in Jules mode: {e}")
+        actions.append(f"Error processing issue #{issue_number} in Jules mode: {e}")
 
     return actions
 
@@ -633,7 +631,6 @@ def process_single(
     repo_name: str,
     target_type: str,
     number: int,
-    jules_mode: bool = False,
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
@@ -647,4 +644,4 @@ def process_single(
 
     # Create a temporary AutomationEngine instance and delegate to it
     engine = AutomationEngine(github_client, config)
-    return engine.process_single(repo_name, target_type, number, jules_mode)
+    return engine.process_single(repo_name, target_type, number)
