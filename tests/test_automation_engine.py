@@ -104,7 +104,7 @@ class TestAutomationEngine:
             mock_take_actions.return_value = ["Merged PR successfully", "Applied fixes"]
 
             # Execute
-            result = engine.process_single("test/repo", "pr", 123, jules_mode=False)
+            result = engine.process_single("test/repo", "pr", 123)
 
             # Assert
             assert result["repository"] == "test/repo"
@@ -147,7 +147,7 @@ class TestAutomationEngine:
             mock_take_actions.side_effect = Exception("Processing failed")
 
             # Execute
-            result = engine.process_single("test/repo", "pr", 123, jules_mode=False)
+            result = engine.process_single("test/repo", "pr", 123)
 
             # Assert
             assert result["repository"] == "test/repo"
@@ -190,7 +190,7 @@ class TestAutomationEngine:
             mock_take_actions.return_value = ["Resolved merge conflicts successfully"]
 
             # Execute
-            result = engine.process_single("test/repo", "pr", 123, jules_mode=False)
+            result = engine.process_single("test/repo", "pr", 123)
 
             # Assert
             assert result["repository"] == "test/repo"
@@ -3145,7 +3145,7 @@ class TestCheckAndHandleClosedBranch:
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute - Process the single PR (as would happen in WIP resumption)
-        result = engine.process_single("test/repo", "pr", 704, jules_mode=False)
+        result = engine.process_single("test/repo", "pr", 704)
 
         # Assert - Processing should continue even though @auto-coder label exists
         assert "prs_processed" in result
@@ -3193,7 +3193,7 @@ class TestCheckAndHandleClosedBranch:
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Execute - Process the single issue
-        result = engine.process_single("test/repo", "issue", 123, jules_mode=False)
+        result = engine.process_single("test/repo", "issue", 123)
 
         # Assert
         # The critical assertion: has_label should NOT be called because CHECK_LABELS=False

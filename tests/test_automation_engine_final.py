@@ -64,51 +64,6 @@ class TestAutomationEngine:
             # Verify report was saved
             engine._save_report.assert_called_once()
 
-    def test_run_jules_mode_success(
-        self,
-        mock_github_client,
-        mock_gemini_client,
-        test_repo_name,
-    ):
-        """Test successful run with jules mode."""
-        # Setup - Mock backend manager
-        from src.auto_coder.backend_manager import get_llm_backend_manager
-
-        mock_backend_manager = Mock()
-        mock_backend_manager.get_last_backend_provider_and_model.return_value = (
-            "gemini",
-            "open-router",
-            "gemini-2.5-pro",
-        )
-
-        with patch("src.auto_coder.automation_engine.get_llm_backend_manager") as mock_get_manager:
-            mock_get_manager.return_value = mock_backend_manager
-
-            # Setup - Mock GitHub client methods needed for operation
-            mock_github_client.get_open_pull_requests.return_value = []
-            mock_github_client.get_open_issues.return_value = []
-            mock_github_client.disable_labels = False
-
-            config = AutomationConfig()
-            engine = AutomationEngine(mock_github_client, config=config)
-            engine._save_report = Mock()
-
-            # Execute
-            result = engine.run(test_repo_name, jules_mode=True)
-
-            # Assert basic result structure with jules mode
-            assert result["repository"] == test_repo_name
-            assert result["jules_mode"] is True
-            assert result["llm_backend"] == "gemini"
-            assert result["llm_provider"] == "open-router"
-            assert result["llm_model"] is not None
-            assert "issues_processed" in result
-            assert "prs_processed" in result
-            assert "errors" in result
-            assert len(result["errors"]) == 0
-
-            engine._save_report.assert_called_once()
-
     def test_run_with_error(
         self,
         mock_github_client,

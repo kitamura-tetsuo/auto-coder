@@ -18,7 +18,6 @@ import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
-from src.auto_coder.issue_processor import _process_issue_jules_mode
 from src.auto_coder.label_manager import LabelManager, get_semantic_labels_from_issue, resolve_pr_labels_with_priority
 from src.auto_coder.prompt_loader import render_prompt
 from tests.fixtures.label_prompt_fixtures import (
@@ -297,42 +296,6 @@ class TestAutomationEngineLabelIntegration:
         priority_order = engine.config.label_priorities
         assert priority_order.index("breaking-change") < priority_order.index("urgent")
         assert priority_order.index("urgent") < priority_order.index("bug")
-
-    def test_jules_mode_integration_with_labels(self, mock_github_client_for_engine):
-        """Test jules mode integration with label-based workflows."""
-        repo_name = "owner/repo"
-
-        # Create issues with and without 'jules' label
-        jules_issue = TEST_ISSUE_DATA["bug_fix"].copy()
-        jules_issue["labels"].append("jules")
-
-        non_jules_issue = TEST_ISSUE_DATA["enhancement"].copy()
-
-        # Test jules mode processing
-        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
-            mock_cmd.run_command.return_value = _cmd_result(success=True)
-
-            config = AutomationConfig()
-
-            # Process jules mode issue
-            result_jules = _process_issue_jules_mode(
-                mock_github_client_for_engine,
-                config,
-                repo_name,
-                jules_issue,
-            )
-
-            # Process non-jules mode issue (should be skipped or handled differently)
-            result_non_jules = _process_issue_jules_mode(
-                mock_github_client_for_engine,
-                config,
-                repo_name,
-                non_jules_issue,
-            )
-
-        # Verify results
-        assert result_jules is not None
-        assert result_non_jules is not None
 
     def test_integration_with_label_manager_context_manager(self, mock_github_client_for_engine):
         """Test integration between automation engine and LabelManager."""

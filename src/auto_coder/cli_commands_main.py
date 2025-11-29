@@ -27,11 +27,6 @@ logger = get_logger(__name__)
 )
 @click.option("--github-token", envvar="GITHUB_TOKEN", help="GitHub API token")
 @click.option(
-    "--jules-mode/--no-jules-mode",
-    default=True,
-    help='Run in jules mode - only add "jules" label to issues without AI analysis (default: on)',
-)
-@click.option(
     "--disable-labels/--no-disable-labels",
     default=False,
     help="Disable GitHub label operations (@auto-coder label) - affects LabelManager context manager behavior",
@@ -93,7 +88,6 @@ logger = get_logger(__name__)
 def process_issues(
     repo: Optional[str],
     github_token: Optional[str],
-    jules_mode: bool,
     disable_labels: Optional[bool],
     check_labels: bool,
     skip_main_update: bool,
@@ -147,7 +141,6 @@ def process_issues(
     logger.info(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         logger.info(f"Using model: {primary_model}")
-    logger.info(f"Jules mode: {jules_mode}")
     logger.info(f"Disable labels: {disable_labels}")
     logger.info(f"Check labels: {check_labels}")
     logger.info(f"Log level: {effective_log_level}")
@@ -165,7 +158,6 @@ def process_issues(
     click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
         click.echo(f"Using model: {primary_model}")
-    click.echo(f"Jules mode: {jules_mode}")
     click.echo(f"Disable labels: {disable_labels}")
     click.echo(f"Check labels: {check_labels}")
     click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
@@ -280,7 +272,7 @@ def process_issues(
                 engine_config.CHECK_LABELS = False
 
                 # Run single-item processing
-                _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
+                _ = automation_engine.process_single(repo_name, target_type, number)
                 # Print brief summary to stdout
                 click.echo(f"Processed {target_type} #{number}")
                 # Close MCP session if present
@@ -317,14 +309,14 @@ def process_issues(
         if target_type is None:
             # Auto-detect: try PR first, then issue
             try:
-                _ = automation_engine.process_single(repo_name, "pr", number, jules_mode=jules_mode)
+                _ = automation_engine.process_single(repo_name, "pr", number)
                 target_type = "pr"
             except Exception:
                 # Fall back to issue
-                _ = automation_engine.process_single(repo_name, "issue", number, jules_mode=jules_mode)
+                _ = automation_engine.process_single(repo_name, "issue", number)
                 target_type = "issue"
         else:
-            _ = automation_engine.process_single(repo_name, target_type, number, jules_mode=jules_mode)
+            _ = automation_engine.process_single(repo_name, target_type, number)
         # Print brief summary to stdout
         click.echo(f"Processed single {target_type} #{number}")
         # Close MCP session if present
@@ -339,7 +331,7 @@ def process_issues(
     if primary_backend == "gemini" and gemini_config and gemini_config.api_key:
         automation_engine.run(repo_name)
     else:
-        automation_engine.run(repo_name, jules_mode=jules_mode)
+        automation_engine.run(repo_name)
 
     # Close MCP session if present
     try:
