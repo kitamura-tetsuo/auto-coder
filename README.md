@@ -715,14 +715,66 @@ Auto-Coder supports multiple backend types. When using custom backend names, you
 | `gemini` | Google Gemini | Gemini CLI | Direct Google API integration |
 | `qwen` | Qwen Code | Qwen CLI | Native Qwen CLI with OAuth |
 | `claude` | Anthropic Claude | Claude CLI | Direct Anthropic API integration |
+| `jules` | Jules AI Assistant | Jules CLI | Session-based AI with PR feedback loop |
 | `auggie` | Auggie | Auggie CLI (`npm install -g @augmentcode/auggie`) | Auggie integration |
 
-**Important:** Custom backend names require the `backend_type` field. Standard backend names (`codex`, `gemini`, `qwen`, `claude`, `auggie`) work without this field.
+**Important:** Custom backend names require the `backend_type` field. Standard backend names (`codex`, `gemini`, `qwen`, `claude`, `jules`, `auggie`) work without this field.
 
 For more details, see:
 - [Custom Backend Configuration Guide](docs/Custom_Backend_Configuration.md)
 - [OpenRouter Setup Guide](OPENROUTER_SETUP.md)
 - [Example Configuration File](docs/llm_backend_config.example.toml)
+
+### Jules Mode Configuration
+
+Jules mode is a special operational mode that adds the `jules` label to issues and processes them using the Jules AI assistant. Jules mode can be enabled in two ways:
+
+#### 1. CLI Flag (Per-Command)
+
+You can enable or disable Jules mode for each command using the `--jules-mode` or `--no-jules-mode` flag:
+
+```bash
+# Enable Jules mode (default: ON)
+auto-coder process-issues --jules-mode
+
+# Disable Jules mode
+auto-coder process-issues --no-jules-mode
+```
+
+Jules mode is **ON by default** for `process-issues` commands.
+
+#### 2. Configuration File (Persistent)
+
+You can configure Jules as a backend in your `llm_config.toml` file for persistent settings:
+
+```toml
+[backend]
+# Add jules to your backend order
+order = ["jules", "gemini", "codex", "claude"]
+default = "codex"
+
+[backends.jules]
+enabled = true
+backend_type = "jules"
+# No additional configuration needed - uses Jules CLI with OAuth
+```
+
+**Configuration Options:**
+
+- **`enabled`**: Set to `true` to enable Jules backend, `false` to disable (default: true)
+- **`backend_type`**: Must be set to `"jules"` for Jules backend configuration
+- **`model`**: Optional - Jules model name (defaults to Jules CLI default)
+- **`temperature`**: Optional - Controls randomness (default: 0.7)
+- **`timeout`**: Optional - Request timeout in seconds (default: 300)
+- **`max_retries`**: Optional - Maximum retry attempts (default: 3)
+
+**Notes:**
+- Jules uses OAuth authentication - no API keys required
+- Requires Jules CLI to be installed and authenticated
+- Sessions are tracked in `~/.auto-coder/<repo>/cloud.csv` files
+- Jules automatically comments on issues with session information
+
+For more details about Jules mode architecture and migration from legacy Jules label logic, see the [Migration Guide: v2026.2.0](docs/MIGRATION_GUIDE_v2026.2.0.md).
 
 ### Retry Configuration
 
