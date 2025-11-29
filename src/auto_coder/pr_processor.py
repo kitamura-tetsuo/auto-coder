@@ -19,7 +19,7 @@ from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
-from .attempt_manager import increment_attempt
+from .attempt_manager import get_current_attempt, increment_attempt
 from .automation_config import AutomationConfig, ProcessedPRResult
 from .conflict_resolver import _get_merge_conflict_info, resolve_merge_conflicts_with_llm, resolve_pr_merge_conflicts
 from .fix_to_pass_tests_runner import extract_important_errors, run_local_tests
@@ -422,6 +422,85 @@ def _trigger_fallback_for_pr_failure(
         logger.error(f"Error triggering fallback for PR #{pr_data['number']}: {e}")
 
 
+def _should_use_fallback_backend(repo_name: str, pr_data: Dict[str, Any]) -> bool:
+    """Check if fallback backend should be used based on attempt count.
+
+    Returns True if any linked issue has attempt count >= 3.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        pr_data: PR data dictionary
+
+    Returns:
+        True if fallback backend should be used, False otherwise
+    """
+    try:
+        # Extract linked issues from PR body
+        pr_body = pr_data.get("body", "")
+        if not pr_body:
+            return False
+
+        linked_issues = _extract_linked_issues_from_pr_body(pr_body)
+        if not linked_issues:
+            return False
+
+        # Check attempt count for each linked issue
+        max_attempt = 0
+        for issue_number in linked_issues:
+            try:
+                current_attempt = get_current_attempt(repo_name, issue_number)
+                max_attempt = max(max_attempt, current_attempt)
+            except Exception as e:
+                logger.debug(f"Failed to get attempt for issue #{issue_number}: {e}")
+                continue
+
+        # Use fallback if max attempt >= 3
+        return max_attempt >= 3
+    except Exception as e:
+        logger.error(f"Error checking fallback backend eligibility: {e}")
+        return False
+
+
+def _switch_to_fallback_backend(repo_name: str, pr_number: int) -> bool:
+    """Switch to the fallback backend for failed PR processing.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        pr_number: PR number for logging
+
+    Returns:
+        True if switch succeeded or no fallback configured, False if switch failed
+    """
+    try:
+        from .llm_backend_config import get_llm_config
+
+        # Get fallback backend configuration
+        llm_config = get_llm_config()
+        fallback_config = llm_config.get_backend_for_failed_pr()
+
+        if not fallback_config:
+            logger.debug(f"No fallback backend configured for PR #{pr_number}")
+            return True  # No fallback configured, not an error
+
+        fallback_backend_name = fallback_config.name
+        if fallback_backend_name == "backend_for_failed_pr":
+            # Use model from config if name is generic
+            fallback_model = llm_config.get_model_for_failed_pr_backend()
+            if fallback_model:
+                fallback_backend_name = fallback_model
+
+        # Switch to fallback backend
+        backend_manager = get_llm_backend_manager()
+        backend_manager._switch_to_backend_by_name(fallback_backend_name)
+
+        logger.info(f"Switched to fallback backend '{fallback_backend_name}' for PR #{pr_number}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to switch to fallback backend for PR #{pr_number}: {e}")
+        return False
+
+
 def _apply_pr_actions_directly(
     github_client: Any,
     repo_name: str,
@@ -438,6 +517,10 @@ def _apply_pr_actions_directly(
     pr_number = pr_data["number"]
 
     try:
+        # Check if we should use fallback backend
+        if _should_use_fallback_backend(repo_name, pr_data):
+            _switch_to_fallback_backend(repo_name, pr_number)
+
         # Get PR diff for analysis
         with ProgressStage("Getting PR diff"):
             pr_diff = _get_pr_diff(repo_name, pr_number, config)
@@ -1731,6 +1814,10 @@ def _apply_github_actions_fix(
     pr_number = pr_data["number"]
 
     try:
+        # Check if we should use fallback backend
+        if _should_use_fallback_backend(repo_name, pr_data):
+            _switch_to_fallback_backend(repo_name, pr_number)
+
         # Get commit log since branch creation
         commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
@@ -1817,6 +1904,10 @@ def _apply_local_test_fix(
         llm_response = ""
 
         try:
+            # Check if we should use fallback backend
+            if _should_use_fallback_backend(repo_name, pr_data):
+                _switch_to_fallback_backend(repo_name, pr_number)
+
             # Extract important error information (convert legacy dict to TestResult)
             tr = TestResult(
                 success=bool(test_result.get("success", False)),
