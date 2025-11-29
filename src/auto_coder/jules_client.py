@@ -97,6 +97,10 @@ class JulesClient(LLMClientBase):
         Returns:
             Session ID if found, None otherwise
         """
+        # Handle None or empty output
+        if not output:
+            return None
+
         # Try to find session ID in various formats
         # Pattern 1: "Session started: <id>"
         if "session started:" in output.lower():
@@ -112,11 +116,12 @@ class JulesClient(LLMClientBase):
                 session_id = parts[1].strip().split()[0].strip()
                 return session_id
 
-        # Pattern 3: Extract any alphanumeric ID at the end of output
+        # Pattern 3: Extract any alphanumeric ID
         import re
 
         match = re.search(r"\b([a-zA-Z0-9_-]{8,})\b", output)
         if match:
+            # Return the matched alphanumeric string
             return match.group(1)
 
         return None
@@ -141,6 +146,12 @@ class JulesClient(LLMClientBase):
                 input_text=message,
                 stream_output=True,
             )
+
+            # Check if command succeeded
+            if result.returncode != 0:
+                error_msg = result.stderr or "Unknown error"
+                logger.error(f"Failed to send message to Jules session {session_id}: {error_msg}")
+                raise RuntimeError(f"Failed to send message to Jules session {session_id}: {error_msg}")
 
             stdout = (result.stdout or "").strip()
             stderr = (result.stderr or "").strip()
@@ -205,3 +216,34 @@ class JulesClient(LLMClientBase):
         finally:
             # End the session
             self.end_session(session_id)
+
+    def check_mcp_server_configured(self, server_name: str) -> bool:
+        """Check if a specific MCP server is configured for Jules CLI.
+
+        Args:
+            server_name: Name of the MCP server to check (e.g., 'graphrag', 'mcp-pdb')
+
+        Returns:
+            True if the MCP server is configured, False otherwise
+        """
+        # Jules doesn't support MCP servers like Claude/Gemini
+        # Return False for all MCP server checks
+        logger.debug(f"Jules does not support MCP servers. Check for '{server_name}' returned False")
+        return False
+
+    def add_mcp_server_config(self, server_name: str, command: str, args: list[str]) -> bool:
+        """Add MCP server configuration for Jules CLI.
+
+        Jules doesn't currently support MCP server configuration.
+
+        Args:
+            server_name: Name of the MCP server (e.g., 'graphrag', 'mcp-pdb')
+            command: Command to run the MCP server (e.g., 'uv', '/path/to/script.sh')
+            args: Arguments for the command (e.g., ['run', 'main.py'] or [])
+
+        Returns:
+            False - Jules does not support MCP server configuration
+        """
+        # Jules doesn't support MCP servers
+        logger.debug(f"Jules does not support MCP server configuration. Cannot add '{server_name}'")
+        return False
