@@ -101,7 +101,7 @@ class LLMBackendConfiguration:
         """Initialize default backends if none are configured."""
         if not self.backends:
             # Add default configurations for known backends
-            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "codex-mcp"]
+            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
             for backend_name in default_backends:
                 self.backends[backend_name] = BackendConfig(name=backend_name)
 
@@ -298,7 +298,7 @@ class LLMBackendConfiguration:
             return config.model
 
         # Default models for known backends
-        default_models = {"gemini": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "codex-mcp": "codex-mcp"}
+        default_models = {"gemini": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "jules": "jules", "codex-mcp": "codex-mcp"}
         return default_models.get(backend_name)
 
     def apply_env_overrides(self) -> None:

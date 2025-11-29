@@ -182,7 +182,12 @@ backend_type = "codex"
 # 4. "claude" - Use Claude client
 #    - Anthropic API integration
 #
-# 5. "codex" (for default codex backend) - Use Codex client
+# 5. "jules" - Use Jules AI assistant
+#    - Session-based AI assistant
+#    - Requires Jules CLI installation and authentication
+#    - Integrated with cloud.csv for session management
+#
+# 6. "codex" (for default codex backend) - Use Codex client
 #    - Default OpenAI Codex integration
 
 # Backend Aliases

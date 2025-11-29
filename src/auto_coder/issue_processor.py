@@ -77,6 +77,85 @@ def _take_issue_actions(
     return actions
 
 
+def _process_issue_jules_mode(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+) -> List[str]:
+    """Process an issue using Jules API for session-based AI interaction.
+
+    This function:
+    1. Starts a Jules session for the issue
+    2. Saves the session ID to cloud.csv
+    3. Comments on the issue with the session ID
+    4. Uses Jules to process the issue
+    5. Creates a PR if changes are made
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        issue_data: Issue data dictionary
+        config: AutomationConfig instance
+        github_client: GitHub client for API operations
+
+    Returns:
+        List of action strings describing what was done
+    """
+    actions = []
+    issue_number = issue_data["number"]
+    issue_title = issue_data.get("title", "Unknown")
+    issue_body = issue_data.get("body", "")
+
+    try:
+        # Initialize Jules client
+        jules_client = JulesClient()
+
+        # Prepare the prompt for Jules
+        action_prompt = render_prompt(
+            "issue.issue_action",
+            issue_number=issue_number,
+            issue_title=issue_title,
+            issue_body=issue_body,
+        )
+
+        logger.info(f"Starting Jules session for issue #{issue_number}")
+
+        # Start Jules session
+        session_id = jules_client.start_session(action_prompt)
+
+        # Store session ID in cloud.csv
+        cloud_manager = CloudManager(repo_name)
+        success = cloud_manager.add_session(issue_number, session_id)
+
+        if not success:
+            logger.warning(f"Failed to save session ID to cloud.csv for issue #{issue_number}")
+            actions.append(f"Warning: Could not save session ID for issue #{issue_number}")
+        else:
+            logger.info(f"Saved session ID '{session_id}' for issue #{issue_number}")
+
+        # Comment on the issue with session ID
+        try:
+            comment_body = f"I started a Jules session to work on this issue. Session ID: `{session_id}`\n\nPlease track progress in the Jules session."
+            github_client.add_comment_to_issue(repo_name, issue_number, comment_body)
+            actions.append(f"Commented on issue #{issue_number} with Jules session ID")
+            logger.info(f"Added comment with session ID to issue #{issue_number}")
+        except Exception as e:
+            logger.warning(f"Failed to add comment to issue #{issue_number}: {e}")
+            actions.append(f"Warning: Could not comment on issue #{issue_number}")
+
+        # For Jules mode, we don't immediately process the issue here
+        # Instead, Jules will create a PR that will be detected and processed by _process_jules_pr
+        # This is the feedback loop - Jules processes the issue and creates a PR
+        actions.append(f"Started Jules session '{session_id}' for issue #{issue_number}")
+        logger.info(f"Jules session started successfully for issue #{issue_number}")
+
+    except Exception as e:
+        logger.error(f"Error processing issue #{issue_number} in Jules mode: {e}")
+        actions.append(f"Error processing issue #{issue_number} in Jules mode: {e}")
+
+    return actions
+
+
 def _create_pr_for_issue(
     repo_name: str,
     issue_data: Dict[str, Any],
