@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
+from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
@@ -65,6 +66,17 @@ def process_pull_request(
                 return processed_pr
 
         check_for_updates_and_restart()
+
+        # Process Jules PRs to detect session IDs and update PR body
+        try:
+            jules_success = _process_jules_pr(repo_name, pr_data, github_client)
+            if jules_success:
+                logger.info(f"Successfully processed Jules PR #{pr_number} (or not a Jules PR)")
+            else:
+                logger.warning(f"Failed to process Jules PR #{pr_number}, but continuing with normal processing")
+        except Exception as e:
+            logger.error(f"Error in Jules PR processing for PR #{pr_number}: {e}")
+            # Continue with normal processing even if Jules processing fails
 
         # Extract PR information
         branch_name = pr_data.get("head", {}).get("ref")
@@ -955,6 +967,181 @@ def _extract_linked_issues_from_pr_body(pr_body: str) -> List[int]:
             unique_issues.append(num)
 
     return unique_issues
+
+
+def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
+    """Extract Session ID from PR body by looking for session links.
+
+    Looks for patterns like:
+    - Session ID: abc123
+    - Session: abc123
+    - Link containing session ID
+    - URLs with session parameters
+
+    Args:
+        pr_body: PR description/body text
+
+    Returns:
+        Session ID if found, None otherwise
+    """
+    if not pr_body:
+        return None
+
+    # Pattern 1: Look for "Session ID:" or "Session:" followed by alphanumeric ID
+    session_pattern = r"(?:session\s*id:|session:)\s*([a-zA-Z0-9-_]+)"
+    match = re.search(session_pattern, pr_body, re.IGNORECASE)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 1: {session_id}")
+        return session_id
+
+    # Pattern 2: Look for URLs that might contain session IDs
+    # Common patterns: ?session=abc123, &session_id=abc123
+    url_session_pattern = r"(?:session(?:_id)?=)([a-zA-Z0-9-_]+)"
+    match = re.search(url_session_pattern, pr_body, re.IGNORECASE)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 2: {session_id}")
+        return session_id
+
+    # Pattern 3: Look for any alphanumeric string that looks like a session ID
+    # (this is a fallback and should be used carefully)
+    # Common session ID formats: starts with letter/number, 8-50 chars
+    general_pattern = r"\b([a-zA-Z0-9]{10,50})\b"
+    matches = re.findall(general_pattern, pr_body)
+    if matches:
+        # Return the first reasonable-looking session ID
+        for potential_id in matches:
+            # Skip common words that happen to be 10+ chars
+            if potential_id.lower() not in ["repository", "pull request", "github", "auto-coder"]:
+                logger.debug(f"Found session ID pattern 3: {potential_id}")
+                return potential_id
+
+    logger.debug("No session ID found in PR body")
+    return None
+
+
+def _update_jules_pr_body(
+    repo_name: str,
+    pr_number: int,
+    pr_body: str,
+    issue_number: int,
+    github_client: Any,
+) -> bool:
+    """Update Jules PR body to include close #<issue_number> and link to issue.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_number: PR number
+        pr_body: Current PR body text
+        issue_number: Issue number to link to
+        github_client: GitHub client instance
+
+    Returns:
+        True if PR body was updated successfully, False otherwise
+    """
+    try:
+        # Check if PR body already has the close reference
+        if f"close #{issue_number}" in pr_body.lower() or f"closes #{issue_number}" in pr_body.lower():
+            logger.info(f"PR #{pr_number} body already references issue #{issue_number}, skipping update")
+            return True
+
+        # Create the issue link
+        issue_link = f"https://github.com/{repo_name}/issues/{issue_number}"
+        close_statement = f"close #{issue_number}"
+
+        # Build new PR body
+        separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
+        new_body = f"{pr_body}{separator}{close_statement}\n\nRelated issue: {issue_link}"
+
+        # Update PR body via GitHub CLI
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            [
+                "gh",
+                "pr",
+                "edit",
+                str(pr_number),
+                "--repo",
+                repo_name,
+                "--body",
+                new_body,
+            ],
+            repo=repo_name,
+            capture_output=True,
+        )
+
+        if result.success:  # type: ignore[attr-defined]
+            logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
+            log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
+            return True
+        else:
+            logger.error(f"Failed to update PR #{pr_number} body: {result.stderr}")
+            return False
+
+    except Exception as e:
+        logger.error(f"Error updating Jules PR #{pr_number} body: {e}")
+        return False
+
+
+def _process_jules_pr(
+    repo_name: str,
+    pr_data: Dict[str, Any],
+    github_client: Any,
+) -> bool:
+    """Process a Jules PR to detect session ID and update PR body.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_data: PR data dictionary
+        github_client: GitHub client instance
+
+    Returns:
+        True if PR body was updated successfully, False otherwise
+    """
+    try:
+        pr_number = pr_data["number"]
+        pr_body = pr_data.get("body", "") or ""
+        pr_author = pr_data.get("user", {}).get("login", "")
+
+        # Check if PR author is google-labs-jules
+        if pr_author != "google-labs-jules":
+            logger.debug(f"PR #{pr_number} author is not google-labs-jules ({pr_author}), skipping Jules processing")
+            return True  # Not an error, just not a Jules PR
+
+        logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
+
+        # Step 1: Extract Session ID from PR body
+        session_id = _extract_session_id_from_pr_body(pr_body)
+        if not session_id:
+            logger.warning(f"No session ID found in Jules PR #{pr_number} body")
+            return False
+
+        logger.info(f"Extracted session ID '{session_id}' from Jules PR #{pr_number}")
+
+        # Step 2: Use CloudManager to find the original issue number
+        cloud_manager = CloudManager(repo_name)
+        issue_number = cloud_manager.get_issue_by_session(session_id)
+
+        if not issue_number:
+            logger.warning(f"No issue found for session ID '{session_id}' in Jules PR #{pr_number}")
+            return False
+
+        logger.info(f"Found issue #{issue_number} for session ID '{session_id}' in Jules PR #{pr_number}")
+
+        # Step 3: Update PR body to include close #<issue_number> and link to issue
+        success = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
+
+        if success:
+            logger.info(f"Successfully processed Jules PR #{pr_number}, updated body to reference issue #{issue_number}")
+        else:
+            logger.error(f"Failed to update Jules PR #{pr_number} body")
+
+        return success
+
+    except Exception as e:
+        logger.error(f"Error processing Jules PR {pr_data.get('number', 'unknown')}: {e}")
+        return False
 
 
 def _close_linked_issues(repo_name: str, pr_number: int) -> None:
