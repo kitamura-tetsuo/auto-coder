@@ -442,7 +442,7 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
-        client.add_labels("test/repo", 123, ["jules", "enhancement"])
+        client.add_labels("test/repo", 123, ["feature", "enhancement"])
 
         # Assert
         mock_repo.get_issue.assert_called_once_with(123)
@@ -451,7 +451,7 @@ class TestGitHubClient:
         mock_issue.edit.assert_called_once()
         call_args = mock_issue.edit.call_args
         actual_labels = call_args[1]["labels"]  # Get labels from kwargs
-        expected_labels = {"bug", "high-priority", "jules", "enhancement"}
+        expected_labels = {"bug", "high-priority", "feature", "enhancement"}
         assert set(actual_labels) == expected_labels
 
     @patch("src.auto_coder.github_client.Github")
@@ -466,7 +466,7 @@ class TestGitHubClient:
         mock_label1 = Mock()
         mock_label1.name = "bug"
         mock_label2 = Mock()
-        mock_label2.name = "jules"  # Already exists
+        mock_label2.name = "feature"  # Already exists
         mock_issue.labels = [mock_label1, mock_label2]
 
         mock_repo.get_issue.return_value = mock_issue
@@ -475,8 +475,8 @@ class TestGitHubClient:
 
         client = GitHubClient.get_instance(mock_github_token)
 
-        # Execute - try to add "jules" again and "enhancement"
-        client.add_labels("test/repo", 123, ["jules", "enhancement"])
+        # Execute - try to add "feature" again and "enhancement"
+        client.add_labels("test/repo", 123, ["feature", "enhancement"])
 
         # Assert
         mock_repo.get_issue.assert_called_once_with(123)
@@ -484,7 +484,7 @@ class TestGitHubClient:
         mock_issue.edit.assert_called_once()
         call_args = mock_issue.edit.call_args
         actual_labels = call_args[1]["labels"]  # Get labels from kwargs
-        expected_labels = {"bug", "jules", "enhancement"}
+        expected_labels = {"bug", "feature", "enhancement"}
         assert set(actual_labels) == expected_labels
 
     @patch("src.auto_coder.github_client.Github")
@@ -509,7 +509,7 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
-        client.add_labels("test/repo", 456, ["jules", "enhancement"], "pr")
+        client.add_labels("test/repo", 456, ["documentation", "enhancement"], "pr")
 
         # Assert
         mock_repo.get_pull.assert_called_once_with(456)
@@ -518,7 +518,7 @@ class TestGitHubClient:
         # Check that add_to_labels was called with the correct labels
         call_args_list = mock_pr.add_to_labels.call_args_list
         called_labels = {call[0][0] for call in call_args_list}
-        expected_labels = {"jules", "enhancement"}
+        expected_labels = {"documentation", "enhancement"}
         assert called_labels == expected_labels
 
     @patch("src.auto_coder.github_client.Github")
@@ -533,7 +533,7 @@ class TestGitHubClient:
         mock_label1 = Mock()
         mock_label1.name = "feature"
         mock_label2 = Mock()
-        mock_label2.name = "jules"  # Already exists
+        mock_label2.name = "documentation"  # Already exists
         mock_pr.labels = [mock_label1, mock_label2]
 
         mock_repo.get_pull.return_value = mock_pr
@@ -542,12 +542,12 @@ class TestGitHubClient:
 
         client = GitHubClient.get_instance(mock_github_token)
 
-        # Execute - try to add "jules" again and "enhancement"
-        client.add_labels("test/repo", 456, ["jules", "enhancement"], "pr")
+        # Execute - try to add "documentation" again and "enhancement"
+        client.add_labels("test/repo", 456, ["documentation", "enhancement"], "pr")
 
         # Assert
         mock_repo.get_pull.assert_called_once_with(456)
-        # Should not call add_to_labels at all since "jules" already exists
+        # Should not call add_to_labels at all since "documentation" already exists
         assert mock_pr.add_to_labels.call_count == 0
 
     @patch("src.auto_coder.github_client.Github")

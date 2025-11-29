@@ -550,7 +550,6 @@ def process_single(
     repo_name: str,
     target_type: str,
     number: int,
-    jules_mode: bool = False,
 ) -> Dict[str, Any]:
     """Process a single issue or PR by number.
 
@@ -564,4 +563,4 @@ def process_single(
 
     # Create a temporary AutomationEngine instance and delegate to it
     engine = AutomationEngine(github_client, config)
-    return engine.process_single(repo_name, target_type, number, jules_mode)
+    return engine.process_single(repo_name, target_type, number)
