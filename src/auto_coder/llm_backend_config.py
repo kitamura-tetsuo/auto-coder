@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import toml
 
+from .logger_config import get_logger
+
 
 def resolve_config_path(config_path: Optional[str] = None) -> str:
     """Resolve the configuration file path with priority rules.
