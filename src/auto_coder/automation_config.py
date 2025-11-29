@@ -665,7 +665,6 @@ class ProcessResult:
 
     repository: str
     timestamp: str
-    jules_mode: bool
     issues_processed: List[Dict[str, Any]] = field(default_factory=list)
     prs_processed: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
