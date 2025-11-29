@@ -14,7 +14,7 @@ try:
 except Exception:  # Avoid runtime dependency
     genai = None  # Replaced via patch in tests
 
-from .exceptions import AutoCoderUsageLimitError
+from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
@@ -140,6 +140,10 @@ class GeminiClient(LLMClientBase):
             full_output = full_output.strip()
             low = full_output.lower()
 
+            # Check for timeout (returncode -1 and "timed out" in stderr)
+            if result.returncode == -1 and "timed out" in low:
+                raise AutoCoderTimeoutError(full_output)
+
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
                 usage_markers = self.usage_markers
@@ -171,10 +175,11 @@ class GeminiClient(LLMClientBase):
         except AutoCoderUsageLimitError:
             # Re-raise without catching
             raise
-        except Exception as e:
-            if "timed out" not in str(e):
-                raise RuntimeError(f"Failed to run Gemini CLI: {e}")
+        except AutoCoderTimeoutError:
+            # Re-raise timeout errors
             raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to run Gemini CLI: {e}")
         finally:
             # Always log the interaction and print summary
             duration_ms = (time.time() - start_time) * 1000
