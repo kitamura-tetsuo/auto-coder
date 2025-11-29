@@ -352,6 +352,7 @@ class AutomationEngine:
         repo_name: str,
         candidate: Candidate,
         config: AutomationConfig,
+        jules_mode: bool = False,
     ) -> CandidateProcessingResult:
         """Unified function for processing single issue or PR candidate.
 
@@ -363,6 +364,7 @@ class AutomationEngine:
             repo_name: Repository name
             candidate: Target candidate to process
             config: AutomationConfig instance
+            jules_mode: Whether to use Jules mode for processing (default: False)
 
         Returns:
             Processing result
@@ -394,8 +396,20 @@ class AutomationEngine:
                     return result
 
                 if item_type == "issue":
-                    # Regular issue processing
-                    result.actions = self._take_issue_actions(repo_name, candidate.data)
+                    # Issue processing
+                    if jules_mode:
+                        # Use Jules mode for issue processing
+                        from .issue_processor import _process_issue_jules_mode
+
+                        result.actions = _process_issue_jules_mode(
+                            repo_name,
+                            candidate.data,
+                            config,
+                            self.github,
+                        )
+                    else:
+                        # Regular issue processing
+                        result.actions = self._take_issue_actions(repo_name, candidate.data)
                     result.success = True
                 elif item_type == "pr":
                     # PR processing
@@ -521,13 +535,14 @@ class AutomationEngine:
             results["errors"].append(error_msg)  # type: ignore
             return results
 
-    def process_single(self, repo_name: str, target_type: str, number: int) -> Dict[str, Any]:
+    def process_single(self, repo_name: str, target_type: str, number: int, jules_mode: bool = False) -> Dict[str, Any]:
         """Process a single issue or PR by number.
 
         Args:
             repo_name: Repository name
             target_type: Type of target ('issue' or 'pr')
             number: Issue or PR number
+            jules_mode: Whether to use Jules mode for processing (default: False)
 
         Returns:
             Dictionary with processing results
@@ -573,6 +588,7 @@ class AutomationEngine:
                     repo_name,
                     candidate,
                     self.config,
+                    jules_mode,
                 )
 
                 # Only add to processed list if there was no error

@@ -11,11 +11,13 @@ from auto_coder.util.github_action import _check_github_actions_status, check_an
 from .attempt_manager import get_current_attempt
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
 from .backend_manager import get_llm_backend_manager, run_llm_message_prompt
+from .cloud_manager import CloudManager
 from .gh_logger import get_gh_logger
 from .git_branch import branch_context, extract_attempt_from_branch
 from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
 from .github_client import GitHubClient
+from .jules_client import JulesClient
 from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
