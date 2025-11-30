@@ -5,7 +5,7 @@ GitHub API client for Auto-Coder.
 import json
 import subprocess
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
@@ -61,6 +61,7 @@ class GitHubClient:
         self.token = token
         self.disable_labels = disable_labels
         self._initialized = True
+        self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
@@ -102,6 +103,10 @@ class GitHubClient:
         """
         with cls._lock:
             cls._instance = None
+
+    def clear_sub_issue_cache(self) -> None:
+        """Clear the sub-issue cache."""
+        self._sub_issue_cache.clear()
 
     def get_repository(self, repo_name: str) -> Repository.Repository:
         """Get repository object by name (owner/repo)."""
