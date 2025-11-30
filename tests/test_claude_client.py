@@ -418,3 +418,80 @@ class TestClaudeClient:
 
         # Check that session ID was extracted
         assert client.get_last_session_id() == "extracted789"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_options_loaded_from_config(self, mock_run, mock_get_config):
+        """ClaudeClient should load options from backend config."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with options
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.options = ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+        mock_backend.options_for_noedit = ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Should have loaded options from config
+        assert client.options == ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+        assert client.options_for_noedit == ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_options_fallback_to_empty_when_not_configured(self, mock_run, mock_get_config):
+        """ClaudeClient should fall back to empty options when not configured."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config without options
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.options = []
+        mock_backend.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Should have empty options when not configured
+        assert client.options == []
+        assert client.options_for_noedit == []
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_options_used_in_run_llm_cli(self, mock_cmd_exec, mock_run, mock_get_config):
+        """ClaudeClient should use configured options in _run_llm_cli."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with options
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.options = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+        mock_backend.options_for_noedit = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Mock command executor
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+
+        # Run LLM
+        client._run_llm_cli("test prompt")
+
+        # Check that configured options were used in command
+        called_cmd = mock_cmd_exec.call_args[0][0]
+        assert "--dangerously-skip-permissions" in called_cmd
+        assert "--allow-dangerously-skip-permissions" in called_cmd
+        assert "--model" in called_cmd
+        assert "sonnet" in called_cmd
