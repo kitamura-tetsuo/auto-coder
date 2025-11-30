@@ -642,3 +642,278 @@ class TestBackendAutoReset:
             # Should stay on default 'a' since saved backend is unknown
             mgr.check_and_reset_backend_if_needed()
             assert mgr._current_backend_name() == "a"
+
+
+# ==================== JSON Parsing Tests ====================
+
+
+def test_parse_json_dict():
+    """Test parsing a pure JSON dict."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '{"key": "value", "number": 42}'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"key": "value", "number": 42}
+
+
+def test_parse_json_list():
+    """Test parsing a pure JSON list (history)."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '[{"content": "first"}, {"content": "second"}, {"content": "final message"}]'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "final message"
+
+
+def test_parse_json_list_with_message_key():
+    """Test parsing JSON list with 'message' key."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '[{"message": "hello"}, {"message": "world"}]'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "world"
+
+
+def test_parse_json_list_with_text_key():
+    """Test parsing JSON list with 'text' key."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '[{"text": "first"}, {"text": "second"}]'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "second"
+
+
+def test_parse_json_list_with_response_key():
+    """Test parsing JSON list with 'response' key."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '[{"response": "response1"}, {"response": "response2"}]'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "response2"
+
+
+def test_parse_json_list_non_dict_last_message():
+    """Test parsing JSON list where last message is not a dict."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '[{"content": "first"}, "simple string last"]'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "simple string last"
+
+
+def test_parse_json_with_prefix_text():
+    """Test parsing JSON with text before it."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = 'Here is the result: {"key": "value"}'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"key": "value"}
+
+
+def test_parse_json_with_suffix_text():
+    """Test parsing JSON with text after it."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '{"key": "value"}\n\nThis is additional information.'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"key": "value"}
+
+
+def test_parse_json_with_prefix_and_suffix_text():
+    """Test parsing JSON with text before and after it."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = 'Result: {"key": "value"}\nEnd of output.'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"key": "value"}
+
+
+def test_parse_json_list_with_prefix_and_suffix_text():
+    """Test parsing JSON list with text before and after it."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = 'History: [{"content": "first"}, {"content": "last"}]\nEnd.'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "last"
+
+
+def test_parse_json_empty_list_raises_error():
+    """Test that parsing an empty list raises ValueError."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = "[]"
+    with pytest.raises(ValueError, match="Parsed JSON is an empty list"):
+        mgr.parse_llm_output_as_json(output)
+
+
+def test_parse_json_invalid_json_raises_error():
+    """Test that parsing invalid JSON raises ValueError."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = "This is not valid JSON"
+    with pytest.raises(ValueError, match="Failed to parse output as JSON"):
+        mgr.parse_llm_output_as_json(output)
+
+
+def test_parse_json_complex_dict():
+    """Test parsing a complex JSON dict with nested structures."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '{"nested": {"key": "value"}, "list": [1, 2, 3], "number": 42}'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"nested": {"key": "value"}, "list": [1, 2, 3], "number": 42}
+
+
+def test_parse_json_list_unknown_content_key():
+    """Test parsing JSON list where last dict has unknown keys (should return the whole dict)."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '[{"unknown_key": "value1"}, {"custom_field": "value2"}]'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"custom_field": "value2"}
+
+
+def test_parse_json_list_with_both_known_and_unknown_keys():
+    """Test parsing JSON list where last dict has both known and unknown keys."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = '[{"content": "value1", "extra": "data1"}, {"content": "value2", "extra": "data2"}]'
+    result = mgr.parse_llm_output_as_json(output)
+    # Should prefer "content" key
+    assert result == "value2"
+
+
+def test_parse_json_primitive_values():
+    """Test parsing JSON primitive values (string, number, boolean)."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    # Test string
+    output = '"test string"'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "test string"
+
+    # Test number
+    output = "42"
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == 42
+
+    # Test boolean
+    output = "true"
+    result = mgr.parse_llm_output_as_json(output)
+    assert result is True
+
+
+def test_parse_json_multiline():
+    """Test parsing multiline JSON."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = """Here is the result:
+{
+    "key1": "value1",
+    "key2": "value2"
+}
+End of output."""
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"key1": "value1", "key2": "value2"}
