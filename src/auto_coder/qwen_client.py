@@ -38,6 +38,7 @@ class QwenClient(LLMClientBase):
         backend_name: Optional[str] = None,
         use_env_vars: bool = True,
         preserve_existing_env: bool = False,
+        use_noedit_options: bool = False,
     ) -> None:
         """Initialize QwenClient.
 
@@ -47,31 +48,24 @@ class QwenClient(LLMClientBase):
                          If False, use command-line options (default: True)
             preserve_existing_env: If True, preserve existing OPENAI_* env vars.
                                   If False, clear them before setting new values (default: False)
+            use_noedit_options: If True, prefer options_for_noedit from configuration when available.
         """
         super().__init__()
         config = get_llm_config()
-        if backend_name:
-            config_backend = config.get_backend_config(backend_name)
-            # Use backend config, fall back to default "qwen"
-            self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
-            self.options = (config_backend and config_backend.options) or []
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
-        else:
-            # Fall back to default qwen config
-            config_backend = config.get_backend_config("qwen")
-            self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
-            self.options = (config_backend and config_backend.options) or []
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+        config_backend = config.get_backend_config(backend_name or "qwen")
+        options = (config_backend and config_backend.options) or []
+        options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+        self.options = options_for_noedit if use_noedit_options and options_for_noedit else options
+        self.options_for_noedit = options_for_noedit
+        self.use_noedit_options = use_noedit_options
+        # Use backend config, fall back to default "qwen"
+        self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
+        self.api_key = config_backend and config_backend.api_key
+        self.base_url = config_backend and config_backend.base_url
+        self.openai_api_key = config_backend and config_backend.openai_api_key
+        self.openai_base_url = config_backend and config_backend.openai_base_url
+        # Store usage_markers from config
+        self.usage_markers = (config_backend and config_backend.usage_markers) or []
 
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching

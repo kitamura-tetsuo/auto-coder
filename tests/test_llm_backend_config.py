@@ -3,7 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import toml
@@ -145,6 +145,32 @@ class TestLLMBackendConfiguration:
         assert config.backend_for_noedit_default == "codex"
         assert config.backends["gemini"].model == "gemini-pro"
         assert config.backends["codex"].enabled is False
+
+    def test_options_for_noedit_field(self):
+        """Options for noedit should be parsed separately from general options."""
+        config_data = {"backends": {"codex": {"options": ["--flag1"], "options_for_noedit": ["--flag2"]}}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "config.toml"
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(config_data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+        assert config.backends["codex"].options == ["--flag1"]
+        assert config.backends["codex"].options_for_noedit == ["--flag2"]
+
+    def test_options_for_noedit_defaults_to_empty_list(self):
+        """Options for noedit should default to an empty list when not provided."""
+        config_data = {"backends": {"codex": {"options": ["--flag1"]}}}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "config.toml"
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(config_data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+        assert config.backends["codex"].options == ["--flag1"]
+        assert config.backends["codex"].options_for_noedit == []
 
     def test_save_and_load_from_file(self):
         """Test saving and loading configuration from a TOML file."""
@@ -392,7 +418,7 @@ class TestLLMBackendConfiguration:
                 "AUTO_CODER_OPENAI_API_KEY": "env_openai_key",
                 "AUTO_CODER_GEMINI_OPENAI_API_KEY": "env_gemini_openai_key",
                 "AUTO_CODER_DEFAULT_BACKEND": "qwen",
-                "AUTO_CODER_MESSAGE_DEFAULT_BACKEND": "claude",
+                "AUTO_CODER_BACKEND_FOR_NOEDIT_DEFAULT_BACKEND": "claude",
             },
         ):
             config.apply_env_overrides()
@@ -790,6 +816,23 @@ class TestLLMBackendConfiguration:
             assert gemini_config.backend_type == "custom_type"
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
+
+    def test_message_backend_key_emits_warning(self):
+        """Deprecated message_backend key should map to backend_for_noedit with a warning."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "message_backend.toml"
+            data = {"message_backend": {"order": ["codex"], "default": "codex"}}
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            mock_logger = MagicMock()
+            with patch("src.auto_coder.llm_backend_config.get_logger", return_value=mock_logger):
+                config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+        assert config.backend_for_noedit_order == ["codex"]
+        assert config.backend_for_noedit_default == "codex"
+        assert mock_logger.warning.call_count >= 1
+        assert any("message_backend" in call.args[0] for call in mock_logger.warning.call_args_list)
 
     def test_configuration_persistence_across_instances(self):
         """Test that configuration persists correctly across multiple instances."""

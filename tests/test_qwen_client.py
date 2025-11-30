@@ -204,6 +204,51 @@ class TestQwenClient:
     @patch("src.auto_coder.qwen_client.get_llm_config")
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_noedit_options_override_general_options(self, mock_run_command, mock_run, mock_get_config):
+        """options_for_noedit should be preferred when requested."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "qwen3-coder-plus"
+        mock_backend.options = ["--general"]
+        mock_backend.options_for_noedit = ["--noedit-flag"]
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = QwenClient(use_noedit_options=True)
+        client._run_llm_cli("test prompt")
+
+        args = mock_run_command.call_args[0][0]
+        assert "--noedit-flag" in args
+        assert "--general" not in args
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_noedit_options_fall_back_to_general_options(self, mock_run_command, mock_run, mock_get_config):
+        """When options_for_noedit is empty, general options should be used."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "qwen3-coder-plus"
+        mock_backend.options = ["--general"]
+        mock_backend.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = QwenClient(use_noedit_options=True)
+        client._run_llm_cli("test prompt")
+
+        args = mock_run_command.call_args[0][0]
+        assert "--general" in args
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
     def test_cli_invocation_with_openrouter_config(self, mock_run_command, mock_run, mock_get_config):
         """Test that API key and base URL are passed as environment variables."""
         mock_run.return_value.returncode = 0
