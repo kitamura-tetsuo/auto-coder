@@ -106,6 +106,111 @@ The system supports extensive backend configuration options. Key fields include:
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Only used when automatic fallback is desired
 
+- **options**: CLI options for code editing operations
+  - Purpose: Pass additional command-line options to the backend CLI when performing code modifications
+  - Type: List[str]
+  - Usage: Each option is passed as a separate argument to the backend CLI
+  - Default: [] (empty list)
+  - Example:
+    ```toml
+    [backends.codex]
+    model = "codex"
+    options = ["--dangerously-bypass-approvals-and-sandbox"]
+
+    [backends.claude]
+    model = "sonnet"
+    options = ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+    [backends.gemini]
+    model = "gemini-2.5-pro"
+    options = ["--yolo", "--force-model"]
+
+    [backends.qwen]
+    model = "qwen3-coder-plus"
+    options = ["-y"]
+
+    [backends.auggie]
+    model = "GPT-5"
+    options = ["--print"]
+
+    [backends.jules]
+    options = []
+
+    [backends.codex-mcp]
+    options = []
+    ```
+  - Notes:
+    - Options are backend-specific and control behavior during code editing operations
+    - For codex/gemini/qwen backends: pass options as CLI flags to the backend CLI
+    - For auggie/claude backends: options are backend-specific flags
+    - Not to be confused with `options_for_noedit` (see below)
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Backward compatible with existing configurations
+
+- **options_for_noedit**: CLI options for message generation (non-editing operations)
+  - Purpose: Pass additional command-line options to the backend CLI for non-editing operations like commit messages, PR descriptions, and documentation
+  - Type: List[str]
+  - Usage: Each option is passed as a separate argument to the backend CLI during message generation
+  - Default: [] (empty list)
+  - Behavior: If not specified, defaults to the same value as `options`
+  - Example:
+    ```toml
+    [backends.codex]
+    model = "codex"
+    options = ["--dangerously-bypass-approvals-and-sandbox"]
+    options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox"]
+
+    [backends.claude]
+    model = "sonnet"
+    options = ["--print", "--dangerously-skip-permissions"]
+    options_for_noedit = ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+    [backends.gemini]
+    model = "gemini-2.5-pro"
+    options = ["--yolo"]
+    options_for_noedit = ["--yolo", "--force-model"]
+
+    [backends.qwen]
+    model = "qwen3-coder-plus"
+    options = ["-y"]
+    options_for_noedit = ["-y"]
+    ```
+  - Notes:
+    - Can differ from `options` to allow different behavior for messages vs code
+    - Used for: commit messages, PR descriptions, issue descriptions, documentation comments
+    - Used when operations don't modify code files
+    - If `options_for_noedit` is not specified, it defaults to the same value as `options`
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Backward compatible with existing configurations
+
+- **backend_for_noedit**: Separate backend configuration for non-editing operations
+  - Purpose: Configure a separate backend (or order of backends) for non-editing operations like message generation
+  - Purpose Detail: Allows using different backends for code editing vs message generation, enabling optimization of costs and performance
+  - Configuration section: `[backend_for_noedit]` in the TOML config file
+  - Fields:
+    - `default`: Name of the default backend for noedit operations
+    - `order`: List of backend names to try for noedit operations
+  - Example:
+    ```toml
+    [backend]
+    default = "codex"
+    order = ["codex", "gemini", "qwen"]
+
+    [backend_for_noedit]
+    default = "qwen"
+    order = ["qwen", "gemini"]
+    ```
+  - Behavior:
+    - When `backend_for_noedit` is not specified, falls back to general backend configuration
+    - Can use different backends for editing vs message generation
+    - Respects the same ordering and fallback logic as general backends
+  - Breaking Change Note:
+    - Previously called `[message_backend]` (deprecated but still supported for backward compatibility)
+    - When both `[message_backend]` and `[backend_for_noedit]` are present, `[backend_for_noedit]` takes precedence
+    - Migration: Rename `[message_backend]` to `[backend_for_noedit]` in configuration files
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Only used when different backends are desired for editing vs message generation
+
 #### Backend Management
 
     nested_managers:
