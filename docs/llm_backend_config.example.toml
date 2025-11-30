@@ -46,7 +46,14 @@ backend_type = "qwen"
 # Additional options to pass to the Qwen CLI
 # These options will be added to the command line when calling qwen
 # Example: ["-o", "stream", "false", "--debug"]
+#
+# options: Used for code editing operations (default LLM operations)
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
+#
+# For most backends, you can use the same options for both or leave empty to use defaults.
+# The system automatically adds required flags (e.g., -y for qwen) during execution.
 options = []
+options_for_noedit = []
 
 
 # Method 2: Qwen via OpenRouter (OpenAI-Compatible API)
@@ -64,7 +71,10 @@ openai_base_url = "https://openrouter.ai/api/v1"
 backend_type = "codex"
 
 # Optional: Add custom headers for tracking usage
+# options: Used for code editing operations
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
 options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+options_for_noedit = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
 # Gemini Configuration
 # --------------------
@@ -84,6 +94,13 @@ always_switch_after_execution = true
 
 backend_type = "gemini"
 
+# Optional: Additional CLI options
+# options: Used for code editing operations
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
+# Note: The system automatically adds --yolo and --force-model flags during execution
+options = []
+options_for_noedit = []
+
 # Codex Configuration
 # -------------------
 # Codex client can be used for generic OpenAI-compatible APIs like OpenRouter.
@@ -96,7 +113,14 @@ base_url = "your-api-base-url-here"
 # For OpenAI-compatible APIs (like OpenRouter), use these
 openai_api_key = "your-openai-api-key-here"
 openai_base_url = "your-openai-base-url-here"
+
+# Optional: Additional CLI options
+# options: Used for code editing operations
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
+# Note: The system automatically adds --dangerously-bypass-approvals-and-sandbox during execution
 options = []
+options_for_noedit = []
+
 backend_type = "codex"
 
 # Custom Alias Examples
@@ -115,7 +139,10 @@ openai_base_url = "https://openrouter.ai/api/v1"
 backend_type = "codex"
 
 # Custom options for faster responses
+# options: Used for code editing operations
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
 options = ["-o", "timeout", "30", "-o", "stream", "true"]
+options_for_noedit = ["-o", "timeout", "30", "-o", "stream", "true"]
 
 
 # Example 2: Qwen via OpenRouter with premium model
@@ -129,7 +156,10 @@ openai_base_url = "https://openrouter.ai/api/v1"
 backend_type = "codex"
 
 # Premium model with additional options
+# options: Used for code editing operations
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
 options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+options_for_noedit = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
 
 # Example 3: Azure OpenAI with Qwen model
@@ -144,7 +174,10 @@ openai_base_url = "https://your-resource.openai.azure.com"
 backend_type = "codex"
 
 # Azure-specific options
+# options: Used for code editing operations
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
 options = ["-o", "api_version", "2024-02-01"]
+options_for_noedit = ["-o", "api_version", "2024-02-01"]
 
 
 # Example 4: Custom OpenAI-compatible endpoint
@@ -157,6 +190,64 @@ openai_base_url = "https://api.example.com/v1"
 
 # Use 'codex' backend type for OpenAI-compatible providers
 backend_type = "codex"
+
+# Optional: Additional CLI options
+# options: Used for code editing operations
+# options_for_noedit: Used for message generation (commit messages, PR descriptions)
+options = []
+options_for_noedit = []
+
+
+# Claude Configuration
+# --------------------
+# Example configuration for Claude backend
+# [claude]
+# # enabled = true is the default (no need to specify)
+# model = "sonnet"
+# backend_type = "claude"
+#
+# # Optional: Path to Claude settings file
+# # settings = "/path/to/claude-settings.json"
+#
+# # Optional: Additional CLI options
+# # options: Used for code editing operations
+# # options_for_noedit: Used for message generation (commit messages, PR descriptions)
+# # Note: The system automatically adds --print, --dangerously-skip-permissions,
+# #       and --allow-dangerously-skip-permissions during execution
+# options = []
+# options_for_noedit = []
+
+
+# Auggie Configuration
+# --------------------
+# Example configuration for Auggie backend (requires npm install -g @augmentcode/auggie)
+# [auggie]
+# # enabled = true is the default (no need to specify)
+# model = "GPT-5"
+# backend_type = "auggie"
+#
+# # Optional: Additional CLI options
+# # options: Used for code editing operations
+# # options_for_noedit: Used for message generation (commit messages, PR descriptions)
+# # Note: The system automatically adds --print flag during execution
+# options = []
+# options_for_noedit = []
+
+
+# Jules Configuration
+# -------------------
+# Example configuration for Jules backend (session-based AI assistant)
+# [jules]
+# # enabled = true is the default (no need to specify)
+# backend_type = "jules"
+#
+# # Optional: Additional CLI options
+# # Jules is session-based, so minimal options are typically needed
+# # options: Used for code editing operations
+# # options_for_noedit: Used for message generation (commit messages, PR descriptions)
+# options = []
+# options_for_noedit = []
+
 
 # Fallback Backend for Failed PRs
 # --------------------------------
@@ -213,6 +304,65 @@ backend_type = "codex"
 # # Optional: Usage markers for tracking
 # usage_markers = ["fallback", "high_availability"]
 
+
+# Understanding Options: options vs options_for_noedit
+# =====================================================
+#
+# The configuration system supports two types of option fields for each backend:
+#
+# 1. `options` - Used for code editing operations (default LLM operations)
+#    - Applied when the LLM is called to analyze issues, generate code, fix bugs, etc.
+#    - These are the primary operations where the LLM modifies files
+#
+# 2. `options_for_noedit` - Used for message generation operations
+#    - Applied when generating commit messages, PR descriptions, and other text
+#    - Allows different configurations for non-code operations
+#    - If not specified, falls back to using the same options as `options`
+#
+# IMPORTANT: Automatic Flag Management
+# -------------------------------------
+# The system automatically adds required CLI flags during execution:
+# - Codex: --dangerously-bypass-approvals-and-sandbox (for exec mode)
+# - Claude: --print, --dangerously-skip-permissions, --allow-dangerously-skip-permissions
+# - Gemini: --yolo, --force-model
+# - Qwen: -y (auto-confirm)
+#
+# You do NOT need to include these flags in your options configuration.
+# Only add additional custom options beyond the defaults.
+#
+# Migration from Old Structure
+# -----------------------------
+# Prior to this configuration schema, CLI options were hardcoded in client implementations.
+# The new structure allows full customization through configuration:
+#
+# OLD (hardcoded in code):
+#   - Codex always used: --dangerously-bypass-approvals-and-sandbox
+#   - Claude always used: --print --dangerously-skip-permissions --allow-dangerously-skip-permissions
+#   - Gemini always used: --yolo --force-model
+#   - Qwen always used: -y
+#
+# NEW (configurable):
+#   - System adds required flags automatically
+#   - You can add additional flags via `options` and `options_for_noedit`
+#   - Example: options = ["-o", "timeout", "30"] to customize timeout
+#
+# Common Use Cases
+# ----------------
+# 1. Same options for all operations:
+#    options = ["--debug"]
+#    options_for_noedit = ["--debug"]
+#
+# 2. Different options for editing vs message generation:
+#    options = ["--verbose", "-o", "timeout", "120"]
+#    options_for_noedit = ["-o", "timeout", "30"]  # Faster for messages
+#
+# 3. Using defaults (empty arrays):
+#    options = []
+#    options_for_noedit = []
+#
+# 4. OpenRouter tracking headers (for codex-based backends):
+#    options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+#    options_for_noedit = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
 # Notes and Best Practices
 # ========================
