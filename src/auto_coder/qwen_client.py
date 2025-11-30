@@ -76,6 +76,13 @@ class QwenClient(LLMClientBase):
         self.use_env_vars = use_env_vars
         self.preserve_existing_env = preserve_existing_env
 
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
+
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()
 

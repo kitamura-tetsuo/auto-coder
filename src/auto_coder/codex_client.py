@@ -70,6 +70,13 @@ class CodexClient(LLMClientBase):
         self.conflict_model = self.model_name
         self.timeout = None
 
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
+
         # Initialize LLM output logger
         self.output_logger = LLMOutputLogger()
 

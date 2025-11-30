@@ -145,8 +145,14 @@ def test_config_validate(tmp_path: Path):
     assert result.exit_code == 0
     assert "Configuration file does not exist" in result.output
 
-    # Test with a valid file
+    # Test with a valid file (add required options for enabled backends)
     config = LLMBackendConfiguration()
+    # Add required options for all enabled backends
+    config.get_backend_config("codex").options = ["--dangerously-bypass-approvals-and-sandbox"]
+    config.get_backend_config("claude").options = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+    config.get_backend_config("gemini").options = ["--yolo"]
+    config.get_backend_config("qwen").options = ["-y"]
+    config.get_backend_config("auggie").options = ["--print"]
     config.save_to_file(config_file)
     result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
     assert result.exit_code == 0

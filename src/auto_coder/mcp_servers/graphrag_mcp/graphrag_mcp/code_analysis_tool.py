@@ -4,7 +4,6 @@ from typing import Any, Dict, List, Optional, Union
 
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
-from sentence_transformers import SentenceTransformer
 
 # Configure logging to write to a file instead of stdout
 logging.basicConfig(
@@ -83,6 +82,8 @@ class CodeAnalysisTool:
 
         # Load the embedding model
         try:
+            from sentence_transformers import SentenceTransformer
+
             self.model = SentenceTransformer(self.model_name)
             logger.info(f"Loaded embedding model: {self.model_name}")
         except Exception as e:
@@ -453,6 +454,8 @@ class CodeAnalysisTool:
 
         if self.model is None:
             try:
+                from sentence_transformers import SentenceTransformer
+
                 self.model = SentenceTransformer(self.model_name)
             except Exception as e:
                 result["error"] = f"Failed to load embedding model: {e}"
@@ -531,6 +534,8 @@ class CodeAnalysisTool:
 
         if self.model is None:
             try:
+                from sentence_transformers import SentenceTransformer
+
                 self.model = SentenceTransformer(self.model_name)
             except Exception as e:
                 result["error"] = f"Failed to load embedding model: {e}"

@@ -59,6 +59,13 @@ class GeminiClient(LLMClientBase):
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
         self.timeout = None  # No timeout - let gemini CLI run as long as needed
 
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
+
         # Configure genai if available (tests patch this symbol)
         if genai is not None and self.api_key:
             try:

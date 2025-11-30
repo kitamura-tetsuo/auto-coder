@@ -1083,6 +1083,11 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
         if not isinstance(backend_config.extra_args, dict):
             errors.append(f"{name}.extra_args must be a dictionary")  # type: ignore[unreachable]
 
+        # Validate required options (only for enabled backends)
+        if backend_config.enabled:
+            required_errors = backend_config.validate_required_options()
+            errors.extend(required_errors)
+
     # Validate backend_order - should be list
     if not isinstance(config.backend_order, list):
         errors.append("backend.order must be a list")  # type: ignore[unreachable]
