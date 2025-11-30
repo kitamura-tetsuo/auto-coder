@@ -517,7 +517,7 @@ def log_action(action: str, success: bool = True, details: str = "") -> str:
         message += f": {details}"
 
     if success:
-        logger.opt(depth=1).info(message)
+        logger.info(message)
     else:
-        logger.opt(depth=1).error(message)
+        logger.error(message)
     return message
