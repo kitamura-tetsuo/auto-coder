@@ -60,17 +60,51 @@ def ensure_parent_issue_open(
     parent_issue_number = parent_issue_details.get("number")
     parent_state = parent_issue_details.get("state", "UNKNOWN").upper()
 
-    # Log the current state for debugging and future implementation
-    logger.debug(
-        "ensure_parent_issue_open: Parent issue #%s for issue #%s is %s - hook not yet implemented",
-        parent_issue_number,
-        issue_number,
-        parent_state,
-    )
+    if parent_state == "OPEN":
+        logger.debug(
+            "Parent issue #%s for issue #%s is already OPEN",
+            parent_issue_number,
+            issue_number,
+        )
+        return True
 
-    # Placeholder behavior: return True if already open, False otherwise
-    # TODO: Implement reopening logic here in follow-up issues
-    return parent_state == "OPEN"
+    if parent_state == "CLOSED":
+        try:
+            logger.info(
+                "Reopening closed parent issue #%s before processing child issue #%s",
+                parent_issue_number,
+                issue_number,
+            )
+
+            # Add an audit comment when reopening
+            audit_comment = f"Auto-Coder: Reopened this parent issue to process child issue #{issue_number}. Branch and base selection will use the parent context."
+
+            # Call GitHub API to reopen the issue
+            github_client.reopen_issue(repo_name, parent_issue_number, audit_comment)
+
+            logger.info(
+                "Successfully reopened parent issue #%s for child issue #%s",
+                parent_issue_number,
+                issue_number,
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Failed to reopen parent issue #%s for child issue #%s: %s",
+                parent_issue_number,
+                issue_number,
+                e,
+            )
+            return False
+
+    logger.warning(
+        "Unexpected parent issue #%s state '%s' for issue #%s",
+        parent_issue_number,
+        parent_state,
+        issue_number,
+    )
+    return False
 
 
 def generate_work_branch_name(issue_number: int, attempt: int) -> str:
