@@ -72,6 +72,8 @@ class BackendConfig:
     options: List[str] = field(default_factory=list)
     # Options for resume functionality
     options_for_resume: List[str] = field(default_factory=list)
+    # Options for non-editing operations (message generation)
+    options_for_noedit: List[str] = field(default_factory=list)
     # Type of backend
     backend_type: Optional[str] = None
     # Model provider (e.g., "openrouter", "anthropic", etc.)
@@ -153,6 +155,7 @@ class LLMBackendConfiguration:
                     usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
                     options=config_data.get("options", []),
                     options_for_resume=config_data.get("options_for_resume", []),
+                    options_for_noedit=config_data.get("options_for_noedit", []),
                     backend_type=config_data.get("backend_type"),
                     model_provider=config_data.get("model_provider"),
                     always_switch_after_execution=config_data.get("always_switch_after_execution", False),
@@ -171,7 +174,7 @@ class LLMBackendConfiguration:
             def is_potential_backend_config(d: dict) -> bool:
                 # Heuristic: if it has specific backend keys, it's likely a config
                 # We check for keys that are commonly used in backend definitions
-                common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_resume"}
+                common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_resume", "options_for_noedit"}
                 # Also check if 'enabled' is present, but it's very common so we combine it
                 # with the fact that we are looking for backends.
                 # If a dict has 'enabled' and is in the top-level (or nested from top-level),
@@ -260,6 +263,7 @@ class LLMBackendConfiguration:
                 "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
                 "options": config.options,
                 "options_for_resume": config.options_for_resume,
+                "options_for_noedit": config.options_for_noedit,
                 "backend_type": config.backend_type,
                 "model_provider": config.model_provider,
                 "always_switch_after_execution": config.always_switch_after_execution,
@@ -288,6 +292,7 @@ class LLMBackendConfiguration:
                 "usage_limit_retry_wait_seconds": config.usage_limit_retry_wait_seconds,
                 "options": config.options,
                 "options_for_resume": config.options_for_resume,
+                "options_for_noedit": config.options_for_noedit,
                 "backend_type": config.backend_type,
                 "model_provider": config.model_provider,
                 "always_switch_after_execution": config.always_switch_after_execution,
