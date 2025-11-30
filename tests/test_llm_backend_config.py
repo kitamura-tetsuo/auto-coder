@@ -1570,3 +1570,272 @@ enabled = true
             assert gemini_config.usage_markers == []
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
+
+
+class TestBackendForFailedPR:
+    """Test cases for backend_for_failed_pr configuration."""
+
+    def test_backend_for_failed_pr_optional_in_initialization(self):
+        """Test that backend_for_failed_pr is optional during initialization."""
+        config = LLMBackendConfiguration()
+        assert config.backend_for_failed_pr is None
+
+    def test_backend_for_failed_pr_with_custom_values(self):
+        """Test creating LLMBackendConfiguration with custom fallback backend."""
+        fallback_backend = BackendConfig(
+            name="fallback",
+            enabled=True,
+            model="fallback-model",
+            api_key="fallback_key",
+            temperature=0.5,
+            backend_type="codex",
+        )
+        config = LLMBackendConfiguration(backend_for_failed_pr=fallback_backend)
+
+        assert config.backend_for_failed_pr is not None
+        assert config.backend_for_failed_pr.name == "fallback"
+        assert config.backend_for_failed_pr.model == "fallback-model"
+        assert config.backend_for_failed_pr.api_key == "fallback_key"
+        assert config.backend_for_failed_pr.temperature == 0.5
+        assert config.backend_for_failed_pr.backend_type == "codex"
+
+    def test_save_and_load_backend_for_failed_pr(self):
+        """Test saving and loading configuration with fallback backend."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_fallback_config.toml"
+
+            # Create configuration with fallback backend
+            config = LLMBackendConfiguration()
+            config.backend_for_failed_pr = BackendConfig(
+                name="gemini-fallback",
+                enabled=True,
+                model="gemini-2.0-flash",
+                api_key="fallback_api_key",
+                temperature=0.3,
+                timeout=120,
+                backend_type="gemini",
+            )
+            config.default_backend = "codex"
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Verify file was created
+            assert config_file.exists()
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify fallback backend was persisted
+            assert loaded_config.backend_for_failed_pr is not None
+            fallback = loaded_config.backend_for_failed_pr
+            assert fallback.name == "gemini-fallback"
+            assert fallback.model == "gemini-2.0-flash"
+            assert fallback.api_key == "fallback_api_key"
+            assert fallback.temperature == 0.3
+            assert fallback.timeout == 120
+            assert fallback.backend_type == "gemini"
+            assert fallback.enabled is True
+
+    def test_load_toml_with_backend_for_failed_pr_section(self):
+        """Test loading TOML file with [backend_for_failed_pr] section."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            data = {
+                "backend": {"default": "codex", "order": ["codex", "gemini"]},
+                "backends": {
+                    "codex": {
+                        "enabled": True,
+                        "model": "codex-default",
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                    },
+                },
+                "backend_for_failed_pr": {
+                    "enabled": True,
+                    "model": "gemini-2.0-flash",
+                    "api_key": "fallback_key_123",
+                    "temperature": 0.2,
+                    "timeout": 60,
+                    "backend_type": "gemini",
+                    "providers": ["fallback-provider"],
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify fallback backend was loaded
+            assert config.backend_for_failed_pr is not None
+            fallback = config.backend_for_failed_pr
+            assert fallback.model == "gemini-2.0-flash"
+            assert fallback.api_key == "fallback_key_123"
+            assert fallback.temperature == 0.2
+            assert fallback.timeout == 60
+            assert fallback.backend_type == "gemini"
+            assert fallback.providers == ["fallback-provider"]
+            assert fallback.enabled is True
+
+    def test_load_toml_without_backend_for_failed_pr_section(self):
+        """Test loading TOML file without [backend_for_failed_pr] section (backward compatibility)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "llm_config.toml"
+            data = {
+                "backend": {"default": "codex", "order": ["codex", "gemini"]},
+                "backends": {
+                    "codex": {
+                        "enabled": True,
+                        "model": "codex-default",
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify fallback backend is None when not in config
+            assert config.backend_for_failed_pr is None
+
+    def test_get_backend_for_failed_pr_method(self):
+        """Test get_backend_for_failed_pr method."""
+        config = LLMBackendConfiguration()
+        assert config.get_backend_for_failed_pr() is None
+
+        # Set fallback backend
+        fallback = BackendConfig(name="test-fallback", model="test-model")
+        config.backend_for_failed_pr = fallback
+
+        # Verify method returns the fallback backend
+        result = config.get_backend_for_failed_pr()
+        assert result is fallback
+        assert result.name == "test-fallback"
+        assert result.model == "test-model"
+
+    def test_get_model_for_failed_pr_backend_method(self):
+        """Test get_model_for_failed_pr_backend method."""
+        config = LLMBackendConfiguration()
+
+        # No fallback backend configured
+        assert config.get_model_for_failed_pr_backend() is None
+
+        # Fallback backend without model
+        config.backend_for_failed_pr = BackendConfig(name="test-fallback")
+        assert config.get_model_for_failed_pr_backend() is None
+
+        # Fallback backend with model
+        config.backend_for_failed_pr = BackendConfig(name="test-fallback", model="fallback-model")
+        assert config.get_model_for_failed_pr_backend() == "fallback-model"
+
+    def test_save_to_file_without_backend_for_failed_pr(self):
+        """Test that save_to_file works when backend_for_failed_pr is not configured."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_no_fallback.toml"
+
+            # Create configuration without fallback backend
+            config = LLMBackendConfiguration()
+            config.default_backend = "gemini"
+            config.get_backend_config("gemini").model = "gemini-pro"
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Verify file was created
+            assert config_file.exists()
+
+            # Load and verify
+            with open(config_file, "r") as f:
+                data = toml.load(f)
+
+            # Verify no backend_for_failed_pr section in the file
+            assert "backend_for_failed_pr" not in data
+            assert data["backend"]["default"] == "gemini"
+
+    def test_backend_for_failed_pr_all_fields(self):
+        """Test that all BackendConfig fields are properly saved and loaded for fallback backend."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_all_fields_fallback.toml"
+
+            # Create configuration with all fields set for fallback backend
+            config = LLMBackendConfiguration()
+            config.backend_for_failed_pr = BackendConfig(
+                name="full-fallback",
+                enabled=False,
+                model="full-fallback-model",
+                api_key="fallback_key",
+                base_url="https://fallback.example.com",
+                temperature=0.9,
+                timeout=180,
+                max_retries=10,
+                openai_api_key="fallback_openai_key",
+                openai_base_url="https://fallback.openai.example.com",
+                extra_args={"FALLBACK_ARG": "value"},
+                providers=["fallback-provider-1", "fallback-provider-2"],
+                usage_limit_retry_count=5,
+                usage_limit_retry_wait_seconds=45,
+                options=["fallback-option1", "fallback-option2"],
+                backend_type="custom_fallback",
+                model_provider="fallback-provider",
+                always_switch_after_execution=True,
+                settings="fallback_settings.json",
+                usage_markers=["fallback-marker1", "fallback-marker2"],
+            )
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify all fields were persisted
+            fallback = loaded_config.backend_for_failed_pr
+            assert fallback is not None
+            assert fallback.enabled is False
+            assert fallback.model == "full-fallback-model"
+            assert fallback.api_key == "fallback_key"
+            assert fallback.base_url == "https://fallback.example.com"
+            assert fallback.temperature == 0.9
+            assert fallback.timeout == 180
+            assert fallback.max_retries == 10
+            assert fallback.openai_api_key == "fallback_openai_key"
+            assert fallback.openai_base_url == "https://fallback.openai.example.com"
+            assert fallback.extra_args == {"FALLBACK_ARG": "value"}
+            assert fallback.providers == ["fallback-provider-1", "fallback-provider-2"]
+            assert fallback.usage_limit_retry_count == 5
+            assert fallback.usage_limit_retry_wait_seconds == 45
+            assert fallback.options == ["fallback-option1", "fallback-option2"]
+            assert fallback.backend_type == "custom_fallback"
+            assert fallback.model_provider == "fallback-provider"
+            assert fallback.always_switch_after_execution is True
+            assert fallback.settings == "fallback_settings.json"
+            assert fallback.usage_markers == ["fallback-marker1", "fallback-marker2"]
+
+    def test_backend_for_failed_pr_minimal_config(self):
+        """Test fallback backend with minimal configuration (only required fields)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_minimal_fallback.toml"
+
+            # Create configuration with minimal fallback backend
+            config = LLMBackendConfiguration()
+            config.backend_for_failed_pr = BackendConfig(name="minimal-fallback")
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify minimal config was persisted with defaults
+            fallback = loaded_config.backend_for_failed_pr
+            assert fallback is not None
+            assert fallback.name == "minimal-fallback"
+            assert fallback.enabled is True  # Default value
+            assert fallback.model is None  # Optional field
+            assert fallback.api_key is None  # Optional field

@@ -190,6 +190,28 @@ class BackendManager(LLMBackendManagerBase):
         current_time = time.time()
         self._state_manager.save_state(current_backend, current_time)
 
+    def _switch_to_backend_by_name(self, backend_name: str) -> None:
+        """Switch to a specific backend by name.
+
+        This method finds the index of the specified backend and switches to it.
+        If the backend is not found, it raises a ValueError.
+
+        Args:
+            backend_name: Name of the backend to switch to
+
+        Raises:
+            ValueError: If the backend name is not found in the list of backends
+        """
+        try:
+            idx = self._all_backends.index(backend_name)
+            self._switch_to_index(idx)
+            # Save the new backend state
+            current_backend = self._current_backend_name()
+            current_time = time.time()
+            self._state_manager.save_state(current_backend, current_time)
+        except ValueError:
+            raise ValueError(f"Backend '{backend_name}' not found in configured backends: {self._all_backends}")
+
     def check_and_reset_backend_if_needed(self) -> None:
         """
         Check if an auto-reset is needed based on the saved state.
