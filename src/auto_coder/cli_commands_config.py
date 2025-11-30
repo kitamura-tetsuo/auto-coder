@@ -283,6 +283,7 @@ def validate(config_file: Optional[str]) -> None:
             click.echo("Configuration validation errors found:")
             for error in errors:
                 click.echo(f"  - {error}")
+            sys.exit(1)
         else:
             click.echo("Configuration is valid")
     except Exception as e:
@@ -1039,6 +1040,9 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
 
     # Check each backend
     for name, backend_config in config.backends.items():
+        # Validate required options
+        required_errors = backend_config.validate_required_options()
+        errors.extend(required_errors)
         # Validate model - should be str or None
         if backend_config.model is not None and not isinstance(backend_config.model, str):
             errors.append(f"{name}.model must be a string")  # type: ignore[unreachable]

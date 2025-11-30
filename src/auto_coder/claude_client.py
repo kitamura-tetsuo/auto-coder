@@ -44,6 +44,12 @@ class ClaudeClient(LLMClientBase):
             self.settings = config_backend and config_backend.settings
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"ClaudeClient validation: {error}")
         else:
             # Fall back to default claude config
             config_backend = config.get_backend_config("claude")
@@ -55,6 +61,12 @@ class ClaudeClient(LLMClientBase):
             self.settings = config_backend and config_backend.settings
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"ClaudeClient validation: {error}")
 
         self.default_model = self.model_name
         self.conflict_model = "sonnet"

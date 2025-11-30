@@ -147,16 +147,47 @@ def test_config_validate(tmp_path: Path):
 
     # Test with a valid file
     config = LLMBackendConfiguration()
+    # Add required options for each backend to make it valid
+    codex_backend = config.get_backend_config("codex")
+    if codex_backend:
+        codex_backend.options = ["--dangerously-bypass-approvals-and-sandbox"]
+
+    gemini_backend = config.get_backend_config("gemini")
+    if gemini_backend:
+        gemini_backend.options = ["--yolo"]
+
+    qwen_backend = config.get_backend_config("qwen")
+    if qwen_backend:
+        qwen_backend.options = ["-y"]
+
+    auggie_backend = config.get_backend_config("auggie")
+    if auggie_backend:
+        auggie_backend.options = ["--print"]
+
+    claude_backend = config.get_backend_config("claude")
+    if claude_backend:
+        claude_backend.options = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
     config.save_to_file(config_file)
     result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
     assert result.exit_code == 0
     assert "Configuration is valid" in result.output
+
+    # Test with missing required options
+    config2 = LLMBackendConfiguration()
+    config2.save_to_file(config_file)
+    result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
+    assert result.exit_code == 1
+    assert "Configuration validation errors found" in result.output
+    assert "missing required option" in result.output
+    assert "codex" in result.output
+    assert "gemini" in result.output
 
     # Test with an invalid file
     with open(config_file, "w") as f:
         f.write("[backends.gemini]\nmodel = 123")  # model should be a string
 
     result = runner.invoke(main, ["config", "validate", "--file", str(config_file)])
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert "Configuration validation errors found" in result.output
     assert "gemini.model must be a string" in result.output

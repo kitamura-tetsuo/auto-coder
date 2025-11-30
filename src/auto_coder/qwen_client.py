@@ -67,6 +67,12 @@ class QwenClient(LLMClientBase):
         # Store usage_markers from config
         self.usage_markers = (config_backend and config_backend.usage_markers) or []
 
+        # Validate required options
+        if config_backend:
+            errors = config_backend.validate_required_options()
+            for error in errors:
+                logger.warning(f"QwenClient validation: {error}")
+
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
         self.conflict_model = self.model_name

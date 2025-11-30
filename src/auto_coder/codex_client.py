@@ -55,6 +55,12 @@ class CodexClient(LLMClientBase):
             self.model_provider = config_backend and config_backend.model_provider
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"CodexClient validation: {error}")
         else:
             # Fall back to default codex config
             config_backend = config.get_backend_config("codex")
@@ -66,6 +72,12 @@ class CodexClient(LLMClientBase):
             self.model_provider = None
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"CodexClient validation: {error}")
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name

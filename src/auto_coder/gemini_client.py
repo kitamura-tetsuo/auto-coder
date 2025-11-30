@@ -48,6 +48,12 @@ class GeminiClient(LLMClientBase):
             self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"GeminiClient validation: {error}")
         else:
             # Fall back to default gemini config
             config_backend = config.get_backend_config("gemini")
@@ -55,6 +61,12 @@ class GeminiClient(LLMClientBase):
             self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"GeminiClient validation: {error}")
 
         self.default_model = self.model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
