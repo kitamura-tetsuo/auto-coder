@@ -856,9 +856,9 @@ class TestResumeLogic:
             assert persisted_arg.last_session_id == "new-session-id"
 
     def test_get_noedit_backend_manager_initialization_and_reuse(self, monkeypatch):
-        """Non-edit backend manager wrapper should delegate to message instance and reuse it."""
+        """Non-edit backend manager wrapper should delegate to noedit instance and reuse it."""
         dummy_manager = MagicMock()
-        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_message_instance", return_value=dummy_manager) as mock_get:
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_noedit_instance", return_value=dummy_manager) as mock_get:
             first = get_noedit_backend_manager(default_backend="a", default_client=MagicMock(), factories={"a": lambda: None})
             second = get_noedit_backend_manager()
 
@@ -872,7 +872,7 @@ class TestResumeLogic:
         default_client = MagicMock()
         factories = {"a": lambda: None}
 
-        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_message_instance", return_value=dummy_manager) as mock_get:
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_noedit_instance", return_value=dummy_manager) as mock_get:
             manager = get_noedit_backend_manager(
                 default_backend="a",
                 default_client=default_client,
@@ -895,7 +895,7 @@ class TestResumeLogic:
         dummy_manager = MagicMock()
         dummy_manager._run_llm_cli.return_value = "ok"
 
-        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_message_instance", return_value=dummy_manager):
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_noedit_instance", return_value=dummy_manager):
             result = run_llm_noedit_prompt("prompt")
 
         assert result == "ok"

@@ -1111,28 +1111,6 @@ def run_llm_message_prompt(prompt: str) -> str:
     return run_llm_noedit_prompt(prompt)
 
 
-def run_llm_noedit_prompt(prompt: str) -> str:
-    """
-    Run a prompt using the global noedit backend manager.
-
-    This is a convenience function that provides a simple way to execute noedit
-    tasks using the global noedit backend manager singleton.
-
-    Args:
-        prompt: The prompt to send to the LLM
-
-    Returns:
-        str: The response from the LLM
-
-    Raises:
-        RuntimeError: If the noedit backend manager hasn't been initialized
-    """
-    manager = LLMBackendManager.get_noedit_instance()
-    if manager is None:
-        raise RuntimeError("Noedit backend manager not initialized. " "Call get_noedit_backend_manager() with initialization parameters first.")
-    return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
-
-
 def get_noedit_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     """
     Get the backend and model used for the most recent noedit operation.
