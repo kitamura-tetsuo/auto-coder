@@ -149,12 +149,7 @@ class TestLLMBackendConfiguration:
     def test_options_for_noedit_field(self):
         """Options for noedit should be parsed separately from general options."""
         config_data = {"backends": {"codex": {"options": ["--flag1"], "options_for_noedit": ["--flag2"]}}}
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_file = Path(tmpdir) / "config.toml"
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(config_data, fh)
-
-            config = LLMBackendConfiguration.load_from_file(str(config_file))
+        config = LLMBackendConfiguration.load_from_dict(config_data)
 
         assert config.backends["codex"].options == ["--flag1"]
         assert config.backends["codex"].options_for_noedit == ["--flag2"]
@@ -162,15 +157,22 @@ class TestLLMBackendConfiguration:
     def test_options_for_noedit_defaults_to_empty_list(self):
         """Options for noedit should default to an empty list when not provided."""
         config_data = {"backends": {"codex": {"options": ["--flag1"]}}}
-        with tempfile.TemporaryDirectory() as tmpdir:
-            config_file = Path(tmpdir) / "config.toml"
-            with open(config_file, "w", encoding="utf-8") as fh:
-                toml.dump(config_data, fh)
-
-            config = LLMBackendConfiguration.load_from_file(str(config_file))
+        config = LLMBackendConfiguration.load_from_dict(config_data)
 
         assert config.backends["codex"].options == ["--flag1"]
         assert config.backends["codex"].options_for_noedit == []
+
+    def test_backend_for_noedit_schema_fields(self):
+        """New backend_for_noedit schema should populate defaults and order."""
+        config_data = {
+            "backend_for_noedit": {"order": ["codex", "gemini"], "default": "codex"},
+            "backends": {"codex": {}, "gemini": {}},
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        assert config.backend_for_noedit_order == ["codex", "gemini"]
+        assert config.backend_for_noedit_default == "codex"
 
     def test_save_and_load_from_file(self):
         """Test saving and loading configuration from a TOML file."""

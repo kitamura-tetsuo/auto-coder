@@ -866,6 +866,17 @@ class TestResumeLogic:
         assert second is dummy_manager
         assert mock_get.call_count == 2
 
+    def test_run_llm_noedit_prompt_delegates_to_manager(self, monkeypatch):
+        """New noedit helper should delegate without using deprecated aliases."""
+        dummy_manager = MagicMock()
+        dummy_manager._run_llm_cli.return_value = "ok"
+
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_message_instance", return_value=dummy_manager):
+            result = run_llm_noedit_prompt("prompt")
+
+        assert result == "ok"
+        dummy_manager._run_llm_cli.assert_called_once_with("prompt")
+
     def test_deprecated_message_helpers_emit_warning(self, monkeypatch):
         """Deprecated message helpers should emit warnings but still delegate."""
         dummy_manager = MagicMock()
