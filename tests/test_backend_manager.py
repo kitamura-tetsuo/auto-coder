@@ -847,6 +847,8 @@ class TestResumeLogic:
             assert isinstance(persisted_arg, BackendSessionState)
             assert persisted_arg.last_backend == "a"
             assert persisted_arg.last_session_id == "new-session-id"
+
+
 # ==================== JSON Parsing Tests ====================
 
 
