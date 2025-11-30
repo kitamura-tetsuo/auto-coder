@@ -47,7 +47,11 @@ backend_type = "qwen"
 # Additional options to pass to the Qwen CLI
 # These options will be added to the command line when calling qwen
 # Example: ["-o", "stream", "false", "--debug"]
-options = []
+options = ["-y"]
+
+# Options for non-editing operations (message generation, commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["-y"]
 
 
 # Method 2: Qwen via OpenRouter (OpenAI-Compatible API)
@@ -67,6 +71,10 @@ backend_type = "codex"
 # Optional: Add custom headers for tracking usage
 options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
+# Options for non-editing operations (message generation, commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+
 # Gemini Configuration
 # --------------------
 [gemini]
@@ -85,6 +93,14 @@ always_switch_after_execution = true
 
 backend_type = "gemini"
 
+# Options for code editing operations
+# These are passed to the backend when performing code modifications
+options = ["--yolo", "--force-model"]
+
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["--yolo", "--force-model"]
+
 # Codex Configuration
 # -------------------
 # Codex client can be used for generic OpenAI-compatible APIs like OpenRouter.
@@ -97,8 +113,71 @@ base_url = "your-api-base-url-here"
 # For OpenAI-compatible APIs (like OpenRouter), use these
 openai_api_key = "your-openai-api-key-here"
 openai_base_url = "your-openai-base-url-here"
-options = []
+
+# Options for code editing operations
+# These are passed to the backend when performing code modifications
+options = ["--dangerously-bypass-approvals-and-sandbox"]
+
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox"]
+
 backend_type = "codex"
+
+# Claude Configuration
+# --------------------
+[claude]
+# enabled = true is the default (no need to specify)
+model = "sonnet"
+
+# Claude API settings
+api_key = "your-claude-api-key-here"
+
+backend_type = "claude"
+
+# Options for code editing operations
+# These are passed to the backend when performing code modifications
+options = ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["--print", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+# Auggie Configuration
+# --------------------
+[auggie]
+# enabled = true is the default (no need to specify)
+model = "GPT-5"
+
+# Auggie API settings
+api_key = "your-auggie-api-key-here"
+
+backend_type = "auggie"
+
+# Options for code editing operations
+# These are passed to the backend when performing code modifications
+options = ["--print"]
+
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["--print"]
+
+# Jules Configuration
+# --------------------
+[jules]
+# enabled = true is the default (no need to specify)
+# Jules is session-based AI assistant
+# No model needed - Jules manages its own models internally
+
+backend_type = "jules"
+
+# Jules is session-based, so minimal options are needed
+# Options for code editing operations
+options = []
+
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = []
 
 # Custom Alias Examples
 # --------------------
@@ -118,6 +197,10 @@ backend_type = "codex"
 # Custom options for faster responses
 options = ["-o", "timeout", "30", "-o", "stream", "true"]
 
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["-o", "timeout", "30", "-o", "stream", "true"]
+
 
 # Example 2: Qwen via OpenRouter with premium model
 [qwen-premium]
@@ -131,6 +214,10 @@ backend_type = "codex"
 
 # Premium model with additional options
 options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
 
 # Example 3: Azure OpenAI with Qwen model
@@ -147,6 +234,10 @@ backend_type = "codex"
 # Azure-specific options
 options = ["-o", "api_version", "2024-02-01"]
 
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["-o", "api_version", "2024-02-01"]
+
 
 # Example 4: Custom OpenAI-compatible endpoint
 # NOTE: Disabled by default (optional service)
@@ -158,6 +249,13 @@ openai_base_url = "https://api.example.com/v1"
 
 # Use 'codex' backend type for OpenAI-compatible providers
 backend_type = "codex"
+
+# Optional options for custom endpoints
+options = ["-o", "timeout", "60"]
+
+# Options for message generation (commit messages, PR descriptions)
+# If not specified, defaults to the same as `options`
+options_for_noedit = ["-o", "timeout", "60"]
 
 # Fallback Backend for Failed PRs
 # --------------------------------
@@ -215,6 +313,50 @@ backend_type = "codex"
 # usage_markers = ["fallback", "high_availability"]
 
 
+# Understanding options vs options_for_noedit
+# ============================================
+#
+# Auto-Coder distinguishes between two types of operations:
+#
+# 1. CODE EDITING OPERATIONS (options)
+#    ---------------------------------
+#    These options are used when the backend performs code modifications:
+#    - Analyzing and implementing code changes
+#    - Writing new files
+#    - Refactoring existing code
+#    - Fixing bugs in source files
+#    - Running tests and builds
+#
+#    Example: ["--dangerously-bypass-approvals-and-sandbox"]
+#
+# 2. MESSAGE GENERATION OPERATIONS (options_for_noedit)
+#    ---------------------------------------------------
+#    These options are used for non-editing operations:
+#    - Generating commit messages
+#    - Writing PR descriptions
+#    - Creating issue descriptions
+#    - Writing documentation comments
+#    - Any operation that doesn't modify code files
+#
+#    Example: ["--print", "--dangerously-skip-permissions"]
+#
+# MIGRATION NOTES:
+# ================
+# - The old hardcoded `options` field has been replaced with a more flexible system
+# - You can now specify different options for editing vs message generation
+# - If `options_for_noedit` is not specified, it defaults to the same value as `options`
+# - The `[message_backend]` section has been renamed to `[backend_for_noedit]`
+#   (backward compatibility is maintained, but the new name is recommended)
+#
+# BEST PRACTICES:
+# ===============
+# - Use `options` for code editing operations that require more aggressive settings
+# - Use `options_for_noedit` for message generation that may need different options
+# - Keep options minimal and focused on the specific operation type
+# - Test your configuration changes in a safe environment first
+# - Monitor logs to ensure options are being applied correctly
+
+
 # Notes and Best Practices
 # ========================
 
@@ -265,15 +407,21 @@ backend_type = "codex"
 
 # Configuration Inheritance and Options
 # -------------------------------------
-# 1. The `options` field is primarily used by qwen/codex backends to pass
-#    command-line arguments to the CLI tools.
+# 1. The `options` field is used by backends to pass command-line arguments
+#    during code editing operations (code modifications, file writes, etc.).
 #
-# 2. Only qwen and codex backends currently utilize the `options` field in their
-#    subprocess calls. Other backends may ignore this field.
+# 2. The `options_for_noedit` field is used specifically for message generation
+#    operations (commit messages, PR descriptions, etc.). If not specified,
+#    it defaults to the same value as `options`.
 #
 # 3. The `backend_type` field allows you to create custom aliases that
 #    map to underlying backend implementations. This is useful when you
 #    want multiple configurations for the same backend type.
+#
+# 4. Different backends use these fields differently:
+#    - qwen/codex: Command-line arguments for CLI tools
+#    - claude/gemini/auggie: Backend-specific flags and options
+#    - jules: Minimal options (session-based backend)
 
 # Environment Variables
 # --------------------
