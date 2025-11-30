@@ -5,7 +5,7 @@ Configuration management for LLM backends using TOML files.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import toml
@@ -128,125 +128,144 @@ class LLMBackendConfiguration:
             with open(config_path, "r") as f:
                 data = toml.load(f)
 
-            # Parse general backend settings
-            backend_order = data.get("backend", {}).get("order", [])
-            default_backend = data.get("backend", {}).get("default", "codex")
+            config = cls._parse_from_data(data, config_path=config_path)
 
-            # Parse backends
-            backends_data = data.get("backends", {})
-            backends = {}
-
-            # Helper to parse a backend config dict
-            def parse_backend_config(name: str, config_data: dict) -> BackendConfig:
-                return BackendConfig(
-                    name=name,
-                    enabled=config_data.get("enabled", True),
-                    model=config_data.get("model"),
-                    api_key=config_data.get("api_key"),
-                    base_url=config_data.get("base_url"),
-                    temperature=config_data.get("temperature"),
-                    timeout=config_data.get("timeout"),
-                    max_retries=config_data.get("max_retries"),
-                    openai_api_key=config_data.get("openai_api_key"),
-                    openai_base_url=config_data.get("openai_base_url"),
-                    extra_args=config_data.get("extra_args", {}),
-                    providers=config_data.get("providers", []),
-                    usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
-                    usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
-                    options=config_data.get("options", []),
-                    options_for_resume=config_data.get("options_for_resume", []),
-                    options_for_noedit=config_data.get("options_for_noedit", []),
-                    backend_type=config_data.get("backend_type"),
-                    model_provider=config_data.get("model_provider"),
-                    always_switch_after_execution=config_data.get("always_switch_after_execution", False),
-                    settings=config_data.get("settings"),
-                    usage_markers=config_data.get("usage_markers", []),
-                )
-
-            # 1. Parse explicit [backends] section
-            for name, config_data in backends_data.items():
-                backends[name] = parse_backend_config(name, config_data)
-
-            # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
-            # This handles cases where TOML parses dotted keys as nested dictionaries
-            # e.g. [grok-4.1-fast] -> {'grok-4': {'1-fast': {...}}}
-
-            def is_potential_backend_config(d: dict) -> bool:
-                # Heuristic: if it has specific backend keys, it's likely a config
-                # We check for keys that are commonly used in backend definitions
-                common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_resume", "options_for_noedit"}
-                # Also check if 'enabled' is present, but it's very common so we combine it
-                # with the fact that we are looking for backends.
-                # If a dict has 'enabled' and is in the top-level (or nested from top-level),
-                # it's a strong candidate.
-                if "enabled" in d:
-                    return True
-                return any(k in d for k in common_keys)
-
-            def find_backends_recursive(current_data: dict, prefix: str = ""):
-                for key, value in current_data.items():
-                    if not isinstance(value, dict):
-                        continue
-
-                    # Skip known non-backend dict fields to avoid false positives
-                    if key in {"extra_args"}:
-                        continue
-
-                    full_key = f"{prefix}.{key}" if prefix else key
-
-                    # Check if this node itself is a backend config
-                    if is_potential_backend_config(value):
-                        if full_key not in backends:
-                            backends[full_key] = parse_backend_config(full_key, value)
-
-                    # Recurse to find nested backends (e.g. grok-4.1-fast)
-                    find_backends_recursive(value, full_key)
-
-            # Exclude reserved top-level keys from recursion
-            reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends"}
-
-            # Create a dict of potential top-level backends to recurse
-            potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
-
-            find_backends_recursive(potential_roots)
-
-            # Add default backends if they are not already in the configuration
-            # This ensures that backends like 'jules' are available even if not explicitly defined in the file
-            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
-            for backend_name in default_backends:
-                if backend_name not in backends:
-                    backends[backend_name] = BackendConfig(name=backend_name)
-
-            # Parse backend_for_noedit settings with backward compatibility
-            backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
-            backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
-
-            # Check old key for backward compatibility
-            if not backend_for_noedit_order:
-                backend_for_noedit_order = data.get("message_backend", {}).get("order", [])
-                if backend_for_noedit_order:
-                    logger = get_logger(__name__)
-                    logger.warning("Config uses deprecated 'message_backend', use 'backend_for_noedit' instead")
-
-            if not backend_for_noedit_default:
-                backend_for_noedit_default = data.get("message_backend", {}).get("default")
-                if backend_for_noedit_default:
-                    logger = get_logger(__name__)
-                    logger.warning("Config uses deprecated 'message_backend', use 'backend_for_noedit' instead")
-
-            # Parse backend_for_failed_pr section
-            backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
-            backend_for_failed_pr = None
-            if backend_for_failed_pr_data:
-                # Use "backend_for_failed_pr" as default name if not specified in data
-                fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
-                backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
-
-            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
-
+            # Preserve the resolved path in the returned configuration for reference
+            config.config_file_path = config_path
             return config
         except Exception as e:
             raise ValueError(f"Error loading configuration from {config_path}: {e}")
+
+    @classmethod
+    def load_from_dict(cls, config_data: Dict[str, Any]) -> "LLMBackendConfiguration":
+        """Load configuration from an in-memory dictionary."""
+        try:
+            return cls._parse_from_data(config_data)
+        except Exception as e:
+            raise ValueError(f"Error loading configuration: {e}")
+
+    @classmethod
+    def _parse_from_data(cls, data: Dict[str, Any], config_path: Optional[str] = None) -> "LLMBackendConfiguration":
+        """Parse configuration data regardless of its source."""
+        # Parse general backend settings
+        backend_order = data.get("backend", {}).get("order", [])
+        default_backend = data.get("backend", {}).get("default", "codex")
+
+        # Parse backends
+        backends_data = data.get("backends", {})
+        backends = {}
+
+        # Helper to parse a backend config dict
+        def parse_backend_config(name: str, config_data: dict) -> BackendConfig:
+            return BackendConfig(
+                name=name,
+                enabled=config_data.get("enabled", True),
+                model=config_data.get("model"),
+                api_key=config_data.get("api_key"),
+                base_url=config_data.get("base_url"),
+                temperature=config_data.get("temperature"),
+                timeout=config_data.get("timeout"),
+                max_retries=config_data.get("max_retries"),
+                openai_api_key=config_data.get("openai_api_key"),
+                openai_base_url=config_data.get("openai_base_url"),
+                extra_args=config_data.get("extra_args", {}),
+                providers=config_data.get("providers", []),
+                usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
+                usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
+                options=config_data.get("options", []),
+                options_for_resume=config_data.get("options_for_resume", []),
+                options_for_noedit=config_data.get("options_for_noedit", []),
+                backend_type=config_data.get("backend_type"),
+                model_provider=config_data.get("model_provider"),
+                always_switch_after_execution=config_data.get("always_switch_after_execution", False),
+                settings=config_data.get("settings"),
+                usage_markers=config_data.get("usage_markers", []),
+            )
+
+        # 1. Parse explicit [backends] section
+        for name, config_data in backends_data.items():
+            backends[name] = parse_backend_config(name, config_data)
+
+        # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
+        # This handles cases where TOML parses dotted keys as nested dictionaries
+        # e.g. [grok-4.1-fast] -> {'grok-4': {'1-fast': {...}}}
+
+        def is_potential_backend_config(d: dict) -> bool:
+            # Heuristic: if it has specific backend keys, it's likely a config
+            # We check for keys that are commonly used in backend definitions
+            common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_resume", "options_for_noedit"}
+            # Also check if 'enabled' is present, but it's very common so we combine it
+            # with the fact that we are looking for backends.
+            # If a dict has 'enabled' and is in the top-level (or nested from top-level),
+            # it's a strong candidate.
+            if "enabled" in d:
+                return True
+            return any(k in d for k in common_keys)
+
+        def find_backends_recursive(current_data: dict, prefix: str = ""):
+            for key, value in current_data.items():
+                if not isinstance(value, dict):
+                    continue
+
+                # Skip known non-backend dict fields to avoid false positives
+                if key in {"extra_args"}:
+                    continue
+
+                full_key = f"{prefix}.{key}" if prefix else key
+
+                # Check if this node itself is a backend config
+                if is_potential_backend_config(value):
+                    if full_key not in backends:
+                        backends[full_key] = parse_backend_config(full_key, value)
+
+                # Recurse to find nested backends (e.g. grok-4.1-fast)
+                find_backends_recursive(value, full_key)
+
+        # Exclude reserved top-level keys from recursion
+        reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends"}
+
+        # Create a dict of potential top-level backends to recurse
+        potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
+
+        find_backends_recursive(potential_roots)
+
+        # Add default backends if they are not already in the configuration
+        # This ensures that backends like 'jules' are available even if not explicitly defined in the file
+        default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
+        for backend_name in default_backends:
+            if backend_name not in backends:
+                backends[backend_name] = BackendConfig(name=backend_name)
+
+        # Parse backend_for_noedit settings with backward compatibility
+        backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
+        backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
+
+        # Check old key for backward compatibility
+        if not backend_for_noedit_order:
+            backend_for_noedit_order = data.get("message_backend", {}).get("order", [])
+            if backend_for_noedit_order:
+                logger = get_logger(__name__)
+                logger.warning("Config uses deprecated 'message_backend', use 'backend_for_noedit' instead")
+
+        if not backend_for_noedit_default:
+            backend_for_noedit_default = data.get("message_backend", {}).get("default")
+            if backend_for_noedit_default:
+                logger = get_logger(__name__)
+                logger.warning("Config uses deprecated 'message_backend', use 'backend_for_noedit' instead")
+
+        # Parse backend_for_failed_pr section
+        backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
+        backend_for_failed_pr = None
+        if backend_for_failed_pr_data:
+            # Use "backend_for_failed_pr" as default name if not specified in data
+            fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
+            backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
+
+        config = cls(
+            backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path or cls.config_file_path
+        )
+
+        return config
 
     def save_to_file(self, config_path: Optional[str] = None) -> None:
         """Save configuration to TOML file."""

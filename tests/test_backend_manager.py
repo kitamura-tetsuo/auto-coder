@@ -4,7 +4,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.backend_manager import BackendManager, LLMBackendManager
+from src.auto_coder.backend_manager import (
+    BackendManager,
+    LLMBackendManager,
+    get_message_backend_manager,
+    get_noedit_backend_manager,
+    run_llm_message_prompt,
+    run_llm_noedit_prompt,
+)
 from src.auto_coder.backend_provider_manager import (
     BackendProviderManager,
     BackendProviderMetadata,
@@ -847,6 +854,65 @@ class TestResumeLogic:
             assert isinstance(persisted_arg, BackendSessionState)
             assert persisted_arg.last_backend == "a"
             assert persisted_arg.last_session_id == "new-session-id"
+
+    def test_get_noedit_backend_manager_initialization_and_reuse(self, monkeypatch):
+        """Non-edit backend manager wrapper should delegate to noedit instance and reuse it."""
+        dummy_manager = MagicMock()
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_noedit_instance", return_value=dummy_manager) as mock_get:
+            first = get_noedit_backend_manager(default_backend="a", default_client=MagicMock(), factories={"a": lambda: None})
+            second = get_noedit_backend_manager()
+
+        assert first is dummy_manager
+        assert second is dummy_manager
+        assert mock_get.call_count == 2
+
+    def test_get_noedit_backend_manager_passes_arguments(self):
+        """Noedit manager helper should pass through initialization parameters."""
+        dummy_manager = MagicMock()
+        default_client = MagicMock()
+        factories = {"a": lambda: None}
+
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_noedit_instance", return_value=dummy_manager) as mock_get:
+            manager = get_noedit_backend_manager(
+                default_backend="a",
+                default_client=default_client,
+                factories=factories,
+                order=["a"],
+                force_reinitialize=True,
+            )
+
+        assert manager is dummy_manager
+        mock_get.assert_called_once_with(
+            default_backend="a",
+            default_client=default_client,
+            factories=factories,
+            order=["a"],
+            force_reinitialize=True,
+        )
+
+    def test_run_llm_noedit_prompt_delegates_to_manager(self, monkeypatch):
+        """New noedit helper should delegate without using deprecated aliases."""
+        dummy_manager = MagicMock()
+        dummy_manager._run_llm_cli.return_value = "ok"
+
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_noedit_instance", return_value=dummy_manager):
+            result = run_llm_noedit_prompt("prompt")
+
+        assert result == "ok"
+        dummy_manager._run_llm_cli.assert_called_once_with("prompt")
+
+    def test_deprecated_message_helpers_emit_warning(self, monkeypatch):
+        """Deprecated message helpers should emit warnings but still delegate."""
+        dummy_manager = MagicMock()
+        with patch("src.auto_coder.backend_manager.get_noedit_backend_manager", return_value=dummy_manager), patch("src.auto_coder.backend_manager.run_llm_noedit_prompt", return_value="ok"):
+            mock_logger = MagicMock()
+            monkeypatch.setattr("src.auto_coder.backend_manager.logger", mock_logger)
+
+            assert get_message_backend_manager() is dummy_manager
+            assert run_llm_message_prompt("prompt") == "ok"
+
+        assert any("deprecated" in call.args[0] for call in mock_logger.warning.call_args_list)
+        assert mock_logger.warning.call_count >= 2
 
 
 # ==================== JSON Parsing Tests ====================

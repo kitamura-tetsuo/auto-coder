@@ -33,17 +33,16 @@ _initialization_lock = threading.Lock()
 __all__ = [
     "BackendManager",
     "get_llm_backend_manager",
+    "get_noedit_backend_manager",
     "run_llm_message_prompt",
+    "run_llm_noedit_prompt",
     "run_llm_prompt",
     "get_llm_backend_and_model",
     "get_llm_backend_provider_and_model",
     "LLMBackendManager",
     "get_message_backend_manager",
-    "get_message_backend_and_model",
-    # New noedit aliases
-    "get_noedit_backend_manager",
     "get_noedit_backend_and_model",
-    "run_llm_noedit_prompt",
+    "get_message_backend_and_model",
 ]
 
 
@@ -1054,27 +1053,9 @@ def get_message_backend_manager(
     """
     Deprecated: Use get_noedit_backend_manager() instead.
 
-    Get the global message backend manager singleton instance.
-
-    This is a convenience function that delegates to LLMBackendManager.get_message_instance().
-    Use this when you need to access the message backend manager from anywhere in your code.
-
-    This function is deprecated. Use get_noedit_backend_manager() instead.
-
-    Args:
-        default_backend: Name of the default backend
-        default_client: Default client instance
-        factories: Dictionary of backend name to factory function
-        order: Optional list specifying backend order
-        force_reinitialize: Force reinitialization with new parameters (default: False)
-
-    Returns:
-        BackendManager: The singleton instance for message generation operations
-
-    Raises:
-        RuntimeError: If called without initialization parameters on first call
+    This wrapper keeps backward compatibility while emitting a warning.
     """
-    logger.warning("get_message_backend_manager() is deprecated, use get_noedit_backend_manager()")
+    logger.warning("get_message_backend_manager() is deprecated, use get_noedit_backend_manager()", opt={"depth": 1})
     return get_noedit_backend_manager(
         default_backend=default_backend,
         default_client=default_client,
@@ -1126,7 +1107,7 @@ def run_llm_message_prompt(prompt: str) -> str:
     Raises:
         RuntimeError: If the message backend manager hasn't been initialized
     """
-    logger.warning("run_llm_message_prompt() is deprecated, use run_llm_noedit_prompt()")
+    logger.warning("run_llm_message_prompt() is deprecated, use run_llm_noedit_prompt()", opt={"depth": 1})
     return run_llm_noedit_prompt(prompt)
 
 
@@ -1152,7 +1133,7 @@ def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     Returns:
         Tuple[Optional[str], Optional[str]]: (backend_name, model_name) or (None, None) if not available
     """
-    logger.warning("get_message_backend_and_model() is deprecated, use get_noedit_backend_and_model()")
+    logger.warning("get_message_backend_and_model() is deprecated, use get_noedit_backend_and_model()", opt={"depth": 1})
     return get_noedit_backend_and_model()
 
 
