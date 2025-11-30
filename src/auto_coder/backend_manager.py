@@ -6,6 +6,8 @@ automatic switching when the same current_test_file appears 3 consecutive times 
 from __future__ import annotations
 
 import contextlib
+import json
+import re
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -479,6 +481,69 @@ class BackendManager(LLMBackendManagerBase):
         provider = self._provider_manager.get_last_used_provider_name(backend) if backend else None
 
         return backend, provider, model
+
+    def parse_llm_output_as_json(self, output: str) -> Any:
+        """
+        Parse LLM output as JSON and extract content.
+
+        This helper method handles various JSON output formats:
+        - Pure JSON (dict or list)
+        - Text followed by JSON (e.g., "Here's the result: {...}")
+        - JSON followed by text (e.g., "{...}\n\nAdditional info")
+        - Text, JSON, and more text (e.g., "Result: {...}\nEnd")
+
+        For list outputs (conversation history), extracts the content from the last message.
+        For dict outputs, returns the dict directly.
+
+        Args:
+            output: The raw LLM output string to parse
+
+        Returns:
+            The extracted content (dict or string from the last message in a list)
+
+        Raises:
+            ValueError: If the output cannot be parsed as JSON
+        """
+        # Try to find JSON in the output using regex
+        # This handles cases where JSON is embedded in text
+        json_pattern = r"\{.*\}|\[.*\]"
+        match = re.search(json_pattern, output, re.DOTALL)
+
+        if match:
+            json_str = match.group(0)
+        else:
+            # No JSON-like structure found, try the whole string
+            json_str = output
+
+        try:
+            parsed = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse output as JSON: {e}\nOutput: {output}")
+
+        # If the parsed JSON is a list (history), extract the last message content
+        if isinstance(parsed, list):
+            if not parsed:
+                raise ValueError("Parsed JSON is an empty list")
+            # Get the last message in the history
+            last_message = parsed[-1]
+            # Extract the content based on the structure
+            if isinstance(last_message, dict):
+                # Try common keys for message content
+                content_keys = ["content", "message", "text", "response"]
+                for key in content_keys:
+                    if key in last_message:
+                        return last_message[key]
+                # If no known content key found, return the entire last message as fallback
+                return last_message
+            else:
+                # Last message is not a dict, return it directly
+                return last_message
+        elif isinstance(parsed, dict):
+            # If it's a dict, use it directly
+            return parsed
+        else:
+            # For other types (str, int, etc.), return directly
+            return parsed
 
     # ---------- Compatibility Helpers ----------
     def switch_to_conflict_model(self) -> None:
