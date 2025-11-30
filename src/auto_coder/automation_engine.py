@@ -145,189 +145,193 @@ class AutomationEngine:
         candidates: List[Candidate] = []
         candidates_count = 0
 
-        # Collect PR candidates
-        prs = self.github.get_open_pull_requests(repo_name)
-        for pr in prs:
-            pr_data = self.github.get_pr_details(pr)
-            labels = pr_data.get("labels", []) or []
+        try:
+            # Collect PR candidates
+            prs = self.github.get_open_pull_requests(repo_name)
+            for pr in prs:
+                pr_data = self.github.get_pr_details(pr)
+                labels = pr_data.get("labels", []) or []
 
-            pr_number = pr_data.get("number")
-            if not isinstance(pr_number, int):
-                logger.warning(f"Skipping PR missing/invalid number in data: {pr_data}")
-                continue
-
-            # Skip if another instance is processing (@auto-coder label present) using LabelManager check
-            with LabelManager(
-                self.github,
-                repo_name,
-                pr_number,
-                item_type="pr",
-                skip_label_add=True,
-                check_labels=self.config.CHECK_LABELS,
-            ) as should_process:
-                if not should_process:
-                    continue
-
-            # Calculate GitHub Actions status for the PR
-            checks = _check_github_actions_status(repo_name, pr_data, self.config)
-
-            # Skip PRs with running CI processes
-            if checks.in_progress:
-                logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
-                continue
-
-            mergeable = pr_data.get("mergeable", True)
-
-            # Handle dependency-bot PRs based on configuration
-            is_dependency_bot = _is_dependabot_pr(pr_data)
-            if is_dependency_bot:
-                if self.config.IGNORE_DEPENDABOT_PRS:
-                    # When IGNORE_DEPENDABOT_PRS is True: Skip ALL Dependabot PRs
-                    logger.debug(f"Skipping dependency-bot PR #{pr_number} - IGNORE_DEPENDABOT_PRS is enabled")
-                    continue
-                elif self.config.AUTO_MERGE_DEPENDABOT_PRS:
-                    # When AUTO_MERGE_DEPENDABOT_PRS is True:
-                    # - If passing & mergeable: Process (allow auto-merge)
-                    # - Else: Skip (ignore)
-                    if not (checks.success and bool(mergeable)):
-                        logger.debug(f"Skipping dependency-bot PR #{pr_number} - AUTO_MERGE_DEPENDABOT_PRS is enabled but PR is not passing/mergeable")
-                        continue
-                # If both flags are False: Process all Dependabot PRs (try to fix failing)
-
-            # Count only PRs that we will actually consider as candidates
-            candidates_count += 1
-
-            # Calculate priority
-            # Enhanced priority logic to distinguish unmergeable PRs
-            if any(
-                label in labels
-                for label in [
-                    "breaking-change",
-                    "breaking",
-                    "api-change",
-                    "deprecation",
-                    "version-major",
-                ]
-            ):
-                # Breaking-change PRs get highest priority (7)
-                pr_priority = 7
-            elif "urgent" in labels:
-                # Urgent items get high priority
-                if not mergeable:
-                    pr_priority = 4  # Urgent + unmergeable (highest urgent priority)
-                else:
-                    pr_priority = 3  # Urgent + mergeable
-            elif not mergeable:
-                pr_priority = 2  # Unmergeable PRs (elevated from priority 1)
-            elif not checks.success:
-                pr_priority = 1  # Fix-required but mergeable PRs
-            else:
-                pr_priority = 2  # Mergeable with successful checks (auto-merge candidate)
-
-            candidates.append(
-                Candidate(
-                    type="pr",
-                    data=pr_data,
-                    priority=pr_priority,
-                    branch_name=pr_data.get("head", {}).get("ref"),
-                    related_issues=_extract_linked_issues_from_pr_body(pr_data.get("body", "")),
-                )
-            )
-
-        # Collect issues if:
-        # - max_items is set and we haven't reached it yet (respect the requested limit), OR
-        # - we have no PR candidates, OR
-        # - we have few PR candidates and they're low priority (optimization to avoid usage limits)
-        should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < 3 and max([candidate.priority for candidate in candidates]) < 2)
-
-        if should_collect_issues:
-            # Collect issue candidates
-            issues = self.github.get_open_issues(repo_name)
-            for issue in issues:
-                issue_data = self.github.get_issue_details(issue)
-                labels = issue_data.get("labels", []) or []
-
-                # Skip if has sub-issues or linked PR
-                number = issue_data.get("number")
-                if not isinstance(number, int):
-                    logger.warning(f"Issue data missing or invalid number: {issue_data}")
+                pr_number = pr_data.get("number")
+                if not isinstance(pr_number, int):
+                    logger.warning(f"Skipping PR missing/invalid number in data: {pr_data}")
                     continue
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
                 with LabelManager(
                     self.github,
                     repo_name,
-                    number,
-                    item_type="issue",
+                    pr_number,
+                    item_type="pr",
                     skip_label_add=True,
                     check_labels=self.config.CHECK_LABELS,
                 ) as should_process:
                     if not should_process:
                         continue
 
-                # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
-                if self.github.get_open_sub_issues(repo_name, number):
+                # Calculate GitHub Actions status for the PR
+                checks = _check_github_actions_status(repo_name, pr_data, self.config)
+
+                # Skip PRs with running CI processes
+                if checks.in_progress:
+                    logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
                     continue
 
-                # Check for elder sibling dependency: if this issue is a sub-issue,
-                # ensure no elder sibling (sub-issue with lower number) is still open
-                parent_issue = self.github.get_parent_issue(repo_name, number)
-                if parent_issue is not None:
-                    open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue)
-                    # Filter to only sibling sub-issues (exclude current issue)
-                    elder_siblings = [s for s in open_sub_issues if s < number]
-                    if elder_siblings:
-                        logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
+                mergeable = pr_data.get("mergeable", True)
+
+                # Handle dependency-bot PRs based on configuration
+                is_dependency_bot = _is_dependabot_pr(pr_data)
+                if is_dependency_bot:
+                    if self.config.IGNORE_DEPENDABOT_PRS:
+                        # When IGNORE_DEPENDABOT_PRS is True: Skip ALL Dependabot PRs
+                        logger.debug(f"Skipping dependency-bot PR #{pr_number} - IGNORE_DEPENDABOT_PRS is enabled")
                         continue
+                    elif self.config.AUTO_MERGE_DEPENDABOT_PRS:
+                        # When AUTO_MERGE_DEPENDABOT_PRS is True:
+                        # - If passing & mergeable: Process (allow auto-merge)
+                        # - Else: Skip (ignore)
+                        if not (checks.success and bool(mergeable)):
+                            logger.debug(f"Skipping dependency-bot PR #{pr_number} - AUTO_MERGE_DEPENDABOT_PRS is enabled but PR is not passing/mergeable")
+                            continue
+                    # If both flags are False: Process all Dependabot PRs (try to fix failing)
 
-                if self.github.has_linked_pr(repo_name, number):
-                    continue
+                # Count only PRs that we will actually consider as candidates
+                candidates_count += 1
 
                 # Calculate priority
-                # Priority levels:
-                # - 7: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
-                # - 3: Urgent
-                # - 0: Regular issues
-                issue_priority = 0
-                # Check for breaking-change related labels (highest priority)
-                breaking_change_labels = [
-                    "breaking-change",
-                    "breaking",
-                    "api-change",
-                    "deprecation",
-                    "version-major",
-                ]
-                if any(label in labels for label in breaking_change_labels):
-                    issue_priority = 7
+                # Enhanced priority logic to distinguish unmergeable PRs
+                if any(
+                    label in labels
+                    for label in [
+                        "breaking-change",
+                        "breaking",
+                        "api-change",
+                        "deprecation",
+                        "version-major",
+                    ]
+                ):
+                    # Breaking-change PRs get highest priority (7)
+                    pr_priority = 7
                 elif "urgent" in labels:
-                    issue_priority = 3
+                    # Urgent items get high priority
+                    if not mergeable:
+                        pr_priority = 4  # Urgent + unmergeable (highest urgent priority)
+                    else:
+                        pr_priority = 3  # Urgent + mergeable
+                elif not mergeable:
+                    pr_priority = 2  # Unmergeable PRs (elevated from priority 1)
+                elif not checks.success:
+                    pr_priority = 1  # Fix-required but mergeable PRs
+                else:
+                    pr_priority = 2  # Mergeable with successful checks (auto-merge candidate)
 
                 candidates.append(
                     Candidate(
-                        type="issue",
-                        data=issue_data,
-                        priority=issue_priority,
-                        issue_number=number,
+                        type="pr",
+                        data=pr_data,
+                        priority=pr_priority,
+                        branch_name=pr_data.get("head", {}).get("ref"),
+                        related_issues=_extract_linked_issues_from_pr_body(pr_data.get("body", "")),
                     )
                 )
 
-        # Sort by priority descending, type (issue first), creation time ascending
-        def _type_order(t: str) -> int:
-            return 0 if t == "issue" else 1
+            # Collect issues if:
+            # - max_items is set and we haven't reached it yet (respect the requested limit), OR
+            # - we have no PR candidates, OR
+            # - we have few PR candidates and they're low priority (optimization to avoid usage limits)
+            should_collect_issues = (max_items is not None and candidates_count < max_items) or candidates_count == 0 or (candidates_count < 3 and max([candidate.priority for candidate in candidates]) < 2)
 
-        candidates.sort(
-            key=lambda x: (
-                -x.priority,
-                _type_order(x.type),
-                x.data.get("created_at", ""),
+            if should_collect_issues:
+                # Collect issue candidates
+                issues = self.github.get_open_issues(repo_name)
+                for issue in issues:
+                    issue_data = self.github.get_issue_details(issue)
+                    labels = issue_data.get("labels", []) or []
+
+                    # Skip if has sub-issues or linked PR
+                    number = issue_data.get("number")
+                    if not isinstance(number, int):
+                        logger.warning(f"Issue data missing or invalid number: {issue_data}")
+                        continue
+
+                    # Skip if another instance is processing (@auto-coder label present) using LabelManager check
+                    with LabelManager(
+                        self.github,
+                        repo_name,
+                        number,
+                        item_type="issue",
+                        skip_label_add=True,
+                        check_labels=self.config.CHECK_LABELS,
+                    ) as should_process:
+                        if not should_process:
+                            continue
+
+                    # Skip if issue has open sub-issues (it should be processed after sub-issues are resolved)
+                    if self.github.get_open_sub_issues(repo_name, number):
+                        continue
+
+                    # Check for elder sibling dependency: if this issue is a sub-issue,
+                    # ensure no elder sibling (sub-issue with lower number) is still open
+                    parent_issue = self.github.get_parent_issue(repo_name, number)
+                    if parent_issue is not None:
+                        open_sub_issues = self.github.get_open_sub_issues(repo_name, parent_issue)
+                        # Filter to only sibling sub-issues (exclude current issue)
+                        elder_siblings = [s for s in open_sub_issues if s < number]
+                        if elder_siblings:
+                            logger.debug(f"Skipping issue #{number} - elder sibling(s) still open: {elder_siblings}")
+                            continue
+
+                    if self.github.has_linked_pr(repo_name, number):
+                        continue
+
+                    # Calculate priority
+                    # Priority levels:
+                    # - 7: Breaking-change (breaking-change, breaking, api-change, deprecation, version-major)
+                    # - 3: Urgent
+                    # - 0: Regular issues
+                    issue_priority = 0
+                    # Check for breaking-change related labels (highest priority)
+                    breaking_change_labels = [
+                        "breaking-change",
+                        "breaking",
+                        "api-change",
+                        "deprecation",
+                        "version-major",
+                    ]
+                    if any(label in labels for label in breaking_change_labels):
+                        issue_priority = 7
+                    elif "urgent" in labels:
+                        issue_priority = 3
+
+                    candidates.append(
+                        Candidate(
+                            type="issue",
+                            data=issue_data,
+                            priority=issue_priority,
+                            issue_number=number,
+                        )
+                    )
+
+            # Sort by priority descending, type (issue first), creation time ascending
+            def _type_order(t: str) -> int:
+                return 0 if t == "issue" else 1
+
+            candidates.sort(
+                key=lambda x: (
+                    -x.priority,
+                    _type_order(x.type),
+                    x.data.get("created_at", ""),
+                )
             )
-        )
 
-        # Trim if max items specified
-        if isinstance(max_items, int) and max_items > 0:
-            candidates = candidates[:max_items]
+            # Trim if max items specified
+            if isinstance(max_items, int) and max_items > 0:
+                candidates = candidates[:max_items]
 
-        return candidates
+            return candidates
+        finally:
+            # Clear the sub-issue cache when candidate acquisition is finished
+            self.github.clear_sub_issue_cache()
 
     def _has_open_sub_issues(self, repo_name: str, candidate: Candidate) -> bool:
         """Fail-safe helper to check if target issue has unresolved sub-issues.
