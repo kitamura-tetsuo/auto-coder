@@ -48,6 +48,9 @@ class GeminiClient(LLMClientBase):
             self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            # Store options from config
+            self.options = (config_backend and config_backend.options) or []
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
         else:
             # Fall back to default gemini config
             config_backend = config.get_backend_config("gemini")
@@ -55,6 +58,9 @@ class GeminiClient(LLMClientBase):
             self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            # Store options from config
+            self.options = (config_backend and config_backend.options) or []
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
 
         self.default_model = self.model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
@@ -114,11 +120,12 @@ class GeminiClient(LLMClientBase):
 
             cmd = [
                 "gemini",
-                "--yolo",
                 "--model",
                 self.model_name,
-                "--force-model",
             ]
+
+            # Add configured options
+            cmd.extend(self.options)
 
             # Append any resume/continuation flags before the prompt payload
             extra_args = self.consume_extra_args()
