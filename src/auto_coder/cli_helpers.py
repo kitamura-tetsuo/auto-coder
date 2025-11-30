@@ -742,13 +742,13 @@ def build_message_backend_manager(
     default_client = temp_backend_manager._clients[primary_backend]
     factories = temp_backend_manager._factories
 
-    # Initialize the message singleton instance
-    LLMBackendManager.get_message_instance(
+    # Initialize the noedit singleton instance
+    LLMBackendManager.get_noedit_instance(
         default_backend=primary_backend,
         default_client=default_client,
         factories=factories,
         order=selected_backends,
     )
 
-    # Get and return the already initialized message instance
-    return LLMBackendManager.get_message_instance()
+    # Get and return the already initialized noedit instance
+    return LLMBackendManager.get_noedit_instance()

@@ -112,8 +112,9 @@ The system supports extensive backend configuration options. Key fields include:
       description: "Multiple backend manager instances can exist with different configurations"
       llm_backend: "Singleton instance for general LLM operations (PR processing, test fixes, code generation)"
       noedit_backend: "Separate singleton instance for non-editing operations (commit messages, PR messages)"
-      usage: "Access via get_llm_backend_manager() and get_message_backend_manager() for different use cases"
+      usage: "Access via get_llm_backend_manager() and get_noedit_backend_manager() for different use cases"
       provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
+      deprecated_names: "get_message_backend_manager(), run_llm_message_prompt(), get_message_backend_and_model() are deprecated - use get_noedit_backend_manager(), run_llm_noedit_prompt(), get_noedit_backend_and_model() instead"
 
   retry_configuration:
       description: "Configurable retry mechanism for LLM backends when usage limits are hit"

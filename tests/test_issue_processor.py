@@ -234,7 +234,7 @@ class TestPRMessageGeneration:
 
         mock_backend_manager.parse_llm_output_as_json.side_effect = parse_response
 
-        with patch("src.auto_coder.issue_processor.run_llm_message_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_message_backend_manager", return_value=mock_backend_manager):
+        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_noedit_backend_manager", return_value=mock_backend_manager):
             mock_run_prompt.return_value = message_response
 
             result = _create_pr_for_issue(
@@ -385,7 +385,7 @@ class TestPRLabelCopying:
         mock_backend_manager = Mock()
         mock_backend_manager.parse_llm_output_as_json = Mock(return_value={"title": pr_title, "body": pr_body})
 
-        with patch("src.auto_coder.issue_processor.run_llm_message_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_message_backend_manager", return_value=mock_backend_manager):
+        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_noedit_backend_manager", return_value=mock_backend_manager):
             mock_run_prompt.return_value = json_response
 
             result = _create_pr_for_issue(

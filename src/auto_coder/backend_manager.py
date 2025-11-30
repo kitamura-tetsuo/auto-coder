@@ -24,7 +24,7 @@ logger = get_logger(__name__)
 
 # Global singleton instance for general LLM operations
 _llm_instance: Optional[BackendManager] = None
-_message_instance: Optional[BackendManager] = None
+_noedit_instance: Optional[BackendManager] = None
 _instance_lock = threading.Lock()
 _initialization_lock = threading.Lock()
 
@@ -32,12 +32,17 @@ _initialization_lock = threading.Lock()
 __all__ = [
     "BackendManager",
     "get_llm_backend_manager",
-    "run_llm_message_prompt",
     "run_llm_prompt",
     "get_llm_backend_and_model",
     "get_llm_backend_provider_and_model",
     "LLMBackendManager",
+    # New names (preferred)
+    "get_noedit_backend_manager",
+    "run_llm_noedit_prompt",
+    "get_noedit_backend_and_model",
+    # Deprecated names (kept for backward compatibility)
     "get_message_backend_manager",
+    "run_llm_message_prompt",
     "get_message_backend_and_model",
 ]
 
@@ -702,7 +707,7 @@ class LLMBackendManager:
     """
 
     _instance: Optional[BackendManager] = None
-    _message_instance: Optional[BackendManager] = None
+    _noedit_instance: Optional[BackendManager] = None
     _init_params: Optional[Dict[str, Any]] = None
     _lock = threading.Lock()
 
@@ -803,7 +808,7 @@ class LLMBackendManager:
             return cls._instance is not None
 
     @classmethod
-    def get_message_instance(
+    def get_noedit_instance(
         cls,
         default_backend: Optional[str] = None,
         default_client: Optional[Any] = None,
@@ -812,7 +817,7 @@ class LLMBackendManager:
         force_reinitialize: bool = False,
     ) -> BackendManager:
         """
-        Get or create the singleton backend manager instance for message operations.
+        Get or create the singleton backend manager instance for non-editing operations.
 
         Args:
             default_backend: Name of the default backend
@@ -822,7 +827,7 @@ class LLMBackendManager:
             force_reinitialize: Force reinitialization with new parameters (default: False)
 
         Returns:
-            BackendManager: The singleton instance for message generation operations
+            BackendManager: The singleton instance for non-editing operations (commit messages, PR messages)
 
         Raises:
             RuntimeError: If called without initialization parameters on first call
@@ -830,22 +835,22 @@ class LLMBackendManager:
         # Fast path: check if instance exists and is initialized
         with cls._lock:
             # Check if we need to initialize
-            if cls._message_instance is None or force_reinitialize:
+            if cls._noedit_instance is None or force_reinitialize:
                 # Validate initialization parameters
                 if default_backend is None or default_client is None or factories is None:
-                    if cls._message_instance is None or force_reinitialize:
-                        raise RuntimeError("LLMBackendManager.get_message_instance() must be called with " "initialization parameters (default_backend, default_client, factories) " "on first use or when force_reinitialize=True")
+                    if cls._noedit_instance is None or force_reinitialize:
+                        raise RuntimeError("LLMBackendManager.get_noedit_instance() must be called with " "initialization parameters (default_backend, default_client, factories) " "on first use or when force_reinitialize=True")
                 else:
                     # If force_reinitialize and instance exists, close it first
-                    if force_reinitialize and cls._message_instance is not None:
+                    if force_reinitialize and cls._noedit_instance is not None:
                         try:
-                            cls._message_instance.close()
+                            cls._noedit_instance.close()
                         except Exception:
                             pass  # Best effort cleanup
 
                     # Create new instance (or reuse if force_reinitialize)
-                    if cls._message_instance is None or force_reinitialize:
-                        cls._message_instance = BackendManager(
+                    if cls._noedit_instance is None or force_reinitialize:
+                        cls._noedit_instance = BackendManager(
                             default_backend=default_backend,
                             default_client=default_client,
                             factories=factories,
@@ -856,13 +861,13 @@ class LLMBackendManager:
                 # This is allowed - we just ignore the parameters and return existing instance
                 pass
 
-            return cls._message_instance
+            return cls._noedit_instance
 
 
-# Global convenience functions for message backend operations
+# Global convenience functions for non-editing backend operations
 
 
-def get_message_backend_manager(
+def get_noedit_backend_manager(
     default_backend: Optional[str] = None,
     default_client: Optional[Any] = None,
     factories: Optional[Dict[str, Callable[[], Any]]] = None,
@@ -870,10 +875,10 @@ def get_message_backend_manager(
     force_reinitialize: bool = False,
 ) -> BackendManager:
     """
-    Get the global message backend manager singleton instance.
+    Get the global non-editing backend manager singleton instance.
 
-    This is a convenience function that delegates to LLMBackendManager.get_message_instance().
-    Use this when you need to access the message backend manager from anywhere in your code.
+    This is a convenience function that delegates to LLMBackendManager.get_noedit_instance().
+    Use this when you need to access the non-editing backend manager from anywhere in your code.
 
     Args:
         default_backend: Name of the default backend
@@ -883,12 +888,12 @@ def get_message_backend_manager(
         force_reinitialize: Force reinitialization with new parameters (default: False)
 
     Returns:
-        BackendManager: The singleton instance for message generation operations
+        BackendManager: The singleton instance for non-editing operations (commit messages, PR messages)
 
     Raises:
         RuntimeError: If called without initialization parameters on first call
     """
-    return LLMBackendManager.get_message_instance(
+    return LLMBackendManager.get_noedit_instance(
         default_backend=default_backend,
         default_client=default_client,
         factories=factories,
@@ -897,12 +902,30 @@ def get_message_backend_manager(
     )
 
 
-def run_llm_message_prompt(prompt: str) -> str:
-    """
-    Run a prompt using the global message backend manager.
+def get_message_backend_manager(
+    default_backend: Optional[str] = None,
+    default_client: Optional[Any] = None,
+    factories: Optional[Dict[str, Callable[[], Any]]] = None,
+    order: Optional[List[str]] = None,
+    force_reinitialize: bool = False,
+) -> BackendManager:
+    """Deprecated: Use get_noedit_backend_manager() instead."""
+    logger.warning("get_message_backend_manager() is deprecated, use get_noedit_backend_manager()", opt={"depth": 1})
+    return get_noedit_backend_manager(
+        default_backend=default_backend,
+        default_client=default_client,
+        factories=factories,
+        order=order,
+        force_reinitialize=force_reinitialize,
+    )
 
-    This is a convenience function that provides a simple way to execute message generation
-    tasks using the global message backend manager singleton.
+
+def run_llm_noedit_prompt(prompt: str) -> str:
+    """
+    Run a prompt using the global non-editing backend manager.
+
+    This is a convenience function that provides a simple way to execute non-editing
+    tasks (commit messages, PR messages) using the global non-editing backend manager singleton.
 
     Args:
         prompt: The prompt to send to the LLM
@@ -911,25 +934,37 @@ def run_llm_message_prompt(prompt: str) -> str:
         str: The response from the LLM
 
     Raises:
-        RuntimeError: If the message backend manager hasn't been initialized
+        RuntimeError: If the non-editing backend manager hasn't been initialized
     """
-    manager = LLMBackendManager.get_message_instance()
+    manager = LLMBackendManager.get_noedit_instance()
     if manager is None:
-        raise RuntimeError("Message backend manager not initialized. " "Call get_message_backend_manager() with initialization parameters first.")
+        raise RuntimeError("Non-editing backend manager not initialized. " "Call get_noedit_backend_manager() with initialization parameters first.")
     return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
 
 
-def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
+def run_llm_message_prompt(prompt: str) -> str:
+    """Deprecated: Use run_llm_noedit_prompt() instead."""
+    logger.warning("run_llm_message_prompt() is deprecated, use run_llm_noedit_prompt()", opt={"depth": 1})
+    return run_llm_noedit_prompt(prompt)
+
+
+def get_noedit_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
     """
-    Get the backend and model used for the most recent message generation.
+    Get the backend and model used for the most recent non-editing operation.
 
     Returns:
         Tuple[Optional[str], Optional[str]]: (backend_name, model_name) or (None, None) if not available
     """
-    manager = LLMBackendManager.get_message_instance()
+    manager = LLMBackendManager.get_noedit_instance()
     if manager is None:
         return None, None  # type: ignore[unreachable]
     return manager.get_last_backend_and_model()
+
+
+def get_message_backend_and_model() -> Tuple[Optional[str], Optional[str]]:
+    """Deprecated: Use get_noedit_backend_and_model() instead."""
+    logger.warning("get_message_backend_and_model() is deprecated, use get_noedit_backend_and_model()", opt={"depth": 1})
+    return get_noedit_backend_and_model()
 
 
 # Global convenience functions for general LLM backend operations
