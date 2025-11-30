@@ -866,6 +866,30 @@ class TestResumeLogic:
         assert second is dummy_manager
         assert mock_get.call_count == 2
 
+    def test_get_noedit_backend_manager_passes_arguments(self):
+        """Noedit manager helper should pass through initialization parameters."""
+        dummy_manager = MagicMock()
+        default_client = MagicMock()
+        factories = {"a": lambda: None}
+
+        with patch("src.auto_coder.backend_manager.LLMBackendManager.get_message_instance", return_value=dummy_manager) as mock_get:
+            manager = get_noedit_backend_manager(
+                default_backend="a",
+                default_client=default_client,
+                factories=factories,
+                order=["a"],
+                force_reinitialize=True,
+            )
+
+        assert manager is dummy_manager
+        mock_get.assert_called_once_with(
+            default_backend="a",
+            default_client=default_client,
+            factories=factories,
+            order=["a"],
+            force_reinitialize=True,
+        )
+
     def test_run_llm_noedit_prompt_delegates_to_manager(self, monkeypatch):
         """New noedit helper should delegate without using deprecated aliases."""
         dummy_manager = MagicMock()

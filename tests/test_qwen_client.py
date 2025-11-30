@@ -273,6 +273,61 @@ class TestQwenClient:
     @patch("src.auto_coder.qwen_client.get_llm_config")
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_noedit_options_respect_backend_name(self, mock_run_command, mock_run, mock_get_config):
+        """Options for noedit should come from the selected backend."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        mock_config = MagicMock()
+        primary_backend = MagicMock()
+        primary_backend.model = "qwen3-coder-plus"
+        primary_backend.options = ["--primary-general"]
+        primary_backend.options_for_noedit = ["--primary-noedit"]
+        alt_backend = MagicMock()
+        alt_backend.model = "qwen3-coder-pro"
+        alt_backend.options = []
+        alt_backend.options_for_noedit = ["--alt-noedit"]
+
+        def get_backend_config(name):
+            return alt_backend if name == "alt" else primary_backend
+
+        mock_config.get_backend_config.side_effect = get_backend_config
+        mock_get_config.return_value = mock_config
+
+        client = QwenClient(backend_name="alt", use_noedit_options=True)
+        client._run_llm_cli("test prompt")
+
+        args = mock_run_command.call_args[0][0]
+        assert "--alt-noedit" in args
+        assert "--primary-noedit" not in args
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_options_for_noedit_default_empty_in_client(self, mock_run_command, mock_run, mock_get_config):
+        """When options_for_noedit is missing, client should default to no extra options."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "qwen3-coder-plus"
+        mock_backend.options = []
+        mock_backend.options_for_noedit = None
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = QwenClient(use_noedit_options=True)
+        client._run_llm_cli("test prompt")
+
+        args = mock_run_command.call_args[0][0]
+        assert args == ["qwen", "-y", "-m", "qwen3-coder-plus", "-p", "test prompt"]
+        assert client.options_for_noedit == []
+        assert client.options == []
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
     def test_general_options_used_when_noedit_not_requested(self, mock_run_command, mock_run, mock_get_config):
         """General options should remain in use when noedit options are not requested."""
         mock_run.return_value.returncode = 0

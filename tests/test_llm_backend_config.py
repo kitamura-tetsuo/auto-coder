@@ -174,6 +174,22 @@ class TestLLMBackendConfiguration:
         assert config.backend_for_noedit_order == ["codex", "gemini"]
         assert config.backend_for_noedit_default == "codex"
 
+    def test_backend_for_noedit_precedes_legacy_message_backend(self):
+        """Explicit backend_for_noedit should be used instead of legacy message_backend."""
+        config_data = {
+            "backend_for_noedit": {"order": ["codex"], "default": "codex"},
+            "message_backend": {"order": ["gemini"], "default": "gemini"},
+            "backends": {"codex": {}, "gemini": {}},
+        }
+
+        mock_logger = MagicMock()
+        with patch("src.auto_coder.llm_backend_config.get_logger", return_value=mock_logger):
+            config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        assert config.backend_for_noedit_order == ["codex"]
+        assert config.backend_for_noedit_default == "codex"
+        mock_logger.warning.assert_not_called()
+
     def test_save_and_load_from_file(self):
         """Test saving and loading configuration from a TOML file."""
         with tempfile.TemporaryDirectory() as tmpdir:
