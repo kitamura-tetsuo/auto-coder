@@ -38,6 +38,7 @@ class TestBackendConfig:
         assert config.usage_limit_retry_count == 0
         assert config.usage_limit_retry_wait_seconds == 0
         assert config.options == []
+        assert config.options_for_resume == []
         assert config.backend_type is None
         assert config.model_provider is None
         assert config.always_switch_after_execution is False
@@ -61,6 +62,7 @@ class TestBackendConfig:
             usage_limit_retry_count=5,
             usage_limit_retry_wait_seconds=30,
             options=["option1", "option2"],
+            options_for_resume=["resume_option1", "resume_option2"],
             backend_type="custom_type",
             model_provider="openrouter",
             always_switch_after_execution=True,
@@ -81,6 +83,7 @@ class TestBackendConfig:
         assert config.usage_limit_retry_count == 5
         assert config.usage_limit_retry_wait_seconds == 30
         assert config.options == ["option1", "option2"]
+        assert config.options_for_resume == ["resume_option1", "resume_option2"]
         assert config.backend_type == "custom_type"
         assert config.model_provider == "openrouter"
         assert config.always_switch_after_execution is True
@@ -528,6 +531,33 @@ class TestLLMBackendConfiguration:
             assert qwen_config.options == ["option3"]
             assert qwen_config.backend_type == "another_type"
 
+    def test_toml_save_and_load_options_for_resume(self):
+        """Test that options_for_resume field is properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_options_for_resume.toml"
+
+            # Create configuration with options_for_resume settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").options_for_resume = ["resume_opt1", "resume_opt2"]
+            config.get_backend_config("qwen").options_for_resume = ["resume_opt3"]
+            config.get_backend_config("codex").options_for_resume = []
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify options_for_resume was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.options_for_resume == ["resume_opt1", "resume_opt2"]
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.options_for_resume == ["resume_opt3"]
+
+            codex_config = loaded_config.get_backend_config("codex")
+            assert codex_config.options_for_resume == []
+
     def test_toml_save_and_load_always_switch_after_execution(self):
         """Test that always_switch_after_execution field is properly saved and loaded."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -626,6 +656,7 @@ class TestLLMBackendConfiguration:
             qwen_config = config.get_backend_config("qwen")
             assert qwen_config is not None
             assert qwen_config.options == []
+            assert qwen_config.options_for_resume == []
             assert qwen_config.backend_type is None
             assert qwen_config.always_switch_after_execution is False
             assert qwen_config.model == "qwen3-coder-plus"
@@ -634,8 +665,54 @@ class TestLLMBackendConfiguration:
             gemini_config = config.get_backend_config("gemini")
             assert gemini_config is not None
             assert gemini_config.options == []
+            assert gemini_config.options_for_resume == []
             assert gemini_config.backend_type is None
             assert gemini_config.always_switch_after_execution is False
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
+
+    def test_backward_compatibility_old_toml_without_options_for_resume(self):
+        """Test loading old TOML files that don't have options_for_resume field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_options_for_resume.toml"
+
+            # Create a TOML file with the old structure (without options_for_resume field)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                        "options": ["option1", "option2"],
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                        "backend_type": "custom_type",
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify options_for_resume has default empty list when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.options_for_resume == []
+            assert qwen_config.options == ["option1", "option2"]
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.options_for_resume == []
+            assert gemini_config.backend_type == "custom_type"
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
 
@@ -1781,6 +1858,7 @@ class TestBackendForFailedPR:
                 usage_limit_retry_count=5,
                 usage_limit_retry_wait_seconds=45,
                 options=["fallback-option1", "fallback-option2"],
+                options_for_resume=["fallback-resume-opt1", "fallback-resume-opt2"],
                 backend_type="custom_fallback",
                 model_provider="fallback-provider",
                 always_switch_after_execution=True,
@@ -1811,6 +1889,7 @@ class TestBackendForFailedPR:
             assert fallback.usage_limit_retry_count == 5
             assert fallback.usage_limit_retry_wait_seconds == 45
             assert fallback.options == ["fallback-option1", "fallback-option2"]
+            assert fallback.options_for_resume == ["fallback-resume-opt1", "fallback-resume-opt2"]
             assert fallback.backend_type == "custom_fallback"
             assert fallback.model_provider == "fallback-provider"
             assert fallback.always_switch_after_execution is True

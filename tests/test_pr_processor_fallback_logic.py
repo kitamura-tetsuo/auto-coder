@@ -37,6 +37,9 @@ class DummyClient:
     def switch_to_default_model(self):
         pass
 
+    def get_last_session_id(self) -> str:
+        return f"{self.name}_session"
+
 
 def test_should_use_fallback_backend_with_attempt_3():
     """Test that fallback backend is used when linked issue has attempt count >= 3."""

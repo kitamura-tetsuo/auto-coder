@@ -36,6 +36,7 @@ class AuggieClient(LLMClientBase):
     DAILY_CALL_LIMIT = _DAILY_LIMIT
 
     def __init__(self, backend_name: Optional[str] = None) -> None:
+        super().__init__()
         config = get_llm_config()
 
         if backend_name:
@@ -155,8 +156,13 @@ class AuggieClient(LLMClientBase):
             "--print",
             "--model",
             self.model_name,
-            escaped_prompt,
         ]
+
+        extra_args = self.consume_extra_args()
+        if extra_args:
+            cmd.extend(extra_args)
+
+        cmd.append(escaped_prompt)
 
         logger.warning("LLM invocation: auggie CLI is being called. Keep LLM calls minimized.")
         logger.debug(f"Running auggie CLI with prompt length: {len(prompt)} characters")

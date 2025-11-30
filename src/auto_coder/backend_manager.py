@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .backend_provider_manager import BackendProviderManager
+from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
@@ -95,6 +96,9 @@ class BackendManager(LLMBackendManagerBase):
         self._last_test_file: Optional[str] = None
         self._same_test_file_count: int = 0
 
+        # Track session ID of the last executed backend
+        self._last_session_id: Optional[str] = None
+
         # Provider manager for backend provider metadata
         # Implements provider rotation logic for switching between different provider implementations
         # for the same backend (e.g., qwen-open-router vs qwen-azure vs qwen-direct)
@@ -102,6 +106,9 @@ class BackendManager(LLMBackendManagerBase):
 
         # State manager for persistence of backend state (e.g., for auto-reset functionality)
         self._state_manager = BackendStateManager()
+        # Session state manager for resuming sessions across executions
+        self._session_state_manager = BackendSessionManager()
+        self._restore_session_state()
 
     @property
     def provider_manager(self) -> BackendProviderManager:
@@ -117,6 +124,39 @@ class BackendManager(LLMBackendManagerBase):
         last used providers for debugging and telemetry.
         """
         return self._provider_manager
+
+    def _restore_session_state(self) -> None:
+        """
+        Restore last session information from persisted state.
+
+        This enables session resume across process restarts when the same backend
+        is invoked consecutively and supports resume options.
+        """
+        try:
+            session_state = self._session_state_manager.load_state()
+            if session_state.last_backend and session_state.last_session_id and session_state.last_backend in self._all_backends:
+                self._last_backend = session_state.last_backend
+                self._last_session_id = session_state.last_session_id
+                logger.debug(
+                    "Restored session state for backend '%s' with session id present",
+                    session_state.last_backend,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to restore session state: %s", exc)
+
+    def _save_session_state(self, backend_name: str, session_id: Optional[str]) -> None:
+        """
+        Persist session metadata for the provided backend.
+
+        Args:
+            backend_name: Backend whose session should be saved
+            session_id: Session identifier or None to clear
+        """
+        try:
+            state: BackendSessionState = create_session_state(backend_name, session_id)
+            self._session_state_manager.save_state(state)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to save session state for backend '%s': %s", backend_name, exc)
 
     # ---------- Basic Operations ----------
     def _current_backend_name(self) -> str:
@@ -161,6 +201,9 @@ class BackendManager(LLMBackendManagerBase):
         reset back to the default backend after 2 hours.
         """
         self._switch_to_index(self._current_idx + 1)
+        # Reset session ID when switching backends
+        self._last_session_id = None
+        self._save_session_state(self._current_backend_name(), self._last_session_id)
         # Save the new backend state
         current_backend = self._current_backend_name()
         current_time = time.time()
@@ -187,6 +230,9 @@ class BackendManager(LLMBackendManagerBase):
         except ValueError:
             idx = 0
         self._switch_to_index(idx)
+        # Reset session ID when switching backends
+        self._last_session_id = None
+        self._save_session_state(self._current_backend_name(), self._last_session_id)
         # Save the new backend state
         current_backend = self._current_backend_name()
         current_time = time.time()
@@ -207,6 +253,9 @@ class BackendManager(LLMBackendManagerBase):
         try:
             idx = self._all_backends.index(backend_name)
             self._switch_to_index(idx)
+            # Reset session ID when switching backends
+            self._last_session_id = None
+            self._save_session_state(self._current_backend_name(), self._last_session_id)
             # Save the new backend state
             current_backend = self._current_backend_name()
             current_time = time.time()
@@ -244,29 +293,31 @@ class BackendManager(LLMBackendManagerBase):
         if not saved_backend or not last_switch_timestamp:
             return
 
-        # Check if we're currently on a non-default backend
-        current_backend = self._current_backend_name()
-        if current_backend == self._default_backend:
-            # Already on default, no reset needed
+        # Ignore unknown backends to avoid index errors
+        try:
+            saved_backend_index = self._all_backends.index(saved_backend)
+        except ValueError:
+            logger.debug(f"Saved backend '{saved_backend}' not found in current backend list")
             return
 
         # Check if we should reset to default backend
         time_since_switch = time.time() - last_switch_timestamp
-        if time_since_switch >= 7200:  # 2 hours
-            # Auto-reset to default backend
-            logger.info(f"Auto-resetting backend to default after {time_since_switch:.0f} seconds. " f"Saved backend: {saved_backend}, Current backend: {current_backend}")
+        if saved_backend != self._default_backend and time_since_switch >= 7200:  # 2 hours
+            # Auto-reset to default backend when non-default was active too long
+            current_backend = self._current_backend_name()
+            logger.info(
+                "Auto-resetting backend to default after %.0f seconds. Saved backend: %s, Current backend: %s",
+                time_since_switch,
+                saved_backend,
+                current_backend,
+            )
             self.switch_to_default_backend()
-        else:
-            # Sync the current index to match the saved backend
-            try:
-                saved_backend_index = self._all_backends.index(saved_backend)
-                if saved_backend_index != self._current_idx:
-                    logger.debug(f"Syncing backend index to match saved state: {self._current_idx} -> {saved_backend_index}")
-                    self._current_idx = saved_backend_index
-            except ValueError:
-                # Saved backend is not in our current list, ignore
-                logger.debug(f"Saved backend '{saved_backend}' not found in current backend list")
-                pass
+            return
+
+        # Otherwise, sync to the saved backend if different
+        if saved_backend_index != self._current_idx:
+            logger.debug(f"Syncing backend index to match saved state: {self._current_idx} -> {saved_backend_index}")
+            self._current_idx = saved_backend_index
 
     def _get_current_provider_name(self, backend_name: str) -> Optional[str]:
         """
@@ -279,6 +330,53 @@ class BackendManager(LLMBackendManagerBase):
             Current provider name, or None if no providers configured
         """
         return self._provider_manager.get_current_provider_name(backend_name)
+
+    def _inject_resume_options_if_applicable(self, backend_name: str, cli: Any) -> None:
+        """
+        Inject resume options into the client if conditions are met.
+
+        Checks if:
+        1. Current backend matches the last backend
+        2. A session ID is available from the last execution
+        3. The backend has resume options configured
+
+        If all conditions are met, prepares resume options by replacing
+        "[sessionId]" placeholder with the actual session ID and sets
+        them as extra args for the next execution.
+
+        Args:
+            backend_name: Name of the current backend
+            cli: Client instance to inject resume options into
+        """
+        # Check if current backend matches the last backend
+        if backend_name != self._last_backend:
+            logger.debug(f"Backend changed from {self._last_backend} to {backend_name}, not resuming")
+            return
+
+        # Check if we have a session ID from the last execution
+        if self._last_session_id is None:
+            logger.debug("No session ID available, cannot resume")
+            return
+
+        # Get backend configuration
+        backend_config = get_llm_config().get_backend_config(backend_name)
+        if not backend_config or not backend_config.options_for_resume:
+            logger.debug(f"No resume options configured for backend '{backend_name}'")
+            return
+
+        # Create a copy of options_for_resume and replace [sessionId] placeholder
+        resume_options = []
+        for option in backend_config.options_for_resume:
+            # Replace [sessionId] placeholder with actual session ID
+            replaced_option = option.replace("[sessionId]", self._last_session_id)
+            resume_options.append(replaced_option)
+
+        # Set the resume options as extra args for the next execution
+        if hasattr(cli, "set_extra_args"):
+            cli.set_extra_args(resume_options)
+            logger.info(f"Injected resume options for backend '{backend_name}': {resume_options}")
+        else:
+            logger.warning(f"Client for backend '{backend_name}' does not support set_extra_args")
 
     # ---------- Direct Compatibility Methods ----------
     @log_calls  # type: ignore[misc]
@@ -329,6 +427,9 @@ class BackendManager(LLMBackendManagerBase):
                 self.switch_to_next_backend()
                 attempts += 1
                 continue
+
+            # Inject resume options if conditions are met
+            self._inject_resume_options_if_applicable(backend_name, cli)
 
             try:
                 result = self._execute_backend_with_providers(
@@ -413,6 +514,10 @@ class BackendManager(LLMBackendManagerBase):
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
+                    # Track session ID from the client
+                    self._last_session_id = cli.get_last_session_id()
+                    # Persist session state to allow resume on subsequent executions
+                    self._save_session_state(backend_name, self._last_session_id)
                     return out
                 except AutoCoderUsageLimitError as exc:
                     if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:

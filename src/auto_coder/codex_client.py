@@ -40,6 +40,7 @@ class CodexClient(LLMClientBase):
             openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
             openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
         """
+        super().__init__()
         config = get_llm_config()
 
         # If backend_name is provided, get config from that backend
@@ -117,6 +118,11 @@ class CodexClient(LLMClientBase):
             # Add model_provider as -c flag if specified
             if self.model_provider:
                 cmd.extend(["-c", f"model_provider={self.model_provider}"])
+
+            # Append any one-time extra arguments (e.g., resume flags)
+            extra_args = self.consume_extra_args()
+            if extra_args:
+                cmd.extend(extra_args)
 
             cmd.append(escaped_prompt)
 

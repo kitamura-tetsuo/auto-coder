@@ -3,8 +3,9 @@ Claude CLI client for Auto-Coder.
 """
 
 import os
+import re
 import subprocess
-from typing import Optional
+from typing import List, Optional
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
@@ -28,6 +29,7 @@ class ClaudeClient(LLMClientBase):
             backend_name: Backend name to use for configuration lookup (optional).
                          If provided, will use config for this backend.
         """
+        super().__init__()
         config = get_llm_config()
 
         # If backend_name is provided, get config from that backend
@@ -57,6 +59,11 @@ class ClaudeClient(LLMClientBase):
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
         self.timeout = None
+
+        # Initialize extra args and session tracking
+        self._extra_args: List[str] = []
+        self._last_session_id: Optional[str] = None
+        self._last_output: Optional[str] = None
 
         try:
             result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
@@ -97,6 +104,12 @@ class ClaudeClient(LLMClientBase):
             if self.settings:
                 cmd.extend(["--settings", self.settings])
 
+            # Append extra args if any (e.g., --resume <session_id>)
+            extra_args = self.consume_extra_args()
+            if extra_args:
+                cmd.extend(extra_args)
+                logger.debug(f"Using extra args: {extra_args}")
+
             cmd.append(escaped_prompt)
 
             # Prepare environment variables for subprocess
@@ -134,6 +147,12 @@ class ClaudeClient(LLMClientBase):
             full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
             full_output = full_output.strip()
             low = full_output.lower()
+
+            # Store output for session ID extraction
+            self._last_output = full_output
+
+            # Extract and store session ID from output
+            self._extract_and_store_session_id(full_output)
 
             # Check for timeout (returncode -1 and "timed out" in stderr)
             if result.returncode == -1 and "timed out" in low:
@@ -224,3 +243,64 @@ class ClaudeClient(LLMClientBase):
         except Exception as e:
             logger.error(f"Failed to add Claude MCP config: {e}")
             return False
+
+    def set_extra_args(self, args: List[str]) -> None:
+        """Store extra arguments to be used in the next execution.
+
+        Args:
+            args: List of extra arguments to store for the next execution (e.g., ['--resume', 'session_id'])
+        """
+        self._extra_args = args
+        logger.debug(f"Set extra args for next execution: {args}")
+
+    def get_last_session_id(self) -> Optional[str]:
+        """Get the last session ID for session resumption.
+
+        Extracts session ID from the last command output using regex patterns.
+
+        Returns:
+            The last session ID if available, None otherwise
+        """
+        return self._last_session_id
+
+    def _extract_and_store_session_id(self, output: str) -> None:
+        """Extract session ID from Claude CLI output and store it.
+
+        Looks for patterns like:
+        - Session ID: abc123
+        - Session: abc123
+        - session_id=abc123
+        - /sessions/abc123
+
+        Args:
+            output: The output from Claude CLI
+        """
+        if not output:
+            return
+
+        # Pattern 1: Look for "Session ID:" or "Session:" followed by alphanumeric ID
+        session_pattern = r"(?:session\s*id:|session:)\s*([a-zA-Z0-9-_]+)"
+        match = re.search(session_pattern, output, re.IGNORECASE)
+        if match:
+            self._last_session_id = match.group(1)
+            logger.debug(f"Extracted session ID from output: {self._last_session_id}")
+            return
+
+        # Pattern 2: Look for session_id= or session= in URLs/parameters
+        session_param_pattern = r"(?:session_id|session)=([a-zA-Z0-9-_]+)"
+        match = re.search(session_param_pattern, output, re.IGNORECASE)
+        if match:
+            self._last_session_id = match.group(1)
+            logger.debug(f"Extracted session ID from URL parameter: {self._last_session_id}")
+            return
+
+        # Pattern 3: Look for /sessions/abc123 in URLs
+        session_path_pattern = r"/sessions/([a-zA-Z0-9-_]+)"
+        match = re.search(session_path_pattern, output, re.IGNORECASE)
+        if match:
+            self._last_session_id = match.group(1)
+            logger.debug(f"Extracted session ID from path: {self._last_session_id}")
+            return
+
+        # If no session ID found, keep previous value
+        logger.debug("No session ID found in output")
