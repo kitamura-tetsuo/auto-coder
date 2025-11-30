@@ -257,6 +257,10 @@ This fork maintains full attribution to the original author Riley Lemm. The orig
       - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."
     propagation:
       - "increment_attempt also reopens closed sub-issues and bumps their counters to keep parent/child attempts in sync."
+    parent_handling:
+      - "When processing a child issue whose parent issue is closed, the system automatically reopens the parent issue before continuing"
+      - "This ensures branch selection, base branch selection, and attempt tracking use the parent issue context"
+      - "Reopening closed parents maintains proper workflow continuity and prevents branch naming and base selection issues"
 
 ## Lock Mechanism
 
