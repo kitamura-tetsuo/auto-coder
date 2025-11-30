@@ -23,6 +23,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -45,6 +47,8 @@ class TestGeminiClient:
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.model = "test-model"
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -71,6 +75,8 @@ class TestGeminiClient:
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.model = "test-model"
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -89,6 +95,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -103,6 +111,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -137,6 +147,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -161,6 +173,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -174,6 +188,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -202,6 +218,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -222,6 +240,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -253,6 +273,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -271,6 +293,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -299,6 +323,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -324,6 +350,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.model = "gemini-2.5-pro"
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -353,6 +381,8 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.model = "gemini-2.5-flash"
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -375,6 +405,8 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -395,6 +427,8 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -415,6 +449,8 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -435,6 +471,8 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -444,3 +482,94 @@ class TestGeminiClient:
         prompt = ""
         escaped = client._escape_prompt(prompt)
         assert escaped == ""
+
+    @patch("src.auto_coder.gemini_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    def test_options_loaded_from_config(self, mock_run_command, mock_run, mock_get_config):
+        """Test that options are loaded from configuration."""
+        # Mock subprocess for version check
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
+
+        # Mock config with options
+        mock_config_instance = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.model = "gemini-2.5-pro"
+        mock_backend_config.options = ["--yolo", "--force-model"]
+        mock_backend_config.options_for_noedit = ["--yolo", "--force-model"]
+        mock_backend_config.api_key = "test-key"
+        mock_config_instance.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config_instance
+
+        client = GeminiClient()
+
+        # Verify options are loaded
+        assert client.options == ["--yolo", "--force-model"]
+        assert client.options_for_noedit == ["--yolo", "--force-model"]
+
+    @patch("src.auto_coder.gemini_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    def test_options_passed_to_cli(self, mock_run_command, mock_run, mock_get_config):
+        """Test that configured options are passed to the CLI."""
+        # Mock subprocess for version check
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
+
+        # Mock config with options
+        mock_config_instance = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.model = "gemini-2.5-pro"
+        mock_backend_config.options = ["--yolo", "--force-model"]
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = "test-key"
+        mock_config_instance.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config_instance
+
+        client = GeminiClient()
+
+        # Run CLI
+        _ = client._run_llm_cli("test prompt")
+
+        # Verify command includes configured options
+        called_cmd = mock_run_command.call_args[0][0]
+        assert "--yolo" in called_cmd
+        assert "--force-model" in called_cmd
+        assert "gemini" in called_cmd
+        assert "--model" in called_cmd
+        assert "gemini-2.5-pro" in called_cmd
+
+    @patch("src.auto_coder.gemini_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    def test_empty_options_handled(self, mock_run_command, mock_run, mock_get_config):
+        """Test that empty options list is handled correctly."""
+        # Mock subprocess for version check
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
+
+        # Mock config without options
+        mock_config_instance = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.model = "gemini-2.5-pro"
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = "test-key"
+        mock_config_instance.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config_instance
+
+        client = GeminiClient()
+
+        # Verify empty options are loaded as empty list
+        assert client.options == []
+        assert client.options_for_noedit == []
+
+        # Run CLI
+        _ = client._run_llm_cli("test prompt")
+
+        # Verify command still works without options
+        called_cmd = mock_run_command.call_args[0][0]
+        assert called_cmd[0] == "gemini"
+        assert "--yolo" not in called_cmd
+        assert "--force-model" not in called_cmd
