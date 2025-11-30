@@ -49,28 +49,25 @@ class QwenClient(LLMClientBase):
                                   If False, clear them before setting new values (default: False)
         """
         config = get_llm_config()
-        if backend_name:
-            config_backend = config.get_backend_config(backend_name)
-            # Use backend config, fall back to default "qwen"
-            self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
-            self.options = (config_backend and config_backend.options) or []
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
-        else:
-            # Fall back to default qwen config
-            config_backend = config.get_backend_config("qwen")
-            self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
-            self.options = (config_backend and config_backend.options) or []
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+        config_backend = config.get_backend_config(backend_name or "qwen")
+        self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
+
+        def _as_list(value: Any) -> List[str]:
+            if isinstance(value, list):
+                return value
+            if isinstance(value, tuple):
+                return list(value)
+            return []
+
+        options_for_noedit = _as_list(getattr(config_backend, "options_for_noedit", None) if config_backend else None)
+        general_options = _as_list(config_backend.options if config_backend else None)
+        self.options = options_for_noedit or general_options
+        self.api_key = config_backend and config_backend.api_key
+        self.base_url = config_backend and config_backend.base_url
+        self.openai_api_key = config_backend and config_backend.openai_api_key
+        self.openai_base_url = config_backend and config_backend.openai_base_url
+        # Store usage_markers from config
+        self.usage_markers = _as_list(getattr(config_backend, "usage_markers", None) if config_backend else None)
 
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching

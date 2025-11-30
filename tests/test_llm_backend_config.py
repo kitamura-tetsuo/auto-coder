@@ -3,7 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import toml
@@ -142,6 +142,24 @@ class TestLLMBackendConfiguration:
         assert config.backend_for_noedit_default == "codex"
         assert config.backends["gemini"].model == "gemini-pro"
         assert config.backends["codex"].enabled is False
+
+    def test_options_for_noedit_field(self):
+        """Test that options_for_noedit is parsed and stored."""
+        config_data = {"backends": {"codex": {"options": ["--flag1"], "options_for_noedit": ["--flag2"]}}}
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        assert config.backends["codex"].options == ["--flag1"]
+        assert config.backends["codex"].options_for_noedit == ["--flag2"]
+
+    def test_options_for_noedit_default_empty(self):
+        """options_for_noedit should default to an empty list when missing."""
+        config_data = {"backends": {"codex": {"options": ["--flag1"]}}}
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        assert config.backends["codex"].options == ["--flag1"]
+        assert config.backends["codex"].options_for_noedit == []
 
     def test_save_and_load_from_file(self):
         """Test saving and loading configuration from a TOML file."""
@@ -343,9 +361,15 @@ class TestLLMBackendConfiguration:
         config.get_backend_config("codex").enabled = True
         config.backend_for_noedit_order = ["codex"]
 
-        # Deprecated method should still work
-        active = config.get_active_message_backends()
+        with patch("src.auto_coder.llm_backend_config.get_logger") as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+
+            # Deprecated method should still work
+            active = config.get_active_message_backends()
+
         assert "codex" in active
+        mock_logger.warning.assert_called_once_with("get_active_message_backends() is deprecated. Use get_active_noedit_backends() instead.")
 
     def test_get_message_default_backend_deprecated(self):
         """Test deprecated get_message_default_backend() still works."""
@@ -353,8 +377,14 @@ class TestLLMBackendConfiguration:
         config.get_backend_config("codex").enabled = True
         config.backend_for_noedit_default = "codex"
 
-        # Deprecated method should still work
-        assert config.get_message_default_backend() == "codex"
+        with patch("src.auto_coder.llm_backend_config.get_logger") as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+
+            # Deprecated method should still work
+            assert config.get_message_default_backend() == "codex"
+
+        mock_logger.warning.assert_called_once_with("get_message_default_backend() is deprecated. Use get_noedit_default_backend() instead.")
 
     def test_has_dual_configuration(self):
         """Test detection of dual backend configuration."""
@@ -1956,12 +1986,18 @@ model = "gemini-2.5-pro"
 """
             config_file.write_text(old_format_config)
 
-            # Load the old format config
-            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+            with patch("src.auto_coder.llm_backend_config.get_logger") as mock_get_logger:
+                mock_logger = MagicMock()
+                mock_get_logger.return_value = mock_logger
+
+                # Load the old format config
+                loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify it was converted to new format
             assert loaded_config.backend_for_noedit_default == "gemini"
             assert loaded_config.backend_for_noedit_order == ["gemini", "qwen"]
+
+            mock_logger.warning.assert_any_call("Configuration uses deprecated 'message_backend' key. Please update to 'backend_for_noedit' in your config file.")
 
             # Verify the deprecated methods still work
             assert loaded_config.get_noedit_default_backend() == "gemini"

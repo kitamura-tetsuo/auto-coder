@@ -3,7 +3,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.auto_coder.backend_manager import BackendManager, LLMBackendManager
+from src.auto_coder.backend_manager import (
+    BackendManager,
+    LLMBackendManager,
+    get_message_backend_and_model,
+    get_message_backend_manager,
+    get_noedit_backend_manager,
+)
 from src.auto_coder.backend_provider_manager import (
     BackendProviderManager,
     BackendProviderMetadata,
@@ -613,35 +619,106 @@ class TestBackendAutoReset:
             mgr.check_and_reset_backend_if_needed()
             assert mgr._current_backend_name() == "a"
 
-    def test_auto_reset_unknown_saved_backend(self, mock_llm_config):
-        """When saved backend is not in current backend list, should ignore and stay on default."""
-        import time
-        from unittest.mock import MagicMock
 
-        # Mock BackendStateManager with unknown backend
-        with patch("src.auto_coder.backend_manager.BackendStateManager") as MockStateManager:
-            mock_state_manager = MagicMock()
-            current_time = time.time()
-            one_hour_ago = current_time - 3600
-            mock_state_manager.load_state.return_value = {
-                "current_backend": "unknown_backend",  # Not in ["a", "b"]
-                "last_switch_timestamp": one_hour_ago,
-            }
-            MockStateManager.return_value = mock_state_manager
+def test_auto_reset_unknown_saved_backend(mock_llm_config):
+    """When saved backend is not in current backend list, should ignore and stay on default."""
+    import time
+    from unittest.mock import MagicMock
 
-            client_a = DummyClient("a", "m1", "ok", [])
-            client_b = DummyClient("b", "m2", "ok", [])
+    # Mock BackendStateManager with unknown backend
+    with patch("src.auto_coder.backend_manager.BackendStateManager") as MockStateManager:
+        mock_state_manager = MagicMock()
+        current_time = time.time()
+        one_hour_ago = current_time - 3600
+        mock_state_manager.load_state.return_value = {
+            "current_backend": "unknown_backend",  # Not in ["a", "b"]
+            "last_switch_timestamp": one_hour_ago,
+        }
+        MockStateManager.return_value = mock_state_manager
 
-            mgr = BackendManager(
-                default_backend="a",
-                default_client=client_a,
-                factories={"a": lambda: client_a, "b": lambda: client_b},
-                order=["a", "b"],
-            )
+        client_a = DummyClient("a", "m1", "ok", [])
+        client_b = DummyClient("b", "m2", "ok", [])
 
-            # Should stay on default 'a' since saved backend is unknown
-            mgr.check_and_reset_backend_if_needed()
-            assert mgr._current_backend_name() == "a"
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a, "b": lambda: client_b},
+            order=["a", "b"],
+        )
+
+        # Should stay on default 'a' since saved backend is unknown
+        mgr.check_and_reset_backend_if_needed()
+        assert mgr._current_backend_name() == "a"
+
+
+def test_get_noedit_backend_manager_initialization_and_reuse():
+    previous = LLMBackendManager._noedit_instance
+    try:
+        LLMBackendManager._noedit_instance = None
+
+        client_a = DummyClient("a", "m1", "ok", [])
+        mgr1 = get_noedit_backend_manager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a},
+            order=["a"],
+        )
+
+        mgr2 = get_noedit_backend_manager()
+
+        assert mgr1 is mgr2
+        assert mgr1._current_backend_name() == "a"
+    finally:
+        LLMBackendManager._noedit_instance = previous
+
+
+def test_get_message_backend_manager_emits_warning():
+    previous = LLMBackendManager._noedit_instance
+    try:
+        LLMBackendManager._noedit_instance = None
+        client_a = DummyClient("a", "m1", "ok", [])
+        get_noedit_backend_manager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a},
+            order=["a"],
+        )
+
+        with patch("src.auto_coder.backend_manager.logger") as mock_logger:
+            returned = get_message_backend_manager()
+
+        assert returned is LLMBackendManager._noedit_instance
+        mock_logger.warning.assert_called_once_with(
+            "get_message_backend_manager() is deprecated, use get_noedit_backend_manager()",
+            opt={"depth": 1},
+        )
+    finally:
+        LLMBackendManager._noedit_instance = previous
+
+
+def test_get_message_backend_and_model_deprecated_warning():
+    previous = LLMBackendManager._noedit_instance
+    try:
+        LLMBackendManager._noedit_instance = None
+        client_a = DummyClient("a", "m1", "ok", [])
+        get_noedit_backend_manager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a},
+            order=["a"],
+        )
+
+        with patch("src.auto_coder.backend_manager.logger") as mock_logger:
+            backend, model = get_message_backend_and_model()
+
+        assert backend == "a"
+        assert model == "m1"
+        mock_logger.warning.assert_called_once_with(
+            "get_message_backend_and_model() is deprecated, use get_noedit_backend_and_model()",
+            opt={"depth": 1},
+        )
+    finally:
+        LLMBackendManager._noedit_instance = previous
 
 
 # ==================== JSON Parsing Tests ====================
