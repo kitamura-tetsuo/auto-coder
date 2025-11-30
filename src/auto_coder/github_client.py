@@ -363,6 +363,13 @@ class GitHubClient:
         Returns:
             List of issue numbers that are linked to the issue and are still open.
         """
+        # Construct cache key
+        cache_key = (repo_name, issue_number)
+
+        # Check if result exists in cache
+        if cache_key in self._sub_issue_cache:
+            return self._sub_issue_cache[cache_key]
+
         try:
             owner, repo = repo_name.split("/")
 
@@ -420,6 +427,9 @@ class GitHubClient:
 
             if open_sub_issues:
                 logger.info(f"Issue #{issue_number} has {len(open_sub_issues)} open sub-issue(s): {open_sub_issues}")
+
+            # Store result in cache before returning
+            self._sub_issue_cache[cache_key] = open_sub_issues
 
             return open_sub_issues
 
