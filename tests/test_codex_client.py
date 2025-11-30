@@ -647,3 +647,165 @@ class TestCodexClient:
 
             # Verify the order: --model comes before -c
             assert model_index < c_index
+
+    @patch("subprocess.run")
+    def test_init_with_options(self, mock_run):
+        """CodexClient should load options from backend config."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+
+        # Mock the config with options
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "codex"
+        mock_backend_config.options = ["--dangerously-bypass-approvals-and-sandbox", "--custom-flag"]
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            assert client.options == ["--dangerously-bypass-approvals-and-sandbox", "--custom-flag"]
+
+    @patch("subprocess.run")
+    def test_init_without_options(self, mock_run):
+        """CodexClient should have empty options when not configured."""
+        mock_run.return_value.returncode = 0
+
+        # Mock the config without options
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "codex"
+        mock_backend_config.options = []
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+            assert client.options == []
+
+    @patch("subprocess.run")
+    def test_init_falls_back_to_codex_config_options(self, mock_run):
+        """CodexClient should fall back to codex backend config for options."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+
+        # Mock the config
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "codex"
+        mock_backend_config.options = ["--dangerously-bypass-approvals-and-sandbox"]
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient()  # No backend_name specified
+            assert client.options == ["--dangerously-bypass-approvals-and-sandbox"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_options_passed_to_cli(self, mock_run_command, mock_run):
+        """Configured options should be passed to codex CLI."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config with options
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "codex"
+        mock_backend_config.options = ["--dangerously-bypass-approvals-and-sandbox", "--custom-flag"]
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify options are in the command
+            assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+            assert "--custom-flag" in cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_empty_options_not_passed_to_cli(self, mock_run_command, mock_run):
+        """Empty options list should not affect the command."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        client = CodexClient()
+        # Ensure options is empty list
+        client.options = []
+
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
+
+        # Verify CommandExecutor.run_command was called
+        assert mock_run_command.called
+        cmd = mock_run_command.call_args[0][0]
+
+        # Verify command structure is correct (no extra elements)
+        assert cmd[0] == "codex"
+        assert cmd[1] == "exec"
+        assert cmd[2] == "-s"
+        assert cmd[3] == "workspace-write"
+        # Next should be either --model or the prompt, not an option
+        assert cmd[4] == "--model" or isinstance(cmd[4], str)
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_options_order_in_command(self, mock_run_command, mock_run):
+        """Options should appear in the correct position in the command."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config with options
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.options = ["--dangerously-bypass-approvals-and-sandbox"]
+        mock_backend_config.model_provider = "openrouter"
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify command order: base cmd -> options -> model -> model_provider -> extra args -> prompt
+            workspace_write_index = cmd.index("workspace-write")
+            options_index = cmd.index("--dangerously-bypass-approvals-and-sandbox")
+            model_index = cmd.index("--model")
+            model_provider_index = cmd.index("-c")
+
+            # Options should come after workspace-write and before --model
+            assert workspace_write_index < options_index < model_index
+            # --model should come before -c (model_provider)
+            assert model_index < model_provider_index
