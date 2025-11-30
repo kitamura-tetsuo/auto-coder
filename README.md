@@ -850,6 +850,77 @@ always_switch_after_execution = true  # continue rotation to claude next
 
 If `always_switch_after_execution` is omitted or set to `false`, Auto-Coder keeps using the active backend until a retry/rotation condition is triggered.
 
+### Session Resume Configuration
+
+Auto-Coder supports session resumption for backends that maintain stateful sessions (like Claude). When the same backend is used consecutively, the system can automatically resume the previous session instead of starting a new one, providing better context continuity.
+
+#### How Session Resume Works
+
+When configured, the system:
+1. Tracks the session ID from the last backend execution
+2. Detects when the same backend is used consecutively
+3. Automatically injects resume options with the previous session ID
+4. The backend resumes the previous session with full context
+
+#### Configuration
+
+Add the `options_for_resume` field to your backend configuration in `llm_config.toml`:
+
+```toml
+[backends.claude]
+model = "sonnet"
+# Resume options with session ID placeholder
+options_for_resume = ["--resume", "[sessionId]"]
+```
+
+The `[sessionId]` placeholder will be automatically replaced with the actual session ID from the previous execution.
+
+#### Example: Claude Backend with Session Resume
+
+```toml
+[backend]
+order = ["claude", "gemini", "codex"]
+default = "claude"
+
+[backends.claude]
+enabled = true
+model = "sonnet"
+timeout = 60
+max_retries = 3
+# Enable session resume for Claude
+options_for_resume = ["--resume", "[sessionId]"]
+```
+
+#### How It Works
+
+When you run multiple operations consecutively:
+
+```bash
+# First operation - starts new session
+auto-coder process-issues --only 123
+# Session ID: abc123 (tracked internally)
+
+# Second operation - resumes previous session
+auto-coder process-issues --only 124
+# Uses: claude --resume abc123
+```
+
+The second operation automatically resumes session `abc123`, providing Claude with context from the first operation.
+
+#### Supported Backends
+
+Currently, session resume is implemented for:
+- **Claude**: Uses `--resume <session-id>` flag
+
+Other backends may support session resume if they provide similar session management capabilities.
+
+#### Notes
+
+- Session IDs are tracked per backend
+- Resume only happens when the same backend is used consecutively
+- If a different backend is used, the session tracking resets
+- The `options_for_resume` list can include multiple options if needed
+
 ### Timeout Handling and Automatic Backend Fallback
 
 Auto-Coder includes automatic timeout handling that triggers fallback to the next configured backend when an LLM command exceeds its configured timeout. This ensures operations continue smoothly even when a backend becomes unresponsive or slow.
