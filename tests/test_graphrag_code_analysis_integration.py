@@ -388,29 +388,37 @@ class TestGraphRAGCodeAnalysisIntegration:
 
         manager = GraphRAGIndexManager(repo_path=str(tmp_path))
 
-        # Mock Qdrant and SentenceTransformer - patch where they're imported
-        with patch("qdrant_client.QdrantClient") as mock_qdrant:
-            with patch("sentence_transformers.SentenceTransformer") as mock_st:
-                mock_client = MagicMock()
-                mock_qdrant.return_value = mock_client
+        # Mock Qdrant and SentenceTransformer using sys.modules
+        mock_client = MagicMock()
+        mock_model = MagicMock()
+        mock_model.encode.return_value = [0.1] * 384  # Mock embedding
 
-                mock_model = MagicMock()
-                mock_model.encode.return_value = [0.1] * 384  # Mock embedding
-                mock_st.return_value = mock_model
+        # Create mocks for the imports
+        mock_qdrant_cls = MagicMock(return_value=mock_client)
+        mock_sentence_transformer_cls = MagicMock(return_value=mock_model)
 
-                manager._store_embeddings_in_qdrant(graph_data, in_container=False)
+        # Mock the imports in sys.modules before they are imported by the function
+        with patch.dict(
+            "sys.modules",
+            {
+                "qdrant_client": MagicMock(QdrantClient=mock_qdrant_cls),
+                "qdrant_client.models": MagicMock(),
+                "sentence_transformers": MagicMock(SentenceTransformer=mock_sentence_transformer_cls),
+            },
+        ):
+            manager._store_embeddings_in_qdrant(graph_data, in_container=False)
 
-                # Verify Qdrant client was created
-                mock_qdrant.assert_called_once()
+            # Verify Qdrant client was created
+            mock_qdrant_cls.assert_called_once()
 
-                # Verify collection was created
-                mock_client.create_collection.assert_called_once()
+            # Verify collection was created
+            mock_client.create_collection.assert_called_once()
 
-                # Verify embeddings were created
-                mock_model.encode.assert_called()
+            # Verify embeddings were created
+            mock_model.encode.assert_called()
 
-                # Verify points were upserted
-                mock_client.upsert.assert_called()
+            # Verify points were upserted
+            mock_client.upsert.assert_called()
 
     def test_graph_builder_supports_multiple_languages(self, tmp_path):
         """Test that graph-builder supports TypeScript, JavaScript, and Python."""

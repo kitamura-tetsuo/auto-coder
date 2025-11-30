@@ -57,6 +57,13 @@ class AuggieClient(LLMClientBase):
         self._usage_date_cache: Optional[str] = None
         self._usage_count_cache: int = 0
 
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
+
         # Verify Auggie CLI availability early for deterministic failures.
         try:
             result = subprocess.run(["auggie", "--version"], capture_output=True, text=True, timeout=10)

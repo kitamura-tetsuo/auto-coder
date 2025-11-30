@@ -5,6 +5,8 @@ Tests for Gemini client functionality.
 import json
 from unittest.mock import Mock, patch
 
+import pytest
+
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.utils import CommandResult
 
@@ -14,6 +16,7 @@ class TestGeminiClient:
     @patch("src.auto_coder.gemini_client.logger")
     @patch("subprocess.run")
     @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_llm_invocation_warn_log(self, mock_run_command, mock_run, mock_logger, mock_get_config, mock_gemini_api_key):
         """Verify that LLM invocation emits a warning log before running CLI."""
         mock_run.return_value.returncode = 0
@@ -23,6 +26,7 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -45,6 +49,7 @@ class TestGeminiClient:
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.model = "test-model"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -61,6 +66,7 @@ class TestGeminiClient:
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_init(self, mock_genai, mock_get_config, mock_gemini_api_key):
         """Test GeminiClient initialization."""
         mock_model = Mock()
@@ -71,6 +77,7 @@ class TestGeminiClient:
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.model = "test-model"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -83,12 +90,14 @@ class TestGeminiClient:
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_analyze_issue_removed(self, mock_genai, mock_get_config, mock_gemini_api_key):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -97,12 +106,14 @@ class TestGeminiClient:
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_analyze_pull_request_removed(self, mock_genai, mock_get_config, mock_gemini_api_key, sample_pr_data):
         """Ensure analysis-only helpers are removed per LLM execution policy."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -111,6 +122,7 @@ class TestGeminiClient:
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_suggest_features_success(self, mock_genai, mock_get_config, mock_gemini_api_key):
         """Test successful feature suggestions."""
         # Setup
@@ -137,6 +149,7 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -155,12 +168,14 @@ class TestGeminiClient:
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("src.auto_coder.gemini_client.genai")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_generate_solution_removed(self, mock_genai, mock_get_config, mock_gemini_api_key, sample_issue_data, sample_analysis_result):
         """Ensure generation helper is removed per LLM execution policy."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -168,12 +183,14 @@ class TestGeminiClient:
         assert not hasattr(client, "generate_solution")
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_parse_analysis_response_valid_json(self, mock_get_config, mock_gemini_api_key):
         """Test parsing valid JSON response."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -196,12 +213,14 @@ class TestGeminiClient:
         assert result["summary"] == "Test summary"
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_parse_analysis_response_invalid_json(self, mock_get_config, mock_gemini_api_key):
         """Test parsing invalid JSON response."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -216,12 +235,14 @@ class TestGeminiClient:
         assert "This is not JSON" in result["summary"]
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_parse_feature_suggestions_valid_json(self, mock_get_config, mock_gemini_api_key):
         """Test parsing valid feature suggestions JSON."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -247,12 +268,14 @@ class TestGeminiClient:
         assert result[1]["title"] == "Feature 2"
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_parse_feature_suggestions_invalid_json(self, mock_get_config, mock_gemini_api_key):
         """Test parsing invalid feature suggestions JSON."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -265,12 +288,14 @@ class TestGeminiClient:
         assert result == []
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_parse_solution_response_valid_json(self, mock_get_config, mock_gemini_api_key):
         """Test parsing valid solution response JSON."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -293,12 +318,14 @@ class TestGeminiClient:
         assert result["code_changes"] == []
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
+    @pytest.mark.usefixtures("mock_gemini_api_key")
     def test_parse_solution_response_invalid_json(self, mock_get_config, mock_gemini_api_key):
         """Test parsing invalid solution response JSON."""
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -324,6 +351,7 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.model = "gemini-2.5-pro"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -353,6 +381,7 @@ class TestGeminiClient:
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.model = "gemini-2.5-flash"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -375,6 +404,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -395,6 +425,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -415,6 +446,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -435,6 +467,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 

@@ -105,6 +105,13 @@ class CodexMCPClient(LLMClientBase):
         self.enable_graphrag = enable_graphrag
         self.graphrag_integration: Optional[GraphRAGMCPIntegration] = None
 
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
+
         # Initialize GraphRAG integration if enabled
         if self.enable_graphrag:
             logger.info("GraphRAG integration enabled for CodexMCPClient")

@@ -3,7 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import toml
@@ -43,6 +43,7 @@ class TestBackendConfig:
         assert config.model_provider is None
         assert config.always_switch_after_execution is False
         assert config.usage_markers == []
+        assert config.options_for_noedit == []
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -67,6 +68,7 @@ class TestBackendConfig:
             model_provider="openrouter",
             always_switch_after_execution=True,
             usage_markers=["marker1", "marker2"],
+            options_for_noedit=["noedit_option1", "noedit_option2"],
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -88,6 +90,7 @@ class TestBackendConfig:
         assert config.model_provider == "openrouter"
         assert config.always_switch_after_execution is True
         assert config.usage_markers == ["marker1", "marker2"]
+        assert config.options_for_noedit == ["noedit_option1", "noedit_option2"]
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -117,8 +120,8 @@ class TestLLMBackendConfiguration:
         # Check default settings
         assert config.default_backend == "codex"
         assert config.backend_order == []
-        assert config.message_backend_order == []
-        assert config.message_default_backend is None
+        assert config.backend_for_noedit_order == []
+        assert config.backend_for_noedit_default is None
         assert config.env_prefix == "AUTO_CODER_"
         assert config.config_file_path == "~/.auto-coder/llm_config.toml"
 
@@ -132,16 +135,34 @@ class TestLLMBackendConfiguration:
             backend_order=["gemini", "codex"],
             default_backend="gemini",
             backends=backends,
-            message_backend_order=["codex"],
-            message_default_backend="codex",
+            backend_for_noedit_order=["codex"],
+            backend_for_noedit_default="codex",
         )
 
         assert config.default_backend == "gemini"
         assert config.backend_order == ["gemini", "codex"]
-        assert config.message_backend_order == ["codex"]
-        assert config.message_default_backend == "codex"
+        assert config.backend_for_noedit_order == ["codex"]
+        assert config.backend_for_noedit_default == "codex"
         assert config.backends["gemini"].model == "gemini-pro"
         assert config.backends["codex"].enabled is False
+
+    def test_options_for_noedit_field(self):
+        """Test that options_for_noedit is parsed and stored."""
+        config_data = {"backends": {"codex": {"options": ["--flag1"], "options_for_noedit": ["--flag2"]}}}
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        assert config.backends["codex"].options == ["--flag1"]
+        assert config.backends["codex"].options_for_noedit == ["--flag2"]
+
+    def test_options_for_noedit_default_empty(self):
+        """options_for_noedit should default to an empty list when missing."""
+        config_data = {"backends": {"codex": {"options": ["--flag1"]}}}
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        assert config.backends["codex"].options == ["--flag1"]
+        assert config.backends["codex"].options_for_noedit == []
 
     def test_save_and_load_from_file(self):
         """Test saving and loading configuration from a TOML file."""
@@ -283,68 +304,100 @@ class TestLLMBackendConfiguration:
         assert "codex" not in active
         assert "qwen" in active
 
-    def test_get_active_message_backends(self):
-        """Test getting active message backends."""
+    def test_get_active_noedit_backends(self):
+        """Test getting active noedit backends."""
         config = LLMBackendConfiguration()
         config.get_backend_config("gemini").enabled = False
         config.get_backend_config("codex").enabled = True
         config.get_backend_config("qwen").enabled = False
-        config.message_backend_order = ["codex", "gemini", "qwen"]
+        config.backend_for_noedit_order = ["codex", "gemini", "qwen"]
 
-        active = config.get_active_message_backends()
+        active = config.get_active_noedit_backends()
         assert "codex" in active
         assert "gemini" not in active
         assert "qwen" not in active
 
-    def test_get_active_message_backends_fallback(self):
-        """Test message backends fall back to general backends when not configured."""
+    def test_get_active_noedit_backends_fallback(self):
+        """Test noedit backends fall back to general backends when not configured."""
         config = LLMBackendConfiguration()
         config.get_backend_config("gemini").enabled = False
         config.get_backend_config("codex").enabled = True
         config.backend_order = ["codex", "gemini", "qwen"]
-        # No message_backend_order set
+        # No backend_for_noedit_order set
 
-        active = config.get_active_message_backends()
+        active = config.get_active_noedit_backends()
         assert "codex" in active
         # Should fall back to general backends
 
-    def test_get_message_default_backend(self):
-        """Test getting default message backend."""
+    def test_get_noedit_default_backend(self):
+        """Test getting default noedit backend."""
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = True
-        config.message_default_backend = "codex"
+        config.backend_for_noedit_default = "codex"
         config.default_backend = "gemini"
 
-        assert config.get_message_default_backend() == "codex"
+        assert config.get_noedit_default_backend() == "codex"
 
-    def test_get_message_default_backend_fallback(self):
-        """Test message default falls back to general default."""
+    def test_get_noedit_default_backend_fallback(self):
+        """Test noedit default falls back to general default."""
         config = LLMBackendConfiguration()
         config.get_backend_config("gemini").enabled = True
         config.default_backend = "gemini"
 
-        # No message_default_backend set
-        assert config.get_message_default_backend() == "gemini"
+        # No backend_for_noedit_default set
+        assert config.get_noedit_default_backend() == "gemini"
 
-    def test_get_message_default_backend_disabled(self):
-        """Test that disabled message default falls back to general default."""
+    def test_get_noedit_default_backend_disabled(self):
+        """Test that disabled noedit default falls back to general default."""
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = False
-        config.message_default_backend = "codex"
+        config.backend_for_noedit_default = "codex"
         config.default_backend = "gemini"
 
-        # message_default_backend is disabled, should fall back
-        assert config.get_message_default_backend() == "gemini"
+        # backend_for_noedit_default is disabled, should fall back
+        assert config.get_noedit_default_backend() == "gemini"
+
+    # Test backward compatibility with deprecated method names
+    def test_get_active_message_backends_deprecated(self):
+        """Test deprecated get_active_message_backends() still works."""
+        config = LLMBackendConfiguration()
+        config.get_backend_config("codex").enabled = True
+        config.backend_for_noedit_order = ["codex"]
+
+        with patch("src.auto_coder.llm_backend_config.get_logger") as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+
+            # Deprecated method should still work
+            active = config.get_active_message_backends()
+
+        assert "codex" in active
+        mock_logger.warning.assert_called_once_with("get_active_message_backends() is deprecated. Use get_active_noedit_backends() instead.")
+
+    def test_get_message_default_backend_deprecated(self):
+        """Test deprecated get_message_default_backend() still works."""
+        config = LLMBackendConfiguration()
+        config.get_backend_config("codex").enabled = True
+        config.backend_for_noedit_default = "codex"
+
+        with patch("src.auto_coder.llm_backend_config.get_logger") as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+
+            # Deprecated method should still work
+            assert config.get_message_default_backend() == "codex"
+
+        mock_logger.warning.assert_called_once_with("get_message_default_backend() is deprecated. Use get_noedit_default_backend() instead.")
 
     def test_has_dual_configuration(self):
         """Test detection of dual backend configuration."""
         config1 = LLMBackendConfiguration()
-        config1.message_backend_order = ["codex"]
+        config1.backend_for_noedit_order = ["codex"]
         assert config1.has_dual_configuration() is True
 
         config2 = LLMBackendConfiguration()
         config2.backend_order = ["gemini", "codex"]
-        config2.message_backend_order = ["codex"]
+        config2.backend_for_noedit_order = ["codex"]
         assert config2.has_dual_configuration() is True
 
         config3 = LLMBackendConfiguration()
@@ -352,9 +405,9 @@ class TestLLMBackendConfiguration:
         assert config3.has_dual_configuration() is False
 
         config4 = LLMBackendConfiguration()
-        # Only message config
-        config4.message_backend_order = ["codex"]
-        config4.message_default_backend = "codex"
+        # Only noedit config
+        config4.backend_for_noedit_order = ["codex"]
+        config4.backend_for_noedit_default = "codex"
         assert config4.has_dual_configuration() is True
 
     def test_get_model_for_backend(self):
@@ -389,7 +442,7 @@ class TestLLMBackendConfiguration:
                 "AUTO_CODER_OPENAI_API_KEY": "env_openai_key",
                 "AUTO_CODER_GEMINI_OPENAI_API_KEY": "env_gemini_openai_key",
                 "AUTO_CODER_DEFAULT_BACKEND": "qwen",
-                "AUTO_CODER_MESSAGE_DEFAULT_BACKEND": "claude",
+                "AUTO_CODER_NOEDIT_DEFAULT_BACKEND": "claude",
             },
         ):
             config.apply_env_overrides()
@@ -397,7 +450,7 @@ class TestLLMBackendConfiguration:
         # Check that environment overrides were applied
         assert config.get_backend_config("gemini").api_key == "env_gemini_key"
         assert config.default_backend == "qwen"
-        assert config.message_default_backend == "claude"
+        assert config.backend_for_noedit_default == "claude"
 
     def test_apply_env_overrides_openai(self):
         """Test applying OpenAI environment variable overrides."""
@@ -581,6 +634,29 @@ class TestLLMBackendConfiguration:
             qwen_config = loaded_config.get_backend_config("qwen")
             assert qwen_config.always_switch_after_execution is False
 
+    def test_toml_save_and_load_options_for_noedit(self):
+        """Test that options_for_noedit field is properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_options_for_noedit.toml"
+
+            # Create configuration with options_for_noedit settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").options_for_noedit = ["noedit1", "noedit2"]
+            config.get_backend_config("qwen").options_for_noedit = ["noedit3"]
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify options_for_noedit was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.options_for_noedit == ["noedit1", "noedit2"]
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.options_for_noedit == ["noedit3"]
+
     def test_backward_compatibility_old_toml_without_retry_fields(self):
         """Test loading old TOML files that don't have retry configuration fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -659,6 +735,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config.options_for_resume == []
             assert qwen_config.backend_type is None
             assert qwen_config.always_switch_after_execution is False
+            assert qwen_config.options_for_noedit == []
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
@@ -668,6 +745,48 @@ class TestLLMBackendConfiguration:
             assert gemini_config.options_for_resume == []
             assert gemini_config.backend_type is None
             assert gemini_config.always_switch_after_execution is False
+            assert gemini_config.options_for_noedit == []
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
+
+    def test_backward_compatibility_old_toml_without_options_for_noedit(self):
+        """Test loading old TOML files that don't have options_for_noedit field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_options_for_noedit.toml"
+
+            # Create a TOML file with the old structure (without options_for_noedit field)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify options_for_noedit has default empty list when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.options_for_noedit == []
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.options_for_noedit == []
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
 
@@ -1265,8 +1384,8 @@ class TestConfigurationPriorityLogic:
             config = LLMBackendConfiguration()
             config.default_backend = "gemini"
             config.backend_order = ["gemini", "qwen", "codex"]
-            config.message_backend_order = ["codex"]
-            config.message_default_backend = "codex"
+            config.backend_for_noedit_order = ["codex"]
+            config.backend_for_noedit_default = "codex"
 
             # Set detailed backend configs
             config.get_backend_config("gemini").model = "gemini-test-model"
@@ -1298,8 +1417,8 @@ class TestConfigurationPriorityLogic:
                 # Verify all values were correctly loaded
                 assert loaded_config.default_backend == "gemini"
                 assert loaded_config.backend_order == ["gemini", "qwen", "codex"]
-                assert loaded_config.message_backend_order == ["codex"]
-                assert loaded_config.message_default_backend == "codex"
+                assert loaded_config.backend_for_noedit_order == ["codex"]
+                assert loaded_config.backend_for_noedit_default == "codex"
 
                 # Verify gemini backend settings
                 gemini = loaded_config.get_backend_config("gemini")
@@ -1864,6 +1983,7 @@ class TestBackendForFailedPR:
                 always_switch_after_execution=True,
                 settings="fallback_settings.json",
                 usage_markers=["fallback-marker1", "fallback-marker2"],
+                options_for_noedit=["fallback-noedit1", "fallback-noedit2"],
             )
 
             # Save to file
@@ -1895,6 +2015,7 @@ class TestBackendForFailedPR:
             assert fallback.always_switch_after_execution is True
             assert fallback.settings == "fallback_settings.json"
             assert fallback.usage_markers == ["fallback-marker1", "fallback-marker2"]
+            assert fallback.options_for_noedit == ["fallback-noedit1", "fallback-noedit2"]
 
     def test_backend_for_failed_pr_minimal_config(self):
         """Test fallback backend with minimal configuration (only required fields)."""
@@ -1918,3 +2039,45 @@ class TestBackendForFailedPR:
             assert fallback.enabled is True  # Default value
             assert fallback.model is None  # Optional field
             assert fallback.api_key is None  # Optional field
+
+    def test_backward_compatibility_message_backend(self):
+        """Test that old message_backend config format is still supported."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_format.toml"
+
+            # Create a config file using the OLD format
+            old_format_config = """
+[backend]
+default = "codex"
+order = ["codex", "gemini"]
+
+[message_backend]
+default = "gemini"
+order = ["gemini", "qwen"]
+
+[backends.codex]
+enabled = true
+model = "codex"
+
+[backends.gemini]
+enabled = true
+model = "gemini-2.5-pro"
+"""
+            config_file.write_text(old_format_config)
+
+            with patch("src.auto_coder.llm_backend_config.get_logger") as mock_get_logger:
+                mock_logger = MagicMock()
+                mock_get_logger.return_value = mock_logger
+
+                # Load the old format config
+                loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify it was converted to new format
+            assert loaded_config.backend_for_noedit_default == "gemini"
+            assert loaded_config.backend_for_noedit_order == ["gemini", "qwen"]
+
+            mock_logger.warning.assert_any_call("Configuration uses deprecated 'message_backend' key. Please update to 'backend_for_noedit' in your config file.")
+
+            # Verify the deprecated methods still work
+            assert loaded_config.get_noedit_default_backend() == "gemini"
+            assert loaded_config.get_active_noedit_backends() == ["gemini", "qwen"]

@@ -13,6 +13,28 @@ from src.auto_coder.qwen_client import QwenClient
 from src.auto_coder.utils import CommandResult
 
 
+def make_backend_mock(
+    model: str = "qwen3-coder-plus",
+    api_key: str | None = None,
+    base_url: str | None = None,
+    openai_api_key: str | None = None,
+    openai_base_url: str | None = None,
+    options: list[str] | None = None,
+    options_for_noedit: list[str] | None = None,
+    usage_markers: list[str] | None = None,
+):
+    backend = MagicMock()
+    backend.model = model
+    backend.api_key = api_key
+    backend.base_url = base_url
+    backend.openai_api_key = openai_api_key
+    backend.openai_base_url = openai_base_url
+    backend.options = options or []
+    backend.options_for_noedit = options_for_noedit or []
+    backend.usage_markers = usage_markers or []
+    return backend
+
+
 class TestQwenClient:
     @patch("src.auto_coder.qwen_client.get_llm_config")
     @patch("subprocess.run")
@@ -21,8 +43,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
+        mock_backend = make_backend_mock()
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -38,8 +59,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
+        mock_backend = make_backend_mock()
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -60,8 +80,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
+        mock_backend = make_backend_mock()
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -83,9 +102,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
-        mock_backend.api_key = None
+        mock_backend = make_backend_mock(api_key=None)
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -110,8 +127,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
+        mock_backend = make_backend_mock()
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -133,8 +149,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
+        mock_backend = make_backend_mock()
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -161,8 +176,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
+        mock_backend = make_backend_mock()
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -187,8 +201,7 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "custom-qwen-model"
+        mock_backend = make_backend_mock(model="custom-qwen-model")
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -204,6 +217,45 @@ class TestQwenClient:
     @patch("src.auto_coder.qwen_client.get_llm_config")
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_options_for_noedit_used_when_present(self, mock_run_command, mock_run, mock_get_config):
+        """Ensure options_for_noedit overrides general options for CLI invocation."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend = make_backend_mock(options=["--general"], options_for_noedit=["--noedit-flag"])
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = QwenClient()
+        client._run_llm_cli("test prompt")
+
+        args = mock_run_command.call_args[0][0]
+        assert "--noedit-flag" in args
+        assert "--general" not in args
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_options_for_noedit_falls_back_to_options(self, mock_run_command, mock_run, mock_get_config):
+        """When options_for_noedit is empty, general options should be used."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        mock_config = MagicMock()
+        mock_backend = make_backend_mock(options=["--general"], options_for_noedit=[])
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = QwenClient()
+        client._run_llm_cli("prompt")
+
+        args = mock_run_command.call_args[0][0]
+        assert "--general" in args
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
     def test_cli_invocation_with_openrouter_config(self, mock_run_command, mock_run, mock_get_config):
         """Test that API key and base URL are passed as environment variables."""
         mock_run.return_value.returncode = 0
@@ -211,12 +263,12 @@ class TestQwenClient:
 
         # Mock config
         mock_config = MagicMock()
-        mock_backend = MagicMock()
-        mock_backend.model = "qwen3-coder-plus"
-        mock_backend.api_key = "qwen-key"
-        mock_backend.base_url = "https://qwen.example.com"
-        mock_backend.openai_api_key = "openai-key"
-        mock_backend.openai_base_url = "https://openai.example.com"
+        mock_backend = make_backend_mock(
+            api_key="qwen-key",
+            base_url="https://qwen.example.com",
+            openai_api_key="openai-key",
+            openai_base_url="https://openai.example.com",
+        )
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 

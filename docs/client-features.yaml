@@ -106,14 +106,81 @@ The system supports extensive backend configuration options. Key fields include:
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Only used when automatic fallback is desired
 
+- **`options` field**: CLI options for code editing operations
+  - Purpose: Pass additional command-line arguments to backend CLIs when performing code editing operations
+  - Type: List[str]
+  - Default: `[]` (empty list)
+  - Usage: Applied when the LLM is invoked for analyzing issues, generating code, fixing bugs, and other file-modifying operations
+  - Example:
+    ```toml
+    [backends.codex]
+    model = "codex"
+    options = ["--dangerously-bypass-approvals-and-sandbox"]
+    ```
+  - Behavior:
+    - The system automatically adds required flags for each backend type during execution (e.g., `--dangerously-bypass-approvals-and-sandbox` for Codex)
+    - Custom options specified here are appended to the automatically-added flags
+    - Different backends may interpret options differently
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Backward compatible with existing configurations
+
+- **`options_for_noedit` field**: CLI options for message generation (non-editing operations)
+  - Purpose: Pass additional command-line arguments to backend CLIs when generating commit messages, PR descriptions, and other non-code operations
+  - Type: List[str]
+  - Default: `[]` (empty list)
+  - Usage: Applied when the LLM is invoked for message generation operations (not code editing)
+  - Example:
+    ```toml
+    [backends.gemini]
+    model = "gemini-2.5-pro"
+    options = ["--debug"]
+    options_for_noedit = ["--silent"]
+    ```
+  - Behavior:
+    - If not specified or empty, falls back to using `options` value
+    - Allows different configurations for editing vs message generation
+    - The system automatically adds required flags for each backend type during execution
+    - Useful for optimizing different operations with different option sets
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Backward compatible with existing configurations
+
+- **`backend_for_noedit` configuration**: Separate backend configuration for non-editing operations
+  - Purpose: Configure a different backend (or backend order) for message generation compared to code editing
+  - Breaking Change: Renamed from `message_backend` to `backend_for_noedit`
+  - Configuration Sections:
+    - `[backend_for_noedit]`: Top-level section for non-editing backend configuration
+    - Fields:
+      - `default`: Default backend name for non-editing operations
+      - `order`: List of backend names to try for non-editing operations (in order)
+  - Example:
+    ```toml
+    [backend]
+    default = "qwen"
+    order = ["qwen", "gemini", "claude"]
+
+    [backend_for_noedit]
+    default = "claude"
+    order = ["claude", "qwen"]
+    ```
+  - Behavior:
+    - If not specified, falls back to general backend configuration (`[backend]` section)
+    - Allows optimization: use fast/cheap models for messages, premium models for code
+    - Backward compatible: old `message_backend` key still works but emits deprecation warning
+  - Migration:
+    - Replace `[message_backend]` with `[backend_for_noedit]` in config files
+    - Replace environment variable `AUTO_CODER_MESSAGE_DEFAULT_BACKEND` with `AUTO_CODER_NOEDIT_DEFAULT_BACKEND`
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Defaults to general backend configuration if not specified
+
 #### Backend Management
 
     nested_managers:
       description: "Multiple backend manager instances can exist with different configurations"
       llm_backend: "Singleton instance for general LLM operations (PR processing, test fixes, code generation)"
-      message_backend: "Separate singleton instance for message generation (commit messages, PR messages)"
-      usage: "Access via get_llm_backend_manager() and get_message_backend_manager() for different use cases"
+      noedit_backend: "Separate singleton instance for non-editing operations (commit messages, PR messages)"
+      usage: "Access via get_llm_backend_manager() and get_noedit_backend_manager() for different use cases"
       provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
+      deprecated_names: "get_message_backend_manager(), run_llm_message_prompt(), get_message_backend_and_model() are deprecated - use get_noedit_backend_manager(), run_llm_noedit_prompt(), get_noedit_backend_and_model() instead"
   session_resume:
       description: "Persist and reuse backend session identifiers so supported backends can resume previous conversations."
       prerequisites:
@@ -174,6 +241,139 @@ The system supports extensive backend configuration options. Key fields include:
           always_switch_after_execution = true
       configuration_file: "~/.auto-coder/llm_config.toml"
       scope: "Per-backend flag; defaults to false when omitted"
+
+#### Per-Backend Option Examples
+
+The following examples demonstrate typical `options` and `options_for_noedit` configurations for each supported backend:
+
+- **Codex Backend** (`backend_type = "codex"`):
+  ```toml
+  [codex]
+  model = "codex"
+  options = ["--dangerously-bypass-approvals-and-sandbox"]
+  options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox"]
+  ```
+  - Typical use: OpenAI-compatible providers (OpenRouter, Azure OpenAI, custom endpoints)
+  - Automatic flags: `--dangerously-bypass-approvals-and-sandbox` during code editing operations
+  - Custom options: Add tracking headers, timeouts, or provider-specific flags
+
+- **Claude Backend** (`backend_type = "claude"`):
+  ```toml
+  [claude]
+  model = "sonnet"
+  backend_type = "claude"
+  options = []
+  options_for_noedit = []
+  ```
+  - Typical use: Anthropic Claude API
+  - Automatic flags: `--print`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`
+  - Custom options: Path to settings file, debug modes
+
+- **Gemini Backend** (`backend_type = "gemini"`):
+  ```toml
+  [gemini]
+  model = "gemini-2.5-pro"
+  backend_type = "gemini"
+  options = []
+  options_for_noedit = []
+  ```
+  - Typical use: Google Gemini API
+  - Automatic flags: `--yolo`, `--force-model`
+  - Custom options: Debug modes, output formatting
+
+- **Qwen Backend** (`backend_type = "qwen"`):
+  ```toml
+  [qwen]
+  model = "qwen3-coder-plus"
+  backend_type = "qwen"
+  options = []
+  options_for_noedit = []
+  ```
+  - Typical use: Native Qwen CLI with OAuth authentication
+  - Automatic flags: `-y` (auto-confirm)
+  - Custom options: Stream settings, debug modes, timeouts
+
+- **Qwen via OpenRouter** (`backend_type = "codex"`):
+  ```toml
+  [qwen-openrouter]
+  model = "qwen/qwen3-coder:free"
+  backend_type = "codex"
+  openai_api_key = "sk-or-v1-your-key"
+  openai_base_url = "https://openrouter.ai/api/v1"
+  options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+  options_for_noedit = ["-o", "timeout", "30"]
+  ```
+  - Typical use: Qwen models through OpenAI-compatible API
+  - Automatic flags: `--dangerously-bypass-approvals-and-sandbox`
+  - Custom options: Tracking headers, timeouts, stream settings
+
+- **Auggie Backend** (`backend_type = "auggie"`):
+  ```toml
+  [auggie]
+  model = "GPT-5"
+  backend_type = "auggie"
+  options = []
+  options_for_noedit = []
+  ```
+  - Typical use: AugmentCode Auggie CLI
+  - Automatic flags: `--print`
+  - Custom options: Debug modes, output formatting
+
+- **Jules Backend** (`backend_type = "jules"`):
+  ```toml
+  [jules]
+  backend_type = "jules"
+  options = []
+  options_for_noedit = []
+  ```
+  - Typical use: Session-based AI assistant (Jules)
+  - Automatic flags: Minimal - Jules manages sessions internally
+  - Custom options: Usually minimal due to session-based nature
+
+#### Breaking Changes Documentation
+
+Recent configuration schema changes that require migration:
+
+**1. Configuration Field Renames**:
+   - **`message_backend` → `backend_for_noedit`**:
+     - Old config:
+       ```toml
+       [message_backend]
+       default = "claude"
+       order = ["claude", "qwen"]
+       ```
+     - New config:
+       ```toml
+       [backend_for_noedit]
+       default = "claude"
+       order = ["claude", "qwen"]
+       ```
+     - Migration: Update all config files to use new field name
+     - Deprecation: Old name still works but emits warning and will be removed in future version
+
+**2. Environment Variable Renames**:
+   - **`AUTO_CODER_MESSAGE_DEFAULT_BACKEND` → `AUTO_CODER_NOEDIT_DEFAULT_BACKEND`**:
+     - Migration: Update environment variables to new name
+     - Deprecation: Old name still works but emits warning
+
+**3. Hardcoded Options Removal**:
+   - **Before**: CLI options were hardcoded in client implementations
+     - Codex: always used `--dangerously-bypass-approvals-and-sandbox`
+     - Claude: always used `--print --dangerously-skip-permissions --allow-dangerously-skip-permissions`
+     - Gemini: always used `--yolo --force-model`
+     - Qwen: always used `-y`
+   - **After**: Options are configurable through `options` and `options_for_noedit` fields
+     - System automatically adds required flags for each backend
+     - Users can add custom options beyond the defaults
+     - Allows fine-tuning per-operation-type behavior
+   - Migration: No action required - configuration is backward compatible
+   - Benefits: Full customization, better separation of concerns
+
+**4. Default Option Behavior**:
+   - When `options_for_noedit` is not specified, it now falls back to `options` value
+   - Previously, each backend had different default behaviors
+   - Migration: No action required - existing configs work as expected
+   - Note: Empty list `[]` means use defaults, not "no options"
 
 #### GraphRAG Integration
 

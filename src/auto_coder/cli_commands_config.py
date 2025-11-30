@@ -575,8 +575,12 @@ def import_config(config_file: Optional[str], source_file: str) -> None:
         config = LLMBackendConfiguration()
         config.backend_order = imported_data.get("backend", {}).get("order", [])
         config.default_backend = imported_data.get("backend", {}).get("default", "codex")
-        config.message_backend_order = imported_data.get("message_backend", {}).get("order", [])
-        config.message_default_backend = imported_data.get("message_backend", {}).get("default")
+        # Try new key first, fall back to old key for backward compatibility
+        config.backend_for_noedit_order = imported_data.get("backend_for_noedit", {}).get("order", [])
+        config.backend_for_noedit_default = imported_data.get("backend_for_noedit", {}).get("default")
+        if not config.backend_for_noedit_order and not config.backend_for_noedit_default:
+            config.backend_for_noedit_order = imported_data.get("message_backend", {}).get("order", [])
+            config.backend_for_noedit_default = imported_data.get("message_backend", {}).get("default")
 
         # Import backends
         config.backends = {}
@@ -1015,9 +1019,9 @@ def config_to_dict(config: LLMBackendConfiguration) -> Dict[str, Any]:
             "extra_args": backend_config.extra_args,
         }
 
-    result["message_backend"] = {
-        "order": config.message_backend_order,
-        "default": config.message_default_backend,
+    result["backend_for_noedit"] = {
+        "order": config.backend_for_noedit_order,
+        "default": config.backend_for_noedit_default,
     }
 
     # Validate the result before returning
@@ -1079,6 +1083,11 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
         if not isinstance(backend_config.extra_args, dict):
             errors.append(f"{name}.extra_args must be a dictionary")  # type: ignore[unreachable]
 
+        # Validate required options (only for enabled backends)
+        if backend_config.enabled:
+            required_errors = backend_config.validate_required_options()
+            errors.extend(required_errors)
+
     # Validate backend_order - should be list
     if not isinstance(config.backend_order, list):
         errors.append("backend.order must be a list")  # type: ignore[unreachable]
@@ -1087,12 +1096,12 @@ def config_validate(config: LLMBackendConfiguration) -> List[str]:
     if not isinstance(config.default_backend, str):
         errors.append("backend.default must be a string")  # type: ignore[unreachable]
 
-    # Validate message_backend_order - should be list
-    if not isinstance(config.message_backend_order, list):
-        errors.append("message_backend.order must be a list")  # type: ignore[unreachable]
+    # Validate backend_for_noedit_order - should be list
+    if not isinstance(config.backend_for_noedit_order, list):
+        errors.append("backend_for_noedit.order must be a list")  # type: ignore[unreachable]
 
-    # Validate message_default_backend - should be str or None
-    if config.message_default_backend is not None and not isinstance(config.message_default_backend, str):
-        errors.append("message_backend.default must be a string")  # type: ignore[unreachable]
+    # Validate backend_for_noedit_default - should be str or None
+    if config.backend_for_noedit_default is not None and not isinstance(config.backend_for_noedit_default, str):
+        errors.append("backend_for_noedit.default must be a string")  # type: ignore[unreachable]
 
     return errors

@@ -99,6 +99,8 @@ class CodeAnalysisTool:
 
         # Load the embedding model
         try:
+            from sentence_transformers import SentenceTransformer
+
             self.model = SentenceTransformer(self.model_name)
             logger.info(f"Loaded embedding model: {self.model_name}")
         except Exception as e:
@@ -469,6 +471,8 @@ class CodeAnalysisTool:
 
         if self.model is None:
             try:
+                from sentence_transformers import SentenceTransformer
+
                 self.model = SentenceTransformer(self.model_name)
             except Exception as e:
                 result["error"] = f"Failed to load embedding model: {e}"
@@ -547,6 +551,8 @@ class CodeAnalysisTool:
 
         if self.model is None:
             try:
+                from sentence_transformers import SentenceTransformer
+
                 self.model = SentenceTransformer(self.model_name)
             except Exception as e:
                 result["error"] = f"Failed to load embedding model: {e}"
