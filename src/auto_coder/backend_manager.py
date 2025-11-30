@@ -6,6 +6,8 @@ automatic switching when the same current_test_file appears 3 consecutive times 
 from __future__ import annotations
 
 import contextlib
+import json
+import re
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -606,6 +608,77 @@ class BackendManager(LLMBackendManagerBase):
         provider = self._provider_manager.get_last_used_provider_name(backend) if backend else None
 
         return backend, provider, model
+
+    def parse_llm_output_as_json(self, output: str) -> Any:
+        """
+        Parse LLM output as JSON and extract content.
+
+        This helper method handles various JSON output formats:
+        - Pure JSON (dict or list)
+        - Text followed by JSON (e.g., "Here's the result: {...}")
+        - JSON followed by text (e.g., "{...}\n\nAdditional info")
+        - Text, JSON, and more text (e.g., "Result: {...}\nEnd")
+        - Responses that include the prompt content before the final JSON block
+
+        For list outputs (conversation history), extracts the content from the last message.
+        For dict outputs, returns the dict directly.
+
+        Args:
+            output: The raw LLM output string to parse
+
+        Returns:
+            The extracted content (dict or string from the last message in a list)
+
+        Raises:
+            ValueError: If the output cannot be parsed as JSON
+        """
+
+        def _extract_content(parsed: Any) -> Any:
+            """Extract the relevant content from parsed JSON."""
+            if isinstance(parsed, list):
+                if not parsed:
+                    raise ValueError("Parsed JSON is an empty list")
+                last_message = parsed[-1]
+                if isinstance(last_message, dict):
+                    for key in ("content", "message", "text", "response"):
+                        if key in last_message:
+                            return last_message[key]
+                    return last_message
+                return last_message
+            if isinstance(parsed, dict):
+                return parsed
+            return parsed
+
+        # First, try to parse the entire output (covers primitive JSON values)
+        stripped_output = output.strip()
+        try:
+            parsed_full = json.loads(stripped_output)
+            return _extract_content(parsed_full)
+        except json.JSONDecodeError:
+            pass
+
+        # Fall back to scanning for the last valid JSON block in the output
+        decoder = json.JSONDecoder()
+        json_candidates: List[Any] = []
+        search_pos = 0
+
+        while search_pos < len(output):
+            match = re.search(r"[\\[{]", output[search_pos:])
+            if not match:
+                break
+            start = search_pos + match.start()
+            try:
+                parsed_partial, end = decoder.raw_decode(output[start:])
+                json_candidates.append(parsed_partial)
+                search_pos = start + end
+            except json.JSONDecodeError:
+                search_pos = start + 1
+
+        if not json_candidates:
+            raise ValueError(f"Failed to parse output as JSON: No JSON object could be decoded\nOutput: {output}")
+
+        # Use the last successfully parsed JSON block (handles prompt + JSON scenarios)
+        return _extract_content(json_candidates[-1])
 
     # ---------- Compatibility Helpers ----------
     def switch_to_conflict_model(self) -> None:

@@ -29,6 +29,84 @@ logger = get_logger(__name__)
 cmd = CommandExecutor()
 
 
+def ensure_parent_issue_open(
+    github_client: GitHubClient,
+    repo_name: str,
+    parent_issue_details: Dict[str, Any],
+    issue_number: int,
+) -> bool:
+    """
+    Ensure parent issue is open, reopening if necessary.
+
+    This is a minimal hook for reopening closed parent issues when processing
+    child issues. Currently implements placeholder logic - full implementation
+    to be added in follow-up issues.
+
+    Args:
+        github_client: GitHub client for API operations
+        repo_name: Repository name (e.g., 'owner/repo')
+        parent_issue_details: Parent issue details from get_parent_issue_details
+        issue_number: Current issue number being processed
+
+    Returns:
+        bool: True if parent issue is open (or was reopened), False otherwise
+
+    TODO:
+        - Implement actual parent issue reopening logic in follow-up issues
+        - Add configuration flag to enable/disable automatic reopening
+        - Add appropriate error handling and retry logic
+        - Add comprehensive logging for reopening actions
+    """
+    parent_issue_number = parent_issue_details.get("number")
+    parent_state = parent_issue_details.get("state", "UNKNOWN").upper()
+
+    if parent_state == "OPEN":
+        logger.debug(
+            "Parent issue #%s for issue #%s is already OPEN",
+            parent_issue_number,
+            issue_number,
+        )
+        return True
+
+    if parent_state == "CLOSED":
+        try:
+            logger.info(
+                "Reopening closed parent issue #%s before processing child issue #%s",
+                parent_issue_number,
+                issue_number,
+            )
+
+            # Add an audit comment when reopening
+            audit_comment = f"Auto-Coder: Reopened this parent issue to process child issue #{issue_number}. Branch and base selection will use the parent context."
+
+            # Call GitHub API to reopen the issue
+            github_client.reopen_issue(repo_name, parent_issue_number, audit_comment)
+
+            logger.info(
+                "Successfully reopened parent issue #%s for child issue #%s",
+                parent_issue_number,
+                issue_number,
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                "Failed to reopen parent issue #%s for child issue #%s: %s",
+                parent_issue_number,
+                issue_number,
+                e,
+            )
+            return False
+
+    logger.warning(
+        "Unexpected parent issue #%s state '%s' for issue #%s",
+        parent_issue_number,
+        parent_state,
+        issue_number,
+    )
+    return False
+
+
 def generate_work_branch_name(issue_number: int, attempt: int) -> str:
     """
     Generate the work branch name based on the issue number and attempt.
@@ -407,7 +485,10 @@ def _apply_issue_actions_directly(
                 parent_issue_number = parent_issue_details["number"]
                 parent_state = parent_issue_details.get("state", "OPEN").upper()
 
-                if parent_state == "OPEN":
+                # Call hook to ensure parent issue is open
+                parent_is_open = ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
+
+                if parent_is_open:
                     # If parent issue exists and is OPEN, use parent issue branch as base
                     # Check if parent issue has attempts and use the appropriate parent branch
                     parent_attempt = get_current_attempt(repo_name, parent_issue_number)

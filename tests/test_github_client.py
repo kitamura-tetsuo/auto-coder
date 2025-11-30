@@ -1721,3 +1721,103 @@ class TestGitHubClientLogging:
                 assert rows[0]["command"] == "gh"
                 assert "auth" in rows[0]["args"]
                 assert "status" in rows[0]["args"]
+
+
+class TestGitHubClientSubIssueCaching:
+    """Test cases for sub-issue caching functionality."""
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_get_open_sub_issues_returns_cached_results(self, mock_subprocess, mock_github_class, mock_github_token):
+        """Test that get_open_sub_issues returns cached results on subsequent calls."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock GraphQL response
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "number": 123,
+                        "subIssues": {
+                            "nodes": [
+                                {"number": 456, "title": "Sub Issue 1", "state": "OPEN"},
+                                {"number": 789, "title": "Sub Issue 2", "state": "OPEN"},
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_result.stderr = ""
+        mock_subprocess.return_value = mock_result
+
+        # Execute - first call (should trigger API)
+        result1 = client.get_open_sub_issues("test/repo", 123)
+
+        # Assert first call
+        assert result1 == [456, 789]
+        assert mock_subprocess.call_count == 1  # API should be called once
+
+        # Execute - second call (should use cache)
+        result2 = client.get_open_sub_issues("test/repo", 123)
+
+        # Assert second call uses cache
+        assert result2 == [456, 789]
+        assert mock_subprocess.call_count == 1  # API should still be called only once (using cache)
+        assert result1 == result2  # Both results should be identical
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_clear_sub_issue_cache_clears_cache(self, mock_subprocess, mock_github_class, mock_github_token):
+        """Test that clear_sub_issue_cache clears the cache."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Mock GraphQL response
+        graphql_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "number": 123,
+                        "subIssues": {
+                            "nodes": [
+                                {"number": 456, "title": "Sub Issue 1", "state": "OPEN"},
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(graphql_response)
+        mock_result.stderr = ""
+        mock_subprocess.return_value = mock_result
+
+        # Execute - first call (should trigger API)
+        result1 = client.get_open_sub_issues("test/repo", 123)
+        assert result1 == [456]
+        assert mock_subprocess.call_count == 1
+
+        # Clear the cache
+        client.clear_sub_issue_cache()
+
+        # Verify cache is empty
+        cache_key = ("test/repo", 123)
+        assert cache_key not in client._sub_issue_cache
+
+        # Execute - second call after cache clear (should trigger API again)
+        result2 = client.get_open_sub_issues("test/repo", 123)
+
+        # Assert second call triggers API again
+        assert result2 == [456]
+        assert mock_subprocess.call_count == 2  # API should be called twice (cache was cleared)
+        assert result1 == result2  # Results should still be identical
