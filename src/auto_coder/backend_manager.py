@@ -287,6 +287,53 @@ class BackendManager(LLMBackendManagerBase):
         """
         return self._provider_manager.get_current_provider_name(backend_name)
 
+    def _inject_resume_options_if_applicable(self, backend_name: str, cli: Any) -> None:
+        """
+        Inject resume options into the client if conditions are met.
+
+        Checks if:
+        1. Current backend matches the last backend
+        2. A session ID is available from the last execution
+        3. The backend has resume options configured
+
+        If all conditions are met, prepares resume options by replacing
+        "[sessionId]" placeholder with the actual session ID and sets
+        them as extra args for the next execution.
+
+        Args:
+            backend_name: Name of the current backend
+            cli: Client instance to inject resume options into
+        """
+        # Check if current backend matches the last backend
+        if backend_name != self._last_backend:
+            logger.debug(f"Backend changed from {self._last_backend} to {backend_name}, not resuming")
+            return
+
+        # Check if we have a session ID from the last execution
+        if self._last_session_id is None:
+            logger.debug("No session ID available, cannot resume")
+            return
+
+        # Get backend configuration
+        backend_config = get_llm_config().get_backend_config(backend_name)
+        if not backend_config or not backend_config.options_for_resume:
+            logger.debug(f"No resume options configured for backend '{backend_name}'")
+            return
+
+        # Create a copy of options_for_resume and replace [sessionId] placeholder
+        resume_options = []
+        for option in backend_config.options_for_resume:
+            # Replace [sessionId] placeholder with actual session ID
+            replaced_option = option.replace("[sessionId]", self._last_session_id)
+            resume_options.append(replaced_option)
+
+        # Set the resume options as extra args for the next execution
+        if hasattr(cli, "set_extra_args"):
+            cli.set_extra_args(resume_options)
+            logger.info(f"Injected resume options for backend '{backend_name}': {resume_options}")
+        else:
+            logger.warning(f"Client for backend '{backend_name}' does not support set_extra_args")
+
     # ---------- Direct Compatibility Methods ----------
     @log_calls  # type: ignore[misc]
     def _run_llm_cli(self, prompt: str) -> str:
@@ -336,6 +383,9 @@ class BackendManager(LLMBackendManagerBase):
                 self.switch_to_next_backend()
                 attempts += 1
                 continue
+
+            # Inject resume options if conditions are met
+            self._inject_resume_options_if_applicable(backend_name, cli)
 
             try:
                 result = self._execute_backend_with_providers(
