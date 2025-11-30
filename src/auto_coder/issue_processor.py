@@ -2,6 +2,7 @@
 Issue processing functionality for Auto-Coder automation engine.
 """
 
+import json
 import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict
@@ -204,12 +205,20 @@ def _create_pr_for_issue(
             pr_message_response = run_llm_message_prompt(pr_message_prompt)
 
             if pr_message_response and len(pr_message_response.strip()) > 0:
-                # Parse the response (first line is title, rest is body)
-                lines = pr_message_response.strip().split("\n")
-                pr_title = lines[0].strip()
-                if len(lines) > 2:
-                    pr_body = "\n".join(lines[2:]).strip()
-                logger.info(f"Generated PR message using message backend: {pr_title}")
+                # Parse the JSON response
+                try:
+                    # Try to parse as JSON first
+                    pr_message_json = json.loads(pr_message_response.strip())
+                    pr_title = pr_message_json.get("title", "")
+                    pr_body = pr_message_json.get("body", "")
+                    logger.info(f"Generated PR message using message backend: {pr_title}")
+                except json.JSONDecodeError:
+                    # Fallback to old format parsing if not valid JSON
+                    lines = pr_message_response.strip().split("\n")
+                    pr_title = lines[0].strip()
+                    if len(lines) > 2:
+                        pr_body = "\n".join(lines[2:]).strip()
+                    logger.info(f"Generated PR message using message backend (fallback): {pr_title}")
         except Exception as e:
             logger.warning(f"Failed to generate PR message using message backend: {e}")
 
