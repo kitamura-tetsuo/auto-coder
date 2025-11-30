@@ -409,7 +409,7 @@ class TestBackendAutoReset:
             assert mgr._current_backend_name() == "a"
 
     def test_auto_reset_switched_backend_under_2_hours(self, mock_llm_config):
-        """Scenario 2: Started on default, saved state shows non-default < 2 hours ago -> Should stay on default."""
+        """Scenario 2: Start on default, saved state shows non-default < 2 hours ago -> Should sync to saved backend."""
         import time
         from unittest.mock import MagicMock
 
@@ -437,12 +437,11 @@ class TestBackendAutoReset:
             # Initially on 'a' (default)
             assert mgr._current_backend_name() == "a"
 
-            # Call check_and_reset_backend_if_needed
-            # Since we're already on default 'a', it returns early and does nothing
+            # Call check_and_reset_backend_if_needed - should sync to saved backend 'b'
             mgr.check_and_reset_backend_if_needed()
 
-            # Should stay on 'a' (default) because we're already on default
-            assert mgr._current_backend_name() == "a"
+            # Should switch to saved backend to allow session resume continuity
+            assert mgr._current_backend_name() == "b"
 
     def test_auto_reset_switched_backend_over_2_hours(self, mock_llm_config):
         """Scenario 3: Started on non-default, saved state > 2 hours ago -> Should reset to default."""

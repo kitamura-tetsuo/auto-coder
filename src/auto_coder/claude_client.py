@@ -29,6 +29,7 @@ class ClaudeClient(LLMClientBase):
             backend_name: Backend name to use for configuration lookup (optional).
                          If provided, will use config for this backend.
         """
+        super().__init__()
         config = get_llm_config()
 
         # If backend_name is provided, get config from that backend
@@ -104,11 +105,10 @@ class ClaudeClient(LLMClientBase):
                 cmd.extend(["--settings", self.settings])
 
             # Append extra args if any (e.g., --resume <session_id>)
-            if self._extra_args:
-                cmd.extend(self._extra_args)
-                logger.debug(f"Using extra args: {self._extra_args}")
-                # Clear extra args after use (one-time use)
-                self._extra_args = []
+            extra_args = self.consume_extra_args()
+            if extra_args:
+                cmd.extend(extra_args)
+                logger.debug(f"Using extra args: {extra_args}")
 
             cmd.append(escaped_prompt)
 

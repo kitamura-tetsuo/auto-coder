@@ -120,6 +120,17 @@ class LLMClientBase(ABC):
         """
         self._extra_args = args
 
+    def consume_extra_args(self) -> List[str]:
+        """Return and clear any stored extra arguments.
+
+        Returns:
+            List of extra arguments previously set via set_extra_args.
+            Returns an empty list when no extra arguments are stored.
+        """
+        args = list(getattr(self, "_extra_args", []))
+        self._extra_args = []
+        return args
+
 
 class LLMBackendManagerBase(LLMClientBase):
     """Base class for LLM backend managers.

@@ -31,6 +31,32 @@ class TestGeminiClient:
         assert mock_logger.warning.called
         assert "LLM invocation" in str(mock_logger.warning.call_args[0][0])
 
+    @patch("src.auto_coder.gemini_client.get_llm_config")
+    @patch("src.auto_coder.gemini_client.logger")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    def test_extra_args_are_passed_to_cli(self, mock_run_command, mock_run, mock_logger, mock_get_config, mock_gemini_api_key):
+        """Resume or continuation flags should be forwarded to gemini CLI."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
+
+        # Mock config
+        mock_config_instance = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.api_key = mock_gemini_api_key
+        mock_backend_config.model = "test-model"
+        mock_config_instance.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config_instance
+
+        client = GeminiClient()
+        client.set_extra_args(["--resume", "session42"])
+
+        _ = client._run_llm_cli("ping")
+
+        called_cmd = mock_run_command.call_args[0][0]
+        assert called_cmd[-2:] == ["--prompt", "ping"]
+        assert called_cmd[-4:-2] == ["--resume", "session42"]
+
     """Test cases for GeminiClient class."""
 
     @patch("src.auto_coder.gemini_client.get_llm_config")

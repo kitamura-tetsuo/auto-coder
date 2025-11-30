@@ -291,29 +291,31 @@ class BackendManager(LLMBackendManagerBase):
         if not saved_backend or not last_switch_timestamp:
             return
 
-        # Check if we're currently on a non-default backend
-        current_backend = self._current_backend_name()
-        if current_backend == self._default_backend:
-            # Already on default, no reset needed
+        # Ignore unknown backends to avoid index errors
+        try:
+            saved_backend_index = self._all_backends.index(saved_backend)
+        except ValueError:
+            logger.debug(f"Saved backend '{saved_backend}' not found in current backend list")
             return
 
         # Check if we should reset to default backend
         time_since_switch = time.time() - last_switch_timestamp
-        if time_since_switch >= 7200:  # 2 hours
-            # Auto-reset to default backend
-            logger.info(f"Auto-resetting backend to default after {time_since_switch:.0f} seconds. " f"Saved backend: {saved_backend}, Current backend: {current_backend}")
+        if saved_backend != self._default_backend and time_since_switch >= 7200:  # 2 hours
+            # Auto-reset to default backend when non-default was active too long
+            current_backend = self._current_backend_name()
+            logger.info(
+                "Auto-resetting backend to default after %.0f seconds. Saved backend: %s, Current backend: %s",
+                time_since_switch,
+                saved_backend,
+                current_backend,
+            )
             self.switch_to_default_backend()
-        else:
-            # Sync the current index to match the saved backend
-            try:
-                saved_backend_index = self._all_backends.index(saved_backend)
-                if saved_backend_index != self._current_idx:
-                    logger.debug(f"Syncing backend index to match saved state: {self._current_idx} -> {saved_backend_index}")
-                    self._current_idx = saved_backend_index
-            except ValueError:
-                # Saved backend is not in our current list, ignore
-                logger.debug(f"Saved backend '{saved_backend}' not found in current backend list")
-                pass
+            return
+
+        # Otherwise, sync to the saved backend if different
+        if saved_backend_index != self._current_idx:
+            logger.debug(f"Syncing backend index to match saved state: {self._current_idx} -> {saved_backend_index}")
+            self._current_idx = saved_backend_index
 
     def _get_current_provider_name(self, backend_name: str) -> Optional[str]:
         """
