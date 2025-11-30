@@ -12,6 +12,18 @@ import toml
 
 from .logger_config import get_logger
 
+# Required options per backend type
+# These options must be present in the backend's options list for the backend to be considered valid
+REQUIRED_OPTIONS_BY_BACKEND = {
+    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+    "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
+    "gemini": ["--yolo"],
+    "auggie": ["--print"],
+    "qwen": ["-y"],
+    "jules": [],  # Session-based, no required flags
+    "codex-mcp": [],  # MCP-based, options flexible
+}
+
 
 def resolve_config_path(config_path: Optional[str] = None) -> str:
     """Resolve the configuration file path with priority rules.
@@ -84,6 +96,25 @@ class BackendConfig:
     settings: Optional[str] = None
     # Usage markers for tracking usage patterns
     usage_markers: List[str] = field(default_factory=list)
+
+    def validate_required_options(self) -> list[str]:
+        """Validate that required options are configured.
+
+        Returns:
+            List of error messages (empty if valid)
+        """
+        from .llm_backend_config import REQUIRED_OPTIONS_BY_BACKEND
+
+        errors = []
+        # Use backend_type if available, otherwise fall back to name
+        backend_key = self.backend_type or self.name
+        required = REQUIRED_OPTIONS_BY_BACKEND.get(backend_key, [])
+
+        for req_opt in required:
+            if req_opt not in self.options:
+                errors.append(f"Backend '{self.name}' missing required option: {req_opt}. " f"Add to [backends.{self.name}].options in llm_config.toml")
+
+        return errors
 
 
 @dataclass

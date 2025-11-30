@@ -44,11 +44,23 @@ class AuggieClient(LLMClientBase):
             self.model_name = (config_backend and config_backend.model) or "GPT-5"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"AuggieClient validation: {error}")
         else:
             config_backend = config.get_backend_config("auggie")
             self.model_name = (config_backend and config_backend.model) or "GPT-5"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"AuggieClient validation: {error}")
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name

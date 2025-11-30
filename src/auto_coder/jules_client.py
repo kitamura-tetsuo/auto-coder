@@ -28,6 +28,16 @@ class JulesClient(LLMClientBase):
         self.timeout = None  # No timeout - let Jules CLI run as needed
         self.active_sessions: Dict[str, str] = {}  # Track active sessions
 
+        # Validate required options (jules has no required options)
+        from .llm_backend_config import get_llm_config
+
+        config = get_llm_config()
+        config_backend = config.get_backend_config(self.backend_name)
+        if config_backend:
+            errors = config_backend.validate_required_options()
+            for error in errors:
+                logger.warning(f"JulesClient validation: {error}")
+
         # Check if Jules CLI is available
         try:
             result = subprocess.run(["jules", "--version"], capture_output=True, text=True, timeout=10)

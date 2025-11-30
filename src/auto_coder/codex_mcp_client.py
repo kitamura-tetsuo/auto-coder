@@ -95,9 +95,21 @@ class CodexMCPClient(LLMClientBase):
         if backend_name:
             config_backend = config.get_backend_config(backend_name)
             self.model_name = (config_backend and config_backend.model) or "codex-mcp"
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"CodexMCPClient validation: {error}")
         else:
             config_backend = config.get_backend_config("codex-mcp")
             self.model_name = (config_backend and config_backend.model) or "codex-mcp"
+
+            # Validate required options
+            if config_backend:
+                errors = config_backend.validate_required_options()
+                for error in errors:
+                    logger.warning(f"CodexMCPClient validation: {error}")
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name
