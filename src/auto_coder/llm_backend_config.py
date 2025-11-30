@@ -378,7 +378,9 @@ class LLMBackendConfiguration:
 
     # Backward compatibility methods
     def get_active_message_backends(self) -> List[str]:
-        """Get list of enabled message backends in the configured order.
+        """Deprecated: Use get_active_noedit_backends() instead.
+
+        Get list of enabled message backends in the configured order.
 
         DEPRECATED: Use get_active_noedit_backends() instead.
         Returns message backend order if specifically configured, otherwise falls back to general backends.
@@ -388,13 +390,14 @@ class LLMBackendConfiguration:
         return self.get_active_noedit_backends()
 
     def get_message_default_backend(self) -> str:
-        """Get the default backend for message generation.
+        """Deprecated: Use get_noedit_default_backend() instead.
 
-        DEPRECATED: Use get_noedit_default_backend() instead.
+        Get the default backend for message generation.
+
         Returns message backend default if specifically configured, otherwise falls back to general default.
         """
         logger = get_logger(__name__)
-        logger.warning("get_message_default_backend() is deprecated, use get_noedit_default_backend() instead")
+        logger.warning("get_message_default_backend() is deprecated, use get_noedit_default_backend()")
         return self.get_noedit_default_backend()
 
     def has_dual_configuration(self) -> bool:
