@@ -458,15 +458,11 @@ pr:
     Requirements:
     - Title: A clear, concise title (max 72 characters) that describes the changes
     - Body: A brief description of what was changed and why (2-3 sentences)
-    - Format: Return ONLY the title on the first line, followed by a blank line, then the body
+    - Format: Return the response as a JSON object with "title" and "body" fields
     - Do NOT include any markdown formatting, headers, or extra text
 
     Example format:
-    Fix authentication bug in login flow
-
-    Updated the authentication logic to properly handle edge cases when users
-    have special characters in their passwords. This resolves the login failures
-    reported in the issue.
+    {"title": "Fix authentication bug in login flow", "body": "Updated the authentication logic to properly handle edge cases when users have special characters in their passwords. This resolves the login failures reported in the issue."}
 
 issue:
   action: |-
