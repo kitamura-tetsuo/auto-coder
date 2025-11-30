@@ -2,7 +2,7 @@
 
 This document tracks all breaking changes in Auto-Coder versions.
 
-## Version 2026.11.30.0 (Issue #925)
+## Version 2026.11.30.1 (Issue #925)
 
 ### Auto-Reopen of Closed Parent Issues
 
@@ -64,15 +64,15 @@ When processing a child issue whose parent is closed, the system now automatical
 - `test_apply_issue_actions_directly_closed_parent` - This test specifically verified the old behavior of ignoring closed parent issues
 
 **Tests Passing**:
-- All other tests (2151 tests) pass without modification
+- All tests pass (2135 passed, 16 skipped)
 - Existing parent issue handling tests continue to work correctly
 
 #### Rollback
 
-To rollback to previous behavior, pin your version to `< 2026.11.30.0`:
+To rollback to previous behavior, pin your version to `< 2026.11.30.1`:
 
 ```bash
-pip install auto-coder==2025.11.30.5
+pip install auto-coder==2026.11.30.0
 ```
 
 However, we recommend updating your workflows to align with the new behavior, as it provides:
