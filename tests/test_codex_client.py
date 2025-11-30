@@ -39,6 +39,22 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_run_exec_includes_extra_args(self, mock_run_command, mock_run):
+        """Extra args (e.g., resume flags) should be passed to codex CLI."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "ok", "", 0)
+
+        client = CodexClient()
+        client.set_extra_args(["--resume", "abc123"])
+
+        _ = client._run_llm_cli("hello world")
+
+        called_cmd = mock_run_command.call_args[0][0]
+        assert called_cmd[-1] == "hello world"
+        assert called_cmd[-3:-1] == ["--resume", "abc123"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_exec_failure(self, mock_run_command, mock_run):
         """When codex exec returns non-zero, raise RuntimeError."""
         mock_run.return_value.returncode = 0

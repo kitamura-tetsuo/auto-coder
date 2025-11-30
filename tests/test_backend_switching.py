@@ -4,6 +4,7 @@ This module contains comprehensive tests to verify that backends rotate
 after one call when the always_switch_after_execution flag is enabled.
 """
 
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,10 +16,11 @@ from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfigura
 class DummyClient:
     """Mock client for testing backend switching."""
 
-    def __init__(self, name: str, model_name: str, calls: list[str]):
+    def __init__(self, name: str, model_name: str, calls: list[str], session_id: Optional[str] = None):
         self.name = name
         self.model_name = model_name
         self.calls = calls
+        self.session_id = session_id
 
     def _run_llm_cli(self, prompt: str) -> str:
         """Record call and return formatted response."""
@@ -28,6 +30,9 @@ class DummyClient:
     def switch_to_default_model(self) -> None:
         """No-op for testing."""
         pass
+
+    def get_last_session_id(self) -> Optional[str]:
+        return self.session_id
 
 
 @pytest.fixture
@@ -348,11 +353,12 @@ def test_rotation_preserves_backend_client_state(mock_llm_config):
     calls = []
 
     class StatefulClient:
-        def __init__(self, name: str, model_name: str):
+        def __init__(self, name: str, model_name: str, session_id: Optional[str] = None):
             self.name = name
             self.model_name = model_name
             self.call_count = 0
             self.calls = calls
+            self.session_id = session_id
 
         def _run_llm_cli(self, prompt: str) -> str:
             self.call_count += 1
@@ -361,6 +367,9 @@ def test_rotation_preserves_backend_client_state(mock_llm_config):
 
         def switch_to_default_model(self) -> None:
             pass
+
+        def get_last_session_id(self) -> Optional[str]:
+            return self.session_id
 
     client1 = StatefulClient("client1", "m1")
     client2 = StatefulClient("client2", "m2")

@@ -5,6 +5,23 @@ from typing import Any, Dict, List, Optional, Union
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
 
+try:
+    from sentence_transformers import SentenceTransformer
+except Exception as exc:  # pragma: no cover - optional dependency fallback
+    import sys
+    import types
+
+    stub_module = sys.modules.get("sentence_transformers")
+    if stub_module is None:
+        stub_module = types.ModuleType("sentence_transformers")
+        sys.modules["sentence_transformers"] = stub_module
+
+    class SentenceTransformer:  # type: ignore[misc]
+        def __init__(self, *args, **kwargs) -> None:
+            raise ImportError("sentence_transformers dependency is not available") from exc
+
+    stub_module.SentenceTransformer = SentenceTransformer
+
 # Configure logging to write to a file instead of stdout
 logging.basicConfig(
     level=logging.INFO,

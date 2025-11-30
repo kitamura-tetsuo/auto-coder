@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,16 +16,19 @@ from src.auto_coder.backend_provider_manager import (
     BackendProviderMetadata,
     ProviderMetadata,
 )
+from src.auto_coder.backend_session_manager import BackendSessionState
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
 
 class DummyClient:
-    def __init__(self, name: str, model_name: str, behavior: str, calls: list[str]):
+    def __init__(self, name: str, model_name: str, behavior: str, calls: list[str], session_id: Optional[str] = None):
         self.name = name
         self.model_name = model_name
         self.behavior = behavior
         self.calls = calls
+        self.session_id = session_id
+        self._extra_args: list[str] = []
 
     def _run_llm_cli(self, prompt: str) -> str:
         self.calls.append(self.name)
@@ -38,6 +42,12 @@ class DummyClient:
 
     def switch_to_default_model(self) -> None:
         pass
+
+    def get_last_session_id(self) -> Optional[str]:
+        return self.session_id
+
+    def set_extra_args(self, args: list[str]) -> None:
+        self._extra_args = args
 
 
 @pytest.fixture
@@ -405,7 +415,7 @@ class TestBackendAutoReset:
             assert mgr._current_backend_name() == "a"
 
     def test_auto_reset_switched_backend_under_2_hours(self, mock_llm_config):
-        """Scenario 2: Started on default, saved state shows non-default < 2 hours ago -> Should stay on default."""
+        """Scenario 2: Start on default, saved state shows non-default < 2 hours ago -> Should sync to saved backend."""
         import time
         from unittest.mock import MagicMock
 
@@ -433,12 +443,11 @@ class TestBackendAutoReset:
             # Initially on 'a' (default)
             assert mgr._current_backend_name() == "a"
 
-            # Call check_and_reset_backend_if_needed
-            # Since we're already on default 'a', it returns early and does nothing
+            # Call check_and_reset_backend_if_needed - should sync to saved backend 'b'
             mgr.check_and_reset_backend_if_needed()
 
-            # Should stay on 'a' (default) because we're already on default
-            assert mgr._current_backend_name() == "a"
+            # Should switch to saved backend to allow session resume continuity
+            assert mgr._current_backend_name() == "b"
 
     def test_auto_reset_switched_backend_over_2_hours(self, mock_llm_config):
         """Scenario 3: Started on non-default, saved state > 2 hours ago -> Should reset to default."""
@@ -719,6 +728,202 @@ def test_get_message_backend_and_model_deprecated_warning():
         )
     finally:
         LLMBackendManager._noedit_instance = previous
+
+
+class TestResumeLogic:
+    """Tests for session resume logic in BackendManager."""
+
+    def test_inject_resume_options_when_conditions_met(self, mock_llm_config):
+        """Resume options should be injected when backend, session ID, and config match."""
+        # Configure backend with resume options
+        mock_llm_config.backends["a"] = BackendConfig(name="a", options_for_resume=["--resume", "[sessionId]"])
+
+        calls = []
+        client_a = DummyClient("a", "m1", "ok", calls, session_id="test-session-123")
+
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a},
+            order=["a"],
+        )
+
+        # First call to establish session ID and backend
+        result1 = mgr._run_llm_cli("first prompt")
+        assert result1 == "a:first prompt"
+        assert mgr._last_session_id == "test-session-123"
+        assert mgr._last_backend == "a"
+
+        # Second call should inject resume options
+        result2 = mgr._run_llm_cli("second prompt")
+        assert result2 == "a:second prompt"
+        # Verify that extra args were set with session ID replaced
+        assert client_a._extra_args == ["--resume", "test-session-123"]
+
+    def test_no_resume_when_backend_changes(self, mock_llm_config):
+        """Resume options should NOT be injected when backend changes."""
+        # Configure both backends with resume options
+        mock_llm_config.backends["a"] = BackendConfig(name="a", options_for_resume=["--resume", "[sessionId]"])
+        mock_llm_config.backends["b"] = BackendConfig(name="b", options_for_resume=["--resume", "[sessionId]"])
+
+        calls = []
+        client_a = DummyClient("a", "m1", "ok", calls, session_id="session-a")
+        client_b = DummyClient("b", "m2", "ok", calls, session_id="session-b")
+
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a, "b": lambda: client_b},
+            order=["a", "b"],
+        )
+
+        # First call on backend a
+        result1 = mgr._run_llm_cli("first prompt")
+        assert result1 == "a:first prompt"
+        assert mgr._last_backend == "a"
+        assert mgr._last_session_id == "session-a"
+
+        # Switch to backend b
+        mgr.switch_to_next_backend()
+        assert mgr._current_backend_name() == "b"
+
+        # Second call on backend b should NOT use resume (backend changed)
+        result2 = mgr._run_llm_cli("second prompt")
+        assert result2 == "b:second prompt"
+        # Extra args should be empty (no resume)
+        assert client_b._extra_args == []
+
+    def test_no_resume_when_no_session_id(self, mock_llm_config):
+        """Resume options should NOT be injected when no session ID is available."""
+        # Configure backend with resume options
+        mock_llm_config.backends["a"] = BackendConfig(name="a", options_for_resume=["--resume", "[sessionId]"])
+
+        calls = []
+        # Client without session ID
+        client_a = DummyClient("a", "m1", "ok", calls, session_id=None)
+
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a},
+            order=["a"],
+        )
+
+        # First call - no session ID will be set
+        result1 = mgr._run_llm_cli("first prompt")
+        assert result1 == "a:first prompt"
+        assert mgr._last_session_id is None
+
+        # Second call should NOT inject resume options (no session ID)
+        result2 = mgr._run_llm_cli("second prompt")
+        assert result2 == "a:second prompt"
+        assert client_a._extra_args == []
+
+    def test_no_resume_when_no_config(self, mock_llm_config):
+        """Resume options should NOT be injected when backend has no resume config."""
+        # Configure backend WITHOUT resume options
+        mock_llm_config.backends["a"] = BackendConfig(name="a", options_for_resume=[])  # Empty resume options
+
+        calls = []
+        client_a = DummyClient("a", "m1", "ok", calls, session_id="test-session")
+
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a},
+            order=["a"],
+        )
+
+        # First call
+        result1 = mgr._run_llm_cli("first prompt")
+        assert result1 == "a:first prompt"
+        assert mgr._last_session_id == "test-session"
+
+        # Second call should NOT inject resume options (no config)
+        result2 = mgr._run_llm_cli("second prompt")
+        assert result2 == "a:second prompt"
+        assert client_a._extra_args == []
+
+    def test_multiple_placeholders_replaced(self, mock_llm_config):
+        """Multiple [sessionId] placeholders should all be replaced."""
+        # Configure backend with multiple placeholders
+        mock_llm_config.backends["a"] = BackendConfig(name="a", options_for_resume=["--resume", "[sessionId]", "--session-id=[sessionId]"])
+
+        calls = []
+        client_a = DummyClient("a", "m1", "ok", calls, session_id="multi-session-456")
+
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a},
+            order=["a"],
+        )
+
+        # First call
+        mgr._run_llm_cli("first prompt")
+
+        # Second call should replace all placeholders
+        mgr._run_llm_cli("second prompt")
+        assert client_a._extra_args == ["--resume", "multi-session-456", "--session-id=multi-session-456"]
+
+    def test_session_id_reset_on_backend_switch(self, mock_llm_config):
+        """Session ID should be reset when switching backends."""
+        calls = []
+        client_a = DummyClient("a", "m1", "ok", calls, session_id="session-a")
+        client_b = DummyClient("b", "m2", "ok", calls, session_id="session-b")
+
+        mgr = BackendManager(
+            default_backend="a",
+            default_client=client_a,
+            factories={"a": lambda: client_a, "b": lambda: client_b},
+            order=["a", "b"],
+        )
+
+        # First call on backend a
+        mgr._run_llm_cli("first prompt")
+        assert mgr._last_session_id == "session-a"
+
+        # Switch to backend b - session ID should be reset
+        mgr.switch_to_next_backend()
+        assert mgr._last_session_id is None
+
+        # Call on backend b establishes new session
+        mgr._run_llm_cli("second prompt")
+        assert mgr._last_session_id == "session-b"
+
+    def test_resume_uses_persisted_session_state(self, mock_llm_config):
+        """Resume options should be applied from persisted session state on startup."""
+        mock_llm_config.backends["a"] = BackendConfig(name="a", options_for_resume=["--resume", "[sessionId]"])
+
+        calls = []
+        client_a = DummyClient("a", "m1", "ok", calls, session_id="new-session-id")
+
+        saved_state = BackendSessionState(last_backend="a", last_session_id="persisted-session", last_used_timestamp=123.0)
+
+        with patch("src.auto_coder.backend_manager.BackendSessionManager") as MockSessionManager:
+            mock_session_manager = MagicMock()
+            mock_session_manager.load_state.return_value = saved_state
+            mock_session_manager.save_state.return_value = True
+            MockSessionManager.return_value = mock_session_manager
+
+            mgr = BackendManager(
+                default_backend="a",
+                default_client=client_a,
+                factories={"a": lambda: client_a},
+                order=["a"],
+            )
+
+            mgr._run_llm_cli("resume prompt")
+
+            # Resume options should use persisted session id
+            assert client_a._extra_args == ["--resume", "persisted-session"]
+
+            # The new session id should be persisted after execution
+            mock_session_manager.save_state.assert_called()
+            persisted_arg = mock_session_manager.save_state.call_args[0][0]
+            assert isinstance(persisted_arg, BackendSessionState)
+            assert persisted_arg.last_backend == "a"
+            assert persisted_arg.last_session_id == "new-session-id"
 
 
 # ==================== JSON Parsing Tests ====================

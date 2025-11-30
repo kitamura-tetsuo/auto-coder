@@ -886,10 +886,10 @@ class GraphRAGIndexManager:
             from qdrant_client import QdrantClient
             from qdrant_client.models import Distance, PointStruct, VectorParams
             from sentence_transformers import SentenceTransformer
-        except ImportError as e:
+        except Exception as e:
             import sys
 
-            logger.warning(f"Required packages not installed, skipping Qdrant indexing: {e}")
+            logger.warning(f"Required packages not installed or failed to load, skipping Qdrant indexing: {e}")
             logger.debug(f"Python executable: {sys.executable}")
             logger.debug(f"Python path: {sys.path}")
             return

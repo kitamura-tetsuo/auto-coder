@@ -38,6 +38,7 @@ class GeminiClient(LLMClientBase):
             backend_name: Backend name to use for configuration lookup (optional).
                          If provided, will use config for this backend.
         """
+        super().__init__()
         config = get_llm_config()
 
         if backend_name:
@@ -124,9 +125,19 @@ class GeminiClient(LLMClientBase):
                 "--model",
                 self.model_name,
                 "--force-model",
-                "--prompt",
-                escaped_prompt,
             ]
+
+            # Append any resume/continuation flags before the prompt payload
+            extra_args = self.consume_extra_args()
+            if extra_args:
+                cmd.extend(extra_args)
+
+            cmd.extend(
+                [
+                    "--prompt",
+                    escaped_prompt,
+                ]
+            )
 
             logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")

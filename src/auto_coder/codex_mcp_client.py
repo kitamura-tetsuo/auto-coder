@@ -89,6 +89,7 @@ class CodexMCPClient(LLMClientBase):
         backend_name: Optional[str] = None,
         enable_graphrag: bool = False,
     ) -> None:
+        super().__init__()
         config = get_llm_config()
 
         if backend_name:
@@ -374,6 +375,7 @@ class CodexMCPClient(LLMClientBase):
                 logger.warning(f"Failed to ensure GraphRAG environment: {e}")
 
         escaped_prompt = self._escape_prompt(prompt)
+        extra_args = self.consume_extra_args()
 
         # Try MCP single-shot first
         if getattr(self, "_initialized", False):
@@ -439,8 +441,10 @@ class CodexMCPClient(LLMClientBase):
                 "-s",
                 "workspace-write",
                 "--dangerously-bypass-approvals-and-sandbox",
-                escaped_prompt,
             ]
+            if extra_args:
+                cmd.extend(extra_args)
+            cmd.append(escaped_prompt)
             logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
             logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
             logger.info("🤖 Running under MCP session: codex exec -s workspace-write " "--dangerously-bypass-approvals-and-sandbox [prompt]")

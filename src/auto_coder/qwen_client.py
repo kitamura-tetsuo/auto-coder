@@ -48,6 +48,7 @@ class QwenClient(LLMClientBase):
             preserve_existing_env: If True, preserve existing OPENAI_* env vars.
                                   If False, clear them before setting new values (default: False)
         """
+        super().__init__()
         config = get_llm_config()
         config_backend = config.get_backend_config(backend_name or "qwen")
         self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
@@ -166,6 +167,11 @@ class QwenClient(LLMClientBase):
             # Pass credentials via command-line options
             if model_to_use:
                 cmd.extend(["-m", model_to_use])
+
+        # Apply any extra arguments (e.g., session resume flags) before the prompt
+        extra_args = self.consume_extra_args()
+        if extra_args:
+            cmd.extend(extra_args)
 
         cmd.extend(["-p", escaped_prompt])
 
