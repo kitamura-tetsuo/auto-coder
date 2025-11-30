@@ -36,7 +36,7 @@ def test_cli_integration():
         # Test importing backend manager functions
         from auto_coder.backend_manager import (
             get_llm_backend_manager,
-            get_message_backend_manager,
+            get_noedit_backend_manager,
         )
 
         print("✓ Global backend manager functions imported successfully")
