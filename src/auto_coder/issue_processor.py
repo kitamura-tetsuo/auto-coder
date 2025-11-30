@@ -214,13 +214,21 @@ def _create_pr_for_issue(
                     pr_body = pr_message_json.get("body", "")
                     logger.info(f"Generated PR message using message backend: {pr_title}")
                 except (json.JSONDecodeError, ValueError) as e:
-                    # Fallback to old format parsing if not valid JSON
-                    logger.debug(f"JSON parsing failed, using fallback: {e}")
-                    lines = pr_message_response.strip().split("\n")
-                    pr_title = lines[0].strip()
-                    if len(lines) > 2:
-                        pr_body = "\n".join(lines[2:]).strip()
-                    logger.info(f"Generated PR message using message backend (fallback): {pr_title}")
+                    # Fallback to direct JSON parsing if backend parser fails
+                    logger.debug(f"Backend JSON parsing failed, trying direct parse: {e}")
+                    try:
+                        pr_message_json = json.loads(pr_message_response.strip())
+                        pr_title = pr_message_json.get("title", "")
+                        pr_body = pr_message_json.get("body", "")
+                        logger.info(f"Generated PR message using message backend: {pr_title}")
+                    except json.JSONDecodeError as json_error:
+                        # Fallback to old format parsing if not valid JSON
+                        logger.debug(f"Direct JSON parsing failed, using fallback: {json_error}")
+                        lines = pr_message_response.strip().split("\n")
+                        pr_title = lines[0].strip()
+                        if len(lines) > 2:
+                            pr_body = "\n".join(lines[2:]).strip()
+                        logger.info(f"Generated PR message using message backend (fallback): {pr_title}")
         except Exception as e:
             logger.warning(f"Failed to generate PR message using message backend: {e}")
 
