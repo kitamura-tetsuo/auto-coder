@@ -80,6 +80,8 @@ class BackendConfig:
     settings: Optional[str] = None
     # Usage markers for tracking usage patterns
     usage_markers: List[str] = field(default_factory=list)
+    # Additional options for message generation (non-code-editing) operations
+    options_for_noedit: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -155,6 +157,7 @@ class LLMBackendConfiguration:
                     always_switch_after_execution=config_data.get("always_switch_after_execution", False),
                     settings=config_data.get("settings"),
                     usage_markers=config_data.get("usage_markers", []),
+                    options_for_noedit=config_data.get("options_for_noedit", []),
                 )
 
             # 1. Parse explicit [backends] section
@@ -261,6 +264,7 @@ class LLMBackendConfiguration:
                 "always_switch_after_execution": config.always_switch_after_execution,
                 "settings": config.settings,
                 "usage_markers": config.usage_markers,
+                "options_for_noedit": config.options_for_noedit,
             }
 
         # Prepare backend_for_failed_pr data
@@ -288,6 +292,7 @@ class LLMBackendConfiguration:
                 "always_switch_after_execution": config.always_switch_after_execution,
                 "settings": config.settings,
                 "usage_markers": config.usage_markers,
+                "options_for_noedit": config.options_for_noedit,
             }
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}
