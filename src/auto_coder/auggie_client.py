@@ -44,11 +44,19 @@ class AuggieClient(LLMClientBase):
             self.model_name = (config_backend and config_backend.model) or "GPT-5"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            # Store options from config
+            self.options = (config_backend and config_backend.options) or []
+            # Store options_for_noedit from config
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
         else:
             config_backend = config.get_backend_config("auggie")
             self.model_name = (config_backend and config_backend.model) or "GPT-5"
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            # Store options from config
+            self.options = (config_backend and config_backend.options) or []
+            # Store options_for_noedit from config
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name
@@ -153,10 +161,12 @@ class AuggieClient(LLMClientBase):
         escaped_prompt = self._escape_prompt(prompt)
         cmd = [
             "auggie",
-            "--print",
             "--model",
             self.model_name,
         ]
+
+        # Add configured options
+        cmd.extend(self.options)
 
         extra_args = self.consume_extra_args()
         if extra_args:
@@ -166,7 +176,7 @@ class AuggieClient(LLMClientBase):
 
         logger.warning("LLM invocation: auggie CLI is being called. Keep LLM calls minimized.")
         logger.debug(f"Running auggie CLI with prompt length: {len(prompt)} characters")
-        logger.info("🤖 Running: auggie --print --model %s [prompt]" % self.model_name)
+        logger.info("🤖 Running: auggie --model %s [prompt]" % self.model_name)
         logger.info("=" * 60)
 
         try:
