@@ -422,45 +422,6 @@ def _trigger_fallback_for_pr_failure(
         logger.error(f"Error triggering fallback for PR #{pr_data['number']}: {e}")
 
 
-def _should_use_fallback_backend(repo_name: str, pr_data: Dict[str, Any]) -> bool:
-    """Check if fallback backend should be used based on attempt count.
-
-    Returns True if any linked issue has attempt count >= 3.
-
-    Args:
-        repo_name: Repository name in format 'owner/repo'
-        pr_data: PR data dictionary
-
-    Returns:
-        True if fallback backend should be used, False otherwise
-    """
-    try:
-        # Extract linked issues from PR body
-        pr_body = pr_data.get("body", "")
-        if not pr_body:
-            return False
-
-        linked_issues = _extract_linked_issues_from_pr_body(pr_body)
-        if not linked_issues:
-            return False
-
-        # Check attempt count for each linked issue
-        max_attempt = 0
-        for issue_number in linked_issues:
-            try:
-                current_attempt = get_current_attempt(repo_name, issue_number)
-                max_attempt = max(max_attempt, current_attempt)
-            except Exception as e:
-                logger.debug(f"Failed to get attempt for issue #{issue_number}: {e}")
-                continue
-
-        # Use fallback if max attempt >= 3
-        return max_attempt >= 3
-    except Exception as e:
-        logger.error(f"Error checking fallback backend eligibility: {e}")
-        return False
-
-
 def _switch_to_fallback_backend(repo_name: str, pr_number: int) -> bool:
     """Switch to the fallback backend for failed PR processing.
 
@@ -517,10 +478,6 @@ def _apply_pr_actions_directly(
     pr_number = pr_data["number"]
 
     try:
-        # Check if we should use fallback backend
-        if _should_use_fallback_backend(repo_name, pr_data):
-            _switch_to_fallback_backend(repo_name, pr_number)
-
         # Get PR diff for analysis
         with ProgressStage("Getting PR diff"):
             pr_diff = _get_pr_diff(repo_name, pr_number, config)
@@ -1814,10 +1771,6 @@ def _apply_github_actions_fix(
     pr_number = pr_data["number"]
 
     try:
-        # Check if we should use fallback backend
-        if _should_use_fallback_backend(repo_name, pr_data):
-            _switch_to_fallback_backend(repo_name, pr_number)
-
         # Get commit log since branch creation
         commit_log = get_commit_log(base_branch=config.MAIN_BRANCH)
 
@@ -1904,10 +1857,6 @@ def _apply_local_test_fix(
         llm_response = ""
 
         try:
-            # Check if we should use fallback backend
-            if _should_use_fallback_backend(repo_name, pr_data):
-                _switch_to_fallback_backend(repo_name, pr_number)
-
             # Extract important error information (convert legacy dict to TestResult)
             tr = TestResult(
                 success=bool(test_result.get("success", False)),
