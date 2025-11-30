@@ -11,7 +11,7 @@ from auto_coder.util.github_action import _check_github_actions_status, check_an
 
 from .attempt_manager import get_current_attempt
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
-from .backend_manager import get_llm_backend_manager, run_llm_message_prompt
+from .backend_manager import get_llm_backend_manager, get_message_backend_manager, run_llm_message_prompt
 from .cloud_manager import CloudManager
 from .gh_logger import get_gh_logger
 from .git_branch import branch_context, extract_attempt_from_branch
@@ -205,15 +205,17 @@ def _create_pr_for_issue(
             pr_message_response = run_llm_message_prompt(pr_message_prompt)
 
             if pr_message_response and len(pr_message_response.strip()) > 0:
-                # Parse the JSON response
+                # Parse the JSON response using the backend manager's parser
+                # This handles conversation history and extracts the last message
                 try:
-                    # Try to parse as JSON first
-                    pr_message_json = json.loads(pr_message_response.strip())
+                    message_backend = get_message_backend_manager()
+                    pr_message_json = message_backend.parse_llm_output_as_json(pr_message_response)
                     pr_title = pr_message_json.get("title", "")
                     pr_body = pr_message_json.get("body", "")
                     logger.info(f"Generated PR message using message backend: {pr_title}")
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, ValueError) as e:
                     # Fallback to old format parsing if not valid JSON
+                    logger.debug(f"JSON parsing failed, using fallback: {e}")
                     lines = pr_message_response.strip().split("\n")
                     pr_title = lines[0].strip()
                     if len(lines) > 2:
