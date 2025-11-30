@@ -49,6 +49,7 @@ class TestGeminiClient:
         mock_backend_config = Mock()
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.model = "test-model"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 

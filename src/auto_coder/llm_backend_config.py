@@ -189,6 +189,7 @@ class LLMBackendConfiguration:
                     always_switch_after_execution=config_data.get("always_switch_after_execution", False),
                     settings=config_data.get("settings"),
                     usage_markers=config_data.get("usage_markers", []),
+                    options_for_noedit=config_data.get("options_for_noedit", []),
                 )
 
             # 1. Parse explicit [backends] section
@@ -245,9 +246,20 @@ class LLMBackendConfiguration:
                 if backend_name not in backends:
                     backends[backend_name] = BackendConfig(name=backend_name)
 
-            # Parse message backend settings
-            message_backend_order = data.get("message_backend", {}).get("order", [])
-            message_default_backend = data.get("message_backend", {}).get("default")
+            # Parse backend for non-editing operations settings
+            # Try new key first, then fall back to old key for backward compatibility
+            backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
+            backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
+
+            # Backward compatibility: check old key if new key not found
+            if not backend_for_noedit_order and not backend_for_noedit_default:
+                old_order = data.get("message_backend", {}).get("order", [])
+                old_default = data.get("message_backend", {}).get("default")
+                if old_order or old_default:
+                    logger = get_logger(__name__)
+                    logger.warning("Configuration uses deprecated 'message_backend' key. " "Please update to 'backend_for_noedit' in your config file.")
+                    backend_for_noedit_order = old_order
+                    backend_for_noedit_default = old_default
 
             # Parse backend_for_failed_pr section
             backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
@@ -257,7 +269,7 @@ class LLMBackendConfiguration:
                 fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
                 backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
 
-            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, message_backend_order=message_backend_order, message_default_backend=message_default_backend, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
+            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
 
             return config
         except Exception as e:
