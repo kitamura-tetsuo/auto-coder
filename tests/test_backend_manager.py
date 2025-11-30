@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,11 +15,12 @@ from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfigura
 
 
 class DummyClient:
-    def __init__(self, name: str, model_name: str, behavior: str, calls: list[str]):
+    def __init__(self, name: str, model_name: str, behavior: str, calls: list[str], session_id: Optional[str] = None):
         self.name = name
         self.model_name = model_name
         self.behavior = behavior
         self.calls = calls
+        self.session_id = session_id
 
     def _run_llm_cli(self, prompt: str) -> str:
         self.calls.append(self.name)
@@ -32,6 +34,9 @@ class DummyClient:
 
     def switch_to_default_model(self) -> None:
         pass
+
+    def get_last_session_id(self) -> Optional[str]:
+        return self.session_id
 
 
 @pytest.fixture

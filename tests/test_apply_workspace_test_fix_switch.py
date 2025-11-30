@@ -18,6 +18,9 @@ class DummyClient:
     def switch_to_default_model(self) -> None:
         pass
 
+    def get_last_session_id(self) -> str:
+        return f"{self.name}_session"
+
 
 def _make_manager(calls: list[str]) -> BackendManager:
     a_client = DummyClient("codex", "m1", calls)

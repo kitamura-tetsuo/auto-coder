@@ -93,6 +93,9 @@ class BackendManager(LLMBackendManagerBase):
         self._last_test_file: Optional[str] = None
         self._same_test_file_count: int = 0
 
+        # Track session ID of the last executed backend
+        self._last_session_id: Optional[str] = None
+
         # Provider manager for backend provider metadata
         # Implements provider rotation logic for switching between different provider implementations
         # for the same backend (e.g., qwen-open-router vs qwen-azure vs qwen-direct)
@@ -159,6 +162,8 @@ class BackendManager(LLMBackendManagerBase):
         reset back to the default backend after 2 hours.
         """
         self._switch_to_index(self._current_idx + 1)
+        # Reset session ID when switching backends
+        self._last_session_id = None
         # Save the new backend state
         current_backend = self._current_backend_name()
         current_time = time.time()
@@ -185,6 +190,8 @@ class BackendManager(LLMBackendManagerBase):
         except ValueError:
             idx = 0
         self._switch_to_index(idx)
+        # Reset session ID when switching backends
+        self._last_session_id = None
         # Save the new backend state
         current_backend = self._current_backend_name()
         current_time = time.time()
@@ -205,6 +212,8 @@ class BackendManager(LLMBackendManagerBase):
         try:
             idx = self._all_backends.index(backend_name)
             self._switch_to_index(idx)
+            # Reset session ID when switching backends
+            self._last_session_id = None
             # Save the new backend state
             current_backend = self._current_backend_name()
             current_time = time.time()
@@ -411,6 +420,8 @@ class BackendManager(LLMBackendManagerBase):
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
+                    # Track session ID from the client
+                    self._last_session_id = cli.get_last_session_id()
                     return out
                 except AutoCoderUsageLimitError as exc:
                     if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:
