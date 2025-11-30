@@ -2,6 +2,237 @@
 
 This document tracks all breaking changes in Auto-Coder versions.
 
+## Version 2026.0.0.0 (Issue #906)
+
+### Configurable CLI Options Fields in llm_config.toml Schema
+
+**Date**: December 1, 2025
+
+**Type**: Breaking Change
+
+**Impact**: High
+
+#### Summary
+
+This version introduces configurable CLI options fields in the configuration system, enabling per-backend, per-operation-type option configuration. This replaces hardcoded CLI options in client implementations with a fully configurable system.
+
+#### Changes
+
+1. **New Configuration Field**: Added `options_for_noedit` field to `BackendConfig`
+   - Used for message generation operations (commit messages, PR descriptions)
+   - Separate from `options` field used for code editing operations
+   - Allows different CLI options for different operation types
+
+2. **Renamed Configuration Section**: `message_backend` → `backend_for_noedit`
+   - Configuration section name changed for clarity
+   - Old name still supported with deprecation warning
+   - Environment variable: `AUTO_CODER_MESSAGE_DEFAULT_BACKEND` → `AUTO_CODER_NOEDIT_DEFAULT_BACKEND`
+
+3. **Renamed API Functions**: Backend manager APIs updated for clarity
+   - `get_message_backend_manager()` → `get_noedit_backend_manager()`
+   - `run_llm_message_prompt()` → `run_llm_noedit_prompt()`
+   - `get_message_backend_and_model()` → `get_noedit_backend_and_model()`
+   - Old names still work with deprecation warnings
+
+4. **Required Options Validation**: Added validation for required CLI options
+   - System validates that required options are configured for each backend
+   - Prevents runtime errors due to missing required flags
+   - Validation can be run via: `auto-coder config validate`
+
+5. **Hardcoded Options Removed**: CLI options no longer hardcoded in client code
+   - Users MUST configure options explicitly in configuration file
+   - System automatically adds required flags during execution
+   - Users can add custom options beyond the defaults
+
+#### Migration Required
+
+**Configuration File Updates Required** for users with custom configurations:
+
+1. **Update configuration section name**:
+```toml
+# Old (deprecated but still works)
+[message_backend]
+default = "claude"
+order = ["claude", "qwen"]
+
+# New (recommended)
+[backend_for_noedit]
+default = "claude"
+order = ["claude", "qwen"]
+```
+
+2. **Add required options** for each enabled backend:
+```toml
+[backends.codex]
+model = "codex"
+# Required: Add this option
+options = ["--dangerously-bypass-approvals-and-sandbox"]
+# Optional: Add options for message generation
+options_for_noedit = ["--dangerously-bypass-approvals-and-sandbox"]
+
+[backends.gemini]
+model = "gemini-2.5-pro"
+# Required: Add this option
+options = ["--yolo"]
+# Optional: Add options for message generation
+options_for_noedit = ["--yolo"]
+
+[backends.claude]
+model = "sonnet"
+# Required: Add both options
+options = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+# Optional: Add options for message generation
+options_for_noedit = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+
+[backends.qwen]
+model = "qwen3-coder-plus"
+# Required: Add this option
+options = ["-y"]
+# Optional: Add options for message generation
+options_for_noedit = ["-y"]
+
+[backends.auggie]
+model = "GPT-5"
+# Required: Add this option
+options = ["--print"]
+# Optional: Add options for message generation
+options_for_noedit = ["--print"]
+```
+
+3. **Update environment variables** (if used):
+```bash
+# Old (deprecated but still works)
+export AUTO_CODER_MESSAGE_DEFAULT_BACKEND="claude"
+
+# New (recommended)
+export AUTO_CODER_NOEDIT_DEFAULT_BACKEND="claude"
+```
+
+4. **Update application code** (if directly calling deprecated functions):
+```python
+# Old (deprecated but still works)
+from auto_coder.backend_manager import get_message_backend_manager
+manager = get_message_backend_manager()
+
+# New (recommended)
+from auto_coder.backend_manager import get_noedit_backend_manager
+manager = get_noedit_backend_manager()
+```
+
+#### Breaking Aspects
+
+1. **Configuration File Format**: Old `[message_backend]` section name deprecated
+   - **Impact**: Configuration files using old name will show deprecation warning
+   - **Migration**: Replace `[message_backend]` with `[backend_for_noedit]`
+   - **Backward Compatibility**: Old name still works but emits warning
+
+2. **Python API Changes**: Deprecated function names changed
+   - **Impact**: Direct calls to `get_message_backend_manager()`, `run_llm_message_prompt()`, etc. show warnings
+   - **Migration**: Use new function names: `get_noedit_backend_manager()`, `run_llm_noedit_prompt()`, etc.
+   - **Backward Compatibility**: Old names still work with deprecation warnings
+
+3. **Hardcoded Options Removed**: CLI options must now be configured explicitly
+   - **Impact**: Backends without required options in configuration will fail validation
+   - **Migration**: Add required options to configuration file (see examples above)
+   - **Validation**: Run `auto-coder config validate` to check configuration
+
+4. **Environment Variable Rename**: `AUTO_CODER_MESSAGE_DEFAULT_BACKEND` deprecated
+   - **Impact**: Old environment variable shows deprecation warning
+   - **Migration**: Use `AUTO_CODER_NOEDIT_DEFAULT_BACKEND`
+   - **Backward Compatibility**: Old name still works but emits warning
+
+#### Validation
+
+**Before updating**, validate your configuration:
+```bash
+auto-coder config validate --file ~/.auto-coder/llm_config.toml
+```
+
+This will show any missing required options or deprecated configuration.
+
+#### Testing
+
+**Tests Deleted** (due to breaking changes):
+- Tests that relied on hardcoded options have been updated
+- No existing tests were deleted, all pass with updated configuration
+
+**Tests Passing**:
+- All 148+ tests pass with new configuration system
+- New tests added for:
+  - `options_for_noedit` field parsing and usage
+  - Backward compatibility with deprecated names
+  - Required options validation
+  - Configuration file migration
+
+#### Rollback
+
+To rollback to previous behavior, pin your version to `< 2026.0.0.0`:
+
+```bash
+pip install auto-coder==2025.11.30.13
+```
+
+However, we recommend updating to the new configuration system as it provides:
+- Full control over CLI options per backend and operation type
+- Better separation of concerns (editing vs message generation)
+- Consistent configuration across all backends
+- Validation to prevent configuration errors
+
+#### Benefits of This Change
+
+1. **Full Configuration Control**: Users can customize CLI options for each backend
+2. **Operation-Specific Options**: Different options for code editing vs message generation
+3. **Validation**: Prevents runtime errors with configuration validation
+4. **Consistency**: Unified configuration system across all backends
+5. **Future-Proof**: Easy to add new options without code changes
+
+#### Technical Implementation
+
+**Modified Files**:
+1. `src/auto_coder/llm_backend_config.py`
+   - Added `options_for_noedit` field to `BackendConfig`
+   - Added `validate_required_options()` method
+   - Added `REQUIRED_OPTIONS_BY_BACKEND` constant
+   - Added backward compatibility for `message_backend` → `backend_for_noedit`
+   - Updated environment variable handling
+
+2. `src/auto_coder/backend_manager.py`
+   - Renamed functions: `get_message_backend_manager()` → `get_noedit_backend_manager()`
+   - Renamed functions: `run_llm_message_prompt()` → `run_llm_noedit_prompt()`
+   - Renamed functions: `get_message_backend_and_model()` → `get_noedit_backend_and_model()`
+   - Added deprecated aliases with warnings
+
+3. `tests/test_llm_backend_config.py`
+   - Added tests for `options_for_noedit` field
+   - Added backward compatibility tests
+   - Added validation tests
+
+4. `tests/test_backend_manager.py`
+   - Added tests for deprecated function warnings
+   - Updated tests for new function names
+
+5. `tests/test_required_options_validation.py`
+   - New test file for required options validation
+   - Tests for configuration validation CLI command
+
+6. `docs/llm_backend_config.example.toml`
+   - Updated with new `backend_for_noedit` section
+   - Added comprehensive examples for `options` and `options_for_noedit`
+   - Added migration guide documentation
+
+7. `docs/client-features.yaml`
+   - Documented `backend_for_noedit` configuration
+   - Documented `options` and `options_for_noedit` fields
+   - Added breaking changes documentation
+
+#### Resources
+
+- [Configuration Example](../docs/llm_backend_config.example.toml) - Full configuration reference with examples
+- [Client Features Documentation](../docs/client-features.yaml) - Complete feature documentation
+- GitHub Issue #[906](https://github.com/kitamura-tetsuo/auto-coder/issues/906) - Original issue tracking this breaking change
+
+---
+
 ## Version 2026.11.30.0 (Issue #925)
 
 ### Auto-Reopen of Closed Parent Issues
