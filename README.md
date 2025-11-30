@@ -487,6 +487,35 @@ auto-coder process --only 704
 auto-coder process --check-labels
 ```
 
+## Parent Issue Auto-Reopen
+
+When processing child issues in a parent-child relationship, Auto-Coder automatically handles closed parent issues:
+
+### Auto-Reopen Behavior
+
+**When processing a child issue whose parent is closed:**
+1. The system automatically reopens the parent issue before continuing
+2. Branch selection and base branch selection use the parent issue context
+3. Attempt tracking operates within the parent issue context
+4. This ensures proper workflow continuity and prevents branch naming conflicts
+
+### Why This Matters
+
+This behavior is critical for maintaining consistency when:
+- Working with hierarchical issue structures
+- Managing parent-child issue dependencies
+- Ensuring branch and attempt tracking remain coherent
+- Preventing branch naming and base selection issues during child issue processing
+
+### Example
+
+If you have issue #100 (parent) with child issue #101:
+- Issue #101 is being processed
+- Issue #100 (parent) is closed
+- Auto-Coder automatically reopens #100
+- All branch operations and attempts now use #100's context
+- Processing continues with proper parent context maintained
+
 ## Configuration
 
 ### Configuration File Locations
