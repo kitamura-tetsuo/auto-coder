@@ -48,6 +48,7 @@ class CodexClient(LLMClientBase):
             config_backend = config.get_backend_config(backend_name)
             # Use backend config model, fall back to default "codex"
             self.model_name = (config_backend and config_backend.model) or "codex"
+            self.options = (config_backend and config_backend.options) or []
             self.api_key = api_key or (config_backend and config_backend.api_key)
             self.base_url = base_url or (config_backend and config_backend.base_url)
             self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
@@ -59,6 +60,7 @@ class CodexClient(LLMClientBase):
             # Fall back to default codex config
             config_backend = config.get_backend_config("codex")
             self.model_name = (config_backend and config_backend.model) or "codex"
+            self.options = (config_backend and config_backend.options) or []
             self.api_key = api_key
             self.base_url = base_url
             self.openai_api_key = openai_api_key
@@ -108,8 +110,11 @@ class CodexClient(LLMClientBase):
                 "exec",
                 "-s",
                 "workspace-write",
-                "--dangerously-bypass-approvals-and-sandbox",
             ]
+
+            # Add configured options from config
+            if self.options:
+                cmd.extend(self.options)
 
             # Add --model flag if model_name is specified
             if self.model_name:
