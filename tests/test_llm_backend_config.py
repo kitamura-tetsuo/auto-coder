@@ -120,8 +120,8 @@ class TestLLMBackendConfiguration:
         # Check default settings
         assert config.default_backend == "codex"
         assert config.backend_order == []
-        assert config.message_backend_order == []
-        assert config.message_default_backend is None
+        assert config.backend_for_noedit_order == []
+        assert config.backend_for_noedit_default is None
         assert config.env_prefix == "AUTO_CODER_"
         assert config.config_file_path == "~/.auto-coder/llm_config.toml"
 
@@ -135,14 +135,14 @@ class TestLLMBackendConfiguration:
             backend_order=["gemini", "codex"],
             default_backend="gemini",
             backends=backends,
-            message_backend_order=["codex"],
-            message_default_backend="codex",
+            backend_for_noedit_order=["codex"],
+            backend_for_noedit_default="codex",
         )
 
         assert config.default_backend == "gemini"
         assert config.backend_order == ["gemini", "codex"]
-        assert config.message_backend_order == ["codex"]
-        assert config.message_default_backend == "codex"
+        assert config.backend_for_noedit_order == ["codex"]
+        assert config.backend_for_noedit_default == "codex"
         assert config.backends["gemini"].model == "gemini-pro"
         assert config.backends["codex"].enabled is False
 
@@ -292,7 +292,7 @@ class TestLLMBackendConfiguration:
         config.get_backend_config("gemini").enabled = False
         config.get_backend_config("codex").enabled = True
         config.get_backend_config("qwen").enabled = False
-        config.message_backend_order = ["codex", "gemini", "qwen"]
+        config.backend_for_noedit_order = ["codex", "gemini", "qwen"]
 
         active = config.get_active_noedit_backends()
         assert "codex" in active
@@ -305,7 +305,7 @@ class TestLLMBackendConfiguration:
         config.get_backend_config("gemini").enabled = False
         config.get_backend_config("codex").enabled = True
         config.backend_order = ["codex", "gemini", "qwen"]
-        # No message_backend_order set
+        # No backend_for_noedit_order set
 
         active = config.get_active_noedit_backends()
         assert "codex" in active
@@ -315,7 +315,7 @@ class TestLLMBackendConfiguration:
         """Test getting default noedit backend."""
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = True
-        config.message_default_backend = "codex"
+        config.backend_for_noedit_default = "codex"
         config.default_backend = "gemini"
 
         assert config.get_noedit_default_backend() == "codex"
@@ -326,28 +326,28 @@ class TestLLMBackendConfiguration:
         config.get_backend_config("gemini").enabled = True
         config.default_backend = "gemini"
 
-        # No message_default_backend set
+        # No backend_for_noedit_default set
         assert config.get_noedit_default_backend() == "gemini"
 
     def test_get_noedit_default_backend_disabled(self):
         """Test that disabled noedit default falls back to general default."""
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = False
-        config.message_default_backend = "codex"
+        config.backend_for_noedit_default = "codex"
         config.default_backend = "gemini"
 
-        # message_default_backend is disabled, should fall back
+        # backend_for_noedit_default is disabled, should fall back
         assert config.get_noedit_default_backend() == "gemini"
 
     def test_has_dual_configuration(self):
         """Test detection of dual backend configuration."""
         config1 = LLMBackendConfiguration()
-        config1.message_backend_order = ["codex"]
+        config1.backend_for_noedit_order = ["codex"]
         assert config1.has_dual_configuration() is True
 
         config2 = LLMBackendConfiguration()
         config2.backend_order = ["gemini", "codex"]
-        config2.message_backend_order = ["codex"]
+        config2.backend_for_noedit_order = ["codex"]
         assert config2.has_dual_configuration() is True
 
         config3 = LLMBackendConfiguration()
@@ -355,9 +355,9 @@ class TestLLMBackendConfiguration:
         assert config3.has_dual_configuration() is False
 
         config4 = LLMBackendConfiguration()
-        # Only message config
-        config4.message_backend_order = ["codex"]
-        config4.message_default_backend = "codex"
+        # Only noedit config
+        config4.backend_for_noedit_order = ["codex"]
+        config4.backend_for_noedit_default = "codex"
         assert config4.has_dual_configuration() is True
 
     def test_get_model_for_backend(self):
@@ -400,7 +400,7 @@ class TestLLMBackendConfiguration:
         # Check that environment overrides were applied
         assert config.get_backend_config("gemini").api_key == "env_gemini_key"
         assert config.default_backend == "qwen"
-        assert config.message_default_backend == "claude"
+        assert config.backend_for_noedit_default == "claude"
 
     def test_apply_env_overrides_openai(self):
         """Test applying OpenAI environment variable overrides."""
@@ -1340,8 +1340,8 @@ class TestConfigurationPriorityLogic:
             config = LLMBackendConfiguration()
             config.default_backend = "gemini"
             config.backend_order = ["gemini", "qwen", "codex"]
-            config.message_backend_order = ["codex"]
-            config.message_default_backend = "codex"
+            config.backend_for_noedit_order = ["codex"]
+            config.backend_for_noedit_default = "codex"
 
             # Set detailed backend configs
             config.get_backend_config("gemini").model = "gemini-test-model"
@@ -1373,8 +1373,8 @@ class TestConfigurationPriorityLogic:
                 # Verify all values were correctly loaded
                 assert loaded_config.default_backend == "gemini"
                 assert loaded_config.backend_order == ["gemini", "qwen", "codex"]
-                assert loaded_config.message_backend_order == ["codex"]
-                assert loaded_config.message_default_backend == "codex"
+                assert loaded_config.backend_for_noedit_order == ["codex"]
+                assert loaded_config.backend_for_noedit_default == "codex"
 
                 # Verify gemini backend settings
                 gemini = loaded_config.get_backend_config("gemini")

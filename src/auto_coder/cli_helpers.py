@@ -720,9 +720,9 @@ def build_message_backend_manager(
 
     # Use configuration values as defaults if not provided
     if selected_backends is None:
-        selected_backends = config.get_active_message_backends()
+        selected_backends = config.get_active_noedit_backends()
     if primary_backend is None:
-        primary_backend = config.get_message_default_backend()
+        primary_backend = config.get_noedit_default_backend()
     if models is None:
         # Build models map using configuration
         models = {}
