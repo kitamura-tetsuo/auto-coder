@@ -286,58 +286,58 @@ class TestLLMBackendConfiguration:
         assert "codex" not in active
         assert "qwen" in active
 
-    def test_get_active_message_backends(self):
-        """Test getting active message backends."""
+    def test_get_active_noedit_backends(self):
+        """Test getting active noedit backends."""
         config = LLMBackendConfiguration()
         config.get_backend_config("gemini").enabled = False
         config.get_backend_config("codex").enabled = True
         config.get_backend_config("qwen").enabled = False
         config.message_backend_order = ["codex", "gemini", "qwen"]
 
-        active = config.get_active_message_backends()
+        active = config.get_active_noedit_backends()
         assert "codex" in active
         assert "gemini" not in active
         assert "qwen" not in active
 
-    def test_get_active_message_backends_fallback(self):
-        """Test message backends fall back to general backends when not configured."""
+    def test_get_active_noedit_backends_fallback(self):
+        """Test noedit backends fall back to general backends when not configured."""
         config = LLMBackendConfiguration()
         config.get_backend_config("gemini").enabled = False
         config.get_backend_config("codex").enabled = True
         config.backend_order = ["codex", "gemini", "qwen"]
         # No message_backend_order set
 
-        active = config.get_active_message_backends()
+        active = config.get_active_noedit_backends()
         assert "codex" in active
         # Should fall back to general backends
 
-    def test_get_message_default_backend(self):
-        """Test getting default message backend."""
+    def test_get_noedit_default_backend(self):
+        """Test getting default noedit backend."""
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = True
         config.message_default_backend = "codex"
         config.default_backend = "gemini"
 
-        assert config.get_message_default_backend() == "codex"
+        assert config.get_noedit_default_backend() == "codex"
 
-    def test_get_message_default_backend_fallback(self):
-        """Test message default falls back to general default."""
+    def test_get_noedit_default_backend_fallback(self):
+        """Test noedit default falls back to general default."""
         config = LLMBackendConfiguration()
         config.get_backend_config("gemini").enabled = True
         config.default_backend = "gemini"
 
         # No message_default_backend set
-        assert config.get_message_default_backend() == "gemini"
+        assert config.get_noedit_default_backend() == "gemini"
 
-    def test_get_message_default_backend_disabled(self):
-        """Test that disabled message default falls back to general default."""
+    def test_get_noedit_default_backend_disabled(self):
+        """Test that disabled noedit default falls back to general default."""
         config = LLMBackendConfiguration()
         config.get_backend_config("codex").enabled = False
         config.message_default_backend = "codex"
         config.default_backend = "gemini"
 
         # message_default_backend is disabled, should fall back
-        assert config.get_message_default_backend() == "gemini"
+        assert config.get_noedit_default_backend() == "gemini"
 
     def test_has_dual_configuration(self):
         """Test detection of dual backend configuration."""

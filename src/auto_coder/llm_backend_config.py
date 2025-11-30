@@ -323,26 +323,48 @@ class LLMBackendConfiguration:
             # If no order is specified, return all enabled backends
             return [name for name, config in self.backends.items() if config.enabled]
 
+    def get_active_noedit_backends(self) -> List[str]:
+        """Get list of enabled noedit backends in the configured order.
+
+        Returns noedit backend order if specifically configured, otherwise falls back to general backends.
+        """
+        if self.message_backend_order:
+            # Filter to only include enabled backends that are in noedit order
+            return [name for name in self.message_backend_order if self.backends.get(name, BackendConfig(name=name)).enabled]
+        else:
+            # Fall back to using the general backend order for noedit
+            return self.get_active_backends()
+
     def get_active_message_backends(self) -> List[str]:
-        """Get list of enabled message backends in the configured order.
+        """Deprecated: Use get_active_noedit_backends() instead.
+
+        Get list of enabled message backends in the configured order.
 
         Returns message backend order if specifically configured, otherwise falls back to general backends.
         """
-        if self.message_backend_order:
-            # Filter to only include enabled backends that are in message order
-            return [name for name in self.message_backend_order if self.backends.get(name, BackendConfig(name=name)).enabled]
-        else:
-            # Fall back to using the general backend order for messages
-            return self.get_active_backends()
+        logger = get_logger(__name__)
+        logger.warning("get_active_message_backends() is deprecated, use get_active_noedit_backends()")
+        return self.get_active_noedit_backends()
 
-    def get_message_default_backend(self) -> str:
-        """Get the default backend for message generation.
+    def get_noedit_default_backend(self) -> str:
+        """Get the default backend for noedit operations.
 
-        Returns message backend default if specifically configured, otherwise falls back to general default.
+        Returns noedit backend default if specifically configured, otherwise falls back to general default.
         """
         if self.message_default_backend and self.backends.get(self.message_default_backend, BackendConfig(name=self.message_default_backend)).enabled:
             return self.message_default_backend
         return self.default_backend
+
+    def get_message_default_backend(self) -> str:
+        """Deprecated: Use get_noedit_default_backend() instead.
+
+        Get the default backend for message generation.
+
+        Returns message backend default if specifically configured, otherwise falls back to general default.
+        """
+        logger = get_logger(__name__)
+        logger.warning("get_message_default_backend() is deprecated, use get_noedit_default_backend()")
+        return self.get_noedit_default_backend()
 
     def has_dual_configuration(self) -> bool:
         """Check if both general backend and message backend configurations are explicitly set."""
