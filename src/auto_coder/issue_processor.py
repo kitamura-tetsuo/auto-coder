@@ -483,8 +483,6 @@ def _apply_issue_actions_directly(
             base_branch = config.MAIN_BRANCH
             if parent_issue_details:
                 parent_issue_number = parent_issue_details["number"]
-                parent_state = parent_issue_details.get("state", "OPEN").upper()
-
                 # Call hook to ensure parent issue is open
                 parent_is_open = ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
 
@@ -518,7 +516,8 @@ def _apply_issue_actions_directly(
                         base_branch = parent_branch
                         pr_base_branch = parent_branch  # Also set PR merge target to parent issue branch
                 else:
-                    logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number} but it is {parent_state}. Ignoring parent branch and using {config.MAIN_BRANCH} as base.")
+                    parent_state_for_log = parent_issue_details.get("state", "UNKNOWN").upper()
+                    logger.info(f"Issue #{issue_number} has parent issue #{parent_issue_number} but it is {parent_state_for_log}. Ignoring parent branch and using {config.MAIN_BRANCH} as base.")
 
             # Check if work branch already exists
             check_work_branch = cmd.run_command(["git", "rev-parse", "--verify", work_branch])

@@ -209,7 +209,7 @@ class TestLoggerConfig:
         assert result == str(external_file.resolve())
 
     def test_logger_output_uses_trimmed_paths(self):
-        """Log messages emitted from package modules should show trimmed paths."""
+        """Log messages should show trimmed paths."""
 
         buffer = StringIO()
 
@@ -223,5 +223,9 @@ class TestLoggerConfig:
 
         log_output = buffer.getvalue()
 
-        assert "auto_coder/utils.py" in log_output
+        # With opt(depth=1), the log shows the caller (this test file), not utils.py
+        # The path should be trimmed to show tests/test_logger_config.py
+        assert "tests/test_logger_config.py" in log_output
+        # Should not have absolute paths or site-packages paths
         assert "/site-packages/" not in log_output
+        assert "/workspaces/auto-coder/" not in log_output
