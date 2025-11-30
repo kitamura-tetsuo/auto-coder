@@ -86,6 +86,26 @@ The system supports extensive backend configuration options. Key fields include:
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Backward compatible with existing configurations
 
+- **backend_for_failed_pr**: Fallback backend configuration for PRs when attempt count reaches 3
+  - Purpose: Automatically switches to a different backend when a PR has been attempted 3 times without success
+  - Trigger: When any linked issue in a PR has an attempt count >= 3, the system switches to this fallback backend for all subsequent LLM operations on that PR
+  - Configuration section: `[backend_for_failed_pr]` in the TOML config file
+  - Example:
+    ```toml
+    [backend_for_failed_pr]
+    name = "gemini"
+    model = "gemini-2.5-flash"
+    api_key = "your-api-key"
+    ```
+  - Behavior:
+    - Checks attempt count for all issues linked in the PR body (using keywords like "close", "fix", "resolve")
+    - Uses max attempt count across all linked issues
+    - When max attempt >= 3, switches to the fallback backend before making any LLM calls
+    - Supports all standard backend configuration fields (model, api_key, base_url, etc.)
+    - If no fallback is configured, processing continues with the current backend (no error)
+  - Configuration file: "~/.auto-coder/llm_config.toml"
+  - Optional field: Only used when automatic fallback is desired
+
 #### Backend Management
 
     nested_managers:
@@ -233,6 +253,8 @@ This fork maintains full attribution to the original author Riley Lemm. The orig
     fallback:
       - "PR failures that cannot be auto-merged (LLM CANNOT_FIX/unclear output, commit/push errors, failed merges or conflict resolution) trigger attempt increments for every linked issue."
       - "Conflict resolver fallbacks do the same when LLM-based conflict handling leaves unresolved markers or cannot push a clean merge."
+      - "When attempt count reaches 3 for any linked issue, the system automatically switches to the configured fallback backend (see [backend_for_failed_pr] configuration)."
+      - "Backend fallback provides a fresh perspective using a different LLM after multiple failed attempts, improving chances of successful PR resolution."
     propagation:
       - "increment_attempt also reopens closed sub-issues and bumps their counters to keep parent/child attempts in sync."
 
