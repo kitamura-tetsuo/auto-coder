@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .backend_provider_manager import BackendProviderManager
+from .backend_session_manager import BackendSessionManager, BackendSessionState, create_session_state
 from .backend_state_manager import BackendStateManager
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import LLMBackendConfiguration, get_llm_config
@@ -103,6 +104,9 @@ class BackendManager(LLMBackendManagerBase):
 
         # State manager for persistence of backend state (e.g., for auto-reset functionality)
         self._state_manager = BackendStateManager()
+        # Session state manager for resuming sessions across executions
+        self._session_state_manager = BackendSessionManager()
+        self._restore_session_state()
 
     @property
     def provider_manager(self) -> BackendProviderManager:
@@ -118,6 +122,39 @@ class BackendManager(LLMBackendManagerBase):
         last used providers for debugging and telemetry.
         """
         return self._provider_manager
+
+    def _restore_session_state(self) -> None:
+        """
+        Restore last session information from persisted state.
+
+        This enables session resume across process restarts when the same backend
+        is invoked consecutively and supports resume options.
+        """
+        try:
+            session_state = self._session_state_manager.load_state()
+            if session_state.last_backend and session_state.last_session_id and session_state.last_backend in self._all_backends:
+                self._last_backend = session_state.last_backend
+                self._last_session_id = session_state.last_session_id
+                logger.debug(
+                    "Restored session state for backend '%s' with session id present",
+                    session_state.last_backend,
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to restore session state: %s", exc)
+
+    def _save_session_state(self, backend_name: str, session_id: Optional[str]) -> None:
+        """
+        Persist session metadata for the provided backend.
+
+        Args:
+            backend_name: Backend whose session should be saved
+            session_id: Session identifier or None to clear
+        """
+        try:
+            state: BackendSessionState = create_session_state(backend_name, session_id)
+            self._session_state_manager.save_state(state)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Failed to save session state for backend '%s': %s", backend_name, exc)
 
     # ---------- Basic Operations ----------
     def _current_backend_name(self) -> str:
@@ -164,6 +201,7 @@ class BackendManager(LLMBackendManagerBase):
         self._switch_to_index(self._current_idx + 1)
         # Reset session ID when switching backends
         self._last_session_id = None
+        self._save_session_state(self._current_backend_name(), self._last_session_id)
         # Save the new backend state
         current_backend = self._current_backend_name()
         current_time = time.time()
@@ -192,6 +230,7 @@ class BackendManager(LLMBackendManagerBase):
         self._switch_to_index(idx)
         # Reset session ID when switching backends
         self._last_session_id = None
+        self._save_session_state(self._current_backend_name(), self._last_session_id)
         # Save the new backend state
         current_backend = self._current_backend_name()
         current_time = time.time()
@@ -214,6 +253,7 @@ class BackendManager(LLMBackendManagerBase):
             self._switch_to_index(idx)
             # Reset session ID when switching backends
             self._last_session_id = None
+            self._save_session_state(self._current_backend_name(), self._last_session_id)
             # Save the new backend state
             current_backend = self._current_backend_name()
             current_time = time.time()
@@ -472,6 +512,8 @@ class BackendManager(LLMBackendManagerBase):
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
                     # Track session ID from the client
                     self._last_session_id = cli.get_last_session_id()
+                    # Persist session state to allow resume on subsequent executions
+                    self._save_session_state(backend_name, self._last_session_id)
                     return out
                 except AutoCoderUsageLimitError as exc:
                     if backend_has_providers and provider_count > 1 and provider_attempts < provider_count - 1:

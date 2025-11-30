@@ -917,6 +917,7 @@ Other backends may support session resume if they provide similar session manage
 #### Notes
 
 - Session IDs are tracked per backend
+- Session state is persisted to `~/.auto-coder/backend_session_state.json` so consecutive executions can resume when the backend supports it
 - Resume only happens when the same backend is used consecutively
 - If a different backend is used, the session tracking resets
 - The `options_for_resume` list can include multiple options if needed

@@ -10,6 +10,7 @@ from src.auto_coder.backend_provider_manager import (
     BackendProviderMetadata,
     ProviderMetadata,
 )
+from src.auto_coder.backend_session_manager import BackendSessionState
 from src.auto_coder.exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
@@ -813,3 +814,37 @@ class TestResumeLogic:
         # Call on backend b establishes new session
         mgr._run_llm_cli("second prompt")
         assert mgr._last_session_id == "session-b"
+
+    def test_resume_uses_persisted_session_state(self, mock_llm_config):
+        """Resume options should be applied from persisted session state on startup."""
+        mock_llm_config.backends["a"] = BackendConfig(name="a", options_for_resume=["--resume", "[sessionId]"])
+
+        calls = []
+        client_a = DummyClient("a", "m1", "ok", calls, session_id="new-session-id")
+
+        saved_state = BackendSessionState(last_backend="a", last_session_id="persisted-session", last_used_timestamp=123.0)
+
+        with patch("src.auto_coder.backend_manager.BackendSessionManager") as MockSessionManager:
+            mock_session_manager = MagicMock()
+            mock_session_manager.load_state.return_value = saved_state
+            mock_session_manager.save_state.return_value = True
+            MockSessionManager.return_value = mock_session_manager
+
+            mgr = BackendManager(
+                default_backend="a",
+                default_client=client_a,
+                factories={"a": lambda: client_a},
+                order=["a"],
+            )
+
+            mgr._run_llm_cli("resume prompt")
+
+            # Resume options should use persisted session id
+            assert client_a._extra_args == ["--resume", "persisted-session"]
+
+            # The new session id should be persisted after execution
+            mock_session_manager.save_state.assert_called()
+            persisted_arg = mock_session_manager.save_state.call_args[0][0]
+            assert isinstance(persisted_arg, BackendSessionState)
+            assert persisted_arg.last_backend == "a"
+            assert persisted_arg.last_session_id == "new-session-id"

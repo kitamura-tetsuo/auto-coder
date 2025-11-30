@@ -114,6 +114,16 @@ The system supports extensive backend configuration options. Key fields include:
       message_backend: "Separate singleton instance for message generation (commit messages, PR messages)"
       usage: "Access via get_llm_backend_manager() and get_message_backend_manager() for different use cases"
       provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
+  session_resume:
+      description: "Persist and reuse backend session identifiers so supported backends can resume previous conversations."
+      prerequisites:
+        - "Backend configuration includes options_for_resume with a [sessionId] placeholder that matches the backend CLI flag"
+      behavior:
+        - "Captures session IDs from backend clients after each execution and persists them to ~/.auto-coder/backend_session_state.json"
+        - "Automatically injects configured resume options when the same backend runs consecutively and a session ID is available"
+        - "Clears persisted session data when rotating to a different backend to avoid cross-backend leakage"
+      configuration_file: "~/.auto-coder/llm_config.toml"
+      persistence_file: "~/.auto-coder/backend_session_state.json"
 
   retry_configuration:
       description: "Configurable retry mechanism for LLM backends when usage limits are hit"
