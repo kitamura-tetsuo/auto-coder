@@ -546,7 +546,7 @@ openai_base_url = "https://openrouter.ai/api/v1"
 
 Supported `backend_type` values: `codex`, `codex-mcp`, `gemini`, `qwen`, `auggie`, `claude`
 
-For detailed configuration examples and troubleshooting, see [Custom Backend Configuration](docs/Custom_Backend_Configuration.md).
+For detailed configuration examples and troubleshooting, including the new fallback backend feature, see [Configuration Guide](docs/configuration.md).
 
 #### Configuring Model Provider
 
@@ -721,7 +721,7 @@ Auto-Coder supports multiple backend types. When using custom backend names, you
 **Important:** Custom backend names require the `backend_type` field. Standard backend names (`codex`, `gemini`, `qwen`, `claude`, `jules`, `auggie`) work without this field.
 
 For more details, see:
-- [Custom Backend Configuration Guide](docs/Custom_Backend_Configuration.md)
+- [Configuration Guide](docs/configuration.md)
 - [OpenRouter Setup Guide](OPENROUTER_SETUP.md)
 - [Example Configuration File](docs/llm_backend_config.example.toml)
 
@@ -1529,7 +1529,7 @@ openai_api_key = "your-key"
 openai_base_url = "https://openrouter.ai/api/v1"
 ```
 
-See [Custom Backend Configuration](docs/Custom_Backend_Configuration.md) for detailed troubleshooting.
+See [Configuration Guide](docs/configuration.md) for detailed troubleshooting.
 
 ### Checking Logs
 
