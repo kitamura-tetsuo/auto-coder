@@ -111,7 +111,7 @@ The system supports extensive backend configuration options. Key fields include:
     nested_managers:
       description: "Multiple backend manager instances can exist with different configurations"
       llm_backend: "Singleton instance for general LLM operations (PR processing, test fixes, code generation)"
-      message_backend: "Separate singleton instance for message generation (commit messages, PR messages)"
+      noedit_backend: "Separate singleton instance for non-editing operations (commit messages, PR messages)"
       usage: "Access via get_llm_backend_manager() and get_message_backend_manager() for different use cases"
       provider_manager: "BackendProviderManager is shared across backend manager instances and tracks provider rotation state"
 

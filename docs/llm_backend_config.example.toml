@@ -11,8 +11,8 @@ default = "qwen-openrouter"
 # Order of backends to try (only enabled backends will be used)
 order = ["qwen-openrouter", "qwen", "gemini", "codex", "claude"]
 
-[message_backend]
-# Separate configuration for message generation (commit messages, PR descriptions)
+[backend_for_noedit]
+# Separate configuration for non-editing operations (commit messages, PR descriptions)
 # If not specified, falls back to general backend configuration
 default = "qwen-openrouter"
 order = ["qwen-openrouter", "qwen", "gemini"]
@@ -278,7 +278,7 @@ backend_type = "codex"
 # --------------------
 # Environment variables can override configuration values:
 #    - AUTO_CODER_DEFAULT_BACKEND
-#    - AUTO_CODER_MESSAGE_DEFAULT_BACKEND
+#    - AUTO_CODER_NOEDIT_DEFAULT_BACKEND
 #    - AUTO_CODER_<BACKEND>_API_KEY (e.g., AUTO_CODER_GEMINI_API_KEY)
 #    - AUTO_CODER_<BACKEND>_OPENAI_API_KEY (e.g., AUTO_CODER_CODEX_OPENAI_API_KEY)
 #    - AUTO_CODER_<BACKEND>_OPENAI_BASE_URL
