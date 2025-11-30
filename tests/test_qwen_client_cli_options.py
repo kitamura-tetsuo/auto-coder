@@ -69,6 +69,7 @@ def test_qwen_client_options_parameter_qwen_mode(mock_get_config, mock_run_comma
     mock_backend_config.base_url = None
     mock_backend_config.openai_api_key = None
     mock_backend_config.openai_base_url = None
+    mock_backend_config.validate_required_options.return_value = []
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 
@@ -249,6 +250,7 @@ def test_qwen_client_oauth_mode_with_options(mock_get_config, mock_run_command, 
     mock_backend_config.base_url = None
     mock_backend_config.openai_api_key = None
     mock_backend_config.openai_base_url = None
+    mock_backend_config.validate_required_options.return_value = []
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 
