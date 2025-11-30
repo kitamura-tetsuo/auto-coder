@@ -52,7 +52,7 @@ def test_should_use_fallback_backend_with_attempt_3():
         "labels": [],
     }
 
-    with patch("src.auto_coder.attempt_manager.get_current_attempt") as mock_get_attempt:
+    with patch("src.auto_coder.pr_processor.get_current_attempt") as mock_get_attempt:
         # Mock attempt count of 3 for issue #456
         mock_get_attempt.return_value = 3
 
@@ -78,7 +78,7 @@ def test_should_use_fallback_backend_with_attempt_2():
         "labels": [],
     }
 
-    with patch("src.auto_coder.attempt_manager.get_current_attempt") as mock_get_attempt:
+    with patch("src.auto_coder.pr_processor.get_current_attempt") as mock_get_attempt:
         # Mock attempt count of 2 for issue #456
         mock_get_attempt.return_value = 2
 
@@ -104,7 +104,7 @@ def test_should_use_fallback_backend_with_multiple_linked_issues():
         "labels": [],
     }
 
-    with patch("src.auto_coder.attempt_manager.get_current_attempt") as mock_get_attempt:
+    with patch("src.auto_coder.pr_processor.get_current_attempt") as mock_get_attempt:
         # Mock different attempt counts for different issues
         # Issue 456 has attempt 2, issue 789 has attempt 3
         # Should use fallback because max attempt >= 3
@@ -133,7 +133,7 @@ def test_should_use_fallback_backend_no_linked_issues():
         "labels": [],
     }
 
-    with patch("src.auto_coder.attempt_manager.get_current_attempt") as mock_get_attempt:
+    with patch("src.auto_coder.pr_processor.get_current_attempt") as mock_get_attempt:
         result = _should_use_fallback_backend(repo_name, pr_data)
         assert result is False
         # Should not call get_current_attempt if no linked issues
@@ -153,7 +153,7 @@ def test_should_use_fallback_backend_no_pr_body():
         "labels": [],
     }
 
-    with patch("src.auto_coder.attempt_manager.get_current_attempt") as mock_get_attempt:
+    with patch("src.auto_coder.pr_processor.get_current_attempt") as mock_get_attempt:
         result = _should_use_fallback_backend(repo_name, pr_data)
         assert result is False
         mock_get_attempt.assert_not_called()
@@ -174,7 +174,7 @@ def test_switch_to_fallback_backend_success():
     mock_backend_manager = Mock()
     mock_backend_manager._switch_to_backend_by_name = Mock()
 
-    with patch("src.auto_coder.llm_backend_config.get_llm_config") as mock_get_config, patch("src.auto_coder.backend_manager.LLMBackendManager.get_llm_instance", return_value=mock_backend_manager):
+    with patch("src.auto_coder.llm_backend_config.get_llm_config") as mock_get_config, patch("src.auto_coder.pr_processor.get_llm_backend_manager", return_value=mock_backend_manager):
         mock_get_config.return_value = mock_config
 
         # Should succeed
