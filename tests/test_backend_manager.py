@@ -797,6 +797,36 @@ def test_parse_json_list_with_prefix_and_suffix_text():
     assert result == "last"
 
 
+def test_parse_json_uses_last_block_when_prompt_included():
+    """When prompt echo precedes response JSON, use the final JSON block."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = 'Prompt payload: {"instruction": "do something"}\n{"result": "final"}'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == {"result": "final"}
+
+
+def test_parse_json_list_after_prompt_block():
+    """Handles prompt JSON followed by response history list."""
+    client = DummyClient("a", "m1", "ok", [])
+    mgr = BackendManager(
+        default_backend="a",
+        default_client=client,
+        factories={"a": lambda: client},
+        order=["a"],
+    )
+
+    output = 'Prompt: {"question": "hi"}\n[{"content": "draft"}, {"content": "final answer"}]'
+    result = mgr.parse_llm_output_as_json(output)
+    assert result == "final answer"
+
+
 def test_parse_json_empty_list_raises_error():
     """Test that parsing an empty list raises ValueError."""
     client = DummyClient("a", "m1", "ok", [])
