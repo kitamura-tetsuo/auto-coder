@@ -58,6 +58,13 @@ class ClaudeClient(LLMClientBase):
         self.conflict_model = "sonnet"
         self.timeout = None
 
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
+
         try:
             result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
