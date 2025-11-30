@@ -5,6 +5,7 @@ fallback backends are used after multiple failures or as configured for PR proce
 """
 
 import time
+from typing import Optional
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -17,12 +18,13 @@ from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfigura
 class MockLLMClient:
     """Mock LLM client for testing backend fallback."""
 
-    def __init__(self, name: str, should_fail: bool = False, fail_count: int = 0):
+    def __init__(self, name: str, should_fail: bool = False, fail_count: int = 0, session_id: Optional[str] = None):
         self.name = name
         self.model_name = name
         self._should_fail = should_fail
         self._fail_count = fail_count
         self._call_count = 0
+        self.session_id = session_id
 
     def _run_llm_cli(self, prompt: str) -> str:
         self._call_count += 1
@@ -36,6 +38,9 @@ class MockLLMClient:
 
     def close(self):
         pass
+
+    def get_last_session_id(self) -> Optional[str]:
+        return self.session_id
 
 
 class TestBackendFallback:
