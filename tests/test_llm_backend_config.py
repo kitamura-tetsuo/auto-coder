@@ -42,6 +42,7 @@ class TestBackendConfig:
         assert config.model_provider is None
         assert config.always_switch_after_execution is False
         assert config.usage_markers == []
+        assert config.options_for_noedit == []
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -65,6 +66,7 @@ class TestBackendConfig:
             model_provider="openrouter",
             always_switch_after_execution=True,
             usage_markers=["marker1", "marker2"],
+            options_for_noedit=["noedit_option1", "noedit_option2"],
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -85,6 +87,7 @@ class TestBackendConfig:
         assert config.model_provider == "openrouter"
         assert config.always_switch_after_execution is True
         assert config.usage_markers == ["marker1", "marker2"]
+        assert config.options_for_noedit == ["noedit_option1", "noedit_option2"]
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -551,6 +554,29 @@ class TestLLMBackendConfiguration:
             qwen_config = loaded_config.get_backend_config("qwen")
             assert qwen_config.always_switch_after_execution is False
 
+    def test_toml_save_and_load_options_for_noedit(self):
+        """Test that options_for_noedit field is properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_options_for_noedit.toml"
+
+            # Create configuration with options_for_noedit settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").options_for_noedit = ["noedit1", "noedit2"]
+            config.get_backend_config("qwen").options_for_noedit = ["noedit3"]
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify options_for_noedit was persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.options_for_noedit == ["noedit1", "noedit2"]
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.options_for_noedit == ["noedit3"]
+
     def test_backward_compatibility_old_toml_without_retry_fields(self):
         """Test loading old TOML files that don't have retry configuration fields."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -628,6 +654,7 @@ class TestLLMBackendConfiguration:
             assert qwen_config.options == []
             assert qwen_config.backend_type is None
             assert qwen_config.always_switch_after_execution is False
+            assert qwen_config.options_for_noedit == []
             assert qwen_config.model == "qwen3-coder-plus"
             assert qwen_config.temperature == 0.7
 
@@ -636,6 +663,48 @@ class TestLLMBackendConfiguration:
             assert gemini_config.options == []
             assert gemini_config.backend_type is None
             assert gemini_config.always_switch_after_execution is False
+            assert gemini_config.options_for_noedit == []
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
+
+    def test_backward_compatibility_old_toml_without_options_for_noedit(self):
+        """Test loading old TOML files that don't have options_for_noedit field."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_options_for_noedit.toml"
+
+            # Create a TOML file with the old structure (without options_for_noedit field)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify options_for_noedit has default empty list when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.options_for_noedit == []
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.options_for_noedit == []
             assert gemini_config.model == "gemini-pro"
             assert gemini_config.timeout == 30
 
@@ -1786,6 +1855,7 @@ class TestBackendForFailedPR:
                 always_switch_after_execution=True,
                 settings="fallback_settings.json",
                 usage_markers=["fallback-marker1", "fallback-marker2"],
+                options_for_noedit=["fallback-noedit1", "fallback-noedit2"],
             )
 
             # Save to file
@@ -1816,6 +1886,7 @@ class TestBackendForFailedPR:
             assert fallback.always_switch_after_execution is True
             assert fallback.settings == "fallback_settings.json"
             assert fallback.usage_markers == ["fallback-marker1", "fallback-marker2"]
+            assert fallback.options_for_noedit == ["fallback-noedit1", "fallback-noedit2"]
 
     def test_backend_for_failed_pr_minimal_config(self):
         """Test fallback backend with minimal configuration (only required fields)."""
