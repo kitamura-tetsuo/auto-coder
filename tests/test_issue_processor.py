@@ -1,5 +1,6 @@
 """Tests for issue_processor branch creation behavior."""
 
+import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock, Mock, patch
 
@@ -188,8 +189,216 @@ def test_missing_work_branch_created_with_correct_base():
     assert first_kwargs.get("base_branch") == config.MAIN_BRANCH, "Work branch should be created from MAIN_BRANCH when no parent issue"
 
 
+class TestPRMessageGeneration:
+    """Tests for PR message generation with various response formats."""
+
+    def _create_pr_with_message_response(self, repo_name, issue_data, work_branch, base_branch, message_response, github_client, config):
+        """Helper to create PR with a specific message backend response."""
+        # Create a mock backend manager
+        mock_backend_manager = Mock()
+
+        # Update the mock to return the parsed JSON for the actual response
+        def parse_response(response):
+            import json
+            import re
+
+            try:
+                # Try to find JSON in the response using regex (similar to parse_llm_output_as_json)
+                json_pattern = r"\{.*\}|\[.*\]"
+                match = re.search(json_pattern, response, re.DOTALL)
+
+                if match:
+                    json_str = match.group(0)
+                else:
+                    json_str = response
+
+                # First try to parse the response directly as JSON
+                parsed = json.loads(json_str)
+
+                # If it's a list (conversation history), get the last message
+                if isinstance(parsed, list) and parsed:
+                    last_message = parsed[-1]
+                    if isinstance(last_message, dict) and "content" in last_message:
+                        content = last_message["content"]
+                        # The content might be a JSON string, so try to parse it
+                        try:
+                            return json.loads(content)
+                        except:
+                            # If content is not JSON, return it as-is or as a dict
+                            return {"title": content, "body": ""}
+
+                return parsed
+            except:
+                # For non-JSON responses, return a default
+                return {"title": "Default", "body": "Default body"}
+
+        mock_backend_manager.parse_llm_output_as_json.side_effect = parse_response
+
+        with patch("src.auto_coder.issue_processor.run_llm_message_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_message_backend_manager", return_value=mock_backend_manager):
+            mock_run_prompt.return_value = message_response
+
+            result = _create_pr_for_issue(
+                repo_name=repo_name,
+                issue_data=issue_data,
+                work_branch=work_branch,
+                base_branch=base_branch,
+                llm_response="Test response",
+                github_client=github_client,
+                config=config,
+            )
+
+        return result
+
+    def test_create_pr_with_simple_json_response(self):
+        """Test PR creation with a simple JSON response."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {
+            "number": issue_number,
+            "title": "Test Issue",
+            "body": "Test body",
+            "labels": [],
+        }
+        work_branch = f"issue-{issue_number}"
+        base_branch = "main"
+
+        config = AutomationConfig()
+
+        # Mock GitHub client
+        github_client = Mock()
+        github_client.get_pr_closing_issues.return_value = [issue_number]
+
+        # Simple JSON response
+        json_response = '{"title": "Fix bug", "body": "This fixes the bug"}'
+
+        # Mock gh pr create
+        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+            mock_gh_logger_instance = Mock()
+            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/456")
+            mock_gh_logger.return_value = mock_gh_logger_instance
+
+            result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, json_response, github_client, config)
+
+            # Verify the PR was created
+            assert "Successfully created PR" in result
+            # Verify the JSON was parsed correctly
+            mock_gh_logger_instance.execute_with_logging.assert_called_once()
+            call_args = mock_gh_logger_instance.execute_with_logging.call_args[0][0]
+            assert "--title" in call_args
+            title_index = call_args.index("--title") + 1
+            assert call_args[title_index] == "Fix bug"
+
+    def test_create_pr_with_conversation_history(self):
+        """Test PR creation with conversation history (list of messages)."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {
+            "number": issue_number,
+            "title": "Test Issue",
+            "body": "Test body",
+            "labels": [],
+        }
+        work_branch = f"issue-{issue_number}"
+        base_branch = "main"
+
+        config = AutomationConfig()
+
+        # Mock GitHub client
+        github_client = Mock()
+        github_client.get_pr_closing_issues.return_value = [issue_number]
+
+        # Conversation history with prompt and system messages, followed by final JSON
+        # Use json.dumps to create valid JSON
+        conversation_list = [
+            {"role": "user", "content": "Generate a PR message for issue #123"},
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "assistant", "content": '{"title": "Fix authentication bug", "body": "Updated authentication logic to handle edge cases with special characters in passwords"}'},
+        ]
+        conversation_response = json.dumps(conversation_list)
+
+        # Mock gh pr create
+        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+            mock_gh_logger_instance = Mock()
+            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/456")
+            mock_gh_logger.return_value = mock_gh_logger_instance
+
+            result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, conversation_response, github_client, config)
+
+            # Verify the PR was created
+            assert "Successfully created PR" in result
+            # Verify the JSON from the last message was parsed correctly
+            mock_gh_logger_instance.execute_with_logging.assert_called_once()
+            call_args = mock_gh_logger_instance.execute_with_logging.call_args[0][0]
+            assert "--title" in call_args
+            title_index = call_args.index("--title") + 1
+            assert call_args[title_index] == "Fix authentication bug"
+
+    def test_create_pr_with_text_before_json(self):
+        """Test PR creation with text before JSON response."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {
+            "number": issue_number,
+            "title": "Test Issue",
+            "body": "Test body",
+            "labels": [],
+        }
+        work_branch = f"issue-{issue_number}"
+        base_branch = "main"
+
+        config = AutomationConfig()
+
+        # Mock GitHub client
+        github_client = Mock()
+        github_client.get_pr_closing_issues.return_value = [issue_number]
+
+        # Response with text before JSON
+        response_with_text = 'Here is the PR message:\n{"title": "Update docs", "body": "Updated documentation"}'
+
+        # Mock gh pr create
+        with patch("src.auto_coder.issue_processor.get_gh_logger") as mock_gh_logger:
+            mock_gh_logger_instance = Mock()
+            mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/456")
+            mock_gh_logger.return_value = mock_gh_logger_instance
+
+            result = self._create_pr_with_message_response(repo_name, issue_data, work_branch, base_branch, response_with_text, github_client, config)
+
+            # Verify the PR was created
+            assert "Successfully created PR" in result
+            # Verify the JSON was extracted and parsed correctly
+            mock_gh_logger_instance.execute_with_logging.assert_called_once()
+            call_args = mock_gh_logger_instance.execute_with_logging.call_args[0][0]
+            assert "--title" in call_args
+            title_index = call_args.index("--title") + 1
+            assert call_args[title_index] == "Update docs"
+
+
 class TestPRLabelCopying:
     """Integration tests for PR label copying functionality."""
+
+    def _create_pr_with_json_message(self, repo_name, issue_data, work_branch, base_branch, pr_title, pr_body, github_client, config):
+        """Helper to create PR with mocked JSON message backend."""
+        # Create JSON response
+        json_response = '{"title": ' + f'"{pr_title}"' + ', "body": ' + f'"{pr_body}"' + "}"
+
+        # Create a mock backend manager that parses JSON
+        mock_backend_manager = Mock()
+        mock_backend_manager.parse_llm_output_as_json = Mock(return_value={"title": pr_title, "body": pr_body})
+
+        with patch("src.auto_coder.issue_processor.run_llm_message_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_message_backend_manager", return_value=mock_backend_manager):
+            mock_run_prompt.return_value = json_response
+
+            result = _create_pr_for_issue(
+                repo_name=repo_name,
+                issue_data=issue_data,
+                work_branch=work_branch,
+                base_branch=base_branch,
+                llm_response="Test response",
+                github_client=github_client,
+                config=config,
+            )
+
+        return result
 
     def test_create_pr_for_issue_copies_semantic_labels(self):
         """Test that PR creation copies semantic labels from issue to PR."""
@@ -203,7 +412,6 @@ class TestPRLabelCopying:
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
-        llm_response = "Test response"
         pr_number = 456
 
         config = AutomationConfig()
@@ -219,13 +427,14 @@ class TestPRLabelCopying:
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
 
-            # Call _create_pr_for_issue
-            result = _create_pr_for_issue(
+            # Call _create_pr_for_issue with JSON message
+            result = self._create_pr_with_json_message(
                 repo_name,
                 issue_data,
                 work_branch,
                 base_branch,
-                llm_response,
+                "Test PR Title",
+                "Test PR body with issue details",
                 github_client,
                 config,
             )
@@ -257,7 +466,6 @@ class TestPRLabelCopying:
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
-        llm_response = "Test response"
         pr_number = 456
 
         config = AutomationConfig()
@@ -273,13 +481,14 @@ class TestPRLabelCopying:
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
 
-            # Call _create_pr_for_issue
-            result = _create_pr_for_issue(
+            # Call _create_pr_for_issue with JSON message
+            result = self._create_pr_with_json_message(
                 repo_name,
                 issue_data,
                 work_branch,
                 base_branch,
-                llm_response,
+                "Test PR Title",
+                "Test PR body with issue details",
                 github_client,
                 config,
             )
@@ -310,7 +519,6 @@ class TestPRLabelCopying:
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
-        llm_response = "Test response"
         pr_number = 456
 
         config = AutomationConfig()
@@ -327,13 +535,14 @@ class TestPRLabelCopying:
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
 
-            # Call _create_pr_for_issue
-            result = _create_pr_for_issue(
+            # Call _create_pr_for_issue with JSON message
+            result = self._create_pr_with_json_message(
                 repo_name,
                 issue_data,
                 work_branch,
                 base_branch,
-                llm_response,
+                "Test PR Title",
+                "Test PR body with issue details",
                 github_client,
                 config,
             )
@@ -364,7 +573,6 @@ class TestPRLabelCopying:
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
-        llm_response = "Test response"
         pr_number = 456
 
         config = AutomationConfig()
@@ -380,13 +588,14 @@ class TestPRLabelCopying:
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
 
-            # Call _create_pr_for_issue
-            result = _create_pr_for_issue(
+            # Call _create_pr_for_issue with JSON message
+            result = self._create_pr_with_json_message(
                 repo_name,
                 issue_data,
                 work_branch,
                 base_branch,
-                llm_response,
+                "Test PR Title",
+                "Test PR body with issue details",
                 github_client,
                 config,
             )
@@ -414,7 +623,6 @@ class TestPRLabelCopying:
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
-        llm_response = "Test response"
         pr_number = 456
 
         config = AutomationConfig()
@@ -430,13 +638,14 @@ class TestPRLabelCopying:
             mock_gh_logger_instance.execute_with_logging.return_value = _cmd_result(success=True, stdout=f"https://github.com/{repo_name}/pull/{pr_number}")
             mock_gh_logger.return_value = mock_gh_logger_instance
 
-            # Call _create_pr_for_issue
-            result = _create_pr_for_issue(
+            # Call _create_pr_for_issue with JSON message
+            result = self._create_pr_with_json_message(
                 repo_name,
                 issue_data,
                 work_branch,
                 base_branch,
-                llm_response,
+                "Test PR Title",
+                "Test PR body with issue details",
                 github_client,
                 config,
             )
@@ -464,7 +673,6 @@ class TestPRLabelCopying:
         }
         work_branch = f"issue-{issue_number}"
         base_branch = "main"
-        llm_response = "Test response"
         pr_number = 456
 
         config = AutomationConfig()
@@ -482,12 +690,13 @@ class TestPRLabelCopying:
             mock_gh_logger.return_value = mock_gh_logger_instance
 
             # Call _create_pr_for_issue - should not raise despite label error
-            result = _create_pr_for_issue(
+            result = self._create_pr_with_json_message(
                 repo_name,
                 issue_data,
                 work_branch,
                 base_branch,
-                llm_response,
+                "Test PR Title",
+                "Test PR body with issue details",
                 github_client,
                 config,
             )
