@@ -328,7 +328,12 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
     try:
         # Get current attempt
         current_attempt = get_current_attempt(repo_name, issue_number)
-        new_attempt = current_attempt + 1
+
+        # Use provided attempt_number if available, otherwise increment
+        if attempt_number is not None:
+            new_attempt = attempt_number
+        else:
+            new_attempt = current_attempt + 1
 
         # Create comment with new attempt number
         comment_body = format_attempt_comment(new_attempt)
@@ -357,7 +362,7 @@ def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optiona
                         client.reopen_issue(repo_name, sub_issue_number, reopen_comment)
 
                     # Increment attempt for the sub-issue
-                    increment_attempt(repo_name, sub_issue_number)
+                    increment_attempt(repo_name, sub_issue_number, attempt_number=new_attempt)
 
                 except Exception as e:
                     logger.error(f"Failed to propagate attempt to sub-issue #{sub_issue_number}: {e}")
