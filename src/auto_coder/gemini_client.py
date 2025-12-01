@@ -141,7 +141,9 @@ class GeminiClient(LLMClientBase):
 
             logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
-            logger.info(f"🤖 Running: gemini --model {self.model_name} --force-model --prompt [prompt]")
+            # Build display command for logging
+            display_options = " ".join(self.options) if self.options else ""
+            logger.info(f"🤖 Running: gemini --model {self.model_name} {display_options} --prompt [prompt]")
             logger.info("=" * 60)
 
             result = CommandExecutor.run_command(

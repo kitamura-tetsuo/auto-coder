@@ -439,15 +439,14 @@ class CodexMCPClient(LLMClientBase):
             # Apply configurable options from config
             if self.options:
                 cmd.extend(self.options)
-            else:
-                # Use default options if none configured
-                cmd.extend(["-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox"])
             if extra_args:
                 cmd.extend(extra_args)
             cmd.append(escaped_prompt)
             logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
             logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
-            logger.info("🤖 Running under MCP session: codex exec -s workspace-write " "--dangerously-bypass-approvals-and-sandbox [prompt]")
+            # Build display command for logging
+            display_options = " ".join(self.options) if self.options else ""
+            logger.info(f"🤖 Running under MCP session: codex exec {display_options} [prompt]")
 
             try:
                 proc = subprocess.Popen(

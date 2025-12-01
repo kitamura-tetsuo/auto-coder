@@ -157,8 +157,8 @@ def test_fallback_exec_uses_options(monkeypatch):
     assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
 
 
-def test_fallback_exec_uses_defaults_when_no_options(monkeypatch):
-    """Test that fallback exec uses default options when no options configured."""
+def test_fallback_exec_uses_no_options_when_none_configured(monkeypatch):
+    """Test that fallback exec uses no options when none are configured."""
     fake_run = mock.MagicMock(return_value=types.SimpleNamespace(returncode=0))
     monkeypatch.setattr("src.auto_coder.codex_mcp_client.subprocess.run", fake_run)
 
@@ -197,11 +197,15 @@ def test_fallback_exec_uses_defaults_when_no_options(monkeypatch):
                 # Ignore errors from the test setup
                 pass
 
-    # Verify exec command includes default options
+    # Verify exec command does not include hardcoded default options
     assert len(popen_calls) >= 2
     args, _ = popen_calls[1]
     cmd = args[0]
-    assert cmd == ["codex", "exec", "-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox", "test prompt"]
+    assert cmd == ["codex", "exec", "test prompt"]
+    # Verify no hardcoded options are present
+    assert "-s" not in cmd
+    assert "workspace-write" not in cmd
+    assert "--dangerously-bypass-approvals-and-sandbox" not in cmd
 
 
 def test_rpc_call_times_out_without_stdout_ready(monkeypatch):
