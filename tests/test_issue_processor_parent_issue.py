@@ -145,44 +145,261 @@ class TestParentIssueDetection:
 class TestProcessParentIssue:
     """Tests for _process_parent_issue function."""
 
-    def test_process_parent_issue_stub(self):
-        """Test that _process_parent_issue stub function works correctly."""
+    def test_process_parent_issue_with_no_sub_issues(self):
+        """Test that _process_parent_issue handles parent issues with no sub-issues."""
         repo_name = "owner/repo"
         issue_number = 100
-        issue_data = {"number": issue_number, "title": "Parent Issue"}
+        issue_data = {"number": issue_number, "title": "Parent Issue", "body": "No sub-issues"}
         config = AutomationConfig()
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.get_all_sub_issues.return_value = []
 
         result = _process_parent_issue(repo_name, issue_data, config, github_client)
 
-        # Should return a success action
+        # Should return warning about no sub-issues
         assert len(result) == 1
-        assert f"Processed parent issue #{issue_number}" in result[0]
+        assert f"Parent issue #{issue_number} has no sub-issues" in result[0]
+        github_client.get_all_sub_issues.assert_called_once_with(repo_name, issue_number)
 
-    def test_process_parent_issue_logs_correctly(self):
-        """Test that _process_parent_issue logs correctly during processing."""
+    @patch("src.auto_coder.issue_processor.run_llm_noedit_prompt")
+    def test_process_parent_issue_verification_closes_issue(self, mock_run_llm):
+        """Test that _process_parent_issue closes issue when requirements are met."""
         repo_name = "owner/repo"
         issue_number = 100
-        issue_data = {"number": issue_number, "title": "Parent Issue"}
+        issue_data = {
+            "number": issue_number,
+            "title": "Parent Issue",
+            "body": "Implement feature with sub-tasks",
+        }
         config = AutomationConfig()
 
         # Mock GitHub client
         github_client = MagicMock()
+        github_client.get_all_sub_issues.return_value = [101, 102]
 
-        with patch("src.auto_coder.issue_processor.logger") as mock_logger:
-            result = _process_parent_issue(repo_name, issue_data, config, github_client)
+        # Mock repository and sub-issues
+        mock_repo = MagicMock()
+        github_client.get_repository.return_value = mock_repo
 
-            # Should log info messages
-            assert mock_logger.info.call_count >= 2
-            # First log should be about processing the parent issue
-            first_call_args = mock_logger.info.call_args_list[0][0]
-            assert f"Processing parent issue #{issue_number}" in first_call_args[0]
+        sub_issue_101 = MagicMock()
+        sub_issue_101.number = 101
+        sub_issue_101.title = "Sub-task 1"
+        sub_issue_101.state = "closed"
+        sub_issue_101.body = "Implementation complete"
+        sub_issue_101.html_url = "https://github.com/owner/repo/issues/101"
 
-            # Should return a success action
-            assert len(result) == 1
-            assert f"Processed parent issue #{issue_number}" in result[0]
+        sub_issue_102 = MagicMock()
+        sub_issue_102.number = 102
+        sub_issue_102.title = "Sub-task 2"
+        sub_issue_102.state = "closed"
+        sub_issue_102.body = "Tests passing"
+        sub_issue_102.html_url = "https://github.com/owner/repo/issues/102"
+
+        mock_repo.get_issue.side_effect = lambda n: {101: sub_issue_101, 102: sub_issue_102}[n]
+
+        # Mock PRs (no PRs for simplicity)
+        github_client.get_open_pull_requests.return_value = []
+        github_client.get_pr_closing_issues.return_value = []
+
+        # Mock LLM response - requirements met
+        mock_run_llm.return_value = """```json
+{
+    "requirements_met": true,
+    "summary": "All sub-issues are closed and requirements are satisfied",
+    "reasoning": "Both sub-issues are closed with proper implementation",
+    "recommendation": "close_issue"
+}
+```"""
+
+        result = _process_parent_issue(repo_name, issue_data, config, github_client)
+
+        # Should verify requirements
+        assert mock_run_llm.called
+        verification_prompt = mock_run_llm.call_args[0][0]
+        assert f"Parent Issue\n**Number:** {issue_number}" in verification_prompt
+
+        # Should close the issue
+        github_client.close_issue.assert_called_once()
+        close_call = github_client.close_issue.call_args
+        assert close_call[0][0] == repo_name
+        assert close_call[0][1] == issue_number
+        assert "Auto-Coder Verification" in close_call[0][2]
+
+        # Should return success actions
+        assert len(result) >= 2
+        assert f"Verified parent issue #{issue_number}" in result[0]
+        assert f"Closed parent issue #{issue_number}" in result[1]
+
+    @patch("src.auto_coder.issue_processor.run_llm_noedit_prompt")
+    def test_process_parent_issue_verification_keeps_open(self, mock_run_llm):
+        """Test that _process_parent_issue keeps issue open when requirements not met."""
+        repo_name = "owner/repo"
+        issue_number = 100
+        issue_data = {
+            "number": issue_number,
+            "title": "Parent Issue",
+            "body": "Implement feature with sub-tasks",
+        }
+        config = AutomationConfig()
+
+        # Mock GitHub client
+        github_client = MagicMock()
+        github_client.get_all_sub_issues.return_value = [101]
+
+        # Mock repository and sub-issues
+        mock_repo = MagicMock()
+        github_client.get_repository.return_value = mock_repo
+
+        sub_issue_101 = MagicMock()
+        sub_issue_101.number = 101
+        sub_issue_101.title = "Sub-task 1"
+        sub_issue_101.state = "closed"
+        sub_issue_101.body = "Partial implementation"
+        sub_issue_101.html_url = "https://github.com/owner/repo/issues/101"
+
+        mock_repo.get_issue.return_value = sub_issue_101
+
+        # Mock PRs
+        github_client.get_open_pull_requests.return_value = []
+        github_client.get_pr_closing_issues.return_value = []
+
+        # Mock LLM response - requirements not met
+        mock_run_llm.return_value = """```json
+{
+    "requirements_met": false,
+    "summary": "Implementation incomplete",
+    "reasoning": "Only one sub-issue completed, missing critical functionality",
+    "recommendation": "keep_open"
+}
+```"""
+
+        result = _process_parent_issue(repo_name, issue_data, config, github_client)
+
+        # Should verify requirements
+        assert mock_run_llm.called
+
+        # Should NOT close the issue
+        github_client.close_issue.assert_not_called()
+
+        # Should return verification message
+        assert len(result) >= 1
+        assert f"Verified parent issue #{issue_number}" in result[0]
+
+    @patch("src.auto_coder.issue_processor.run_llm_noedit_prompt")
+    def test_process_parent_issue_invalid_json_response(self, mock_run_llm):
+        """Test that _process_parent_issue handles invalid LLM JSON response gracefully."""
+        repo_name = "owner/repo"
+        issue_number = 100
+        issue_data = {"number": issue_number, "title": "Parent Issue", "body": "Test"}
+        config = AutomationConfig()
+
+        # Mock GitHub client
+        github_client = MagicMock()
+        github_client.get_all_sub_issues.return_value = [101]
+
+        # Mock repository and sub-issues
+        mock_repo = MagicMock()
+        github_client.get_repository.return_value = mock_repo
+
+        sub_issue_101 = MagicMock()
+        sub_issue_101.number = 101
+        sub_issue_101.title = "Sub-task 1"
+        sub_issue_101.state = "closed"
+        sub_issue_101.body = "Test"
+        sub_issue_101.html_url = "https://github.com/owner/repo/issues/101"
+
+        mock_repo.get_issue.return_value = sub_issue_101
+
+        # Mock PRs
+        github_client.get_open_pull_requests.return_value = []
+        github_client.get_pr_closing_issues.return_value = []
+
+        # Mock LLM response - invalid JSON
+        mock_run_llm.return_value = "This is not valid JSON"
+
+        result = _process_parent_issue(repo_name, issue_data, config, github_client)
+
+        # Should handle invalid JSON gracefully
+        assert len(result) >= 1
+        assert "Warning: Could not parse verification response" in result[0]
+
+        # Should NOT close the issue
+        github_client.close_issue.assert_not_called()
+
+    @patch("src.auto_coder.issue_processor.run_llm_noedit_prompt")
+    def test_process_parent_issue_with_sub_issue_prs(self, mock_run_llm):
+        """Test that _process_parent_issue correctly identifies PRs for sub-issues."""
+        repo_name = "owner/repo"
+        issue_number = 100
+        issue_data = {"number": issue_number, "title": "Parent Issue", "body": "Test"}
+        config = AutomationConfig()
+
+        # Mock GitHub client
+        github_client = MagicMock()
+        github_client.get_all_sub_issues.return_value = [101]
+
+        # Mock repository and sub-issues
+        mock_repo = MagicMock()
+        github_client.get_repository.return_value = mock_repo
+
+        sub_issue_101 = MagicMock()
+        sub_issue_101.number = 101
+        sub_issue_101.title = "Sub-task 1"
+        sub_issue_101.state = "closed"
+        sub_issue_101.body = "Test"
+        sub_issue_101.html_url = "https://github.com/owner/repo/issues/101"
+
+        mock_repo.get_issue.return_value = sub_issue_101
+
+        # Mock PR that closes the sub-issue
+        mock_pr = MagicMock()
+        mock_pr.number = 201
+        mock_pr.state = "MERGED"
+        mock_pr.mergeable = True
+        github_client.get_open_pull_requests.return_value = [mock_pr]
+        github_client.get_pr_closing_issues.return_value = [101]
+
+        # Mock LLM response
+        mock_run_llm.return_value = """```json
+{
+    "requirements_met": true,
+    "summary": "PR is merged",
+    "reasoning": "All PRs are merged",
+    "recommendation": "close_issue"
+}
+```"""
+
+        result = _process_parent_issue(repo_name, issue_data, config, github_client)
+
+        # Should include PR information in verification prompt
+        assert mock_run_llm.called
+        verification_prompt = mock_run_llm.call_args[0][0]
+        assert "PRs Summary" in verification_prompt
+        assert "Sub-issue #101 -> PR #201" in verification_prompt
+
+    @patch("src.auto_coder.issue_processor.logger")
+    def test_process_parent_issue_exception_handling(self, mock_logger):
+        """Test that _process_parent_issue handles exceptions gracefully."""
+        repo_name = "owner/repo"
+        issue_number = 100
+        issue_data = {"number": issue_number, "title": "Parent Issue", "body": "Test"}
+        config = AutomationConfig()
+
+        # Mock GitHub client that raises exception
+        github_client = MagicMock()
+        github_client.get_all_sub_issues.side_effect = Exception("API Error")
+
+        result = _process_parent_issue(repo_name, issue_data, config, github_client)
+
+        # Should handle exception and return error action
+        assert len(result) == 1
+        assert f"Error processing parent issue #{issue_number}" in result[0]
+        assert "API Error" in result[0]
+
+        # Should log error
+        mock_logger.error.assert_called()
 
 
 class TestParentIssueBranchingIntegration:
