@@ -308,7 +308,7 @@ def get_current_attempt(repo_name: str, issue_number: int) -> int:
         return 0
 
 
-def increment_attempt(repo_name: str, issue_number: int) -> int:
+def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optional[int] = None) -> int:
     """Increment the attempt count for an issue.
 
     Gets the current attempt count, increments by 1, and posts a new comment
@@ -318,6 +318,7 @@ def increment_attempt(repo_name: str, issue_number: int) -> int:
     Args:
         repo_name: Repository name in format 'owner/repo'
         issue_number: Issue number to increment attempt for
+        attempt_number: Optional specific attempt number to use instead of auto-incrementing
 
     Returns:
         The new attempt number after incrementing
