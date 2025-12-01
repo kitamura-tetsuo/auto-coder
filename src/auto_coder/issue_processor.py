@@ -137,10 +137,17 @@ def _process_parent_issue(
 ) -> List[str]:
     """Process a parent issue that has all sub-issues closed.
 
-    This is a skeleton function for handling parent issues. A parent issue is defined as:
+    This function implements verification logic for parent issues using backend_for_noedit.
+    A parent issue is defined as:
     - Has sub-issues
     - Has no parent itself (is a top-level issue)
     - All sub-issues are closed
+
+    The function:
+    1. Retrieves all sub-issues and their details
+    2. Checks if sub-issues have corresponding merged/closed PRs
+    3. Uses backend_for_noedit to verify if the parent issue requirements are met
+    4. Closes the parent issue if requirements are satisfied
 
     Args:
         repo_name: Repository name (e.g., 'owner/repo')
@@ -153,18 +160,156 @@ def _process_parent_issue(
     """
     actions = []
     issue_number = issue_data["number"]
+    issue_title = issue_data.get("title", "Unknown")
+    issue_body = issue_data.get("body", "")
 
     try:
         logger.info(f"Processing parent issue #{issue_number}")
 
-        # TODO: Implement parent issue processing logic here
-        # This could include:
-        # - Analyzing the parent issue's requirements
-        # - Synthesizing work from all sub-issues
-        # - Creating a final PR that addresses the parent issue comprehensively
-        # - Closing the parent issue if appropriate
+        # Get all sub-issues for this parent issue
+        all_sub_issues = github_client.get_all_sub_issues(repo_name, issue_number)
 
-        actions.append(f"Processed parent issue #{issue_number}")
+        if not all_sub_issues:
+            logger.warning(f"Parent issue #{issue_number} has no sub-issues")
+            actions.append(f"Parent issue #{issue_number} has no sub-issues to process")
+            return actions
+
+        # Get detailed information about each sub-issue
+        sub_issues_details = []
+        sub_issues_with_prs = []
+
+        for sub_issue_number in all_sub_issues:
+            try:
+                # Get sub-issue details using GitHub API
+                repo = github_client.get_repository(repo_name)
+                sub_issue = repo.get_issue(sub_issue_number)
+                sub_issue_dict = {
+                    "number": sub_issue.number,
+                    "title": sub_issue.title,
+                    "state": sub_issue.state,
+                    "body": sub_issue.body or "",
+                    "url": sub_issue.html_url,
+                }
+                sub_issues_details.append(sub_issue_dict)
+
+                # Check if this sub-issue has a closing PR
+                # Search for PRs that might close this issue
+                prs = github_client.get_open_pull_requests(repo_name, limit=100)
+                for pr in prs:
+                    closing_issues = github_client.get_pr_closing_issues(repo_name, pr.number)
+                    if sub_issue_number in closing_issues:
+                        sub_issues_with_prs.append(
+                            {
+                                "issue_number": sub_issue_number,
+                                "pr_number": pr.number,
+                                "pr_state": pr.state,
+                                "mergeable": pr.mergeable,
+                            }
+                        )
+                        break
+
+            except Exception as e:
+                logger.warning(f"Failed to get details for sub-issue #{sub_issue_number}: {e}")
+
+        # Construct a comprehensive prompt for verification
+        sub_issues_summary = "\n".join([f"- Sub-issue #{detail['number']}: {detail['title']} (State: {detail['state']})" for detail in sub_issues_details])
+
+        prs_summary = "\n".join([f"- Sub-issue #{pr_info['issue_number']} -> PR #{pr_info['pr_number']} (State: {pr_info['pr_state']}, Mergeable: {pr_info['mergeable']})" for pr_info in sub_issues_with_prs]) if sub_issues_with_prs else "- No PRs found for sub-issues"
+
+        verification_prompt = f"""
+You are tasked with verifying if a parent issue's requirements have been met based on its sub-issues and their implementation status.
+
+## Parent Issue
+**Number:** {issue_number}
+**Title:** {issue_title}
+**Body:** {issue_body}
+
+## Sub-Issues Summary
+{sub_issues_summary}
+
+## PRs Summary
+{prs_summary}
+
+## Verification Task
+Please analyze whether the parent issue's requirements have been fully satisfied based on:
+1. The parent issue's description and acceptance criteria
+2. The implementation work completed in the sub-issues
+3. The status of corresponding PRs (merged, open, etc.)
+
+## Response Format
+Please respond with a JSON object in the following format:
+
+```json
+{{
+    "requirements_met": true/false,
+    "summary": "Brief summary of verification results",
+    "reasoning": "Detailed explanation of why requirements are or are not met",
+    "recommendation": "Action to take (close_issue, keep_open, needs_review)"
+}}
+```
+
+**Important Notes:**
+- Only respond with the JSON object, no additional text
+- If all sub-issues are closed and their PRs are merged, requirements are likely met
+- If any sub-issues are not properly implemented or their PRs are not merged, requirements are not met
+- Consider the parent issue's original requirements and whether the sub-issues collectively fulfill them
+"""
+
+        # Use backend_for_noedit to verify if requirements are met
+        logger.info(f"Using backend_for_noedit to verify requirements for parent issue #{issue_number}")
+
+        try:
+            verification_response = run_llm_noedit_prompt(verification_prompt)
+            logger.debug(f"Verification response for parent issue #{issue_number}: {verification_response[:500]}...")
+
+            # Parse the JSON response
+            try:
+                import json
+
+                # Try to extract JSON from the response (it might have markdown code blocks)
+                json_match = verification_response.strip()
+                if "```json" in verification_response:
+                    json_match = verification_response.split("```json")[1].split("```")[0].strip()
+                elif "```" in verification_response:
+                    json_match = verification_response.split("```")[1].split("```")[0].strip()
+
+                verification_result = json.loads(json_match.strip())
+
+                requirements_met = verification_result.get("requirements_met", False)
+                summary = verification_result.get("summary", "No summary provided")
+                reasoning = verification_result.get("reasoning", "No reasoning provided")
+                recommendation = verification_result.get("recommendation", "keep_open")
+
+                actions.append(f"Verified parent issue #{issue_number}: {summary}")
+                logger.info(f"Verification result for parent issue #{issue_number}: requirements_met={requirements_met}, recommendation={recommendation}")
+
+                # Take action based on recommendation
+                if recommendation.lower() == "close_issue" and requirements_met:
+                    try:
+                        # Close the parent issue
+                        close_comment = f"Auto-Coder Verification: All sub-issues have been processed and requirements are met.\n\nSummary: {summary}\n\nReasoning: {reasoning}"
+                        github_client.close_issue(repo_name, issue_number, close_comment)
+                        actions.append(f"Closed parent issue #{issue_number} - requirements verified as met")
+                        logger.info(f"Successfully closed parent issue #{issue_number}")
+                    except Exception as e:
+                        logger.error(f"Failed to close parent issue #{issue_number}: {e}")
+                        actions.append(f"Warning: Could not close parent issue #{issue_number}: {e}")
+                elif recommendation.lower() == "keep_open" or not requirements_met:
+                    actions.append(f"Parent issue #{issue_number} kept open - requirements not fully met or needs review")
+                    logger.info(f"Parent issue #{issue_number} will remain open")
+                else:
+                    actions.append(f"Parent issue #{issue_number}: {recommendation}")
+                    logger.info(f"Parent issue #{issue_number}: {recommendation}")
+
+            except (json.JSONDecodeError, ValueError, IndexError) as e:
+                logger.warning(f"Failed to parse verification response for parent issue #{issue_number}: {e}")
+                actions.append(f"Warning: Could not parse verification response for parent issue #{issue_number}")
+                actions.append(f"Raw verification response: {verification_response[:200]}...")
+
+        except Exception as e:
+            logger.error(f"Failed to verify parent issue #{issue_number} using backend_for_noedit: {e}")
+            actions.append(f"Error verifying parent issue #{issue_number}: {e}")
+
         logger.info(f"Completed processing parent issue #{issue_number}")
 
     except Exception as e:
