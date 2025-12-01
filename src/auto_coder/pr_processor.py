@@ -1705,6 +1705,12 @@ def _fix_pr_issues_with_testing(
                 except Exception:
                     logger.warning("Auto-update check failed during PR fix loop", exc_info=True)
                 attempt += 1
+
+                # Backend switching logic: switch to fallback after 2 attempts
+                if attempt >= 2:
+                    logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
+                    _switch_to_fallback_backend(repo_name, pr_number)
+
                 actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
                 with ProgressStage(f"Running local tests"):
