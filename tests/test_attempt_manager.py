@@ -636,6 +636,61 @@ class TestIncrementAttempt:
 
     @patch("auto_coder.github_client.GitHubClient")
     @patch("auto_coder.attempt_manager.get_current_attempt")
+    def test_increment_attempt_synchronizes_sub_issue_attempts(self, mock_get_current_attempt, mock_github_client):
+        """Test that sub-issues receive the same attempt number as parent, even with different current attempts."""
+        # Parent issue #123 has current attempt 3
+        # Sub-issue #456 has current attempt 1 (different from parent)
+        # Sub-issue #789 has current attempt 0 (different from parent)
+        # After incrementing parent to attempt 4, all should have attempt 4
+        attempts = {123: 3, 456: 1, 789: 0}
+        mock_get_current_attempt.side_effect = lambda repo, issue_num: attempts.get(issue_num, 0)
+
+        mock_client = Mock()
+        mock_repo = Mock()
+        issues = {123: Mock(state="open"), 456: Mock(state="closed"), 789: Mock(state="closed")}
+
+        mock_repo.get_issue.side_effect = lambda issue_num: issues[issue_num]
+        mock_client.get_repository.return_value = mock_repo
+        # Parent issue #123 has two sub-issues: #456 and #789
+        mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456, 789] if issue_num == 123 else []
+        mock_github_client.get_instance.return_value = mock_client
+
+        result = increment_attempt("owner/repo", 123)
+
+        assert result == 4
+        # Should have 3 calls: parent + 2 sub-issues
+        assert mock_client.add_comment_to_issue.call_count == 3
+
+        # Get all calls to add_comment_to_issue
+        calls = mock_client.add_comment_to_issue.call_args_list
+
+        # Verify parent issue #123 gets attempt 4
+        parent_call = calls[0]
+        assert parent_call[0][1] == 123
+        assert parent_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}4"
+
+        # Verify sub-issue #456 gets attempt 4 (synchronized with parent, not its old attempt 1)
+        sub_call_1 = calls[1]
+        assert sub_call_1[0][1] == 456
+        assert sub_call_1[0][2] == f"{ATTEMPT_COMMENT_PREFIX}4"
+
+        # Verify sub-issue #789 gets attempt 4 (synchronized with parent, not its old attempt 0)
+        sub_call_2 = calls[2]
+        assert sub_call_2[0][1] == 789
+        assert sub_call_2[0][2] == f"{ATTEMPT_COMMENT_PREFIX}4"
+
+        # All issues should have the SAME attempt number (4), proving synchronization
+        assert sub_call_1[0][2] == parent_call[0][2] == sub_call_2[0][2]
+
+        # Both closed sub-issues should be reopened
+        assert mock_client.reopen_issue.call_count == 2
+        reopen_calls = mock_client.reopen_issue.call_args_list
+        reopened_issues = [call[0][1] for call in reopen_calls]
+        assert 456 in reopened_issues
+        assert 789 in reopened_issues
+
+    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.attempt_manager.get_current_attempt")
     def test_increment_attempt_posts_comment_and_increments(self, mock_get_current_attempt, mock_github_client):
         """Incrementing adds a new attempt comment based on the current count."""
         mock_get_current_attempt.return_value = 1
@@ -684,7 +739,7 @@ class TestIncrementAttempt:
         assert parent_call[0][1] == 123
         assert parent_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}2"
         assert sub_call[0][1] == 456
-        assert sub_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}1"
+        assert sub_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}2"
         mock_client.reopen_issue.assert_called_once()
         reopen_args = mock_client.reopen_issue.call_args[0]
         assert reopen_args[0] == "owner/repo"
@@ -740,6 +795,60 @@ class TestIncrementAttempt:
         # Parent and first sub-issue should get comments; failing sub-issue is skipped
         assert mock_client.add_comment_to_issue.call_count == 2
         mock_client.reopen_issue.assert_called_once_with("owner/repo", 456, ANY)
+
+    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.attempt_manager.get_current_attempt")
+    def test_increment_attempt_with_explicit_attempt_number(self, mock_get_current_attempt, mock_github_client):
+        """When attempt_number is provided, it should be used instead of incrementing."""
+        # Current attempt is 5, but we explicitly set attempt_number to 10
+        mock_get_current_attempt.return_value = 5
+
+        mock_client = Mock()
+        mock_repo = Mock()
+        mock_issue = Mock(state="open")
+
+        mock_repo.get_issue.return_value = mock_issue
+        mock_client.get_repository.return_value = mock_repo
+        mock_client.get_all_sub_issues.return_value = []
+        mock_github_client.get_instance.return_value = mock_client
+
+        result = increment_attempt("owner/repo", 321, attempt_number=10)
+
+        # Should return the explicit attempt number, not current + 1
+        assert result == 10
+        mock_get_current_attempt.assert_called_once_with("owner/repo", 321)
+        mock_client.add_comment_to_issue.assert_called_once()
+        args = mock_client.add_comment_to_issue.call_args[0]
+        assert args[0] == "owner/repo"
+        assert args[1] == 321
+        assert args[2].strip() == f"{ATTEMPT_COMMENT_PREFIX}10"
+
+    @patch("auto_coder.github_client.GitHubClient")
+    @patch("auto_coder.attempt_manager.get_current_attempt")
+    def test_increment_attempt_with_explicit_attempt_number_propagates_to_sub_issues(self, mock_get_current_attempt, mock_github_client):
+        """Explicit attempt_number should be propagated to sub-issues for synchronized increment."""
+        attempts = {123: 1, 456: 0}
+        mock_get_current_attempt.side_effect = lambda repo, issue_num: attempts.get(issue_num, 0)
+
+        mock_client = Mock()
+        mock_repo = Mock()
+        issues = {123: Mock(state="open"), 456: Mock(state="closed")}
+
+        mock_repo.get_issue.side_effect = lambda issue_num: issues[issue_num]
+        mock_client.get_repository.return_value = mock_repo
+        mock_client.get_all_sub_issues.side_effect = lambda repo, issue_num: [456] if issue_num == 123 else []
+        mock_github_client.get_instance.return_value = mock_client
+
+        # Explicitly set attempt_number to 5 for parent issue #123
+        result = increment_attempt("owner/repo", 123, attempt_number=5)
+
+        # Should return the explicit attempt number
+        assert result == 5
+        assert mock_client.add_comment_to_issue.call_count == 2
+        parent_call, sub_call = mock_client.add_comment_to_issue.call_args_list
+        # Both parent and sub-issue should have attempt 5 (synchronized)
+        assert parent_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}5"
+        assert sub_call[0][2] == f"{ATTEMPT_COMMENT_PREFIX}5"
 
 
 class TestGenerateWorkBranchName:

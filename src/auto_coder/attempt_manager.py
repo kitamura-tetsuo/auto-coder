@@ -308,7 +308,7 @@ def get_current_attempt(repo_name: str, issue_number: int) -> int:
         return 0
 
 
-def increment_attempt(repo_name: str, issue_number: int) -> int:
+def increment_attempt(repo_name: str, issue_number: int, attempt_number: Optional[int] = None) -> int:
     """Increment the attempt count for an issue.
 
     Gets the current attempt count, increments by 1, and posts a new comment
@@ -318,6 +318,7 @@ def increment_attempt(repo_name: str, issue_number: int) -> int:
     Args:
         repo_name: Repository name in format 'owner/repo'
         issue_number: Issue number to increment attempt for
+        attempt_number: Optional specific attempt number to use instead of auto-incrementing
 
     Returns:
         The new attempt number after incrementing
@@ -327,7 +328,12 @@ def increment_attempt(repo_name: str, issue_number: int) -> int:
     try:
         # Get current attempt
         current_attempt = get_current_attempt(repo_name, issue_number)
-        new_attempt = current_attempt + 1
+
+        # Use provided attempt_number if available, otherwise increment
+        if attempt_number is not None:
+            new_attempt = attempt_number
+        else:
+            new_attempt = current_attempt + 1
 
         # Create comment with new attempt number
         comment_body = format_attempt_comment(new_attempt)
@@ -356,7 +362,7 @@ def increment_attempt(repo_name: str, issue_number: int) -> int:
                         client.reopen_issue(repo_name, sub_issue_number, reopen_comment)
 
                     # Increment attempt for the sub-issue
-                    increment_attempt(repo_name, sub_issue_number)
+                    increment_attempt(repo_name, sub_issue_number, attempt_number=new_attempt)
 
                 except Exception as e:
                     logger.error(f"Failed to propagate attempt to sub-issue #{sub_issue_number}: {e}")
