@@ -119,6 +119,7 @@ def test_auggie_client_options_from_config(mock_get_config, monkeypatch):
     mock_backend_config.options = ["--print"]
     mock_backend_config.options_for_noedit = ["--print"]
     mock_backend_config.usage_markers = []
+    mock_backend_config.validate_required_options.return_value = []
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 
@@ -148,6 +149,7 @@ def test_auggie_client_multiple_options_from_config(mock_get_config, monkeypatch
     mock_backend_config.options = ["--print", "--debug", "--verbose"]
     mock_backend_config.options_for_noedit = ["--print"]
     mock_backend_config.usage_markers = []
+    mock_backend_config.validate_required_options.return_value = []
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 
@@ -179,6 +181,7 @@ def test_auggie_client_empty_options_default(mock_get_config, monkeypatch):
     mock_backend_config.options = []
     mock_backend_config.options_for_noedit = []
     mock_backend_config.usage_markers = []
+    mock_backend_config.validate_required_options.return_value = []
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 
@@ -235,6 +238,7 @@ def test_auggie_client_options_for_noedit_stored(mock_get_config, monkeypatch):
     mock_backend_config.options = ["--print"]
     mock_backend_config.options_for_noedit = ["--print", "--no-edit"]
     mock_backend_config.usage_markers = []
+    mock_backend_config.validate_required_options.return_value = []
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 

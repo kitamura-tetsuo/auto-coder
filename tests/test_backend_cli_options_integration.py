@@ -99,6 +99,7 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_base_url = None
             mock_backend_config.model_provider = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -142,6 +143,7 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_base_url = None
             mock_backend_config.model_provider = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -185,6 +187,7 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_base_url = None
             mock_backend_config.settings = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -222,6 +225,7 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_base_url = None
             mock_backend_config.settings = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -260,6 +264,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options_for_noedit = ["-o", "read-only"]
             mock_backend_config.api_key = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -299,6 +304,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options_for_noedit = []
             mock_backend_config.api_key = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -337,6 +343,7 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_api_key = None
             mock_backend_config.openai_base_url = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -374,6 +381,7 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_api_key = None
             mock_backend_config.openai_base_url = None
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -408,6 +416,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options = ["-o", "creativity", "high", "-o", "verbosity", "detailed"]
             mock_backend_config.options_for_noedit = ["-o", "read-only"]
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -444,6 +453,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options = []
             mock_backend_config.options_for_noedit = []
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -480,6 +490,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options = ["-o", "session-timeout", "3600", "-o", "verbose"]
             mock_backend_config.options_for_noedit = ["-o", "no-edit-mode"]
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -524,6 +535,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options = []
             mock_backend_config.options_for_noedit = []
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -566,6 +578,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options = ["-o", "timeout", "60", "-o", "retry", "3"]
             mock_backend_config.options_for_noedit = ["-o", "read-only"]
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -613,6 +626,7 @@ class TestBackendCLIOptions:
             mock_backend_config.options = []
             mock_backend_config.options_for_noedit = []
             mock_backend_config.usage_markers = []
+            mock_backend_config.validate_required_options.return_value = []
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 

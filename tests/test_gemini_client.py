@@ -25,6 +25,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -49,6 +50,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.model = "test-model"
         mock_backend_config.options = []
@@ -79,6 +81,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.model = "test-model"
         mock_backend_config.options = []
@@ -102,6 +105,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -120,6 +124,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -158,6 +163,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -186,6 +192,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -203,6 +210,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -235,6 +243,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -259,6 +268,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -294,6 +304,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -316,6 +327,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -348,6 +360,7 @@ class TestGeminiClient:
         # Mock config
         mock_config_instance = Mock()
         mock_backend_config = Mock()
+        mock_backend_config.validate_required_options.return_value = []
         mock_backend_config.api_key = mock_gemini_api_key
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
@@ -532,6 +545,7 @@ class TestGeminiClient:
         mock_backend_config.options = ["--yolo", "--force-model"]
         mock_backend_config.options_for_noedit = ["--yolo", "--force-model"]
         mock_backend_config.api_key = "test-key"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -557,6 +571,7 @@ class TestGeminiClient:
         mock_backend_config.options = ["--yolo", "--force-model"]
         mock_backend_config.options_for_noedit = []
         mock_backend_config.api_key = "test-key"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -589,6 +604,7 @@ class TestGeminiClient:
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
         mock_backend_config.api_key = "test-key"
+        mock_backend_config.validate_required_options.return_value = []
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
