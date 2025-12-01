@@ -129,6 +129,51 @@ def generate_work_branch_name(issue_number: int, attempt: int) -> str:
     return f"issue-{issue_number}"
 
 
+def _process_parent_issue(
+    repo_name: str,
+    issue_data: Dict[str, Any],
+    config: AutomationConfig,
+    github_client: GitHubClient,
+) -> List[str]:
+    """Process a parent issue that has all sub-issues closed.
+
+    This is a skeleton function for handling parent issues. A parent issue is defined as:
+    - Has sub-issues
+    - Has no parent itself (is a top-level issue)
+    - All sub-issues are closed
+
+    Args:
+        repo_name: Repository name (e.g., 'owner/repo')
+        issue_data: Issue data dictionary
+        config: AutomationConfig instance
+        github_client: GitHub client for API operations
+
+    Returns:
+        List of action strings describing what was done
+    """
+    actions = []
+    issue_number = issue_data["number"]
+
+    try:
+        logger.info(f"Processing parent issue #{issue_number}")
+
+        # TODO: Implement parent issue processing logic here
+        # This could include:
+        # - Analyzing the parent issue's requirements
+        # - Synthesizing work from all sub-issues
+        # - Creating a final PR that addresses the parent issue comprehensively
+        # - Closing the parent issue if appropriate
+
+        actions.append(f"Processed parent issue #{issue_number}")
+        logger.info(f"Completed processing parent issue #{issue_number}")
+
+    except Exception as e:
+        logger.error(f"Error processing parent issue #{issue_number}: {e}")
+        actions.append(f"Error processing parent issue #{issue_number}: {e}")
+
+    return actions
+
+
 def _take_issue_actions(
     repo_name: str,
     issue_data: Dict[str, Any],
@@ -140,14 +185,32 @@ def _take_issue_actions(
     issue_number = issue_data["number"]
 
     try:
-        # Ask LLM CLI to analyze the issue and take appropriate actions
-        action_results = _apply_issue_actions_directly(
-            repo_name,
-            issue_data,
-            config,
-            github_client,
-        )
-        actions.extend(action_results)
+        # Check if this is a parent issue (has sub-issues, no parent, all sub-issues closed)
+        all_sub_issues = github_client.get_all_sub_issues(repo_name, issue_number)
+        parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
+        open_sub_issues = github_client.get_open_sub_issues(repo_name, issue_number)
+
+        is_parent_issue = len(all_sub_issues) > 0 and parent_issue_details is None and len(open_sub_issues) == 0  # Has sub-issues  # No parent  # All sub-issues closed
+
+        if is_parent_issue:
+            logger.info(f"Issue #{issue_number} detected as parent issue with all sub-issues closed")
+            # Branch to parent issue processing
+            action_results = _process_parent_issue(
+                repo_name,
+                issue_data,
+                config,
+                github_client,
+            )
+            actions.extend(action_results)
+        else:
+            # Ask LLM CLI to analyze the issue and take appropriate actions
+            action_results = _apply_issue_actions_directly(
+                repo_name,
+                issue_data,
+                config,
+                github_client,
+            )
+            actions.extend(action_results)
 
     except Exception as e:
         logger.error(f"Error taking actions on issue #{issue_number}: {e}")
