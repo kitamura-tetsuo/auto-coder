@@ -44,6 +44,10 @@ class ClaudeClient(LLMClientBase):
             self.settings = config_backend and config_backend.settings
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            # Store options from config
+            self.options = (config_backend and config_backend.options) or []
+            # Store options_for_noedit from config
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
         else:
             # Fall back to default claude config
             config_backend = config.get_backend_config("claude")
@@ -55,6 +59,10 @@ class ClaudeClient(LLMClientBase):
             self.settings = config_backend and config_backend.settings
             # Store usage_markers from config
             self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            # Store options from config
+            self.options = (config_backend and config_backend.options) or []
+            # Store options_for_noedit from config
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
 
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
@@ -102,11 +110,12 @@ class ClaudeClient(LLMClientBase):
             cmd = [
                 "claude",
                 "--print",
-                "--dangerously-skip-permissions",
-                "--allow-dangerously-skip-permissions",
                 "--model",
                 self.model_name,
             ]
+
+            # Add configurable options from config
+            cmd.extend(self.options)
 
             if self.settings:
                 cmd.extend(["--settings", self.settings])
@@ -132,7 +141,9 @@ class ClaudeClient(LLMClientBase):
 
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
-            logger.info(f"🤖 Running: claude --print --dangerously-skip-permissions " f"--allow-dangerously-skip-permissions --model {self.model_name} [prompt]")
+            # Build command string for logging
+            options_str = " ".join(self.options) if self.options else ""
+            logger.info(f"🤖 Running: claude --print {options_str} --model {self.model_name} [prompt]")
             logger.info("=" * 60)
 
             # Use configured usage_markers if available, otherwise fall back to defaults

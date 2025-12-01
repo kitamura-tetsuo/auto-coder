@@ -656,6 +656,8 @@ auto-coder config examples
 auto-coder config migrate
 ```
 
+**Note:** If you're migrating from an older configuration format with `message_backend` section, see the [Migration Guide for CLI Options](docs/MIGRATION_CLI_OPTIONS.md) for detailed instructions.
+
 Example configuration file (`.auto-coder/llm_config.toml` or `~/.auto-coder/llm_config.toml`):
 ```toml
 version = "1.0.0"

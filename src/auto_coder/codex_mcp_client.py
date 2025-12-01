@@ -105,6 +105,9 @@ class CodexMCPClient(LLMClientBase):
         self.enable_graphrag = enable_graphrag
         self.graphrag_integration: Optional[GraphRAGMCPIntegration] = None
 
+        # Store options from config for MCP session and fallback exec calls
+        self.options = (config_backend and config_backend.options) or []
+        self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
         # Validate required options for this backend
         if config_backend:
             required_errors = config_backend.validate_required_options()
@@ -135,6 +138,9 @@ class CodexMCPClient(LLMClientBase):
                 cmd = shlex.split(mcp_cmd_env)
             else:
                 cmd = ["codex", "mcp"]
+                # Apply configurable options from config
+                if self.options:
+                    cmd.extend(self.options)
 
             self.proc = subprocess.Popen(
                 cmd,
@@ -435,19 +441,18 @@ class CodexMCPClient(LLMClientBase):
 
         # Fallback: codex exec
         try:
-            cmd: List[str] = [
-                "codex",
-                "exec",
-                "-s",
-                "workspace-write",
-                "--dangerously-bypass-approvals-and-sandbox",
-            ]
+            cmd: List[str] = ["codex", "exec"]
+            # Apply configurable options from config
+            if self.options:
+                cmd.extend(self.options)
             if extra_args:
                 cmd.extend(extra_args)
             cmd.append(escaped_prompt)
             logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
             logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
-            logger.info("🤖 Running under MCP session: codex exec -s workspace-write " "--dangerously-bypass-approvals-and-sandbox [prompt]")
+            # Build display command for logging
+            display_options = " ".join(self.options) if self.options else ""
+            logger.info(f"🤖 Running under MCP session: codex exec {display_options} [prompt]")
 
             try:
                 proc = subprocess.Popen(

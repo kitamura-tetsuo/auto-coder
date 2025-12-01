@@ -31,6 +31,73 @@ class TestJulesClient:
         assert client.backend_name == "custom-jules"
 
     @patch("subprocess.run")
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_init_loads_config_and_options(self, mock_get_config, mock_run):
+        """JulesClient should load configuration from config file."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config to provide options
+        from unittest.mock import Mock
+
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = ["--flag1", "value1", "--flag2"]
+        mock_backend_config.options_for_noedit = ["--no-edit-flag"]
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        client = JulesClient()
+
+        # Verify config was queried
+        mock_config.get_backend_config.assert_called_once_with("jules")
+        assert client.options == ["--flag1", "value1", "--flag2"]
+        assert client.options_for_noedit == ["--no-edit-flag"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_init_with_empty_config_options(self, mock_get_config, mock_run):
+        """JulesClient should handle empty options from config."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with no options
+        from unittest.mock import Mock
+
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = None
+        mock_backend_config.options_for_noedit = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        client = JulesClient()
+
+        # Should default to empty lists
+        assert client.options == []
+        assert client.options_for_noedit == []
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_init_with_backend_name_uses_correct_config(self, mock_get_config, mock_run):
+        """JulesClient should use correct backend name for config lookup."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        from unittest.mock import Mock
+
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = ["--custom"]
+        mock_backend_config.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        client = JulesClient(backend_name="custom-jules")
+
+        # Should use custom-jules for config lookup
+        mock_config.get_backend_config.assert_called_once_with("custom-jules")
+        assert client.options == ["--custom"]
+
+    @patch("subprocess.run")
     def test_init_raises_error_when_jules_not_available(self, mock_run):
         """JulesClient should raise RuntimeError when jules CLI is not available."""
         mock_run.side_effect = FileNotFoundError("jules command not found")
@@ -67,6 +134,65 @@ class TestJulesClient:
         assert client.active_sessions[session_id] == "Test prompt"
 
         # Verify correct command was called
+        mock_run_command.assert_called_once()
+        call_args = mock_run_command.call_args[0][0]
+        assert call_args == ["jules", "session", "start"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
+    def test_start_session_with_options_from_config(self, mock_run_command, mock_get_config, mock_run):
+        """Test that options from config are added to start_session command."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config to provide options
+        from unittest.mock import Mock
+
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = ["--verbose", "--timeout", "30"]
+        mock_backend_config.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        mock_run_command.return_value = CommandResult(True, "Session started: abc123\n", "", 0)
+
+        client = JulesClient()
+        _ = client.start_session("Test prompt")
+
+        # Verify correct command was called with options
+        mock_run_command.assert_called_once()
+        call_args = mock_run_command.call_args[0][0]
+        assert call_args[0] == "jules"
+        assert call_args[1] == "session"
+        assert call_args[2] == "start"
+        assert "--verbose" in call_args
+        assert "--timeout" in call_args
+        assert "30" in call_args
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
+    def test_start_session_without_options(self, mock_run_command, mock_get_config, mock_run):
+        """Test that session starts correctly when no options are configured."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with no options
+        from unittest.mock import Mock
+
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        mock_run_command.return_value = CommandResult(True, "Session started: abc123\n", "", 0)
+
+        client = JulesClient()
+        _ = client.start_session("Test prompt")
+
+        # Verify correct command was called without extra options
         mock_run_command.assert_called_once()
         call_args = mock_run_command.call_args[0][0]
         assert call_args == ["jules", "session", "start"]
@@ -167,6 +293,44 @@ class TestJulesClient:
         mock_run_command.assert_called_once()
         call_args = mock_run_command.call_args[0][0]
         assert call_args == ["jules", "session", "send", "--session", "test-session"]
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
+    def test_send_message_with_options_from_config(self, mock_run_command, mock_get_config, mock_run):
+        """Test that options from config are added to send_message command."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config to provide options
+        from unittest.mock import Mock
+
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = ["--debug", "--log-level", "info"]
+        mock_backend_config.options_for_noedit = []
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        mock_run_command.return_value = CommandResult(True, "Response from Jules\n", "", 0)
+
+        client = JulesClient()
+        client.active_sessions["test-session"] = "Previous prompt"
+
+        response = client.send_message("test-session", "New message")
+
+        assert response == "Response from Jules"
+
+        # Verify correct command was called with options
+        mock_run_command.assert_called_once()
+        call_args = mock_run_command.call_args[0][0]
+        assert call_args[0] == "jules"
+        assert call_args[1] == "session"
+        assert call_args[2] == "send"
+        assert call_args[3] == "--session"
+        assert call_args[4] == "test-session"
+        assert "--debug" in call_args
+        assert "--log-level" in call_args
+        assert "info" in call_args
 
     @patch("subprocess.run")
     @patch("src.auto_coder.jules_client.CommandExecutor.run_command")

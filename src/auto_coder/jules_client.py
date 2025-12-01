@@ -8,6 +8,7 @@ import subprocess
 import time
 from typing import Any, Dict, List, Optional
 
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 from .utils import CommandExecutor
@@ -27,6 +28,12 @@ class JulesClient(LLMClientBase):
         self.backend_name = backend_name or "jules"
         self.timeout = None  # No timeout - let Jules CLI run as needed
         self.active_sessions: Dict[str, str] = {}  # Track active sessions
+
+        # Load configuration for this backend
+        config = get_llm_config()
+        config_backend = config.get_backend_config(self.backend_name)
+        self.options = (config_backend and config_backend.options) or []
+        self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
 
         # Check if Jules CLI is available
         try:
@@ -51,6 +58,10 @@ class JulesClient(LLMClientBase):
         """
         try:
             cmd = ["jules", "session", "start"]
+
+            # Add configured options from config
+            if self.options:
+                cmd.extend(self.options)
 
             logger.info("Starting Jules session")
             logger.info(f"🤖 Running: jules session start [prompt]")
@@ -138,6 +149,10 @@ class JulesClient(LLMClientBase):
         """
         try:
             cmd = ["jules", "session", "send", "--session", session_id]
+
+            # Add configured options from config
+            if self.options:
+                cmd.extend(self.options)
 
             logger.info(f"Sending message to Jules session: {session_id}")
 
