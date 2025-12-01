@@ -105,6 +105,10 @@ class CodexMCPClient(LLMClientBase):
         self.enable_graphrag = enable_graphrag
         self.graphrag_integration: Optional[GraphRAGMCPIntegration] = None
 
+        # Store options from config for MCP session and fallback exec calls
+        self.options = (config_backend and config_backend.options) or []
+        self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+
         # Initialize GraphRAG integration if enabled
         if self.enable_graphrag:
             logger.info("GraphRAG integration enabled for CodexMCPClient")
@@ -128,6 +132,9 @@ class CodexMCPClient(LLMClientBase):
                 cmd = shlex.split(mcp_cmd_env)
             else:
                 cmd = ["codex", "mcp"]
+                # Apply configurable options from config
+                if self.options:
+                    cmd.extend(self.options)
 
             self.proc = subprocess.Popen(
                 cmd,
@@ -428,13 +435,13 @@ class CodexMCPClient(LLMClientBase):
 
         # Fallback: codex exec
         try:
-            cmd: List[str] = [
-                "codex",
-                "exec",
-                "-s",
-                "workspace-write",
-                "--dangerously-bypass-approvals-and-sandbox",
-            ]
+            cmd: List[str] = ["codex", "exec"]
+            # Apply configurable options from config
+            if self.options:
+                cmd.extend(self.options)
+            else:
+                # Use default options if none configured
+                cmd.extend(["-s", "workspace-write", "--dangerously-bypass-approvals-and-sandbox"])
             if extra_args:
                 cmd.extend(extra_args)
             cmd.append(escaped_prompt)
