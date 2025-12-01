@@ -16,7 +16,7 @@ from .logger_config import get_logger
 logger = get_logger(__name__)
 
 
-class TestWatcherIntegration:
+class WatcherIntegration:
     """Integrates test_watcher MCP server with LLM clients."""
 
     def __init__(
