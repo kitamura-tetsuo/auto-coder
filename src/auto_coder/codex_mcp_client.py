@@ -108,6 +108,12 @@ class CodexMCPClient(LLMClientBase):
         # Store options from config for MCP session and fallback exec calls
         self.options = (config_backend and config_backend.options) or []
         self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
 
         # Initialize GraphRAG integration if enabled
         if self.enable_graphrag:

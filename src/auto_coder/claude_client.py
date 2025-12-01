@@ -73,6 +73,13 @@ class ClaudeClient(LLMClientBase):
         self._last_session_id: Optional[str] = None
         self._last_output: Optional[str] = None
 
+        # Validate required options for this backend
+        if config_backend:
+            required_errors = config_backend.validate_required_options()
+            if required_errors:
+                for error in required_errors:
+                    logger.warning(error)
+
         try:
             result = subprocess.run(["claude", "--version"], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:

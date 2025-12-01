@@ -59,7 +59,9 @@ from .config import settings
 # package is installed this resolves to ``.../site-packages``.  When running
 # directly from the repository it resolves to ``.../src``.
 _PACKAGE_DIR = Path(__file__).resolve().parent
-_PATH_TRIM_BASES = (_PACKAGE_DIR.parent.resolve(),)
+# Include both the src directory and the project root for path trimming
+_PROJECT_ROOT = _PACKAGE_DIR.parent.parent.resolve()
+_PATH_TRIM_BASES = (_PACKAGE_DIR.parent.resolve(), _PROJECT_ROOT, Path.cwd())
 
 
 def format_path_for_log(file_path: str) -> str:

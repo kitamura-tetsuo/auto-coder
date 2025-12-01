@@ -5,15 +5,15 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from src.auto_coder.test_watcher_integration import TestWatcherIntegration
+from src.auto_coder.test_watcher_integration import WatcherIntegration
 
 
-class TestTestWatcherIntegration:
-    """Tests for TestWatcherIntegration."""
+class TestWatcherIntegration:
+    """Tests for WatcherIntegration."""
 
     def test_initialization_default(self):
         """Test initialization with default values."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         assert integration.mcp_server_path is None or isinstance(integration.mcp_server_path, str)
         assert integration.project_root == str(Path.cwd())
@@ -21,7 +21,7 @@ class TestTestWatcherIntegration:
 
     def test_initialization_with_params(self):
         """Test initialization with custom parameters."""
-        integration = TestWatcherIntegration(
+        integration = WatcherIntegration(
             mcp_server_path="/path/to/server",
             project_root="/path/to/project",
         )
@@ -32,13 +32,13 @@ class TestTestWatcherIntegration:
 
     def test_is_mcp_server_installed_no_path(self):
         """Test checking if server is installed (no path)."""
-        integration = TestWatcherIntegration(mcp_server_path=None)
+        integration = WatcherIntegration(mcp_server_path=None)
 
         assert integration.is_mcp_server_installed() is False
 
     def test_is_mcp_server_installed_not_exists(self):
         """Test checking if server is installed (path doesn't exist)."""
-        integration = TestWatcherIntegration(mcp_server_path="/non/existent/path")
+        integration = WatcherIntegration(mcp_server_path="/non/existent/path")
 
         assert integration.is_mcp_server_installed() is False
 
@@ -47,7 +47,7 @@ class TestTestWatcherIntegration:
         server_path = tmp_path / "server"
         server_path.mkdir()
 
-        integration = TestWatcherIntegration(mcp_server_path=str(server_path))
+        integration = WatcherIntegration(mcp_server_path=str(server_path))
 
         assert integration.is_mcp_server_installed() is False
 
@@ -57,7 +57,7 @@ class TestTestWatcherIntegration:
         server_path.mkdir()
         (server_path / "main.py").write_text("# main")
 
-        integration = TestWatcherIntegration(mcp_server_path=str(server_path))
+        integration = WatcherIntegration(mcp_server_path=str(server_path))
 
         assert integration.is_mcp_server_installed() is True
 
@@ -67,19 +67,19 @@ class TestTestWatcherIntegration:
         server_path.mkdir()
         (server_path / "server.py").write_text("# server")
 
-        integration = TestWatcherIntegration(mcp_server_path=str(server_path))
+        integration = WatcherIntegration(mcp_server_path=str(server_path))
 
         assert integration.is_mcp_server_installed() is True
 
     def test_is_mcp_server_running_no_process(self):
         """Test checking if server is running (no process)."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         assert integration.is_mcp_server_running() is False
 
     def test_is_mcp_server_running_process_terminated(self):
         """Test checking if server is running (process terminated)."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         # Mock terminated process
         mock_process = Mock()
@@ -91,7 +91,7 @@ class TestTestWatcherIntegration:
 
     def test_is_mcp_server_running_process_alive(self):
         """Test checking if server is running (process alive)."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         # Mock running process
         mock_process = Mock()
@@ -110,7 +110,7 @@ class TestTestWatcherIntegration:
         run_script = server_path / "run_server.sh"
         run_script.write_text("#!/bin/bash\necho test")
 
-        integration = TestWatcherIntegration(
+        integration = WatcherIntegration(
             mcp_server_path=str(server_path),
             project_root="/path/to/project",
         )
@@ -143,7 +143,7 @@ class TestTestWatcherIntegration:
         (server_path / "main.py").write_text("# main")
         # No run_server.sh
 
-        integration = TestWatcherIntegration(
+        integration = WatcherIntegration(
             mcp_server_path=str(server_path),
             project_root="/path/to/project",
         )
@@ -166,7 +166,7 @@ class TestTestWatcherIntegration:
 
     def test_start_mcp_server_no_path(self):
         """Test starting MCP server with no path."""
-        integration = TestWatcherIntegration(mcp_server_path=None)
+        integration = WatcherIntegration(mcp_server_path=None)
 
         result = integration.start_mcp_server()
 
@@ -179,7 +179,7 @@ class TestTestWatcherIntegration:
         server_path.mkdir()
         (server_path / "main.py").write_text("# main")
 
-        integration = TestWatcherIntegration(mcp_server_path=str(server_path))
+        integration = WatcherIntegration(mcp_server_path=str(server_path))
 
         # Mock Popen to raise exception
         mock_popen.side_effect = Exception("Test error")
@@ -190,7 +190,7 @@ class TestTestWatcherIntegration:
 
     def test_stop_mcp_server_no_process(self):
         """Test stopping MCP server with no process."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         # Should not raise exception
         integration.stop_mcp_server()
@@ -199,7 +199,7 @@ class TestTestWatcherIntegration:
 
     def test_stop_mcp_server_normal(self):
         """Test stopping MCP server normally."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         # Mock process
         mock_process = Mock()
@@ -215,7 +215,7 @@ class TestTestWatcherIntegration:
         """Test stopping MCP server with timeout."""
         import subprocess
 
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         # Mock process that times out
         mock_process = Mock()
@@ -230,7 +230,7 @@ class TestTestWatcherIntegration:
 
     def test_get_mcp_config_for_llm_not_running(self):
         """Test getting MCP config when server is not running."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         config = integration.get_mcp_config_for_llm()
 
@@ -238,7 +238,7 @@ class TestTestWatcherIntegration:
 
     def test_get_mcp_config_for_llm_running(self):
         """Test getting MCP config when server is running."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         # Mock running process
         mock_process = Mock()
@@ -254,7 +254,7 @@ class TestTestWatcherIntegration:
 
     def test_context_manager(self):
         """Test context manager usage."""
-        integration = TestWatcherIntegration()
+        integration = WatcherIntegration()
 
         # Mock process
         mock_process = Mock()
@@ -268,20 +268,20 @@ class TestTestWatcherIntegration:
 
     def test_ensure_ready_not_installed(self):
         """Test ensure_ready when server is not installed."""
-        integration = TestWatcherIntegration(mcp_server_path="/non/existent/path")
+        integration = WatcherIntegration(mcp_server_path="/non/existent/path")
 
         result = integration.ensure_ready()
 
         assert result is False
 
-    @patch.object(TestWatcherIntegration, "start_mcp_server")
+    @patch.object(WatcherIntegration, "start_mcp_server")
     def test_ensure_ready_start_failure(self, mock_start, tmp_path):
         """Test ensure_ready when server start fails."""
         server_path = tmp_path / "server"
         server_path.mkdir()
         (server_path / "main.py").write_text("# main")
 
-        integration = TestWatcherIntegration(mcp_server_path=str(server_path))
+        integration = WatcherIntegration(mcp_server_path=str(server_path))
 
         # Mock start_mcp_server to fail
         mock_start.return_value = False
@@ -290,14 +290,14 @@ class TestTestWatcherIntegration:
 
         assert result is False
 
-    @patch.object(TestWatcherIntegration, "start_mcp_server")
+    @patch.object(WatcherIntegration, "start_mcp_server")
     def test_ensure_ready_success(self, mock_start, tmp_path):
         """Test ensure_ready when everything succeeds."""
         server_path = tmp_path / "server"
         server_path.mkdir()
         (server_path / "main.py").write_text("# main")
 
-        integration = TestWatcherIntegration(mcp_server_path=str(server_path))
+        integration = WatcherIntegration(mcp_server_path=str(server_path))
 
         # Mock start_mcp_server to succeed
         mock_start.return_value = True

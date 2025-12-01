@@ -5,12 +5,24 @@ Configuration management for LLM backends using TOML files.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import toml
 
 from .logger_config import get_logger
+
+# Define required options for each backend type
+# These are options that must be present in the options list for the backend to work
+REQUIRED_OPTIONS_BY_BACKEND = {
+    "codex": ["--dangerously-bypass-approvals-and-sandbox"],
+    "claude": ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"],
+    "gemini": ["--yolo"],
+    "auggie": ["--print"],
+    "qwen": ["-y"],
+    "jules": [],  # Session-based, no required flags
+    "codex-mcp": [],  # MCP-based, options flexible
+}
 
 
 def resolve_config_path(config_path: Optional[str] = None) -> str:
@@ -84,6 +96,25 @@ class BackendConfig:
     settings: Optional[str] = None
     # Usage markers for tracking usage patterns
     usage_markers: List[str] = field(default_factory=list)
+    # Additional options for message generation (non-code-editing) operations
+    options_for_noedit: List[str] = field(default_factory=list)
+
+    def validate_required_options(self) -> List[str]:
+        """Validate that required options are configured.
+
+        Returns:
+            List of error messages (empty if valid)
+        """
+        errors = []
+        # Use backend_type if available, otherwise fall back to name
+        backend_type = self.backend_type or self.name
+        required = REQUIRED_OPTIONS_BY_BACKEND.get(backend_type, [])
+
+        for req_opt in required:
+            if req_opt not in self.options:
+                errors.append(f"Backend '{self.name}' missing required option: {req_opt}. " f"Add to [backends.{self.name}].options in llm_config.toml")
+
+        return errors
 
 
 @dataclass
@@ -95,9 +126,9 @@ class LLMBackendConfiguration:
     default_backend: str = "codex"
     # Individual backend configurations
     backends: Dict[str, BackendConfig] = field(default_factory=dict)
-    # Message backend configuration (separate from general LLM operations)
-    message_backend_order: List[str] = field(default_factory=list)
-    message_default_backend: Optional[str] = None
+    # Backend configuration for non-editing operations (message generation, etc.)
+    backend_for_noedit_order: List[str] = field(default_factory=list)
+    backend_for_noedit_default: Optional[str] = None
     # Fallback backend configuration for failed PRs
     backend_for_failed_pr: Optional[BackendConfig] = None
     # Environment variable overrides
@@ -161,6 +192,7 @@ class LLMBackendConfiguration:
                     always_switch_after_execution=config_data.get("always_switch_after_execution", False),
                     settings=config_data.get("settings"),
                     usage_markers=config_data.get("usage_markers", []),
+                    options_for_noedit=config_data.get("options_for_noedit", []),
                 )
 
             # 1. Parse explicit [backends] section
@@ -217,9 +249,20 @@ class LLMBackendConfiguration:
                 if backend_name not in backends:
                     backends[backend_name] = BackendConfig(name=backend_name)
 
-            # Parse message backend settings
-            message_backend_order = data.get("message_backend", {}).get("order", [])
-            message_default_backend = data.get("message_backend", {}).get("default")
+            # Parse backend for non-editing operations settings
+            # Try new key first, then fall back to old key for backward compatibility
+            backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
+            backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
+
+            # Backward compatibility: check old key if new key not found
+            if not backend_for_noedit_order and not backend_for_noedit_default:
+                old_order = data.get("message_backend", {}).get("order", [])
+                old_default = data.get("message_backend", {}).get("default")
+                if old_order or old_default:
+                    logger = get_logger(__name__)
+                    logger.warning("Configuration uses deprecated 'message_backend' key. " "Please update to 'backend_for_noedit' in your config file.")
+                    backend_for_noedit_order = old_order
+                    backend_for_noedit_default = old_default
 
             # Parse backend_for_failed_pr section
             backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
@@ -229,11 +272,137 @@ class LLMBackendConfiguration:
                 fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
                 backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
 
-            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, message_backend_order=message_backend_order, message_default_backend=message_default_backend, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
+            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
 
             return config
         except Exception as e:
             raise ValueError(f"Error loading configuration from {config_path}: {e}")
+
+    @classmethod
+    def load_from_dict(cls, data: Dict[str, Any]) -> "LLMBackendConfiguration":
+        """Load configuration directly from a dictionary of configuration data."""
+
+        try:
+            return cls._load_from_data(data, config_path="<dict>")
+        except Exception as e:
+            raise ValueError(f"Error loading configuration from dict: {e}")
+
+    @classmethod
+    def _load_from_data(cls, data: Dict[str, Any], config_path: Optional[str] = None) -> "LLMBackendConfiguration":
+        # Parse general backend settings
+        backend_order = data.get("backend", {}).get("order", [])
+        default_backend = data.get("backend", {}).get("default", "codex")
+
+        # Parse backends
+        backends_data = data.get("backends", {})
+        backends: Dict[str, BackendConfig] = {}
+
+        # Helper to parse a backend config dict
+        def parse_backend_config(name: str, config_data: dict) -> BackendConfig:
+            return BackendConfig(
+                name=name,
+                enabled=config_data.get("enabled", True),
+                model=config_data.get("model"),
+                api_key=config_data.get("api_key"),
+                base_url=config_data.get("base_url"),
+                temperature=config_data.get("temperature"),
+                timeout=config_data.get("timeout"),
+                max_retries=config_data.get("max_retries"),
+                openai_api_key=config_data.get("openai_api_key"),
+                openai_base_url=config_data.get("openai_base_url"),
+                extra_args=config_data.get("extra_args", {}),
+                providers=config_data.get("providers", []),
+                usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
+                usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
+                options=config_data.get("options", []),
+                backend_type=config_data.get("backend_type"),
+                model_provider=config_data.get("model_provider"),
+                always_switch_after_execution=config_data.get("always_switch_after_execution", False),
+                settings=config_data.get("settings"),
+                usage_markers=config_data.get("usage_markers", []),
+                options_for_noedit=config_data.get("options_for_noedit", []),
+            )
+
+        # 1. Parse explicit [backends] section
+        for name, config_data in backends_data.items():
+            backends[name] = parse_backend_config(name, config_data)
+
+        # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
+        # This handles cases where TOML parses dotted keys as nested dictionaries
+        # e.g. [grok-4.1-fast] -> {'grok-4': {'1-fast': {...}}}
+
+        def is_potential_backend_config(d: dict) -> bool:
+            # Heuristic: if it has specific backend keys, it's likely a config
+            # We check for keys that are commonly used in backend definitions
+            common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings"}
+            # Also check if 'enabled' is present, but it's very common so we combine it
+            # with the fact that we are looking for backends.
+            # If a dict has 'enabled' and is in the top-level (or nested from top-level),
+            # it's a strong candidate.
+            if "enabled" in d:
+                return True
+            return any(k in d for k in common_keys)
+
+        def find_backends_recursive(current_data: dict, prefix: str = ""):
+            for key, value in current_data.items():
+                if not isinstance(value, dict):
+                    continue
+
+                # Skip known non-backend dict fields to avoid false positives
+                if key in {"extra_args"}:
+                    continue
+
+                full_key = f"{prefix}.{key}" if prefix else key
+
+                # Check if this node itself is a backend config
+                if is_potential_backend_config(value):
+                    if full_key not in backends:
+                        backends[full_key] = parse_backend_config(full_key, value)
+
+                # Recurse to find nested backends (e.g. grok-4.1-fast)
+                find_backends_recursive(value, full_key)
+
+        # Exclude reserved top-level keys from recursion
+        reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends"}
+
+        # Create a dict of potential top-level backends to recurse
+        potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
+
+        find_backends_recursive(potential_roots)
+
+        # Add default backends if they are not already in the configuration
+        # This ensures that backends like 'jules' are available even if not explicitly defined in the file
+        default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
+        for backend_name in default_backends:
+            if backend_name not in backends:
+                backends[backend_name] = BackendConfig(name=backend_name)
+
+        # Parse backend for non-editing operations settings
+        # Try new key first, then fall back to old key for backward compatibility
+        backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
+        backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
+
+        # Backward compatibility: check old key if new key not found
+        if not backend_for_noedit_order and not backend_for_noedit_default:
+            old_order = data.get("message_backend", {}).get("order", [])
+            old_default = data.get("message_backend", {}).get("default")
+            if old_order or old_default:
+                logger = get_logger(__name__)
+                logger.warning("Configuration uses deprecated 'message_backend' key. " "Please update to 'backend_for_noedit' in your config file.")
+                backend_for_noedit_order = old_order
+                backend_for_noedit_default = old_default
+
+        # Parse backend_for_failed_pr section
+        backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
+        backend_for_failed_pr = None
+        if backend_for_failed_pr_data:
+            # Use "backend_for_failed_pr" as default name if not specified in data
+            fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
+            backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
+
+        config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
+
+        return config
 
     def save_to_file(self, config_path: Optional[str] = None) -> None:
         """Save configuration to TOML file."""
@@ -269,6 +438,7 @@ class LLMBackendConfiguration:
                 "always_switch_after_execution": config.always_switch_after_execution,
                 "settings": config.settings,
                 "usage_markers": config.usage_markers,
+                "options_for_noedit": config.options_for_noedit,
             }
 
         # Prepare backend_for_failed_pr data
@@ -298,9 +468,10 @@ class LLMBackendConfiguration:
                 "always_switch_after_execution": config.always_switch_after_execution,
                 "settings": config.settings,
                 "usage_markers": config.usage_markers,
+                "options_for_noedit": config.options_for_noedit,
             }
 
-        data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "message_backend": {"order": self.message_backend_order, "default": self.message_default_backend or self.default_backend}, "backends": backend_data}
+        data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend}, "backends": backend_data}
 
         # Add backend_for_failed_pr section if configured
         if backend_for_failed_pr_data:
@@ -323,33 +494,47 @@ class LLMBackendConfiguration:
             # If no order is specified, return all enabled backends
             return [name for name, config in self.backends.items() if config.enabled]
 
-    def get_active_message_backends(self) -> List[str]:
-        """Get list of enabled message backends in the configured order.
+    def get_active_noedit_backends(self) -> List[str]:
+        """Get list of enabled backends for non-editing operations in the configured order.
 
-        Returns message backend order if specifically configured, otherwise falls back to general backends.
+        Returns backend_for_noedit order if specifically configured, otherwise falls back to general backends.
         """
-        if self.message_backend_order:
-            # Filter to only include enabled backends that are in message order
-            return [name for name in self.message_backend_order if self.backends.get(name, BackendConfig(name=name)).enabled]
+        if self.backend_for_noedit_order:
+            # Filter to only include enabled backends that are in noedit order
+            return [name for name in self.backend_for_noedit_order if self.backends.get(name, BackendConfig(name=name)).enabled]
         else:
-            # Fall back to using the general backend order for messages
+            # Fall back to using the general backend order for non-editing operations
             return self.get_active_backends()
 
-    def get_message_default_backend(self) -> str:
-        """Get the default backend for message generation.
+    # Deprecated alias for backward compatibility
+    def get_active_message_backends(self) -> List[str]:
+        """Deprecated: Use get_active_noedit_backends() instead."""
+        logger = get_logger(__name__)
+        logger.warning("get_active_message_backends() is deprecated. Use get_active_noedit_backends() instead.")
+        return self.get_active_noedit_backends()
 
-        Returns message backend default if specifically configured, otherwise falls back to general default.
+    def get_noedit_default_backend(self) -> str:
+        """Get the default backend for non-editing operations.
+
+        Returns backend_for_noedit default if specifically configured, otherwise falls back to general default.
         """
-        if self.message_default_backend and self.backends.get(self.message_default_backend, BackendConfig(name=self.message_default_backend)).enabled:
-            return self.message_default_backend
+        if self.backend_for_noedit_default and self.backends.get(self.backend_for_noedit_default, BackendConfig(name=self.backend_for_noedit_default)).enabled:
+            return self.backend_for_noedit_default
         return self.default_backend
 
+    # Deprecated alias for backward compatibility
+    def get_message_default_backend(self) -> str:
+        """Deprecated: Use get_noedit_default_backend() instead."""
+        logger = get_logger(__name__)
+        logger.warning("get_message_default_backend() is deprecated. Use get_noedit_default_backend() instead.")
+        return self.get_noedit_default_backend()
+
     def has_dual_configuration(self) -> bool:
-        """Check if both general backend and message backend configurations are explicitly set."""
-        # Check if message-specific configurations exist
-        has_message_config = bool(self.message_backend_order or self.message_default_backend)
+        """Check if both general backend and non-editing backend configurations are explicitly set."""
+        # Check if noedit-specific configurations exist
+        has_noedit_config = bool(self.backend_for_noedit_order or self.backend_for_noedit_default)
         has_general_config = bool(self.backend_order or self.default_backend)
-        return has_message_config and has_general_config
+        return has_noedit_config and has_general_config
 
     def get_backend_for_failed_pr(self) -> Optional[BackendConfig]:
         """Get the fallback backend configuration for failed PRs.
@@ -400,9 +585,14 @@ class LLMBackendConfiguration:
         if default_backend_env:
             self.default_backend = default_backend_env
 
-        message_default_backend_env = os.environ.get("AUTO_CODER_MESSAGE_DEFAULT_BACKEND")
-        if message_default_backend_env:
-            self.message_default_backend = message_default_backend_env
+        # Check new environment variable first, fall back to old one
+        noedit_default_backend_env = os.environ.get("AUTO_CODER_NOEDIT_DEFAULT_BACKEND") or os.environ.get("AUTO_CODER_MESSAGE_DEFAULT_BACKEND")
+        if noedit_default_backend_env:
+            self.backend_for_noedit_default = noedit_default_backend_env
+            # Warn if using old environment variable
+            if os.environ.get("AUTO_CODER_MESSAGE_DEFAULT_BACKEND") and not os.environ.get("AUTO_CODER_NOEDIT_DEFAULT_BACKEND"):
+                logger = get_logger(__name__)
+                logger.warning("Environment variable AUTO_CODER_MESSAGE_DEFAULT_BACKEND is deprecated. " "Use AUTO_CODER_NOEDIT_DEFAULT_BACKEND instead.")
 
 
 # Global instance to be used throughout the application
