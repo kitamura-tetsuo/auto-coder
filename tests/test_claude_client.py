@@ -500,3 +500,251 @@ class TestClaudeClient:
         assert "--allow-dangerously-skip-permissions" in called_cmd
         assert "--model" in called_cmd
         assert "sonnet" in called_cmd
+
+
+class TestClaudeClientSessionExtraction:
+    """Test cases for session ID extraction in ClaudeClient."""
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_extract_valid_uuid_from_session_id_label(self, mock_run, mock_get_config):
+        """Test extraction from 'Session ID: <uuid>' format."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test extraction with valid UUID
+        output = "Session ID: 550e8400-e29b-41d4-a716-446655440000"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() == "550e8400-e29b-41d4-a716-446655440000"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_extract_valid_uuid_from_session_label(self, mock_run, mock_get_config):
+        """Test extraction from 'Session: <uuid>' format."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test extraction with valid UUID
+        output = "Session: 550e8400-e29b-41d4-a716-446655440000"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() == "550e8400-e29b-41d4-a716-446655440000"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_extract_valid_uuid_from_url_parameter(self, mock_run, mock_get_config):
+        """Test extraction from 'session_id=<uuid>' format."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test extraction with valid UUID
+        output = "session_id=550e8400-e29b-41d4-a716-446655440000"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() == "550e8400-e29b-41d4-a716-446655440000"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_extract_valid_uuid_from_path(self, mock_run, mock_get_config):
+        """Test extraction from '/sessions/<uuid>' format."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test extraction with valid UUID
+        output = "/sessions/550e8400-e29b-41d4-a716-446655440000"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() == "550e8400-e29b-41d4-a716-446655440000"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_reject_invalid_session_id_abc123(self, mock_run, mock_get_config):
+        """Test that 'abc123' is NOT extracted."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test that invalid format is NOT extracted
+        output = "Session ID: abc123"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_reject_invalid_session_id_short(self, mock_run, mock_get_config):
+        """Test that short strings are NOT extracted."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test that short strings are NOT extracted
+        output = "Session ID: 12345678"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+        # Test another short string
+        output = "Session ID: a1b2c3d4"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_reject_invalid_session_id_malformed_uuid(self, mock_run, mock_get_config):
+        """Test that malformed UUIDs are NOT extracted."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test malformed UUID - wrong segment lengths
+        output = "Session ID: 550e8400-e29b-41d4-a716-44665544000"  # 31 chars, should be 32
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+        # Test malformed UUID - invalid characters
+        output = "Session ID: 550e8400-e29b-41d4-a716-44665544000g"  # contains 'g'
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+        # Test malformed UUID - wrong dashes
+        output = "Session ID: 550e8400-e29b-41d4-a716-44665544000"  # missing dash
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_extract_uppercase_uuid(self, mock_run, mock_get_config):
+        """Test that uppercase UUIDs are extracted correctly."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test extraction with uppercase UUID
+        output = "Session ID: 550E8400-E29B-41D4-A716-446655440000"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() == "550E8400-E29B-41D4-A716-446655440000"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_extract_lowercase_uuid(self, mock_run, mock_get_config):
+        """Test that lowercase UUIDs are extracted correctly."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test extraction with lowercase UUID
+        output = "Session ID: 550e8400-e29b-41d4-a716-446655440000"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() == "550e8400-e29b-41d4-a716-446655440000"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_extract_mixed_case_uuid(self, mock_run, mock_get_config):
+        """Test that mixed-case UUIDs are extracted correctly."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test extraction with mixed-case UUID
+        output = "Session ID: 550e8400-E29B-41d4-a716-446655440000"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() == "550e8400-E29B-41d4-a716-446655440000"
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    def test_no_session_id_in_output(self, mock_run, mock_get_config):
+        """Test that _last_session_id remains None when no UUID is present."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = ClaudeClient()
+
+        # Test with empty output
+        client._extract_and_store_session_id("")
+        assert client.get_last_session_id() is None
+
+        # Test with no session ID in output
+        output = "This is just regular output with no session information"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+        # Test with text that looks similar but isn't a valid UUID
+        output = "Session ID: not-a-uuid-format"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
