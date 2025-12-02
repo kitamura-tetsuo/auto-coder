@@ -366,8 +366,8 @@ class TestProcessParentIssue:
         mock_pr.number = 201
         mock_pr.state = "MERGED"
         mock_pr.mergeable = True
-        github_client.get_open_pull_requests.return_value = [mock_pr]
-        github_client.get_pr_closing_issues.return_value = [101]
+        github_client.find_closing_pr.return_value = 201
+        mock_repo.get_pull.return_value = mock_pr
 
         # Mock LLM response
         mock_run_llm.return_value = """```json
