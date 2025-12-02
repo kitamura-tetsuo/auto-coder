@@ -217,3 +217,178 @@ class TestPRProcessorBackendSwitching:
         # Verify all calls were with correct arguments
         for call_args in mock_switch_backend.call_args_list:
             assert call_args[0] == (repo_name, 321)
+
+
+class TestKeepLabelOnPRMerge:
+    """Test that keep_label() is called on successful PR merge."""
+
+    def test_process_pr_for_merge_calls_keep_label_on_successful_merge(self):
+        """Test that _process_pr_for_merge calls keep_label when PR is successfully merged."""
+        from contextlib import contextmanager
+        from unittest.mock import Mock, patch
+
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _process_pr_for_merge
+
+        repo_name = "owner/repo"
+        pr_data = {"number": 123, "title": "Test PR", "body": "Test body"}
+        config = AutomationConfig()
+
+        # Track if keep_label was called
+        keep_label_called = []
+
+        # Create a mock LabelManagerContext that tracks keep_label calls
+        class MockLabelManagerContext:
+            def __init__(self, should_process):
+                self._should_process = should_process
+
+            def __bool__(self):
+                return self._should_process
+
+            def keep_label(self):
+                keep_label_called.append(True)
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield MockLabelManagerContext(True)
+
+        # Mock _merge_pr to return True (successful merge)
+        with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
+            with patch("src.auto_coder.pr_processor._merge_pr", return_value=True):
+                with patch("src.auto_coder.pr_processor.GitHubClient") as mock_client_class:
+                    mock_client = Mock()
+                    mock_client_class.get_instance.return_value = mock_client
+
+                    result = _process_pr_for_merge(repo_name, pr_data, config)
+
+        # Verify keep_label was called
+        assert len(keep_label_called) == 1, "keep_label should be called once on successful PR merge"
+        assert "Successfully merged" in result.actions_taken[0]
+
+    def test_process_pr_for_merge_does_not_call_keep_label_on_failed_merge(self):
+        """Test that _process_pr_for_merge does not call keep_label when merge fails."""
+        from contextlib import contextmanager
+        from unittest.mock import Mock, patch
+
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _process_pr_for_merge
+
+        repo_name = "owner/repo"
+        pr_data = {"number": 456, "title": "Test PR", "body": "Test body"}
+        config = AutomationConfig()
+
+        # Track if keep_label was called
+        keep_label_called = []
+
+        # Create a mock LabelManagerContext that tracks keep_label calls
+        class MockLabelManagerContext:
+            def __init__(self, should_process):
+                self._should_process = should_process
+
+            def __bool__(self):
+                return self._should_process
+
+            def keep_label(self):
+                keep_label_called.append(True)
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield MockLabelManagerContext(True)
+
+        # Mock _merge_pr to return False (failed merge)
+        with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
+            with patch("src.auto_coder.pr_processor._merge_pr", return_value=False):
+                with patch("src.auto_coder.pr_processor.GitHubClient") as mock_client_class:
+                    mock_client = Mock()
+                    mock_client_class.get_instance.return_value = mock_client
+
+                    result = _process_pr_for_merge(repo_name, pr_data, config)
+
+        # Verify keep_label was NOT called
+        assert len(keep_label_called) == 0, "keep_label should not be called when merge fails"
+        assert "Failed to merge" in result.actions_taken[0]
+
+    def test_process_pr_for_fixes_calls_keep_label_on_successful_merge(self):
+        """Test that _process_pr_for_fixes calls keep_label when PR is successfully merged."""
+        from contextlib import contextmanager
+        from unittest.mock import Mock, patch
+
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _process_pr_for_fixes
+
+        repo_name = "owner/repo"
+        pr_data = {"number": 789, "title": "Test PR", "body": "Test body"}
+        config = AutomationConfig()
+        mock_github_client = Mock()
+
+        # Track if keep_label was called
+        keep_label_called = []
+
+        # Create a mock LabelManagerContext that tracks keep_label calls
+        class MockLabelManagerContext:
+            def __init__(self, should_process):
+                self._should_process = should_process
+
+            def __bool__(self):
+                return self._should_process
+
+            def keep_label(self):
+                keep_label_called.append(True)
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield MockLabelManagerContext(True)
+
+        # Mock _take_pr_actions to return actions indicating successful merge
+        with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
+            with patch("src.auto_coder.pr_processor.ProgressStage"):
+                with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
+                    mock_take_actions.return_value = ["Successfully merged PR #789"]
+
+                    result = _process_pr_for_fixes(mock_github_client, repo_name, pr_data, config)
+
+        # Verify keep_label was called
+        assert len(keep_label_called) == 1, "keep_label should be called once on successful PR merge"
+        assert "Successfully merged" in result.actions_taken[0]
+
+    def test_process_pr_for_fixes_does_not_call_keep_label_on_no_merge(self):
+        """Test that _process_pr_for_fixes does not call keep_label when no merge occurs."""
+        from contextlib import contextmanager
+        from unittest.mock import Mock, patch
+
+        from src.auto_coder.automation_config import AutomationConfig
+        from src.auto_coder.pr_processor import _process_pr_for_fixes
+
+        repo_name = "owner/repo"
+        pr_data = {"number": 101, "title": "Test PR", "body": "Test body"}
+        config = AutomationConfig()
+        mock_github_client = Mock()
+
+        # Track if keep_label was called
+        keep_label_called = []
+
+        # Create a mock LabelManagerContext that tracks keep_label calls
+        class MockLabelManagerContext:
+            def __init__(self, should_process):
+                self._should_process = should_process
+
+            def __bool__(self):
+                return self._should_process
+
+            def keep_label(self):
+                keep_label_called.append(True)
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield MockLabelManagerContext(True)
+
+        # Mock _take_pr_actions to return actions WITHOUT merge
+        with patch("src.auto_coder.pr_processor.LabelManager", fake_label_manager):
+            with patch("src.auto_coder.pr_processor.ProgressStage"):
+                with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
+                    mock_take_actions.return_value = ["GitHub Actions checks are still in progress"]
+
+                    result = _process_pr_for_fixes(mock_github_client, repo_name, pr_data, config)
+
+        # Verify keep_label was NOT called
+        assert len(keep_label_called) == 0, "keep_label should not be called when no merge occurs"
