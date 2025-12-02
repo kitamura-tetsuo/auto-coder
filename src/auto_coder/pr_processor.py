@@ -1736,8 +1736,6 @@ def _fix_pr_issues_with_testing(
 
                     if finite_limit_reached:
                         actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
-                        # Trigger fallback when max fix attempts are reached
-                        _trigger_fallback_for_pr_failure(repo_name, pr_data, f"Max fix attempts ({attempts_limit}) reached")
                         break
                     else:
                         local_fix_actions, llm_response = _apply_local_test_fix(repo_name, pr_data, config, test_result, attempt_history)
