@@ -604,6 +604,86 @@ class GitHubClient:
             return int(parent_details["number"])
         return None
 
+    def get_parent_issue_body(self, repo_name: str, issue_number: int) -> Optional[str]:
+        """Get parent issue body content for a given issue using GitHub GraphQL API.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue number to check for parent issue
+
+        Returns:
+            Parent issue body as a string if exists, None otherwise.
+        """
+        try:
+            # First get parent issue details to check if parent exists
+            parent_details = self.get_parent_issue_details(repo_name, issue_number)
+            if not parent_details:
+                logger.debug(f"Issue #{issue_number} has no parent issue")
+                return None
+
+            parent_number = parent_details.get("number")
+            if not parent_number:
+                logger.debug(f"Issue #{issue_number} parent has no number")
+                return None
+
+            logger.debug(f"Fetching body for parent issue #{parent_number} of issue #{issue_number}")
+
+            # Now fetch the full parent issue with body using GraphQL
+            owner, repo = repo_name.split("/")
+            query = """
+            {
+              repository(owner: "%s", name: "%s") {
+                issue(number: %d) {
+                  number
+                  title
+                  body
+                  state
+                  url
+                }
+              }
+            }
+            """ % (
+                owner,
+                repo,
+                parent_number,
+            )
+
+            # Execute GraphQL query using gh CLI
+            gh_logger = get_gh_logger()
+            result = gh_logger.execute_with_logging(
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "-f",
+                    f"query={query}",
+                ],
+                repo=repo_name,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+
+            data = json.loads(result.stdout)
+
+            # Extract parent issue body
+            parent_issue = data.get("data", {}).get("repository", {}).get("issue", {})
+
+            if parent_issue and "body" in parent_issue:
+                body = parent_issue.get("body")
+                logger.info(f"Retrieved body for parent issue #{parent_number} ({len(body) if body else 0} chars)")
+                return body
+
+            logger.debug(f"No body found for parent issue #{parent_number}")
+            return None
+
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to execute gh GraphQL query for parent issue body: {e.stderr}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get parent issue body for issue #{issue_number}: {e}")
+            return None
+
     def create_issue(self, repo_name: str, title: str, body: str, labels: Optional[List[str]] = None) -> Issue.Issue:
         """Create a new issue in the repository."""
         try:
