@@ -96,8 +96,6 @@ class BackendConfig:
     settings: Optional[str] = None
     # Usage markers for tracking usage patterns
     usage_markers: List[str] = field(default_factory=list)
-    # Additional options for message generation (non-code-editing) operations
-    options_for_noedit: List[str] = field(default_factory=list)
 
     def validate_required_options(self) -> List[str]:
         """Validate that required options are configured.
