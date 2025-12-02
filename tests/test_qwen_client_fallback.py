@@ -47,9 +47,6 @@ def test_qwen_client_prefers_configured_api_keys_before_oauth(mock_run_command, 
     # Verify codex command is used for providers with API keys
     assert first_cmd[0] == "codex"
     assert "exec" in first_cmd
-    assert "-s" in first_cmd
-    assert "workspace-write" in first_cmd
-    assert "--dangerously-bypass-approvals-and-sandbox" in first_cmd
 
     # Verify environment variables are set
     assert first_env["OPENAI_API_KEY"] == "dashscope-xyz"

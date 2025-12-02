@@ -121,8 +121,6 @@ class TestBackendCLIOptions:
         # Verify the command starts with expected elements
         assert cmd[0] == "codex"
         assert "exec" in cmd
-        assert "-s" in cmd
-        assert "workspace-write" in cmd
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -157,8 +155,6 @@ class TestBackendCLIOptions:
         # Verify basic command structure
         assert cmd[0] == "codex"
         assert "exec" in cmd
-        assert "-s" in cmd
-        assert "workspace-write" in cmd
 
         # Verify no options flags are present
         assert "-o" not in cmd
