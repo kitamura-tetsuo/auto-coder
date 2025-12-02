@@ -5,7 +5,8 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.issue_processor import _create_pr_for_parent_issue, _process_parent_issue, _take_issue_actions
+from src.auto_coder.issue_processor import _apply_issue_actions_directly, _create_pr_for_parent_issue, _process_parent_issue, _take_issue_actions
+from src.auto_coder.prompt_loader import clear_prompt_cache, render_prompt
 
 
 class TestParentIssueDetection:
@@ -742,3 +743,291 @@ class TestCreatePRForParentIssue:
 
             # Should return PR creation action
             assert "Successfully created PR for parent issue #100" in result[1]
+
+
+class TestParentIssueContextInjection:
+    """Tests for parent issue context injection in sub-issues."""
+
+    def test_sub_issue_with_parent_context_injected(self):
+        """Test that sub-issues correctly inject parent issue context into prompts."""
+        repo_name = "owner/repo"
+        issue_number = 201
+        issue_data = {
+            "number": issue_number,
+            "title": "Sub-issue 1: Implement feature",
+            "body": "Implement the first part of the feature",
+            "labels": ["bug"],
+            "state": "open",
+            "author": "user1",
+        }
+        config = AutomationConfig()
+
+        # Mock GitHub client
+        github_client = MagicMock()
+        # Sub-issue has a parent
+        github_client.get_parent_issue_details.return_value = {
+            "number": 200,
+            "title": "Parent Issue: Implement feature X",
+            "state": "open",
+        }
+        github_client.get_parent_issue_body.return_value = "Parent issue description with full context and requirements"
+
+        # Mock commit log
+        with patch("src.auto_coder.issue_processor.get_commit_log") as mock_commit_log:
+            mock_commit_log.return_value = "Initial commit"
+
+            # Mock LLM CLI call
+            with patch("src.auto_coder.issue_processor.get_llm_backend_manager") as mock_backend:
+                mock_backend_manager = MagicMock()
+                mock_backend_manager._run_llm_cli.return_value = "Implemented feature"
+                mock_backend.return_value = mock_backend_manager
+
+                # Mock commit_and_push_changes
+                with patch("src.auto_coder.issue_processor.commit_and_push_changes") as mock_commit:
+                    mock_commit.return_value = "Committed changes"
+
+                    # Mock _create_pr_for_issue
+                    with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
+                        mock_create_pr.return_value = "Created PR"
+
+                        # Mock branch_context
+                        with patch("src.auto_coder.issue_processor.branch_context"):
+                            # Mock LabelManager
+                            with patch("src.auto_coder.issue_processor.LabelManager") as mock_label_mgr:
+                                mock_label_mgr.return_value.__enter__.return_value = True
+                                mock_label_mgr.return_value.__exit__.return_value = None
+
+                                # Mock ProgressStage
+                                with patch("src.auto_coder.issue_processor.ProgressStage"):
+                                    result = _apply_issue_actions_directly(repo_name, issue_data, config, github_client)
+
+        # Verify get_parent_issue_body was called
+        github_client.get_parent_issue_body.assert_called_once_with(repo_name, issue_number)
+
+        # Verify parent context was fetched
+        github_client.get_parent_issue_details.assert_called_once_with(repo_name, issue_number)
+
+    def test_regular_issue_without_parent_not_affected(self):
+        """Test that regular issues without parents do not get parent context."""
+        repo_name = "owner/repo"
+        issue_number = 300
+        issue_data = {
+            "number": issue_number,
+            "title": "Regular Issue",
+            "body": "A regular issue without parent",
+            "labels": ["bug"],
+            "state": "open",
+            "author": "user2",
+        }
+        config = AutomationConfig()
+
+        # Mock GitHub client - no parent
+        github_client = MagicMock()
+        github_client.get_parent_issue_details.return_value = None
+        github_client.get_parent_issue_body.return_value = None  # Should not be called
+
+        # Mock commit log
+        with patch("src.auto_coder.issue_processor.get_commit_log") as mock_commit_log:
+            mock_commit_log.return_value = "Initial commit"
+
+            # Mock LLM CLI call
+            with patch("src.auto_coder.issue_processor.get_llm_backend_manager") as mock_backend:
+                mock_backend_manager = MagicMock()
+                mock_backend_manager._run_llm_cli.return_value = "Implemented feature"
+                mock_backend.return_value = mock_backend_manager
+
+                # Mock commit_and_push_changes
+                with patch("src.auto_coder.issue_processor.commit_and_push_changes") as mock_commit:
+                    mock_commit.return_value = "Committed changes"
+
+                    # Mock _create_pr_for_issue
+                    with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
+                        mock_create_pr.return_value = "Created PR"
+
+                        # Mock branch_context
+                        with patch("src.auto_coder.issue_processor.branch_context"):
+                            # Mock LabelManager
+                            with patch("src.auto_coder.issue_processor.LabelManager") as mock_label_mgr:
+                                mock_label_mgr.return_value.__enter__.return_value = True
+                                mock_label_mgr.return_value.__exit__.return_value = None
+
+                                # Mock ProgressStage
+                                with patch("src.auto_coder.issue_processor.ProgressStage"):
+                                    result = _apply_issue_actions_directly(repo_name, issue_data, config, github_client)
+
+        # Verify parent issue methods were called but parent_issue_body returned None
+        github_client.get_parent_issue_details.assert_called_once_with(repo_name, issue_number)
+        # get_parent_issue_body should not be called when there's no parent
+        github_client.get_parent_issue_body.assert_not_called()
+
+    def test_parent_issue_body_none_handled_correctly(self):
+        """Test that None parent issue body is handled correctly."""
+        repo_name = "owner/repo"
+        issue_number = 201
+        issue_data = {
+            "number": issue_number,
+            "title": "Sub-issue",
+            "body": "Body",
+            "labels": [],
+            "state": "open",
+            "author": "user1",
+        }
+        config = AutomationConfig()
+
+        # Mock GitHub client - has parent but body is None
+        github_client = MagicMock()
+        github_client.get_parent_issue_details.return_value = {
+            "number": 200,
+            "title": "Parent Issue",
+            "state": "open",
+        }
+        github_client.get_parent_issue_body.return_value = None
+
+        # Mock commit log
+        with patch("src.auto_coder.issue_processor.get_commit_log") as mock_commit_log:
+            mock_commit_log.return_value = "Initial commit"
+
+            # Mock LLM CLI call
+            with patch("src.auto_coder.issue_processor.get_llm_backend_manager") as mock_backend:
+                mock_backend_manager = MagicMock()
+                mock_backend_manager._run_llm_cli.return_value = "Implemented"
+                mock_backend.return_value = mock_backend_manager
+
+                # Mock commit_and_push_changes
+                with patch("src.auto_coder.issue_processor.commit_and_push_changes") as mock_commit:
+                    mock_commit.return_value = "Committed"
+
+                    # Mock _create_pr_for_issue
+                    with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
+                        mock_create_pr.return_value = "Created PR"
+
+                        # Mock branch_context
+                        with patch("src.auto_coder.issue_processor.branch_context"):
+                            # Mock LabelManager
+                            with patch("src.auto_coder.issue_processor.LabelManager") as mock_label_mgr:
+                                mock_label_mgr.return_value.__enter__.return_value = True
+                                mock_label_mgr.return_value.__exit__.return_value = None
+
+                                # Mock ProgressStage
+                                with patch("src.auto_coder.issue_processor.ProgressStage"):
+                                    result = _apply_issue_actions_directly(repo_name, issue_data, config, github_client)
+
+        # get_parent_issue_body should be called even if it returns None
+        github_client.get_parent_issue_body.assert_called_once_with(repo_name, issue_number)
+
+    def test_render_prompt_with_parent_issue_body(self, tmp_path):
+        """Test that render_prompt correctly handles parent_issue_body parameter."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            "issue:\n" "  action: |\n" "    Issue #$issue_number: $issue_title\n" "    Body: $issue_body\n" "    Parent Context: $parent_issue_body\n",
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+
+        # Test with parent_issue_body
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            issue_number="123",
+            issue_title="Test Issue",
+            issue_body="Test body",
+            parent_issue_body="Parent context here",
+        )
+
+        # Should include parent context
+        assert "Parent Context: Parent context here" in result
+        assert "Issue #123: Test Issue" in result
+
+    def test_render_prompt_without_parent_issue_body(self, tmp_path):
+        """Test that render_prompt works correctly when parent_issue_body is not provided."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            "issue:\n" "  action: |\n" "    Issue #$issue_number: $issue_title\n" "    Body: $issue_body\n" "    Parent Context: $parent_issue_body\n",
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+
+        # Test without parent_issue_body (regular issue)
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            issue_number="456",
+            issue_title="Regular Issue",
+            issue_body="Regular body",
+        )
+
+        # Should show empty parent context (variable not substituted)
+        assert "Issue #456: Regular Issue" in result
+        assert "Regular body" in result
+        # When parent_issue_body is not in params, it's not substituted
+        assert "$parent_issue_body" in result
+
+    def test_render_prompt_with_empty_parent_issue_body(self, tmp_path):
+        """Test that render_prompt handles empty parent_issue_body correctly."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            "issue:\n" "  action: |\n" "    Issue #$issue_number\n" "    Parent: $parent_issue_body\n",
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+
+        # Test with empty string parent_issue_body
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            issue_number="789",
+            parent_issue_body="",
+        )
+
+        # Empty string should be substituted as empty
+        assert "Parent: " in result
+        assert "Issue #789" in result
+
+    def test_render_prompt_backward_compatibility_without_parent_param(self, tmp_path):
+        """Test backward compatibility - render_prompt works without parent_issue_body parameter."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            'issue:\n  action: "Issue $issue_number"\n',
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+
+        # Test without parent_issue_body parameter at all (backward compatibility)
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            issue_number="999",
+        )
+
+        # Should work without errors
+        assert "Issue 999" in result
+
+    def test_parent_context_integration_with_labels(self, tmp_path):
+        """Test that parent context works correctly with label-based prompts."""
+        prompt_file = tmp_path / "prompts.yaml"
+        prompt_file.write_text(
+            "issue:\n" '  action: "Default: $issue_title"\n' "  bugfix: |\n" "    Bug Fix: $issue_title\n" "    Parent: $parent_issue_body\n",
+            encoding="utf-8",
+        )
+
+        clear_prompt_cache()
+
+        # Test with parent context and label-based prompt
+        result = render_prompt(
+            "issue.action",
+            path=str(prompt_file),
+            issue_title="Fix bug",
+            labels=["bug"],
+            label_prompt_mappings={"bug": "issue.bugfix"},
+            label_priorities=["bug"],
+            parent_issue_body="Parent bug context",
+        )
+
+        # Should use bugfix prompt with parent context
+        assert "Bug Fix:" in result
+        assert "Parent: Parent bug context" in result
+        assert "Fix bug" in result
