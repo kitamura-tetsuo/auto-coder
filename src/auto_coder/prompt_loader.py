@@ -285,6 +285,7 @@ def render_prompt(
     labels: Optional[List[str]] = None,
     label_prompt_mappings: Optional[Dict[str, str]] = None,
     label_priorities: Optional[List[str]] = None,
+    parent_issue_body: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
     """Render a prompt template identified by key with optional label-based selection.
@@ -296,6 +297,7 @@ def render_prompt(
         labels: Optional list of issue labels for label-based prompt selection
         label_prompt_mappings: Optional dict mapping labels to prompt template keys
         label_priorities: Optional list of labels in priority order (highest priority first)
+        parent_issue_body: Optional parent issue body text for template substitution
         **kwargs: Additional keyword arguments for template substitution
 
     Returns:
@@ -323,6 +325,7 @@ def render_prompt(
                     labels=None,  # Prevent infinite recursion
                     label_prompt_mappings=None,
                     label_priorities=None,
+                    parent_issue_body=parent_issue_body,
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
@@ -340,6 +343,8 @@ def render_prompt(
     params: Dict[str, Any] = {}
     if data:
         params.update(data)
+    if parent_issue_body is not None:
+        params["parent_issue_body"] = parent_issue_body
     params.update(kwargs)
 
     safe_params = {name: "" if value is None else str(value) for name, value in params.items()}
