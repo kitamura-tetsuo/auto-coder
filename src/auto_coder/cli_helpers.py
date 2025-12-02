@@ -396,11 +396,13 @@ def build_backend_manager(
     primary_backend: str,
     models: dict[str, str],
     enable_graphrag: bool = True,
+    use_noedit_options: bool = False,
 ) -> BackendManager:
     """Construct BackendManager with per-backend model selection.
 
     models: mapping backend -> model_name (all backends respect this configuration).
     enable_graphrag: Enable GraphRAG integration for CodexMCPClient (always True).
+    use_noedit_options: If True, use options_for_noedit instead of options for clients.
     """
     config = get_llm_config()
 
@@ -453,6 +455,7 @@ def build_backend_manager(
             base_url=backend_config.base_url if backend_config else None,
             openai_api_key=backend_config.openai_api_key if backend_config else None,
             openai_base_url=backend_config.openai_base_url if backend_config else None,
+            use_noedit_options=use_noedit_options,
         )
 
     def _create_codex_mcp_client(backend_name: str):
@@ -736,6 +739,7 @@ def build_message_backend_manager(
         primary_backend=primary_backend,
         models=models,
         enable_graphrag=False,  # GraphRAG not needed for messages
+        use_noedit_options=True,  # Use noedit options for message generation
     )
 
     # Get the default client and factories to initialize the singleton

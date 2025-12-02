@@ -362,7 +362,7 @@ class CodexMCPClient(LLMClientBase):
         }
         logger.info(json.dumps(log_entry, ensure_ascii=False))
 
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Prefer MCP single-shot methods; fallback to echo; then to codex exec.
 
         Attempt order when MCP handshake succeeded:
@@ -371,6 +371,10 @@ class CodexMCPClient(LLMClientBase):
         3) tools/call name in [run, execute, workspace-write]
         4) tools/call name=echo
         Finally, fallback to `codex exec`.
+
+        Args:
+            prompt: The prompt to send
+            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
         """
         # Ensure GraphRAG environment is ready if enabled
         if self.graphrag_integration:
@@ -382,6 +386,9 @@ class CodexMCPClient(LLMClientBase):
 
         escaped_prompt = self._escape_prompt(prompt)
         extra_args = self.consume_extra_args()
+
+        # Store is_noedit for fallback operations
+        self._is_noedit = is_noedit
 
         # Try MCP single-shot first
         if getattr(self, "_initialized", False):
@@ -443,15 +450,17 @@ class CodexMCPClient(LLMClientBase):
         try:
             cmd: List[str] = ["codex", "exec"]
             # Apply configurable options from config
-            if self.options:
-                cmd.extend(self.options)
+            # Use options_for_noedit for no-edit operations if available
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            if options_to_use:
+                cmd.extend(options_to_use)
             if extra_args:
                 cmd.extend(extra_args)
             cmd.append(escaped_prompt)
             logger.warning("LLM invocation: codex-mcp (codex exec) is being called. Keep LLM calls minimized.")
             logger.debug(f"Running codex exec with prompt length: {len(prompt)} characters (MCP session kept alive)")
             # Build display command for logging
-            display_options = " ".join(self.options) if self.options else ""
+            display_options = " ".join(options_to_use) if options_to_use else ""
             logger.info(f"🤖 Running under MCP session: codex exec {display_options} [prompt]")
 
             try:

@@ -334,6 +334,20 @@ The following examples demonstrate typical `options` and `options_for_noedit` co
 
 Recent configuration schema changes that require migration:
 
+**BREAKING CHANGE (v2026.1.0.0)**: Removed hardcoded default options from CodexClient
+   - **What Changed**: The CodexClient no longer includes hardcoded `-s workspace-write` options in codex CLI commands.
+   - **Impact**: Users who relied on these hardcoded options will need to explicitly configure them in their backend configuration.
+   - **Migration Required**:
+     - Add the following to your `~/.auto-coder/llm_config.toml`:
+       ```toml
+       [backends.codex]
+       model = "codex"
+       options = ["-s", "workspace-write"]
+       ```
+     - Or configure any custom options you need for your specific use case.
+   - **Rationale**: Hardcoded options were considered excessive and limited flexibility. This change allows users to configure exactly the options they need.
+   - **Version**: v2026.1.0.0 (Major version bump due to breaking change)
+
 **1. Configuration Field Renames**:
    - **`message_backend` → `backend_for_noedit`**:
      - Old config:

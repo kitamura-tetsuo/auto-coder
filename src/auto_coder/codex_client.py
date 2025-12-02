@@ -29,6 +29,7 @@ class CodexClient(LLMClientBase):
         base_url: Optional[str] = None,
         openai_api_key: Optional[str] = None,
         openai_base_url: Optional[str] = None,
+        use_noedit_options: bool = False,
     ) -> None:
         """Initialize Codex CLI client.
 
@@ -39,6 +40,7 @@ class CodexClient(LLMClientBase):
             base_url: Base URL for the backend (optional, for custom backends).
             openai_api_key: OpenAI API key (optional, for OpenAI-compatible backends).
             openai_base_url: OpenAI base URL (optional, for OpenAI-compatible backends).
+            use_noedit_options: If True, use options_for_noedit instead of options.
         """
         super().__init__()
         config = get_llm_config()
@@ -48,7 +50,11 @@ class CodexClient(LLMClientBase):
             config_backend = config.get_backend_config(backend_name)
             # Use backend config model, fall back to default "codex"
             self.model_name = (config_backend and config_backend.model) or "codex"
-            self.options = (config_backend and config_backend.options) or []
+            # Use options_for_noedit if use_noedit_options is True
+            if use_noedit_options and config_backend and config_backend.options_for_noedit:
+                self.options = config_backend.options_for_noedit
+            else:
+                self.options = (config_backend and config_backend.options) or []
             self.api_key = api_key or (config_backend and config_backend.api_key)
             self.base_url = base_url or (config_backend and config_backend.base_url)
             self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
@@ -60,7 +66,11 @@ class CodexClient(LLMClientBase):
             # Fall back to default codex config
             config_backend = config.get_backend_config("codex")
             self.model_name = (config_backend and config_backend.model) or "codex"
-            self.options = (config_backend and config_backend.options) or []
+            # Use options_for_noedit if use_noedit_options is True
+            if use_noedit_options and config_backend and config_backend.options_for_noedit:
+                self.options = config_backend.options_for_noedit
+            else:
+                self.options = (config_backend and config_backend.options) or []
             self.api_key = api_key
             self.base_url = base_url
             self.openai_api_key = openai_api_key
@@ -103,7 +113,7 @@ class CodexClient(LLMClientBase):
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run codex CLI with the given prompt and show real-time output."""
         start_time = time.time()
         status = "success"
@@ -115,13 +125,13 @@ class CodexClient(LLMClientBase):
             cmd = [
                 "codex",
                 "exec",
-                "-s",
-                "workspace-write",
             ]
 
             # Add configured options from config
-            if self.options:
-                cmd.extend(self.options)
+            # Use options_for_noedit for no-edit operations if available
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            if options_to_use:
+                cmd.extend(options_to_use)
 
             # Add --model flag if model_name is specified
             if self.model_name:

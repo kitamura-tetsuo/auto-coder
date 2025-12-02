@@ -763,10 +763,8 @@ class TestCodexClient:
         # Verify command structure is correct (no extra elements)
         assert cmd[0] == "codex"
         assert cmd[1] == "exec"
-        assert cmd[2] == "-s"
-        assert cmd[3] == "workspace-write"
         # Next should be either --model or the prompt, not an option
-        assert cmd[4] == "--model" or isinstance(cmd[4], str)
+        assert cmd[2] == "--model" or isinstance(cmd[2], str)
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -800,12 +798,11 @@ class TestCodexClient:
             cmd = mock_run_command.call_args[0][0]
 
             # Verify command order: base cmd -> options -> model -> model_provider -> extra args -> prompt
-            workspace_write_index = cmd.index("workspace-write")
             options_index = cmd.index("--dangerously-bypass-approvals-and-sandbox")
             model_index = cmd.index("--model")
             model_provider_index = cmd.index("-c")
 
-            # Options should come after workspace-write and before --model
-            assert workspace_write_index < options_index < model_index
+            # Options should come before --model
+            assert options_index < model_index
             # --model should come before -c (model_provider)
             assert model_index < model_provider_index

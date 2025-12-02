@@ -32,9 +32,6 @@ def test_qwen_client_options_parameter(mock_run_command, mock_run):
     # Check that codex CLI is used with proper flags
     assert args[0] == "codex"
     assert "exec" in args
-    assert "-s" in args
-    assert "workspace-write" in args
-    assert "--dangerously-bypass-approvals-and-sandbox" in args
 
     # Check that custom options are included in the command
     assert "-o" in args
@@ -120,9 +117,6 @@ def test_qwen_client_cli_options_mode(mock_run_command, mock_run):
     # Check that codex CLI is used with proper flags
     assert args[0] == "codex"
     assert "exec" in args
-    assert "-s" in args
-    assert "workspace-write" in args
-    assert "--dangerously-bypass-approvals-and-sandbox" in args
 
     # Check environment variables are set
     kwargs = mock_run_command.call_args.kwargs

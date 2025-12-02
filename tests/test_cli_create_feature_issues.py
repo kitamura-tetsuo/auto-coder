@@ -98,6 +98,7 @@ class TestCLICreateFeatureIssues:
             base_url=None,
             openai_api_key=None,
             openai_base_url=None,
+            use_noedit_options=False,
         )
         assert mock_automation_engine_class.call_count == 1
         args, kwargs = mock_automation_engine_class.call_args

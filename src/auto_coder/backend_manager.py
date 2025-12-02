@@ -515,7 +515,9 @@ class BackendManager(LLMBackendManagerBase):
 
             with ProgressStage(message), env_context:
                 try:
-                    out: str = cli._run_llm_cli(prompt)
+                    # Determine if this is a no-edit operation
+                    is_noedit = getattr(self, "_is_noedit", False)
+                    out: str = cli._run_llm_cli(prompt, is_noedit=is_noedit)
                     self._last_backend = backend_name
                     self._last_model = getattr(cli, "model_name", None)
                     self._provider_manager.mark_provider_used(backend_name, provider_name)
@@ -569,6 +571,8 @@ class BackendManager(LLMBackendManagerBase):
 
         with ProgressStage(stage_label):
             try:
+                # This is not a no-edit operation
+                self._is_noedit = False
                 out: str = self._run_llm_cli(prompt)
             except AutoCoderTimeoutError as exc:
                 logger.warning(f"Timeout error on backend '{active_backend}', switching to next backend")
@@ -1044,6 +1048,8 @@ def run_llm_noedit_prompt(prompt: str) -> str:
     manager = LLMBackendManager.get_noedit_instance()
     if manager is None:
         raise RuntimeError("Non-editing backend manager not initialized. " "Call get_noedit_backend_manager() with initialization parameters first.")
+    # Mark this as a no-edit operation so clients use options_for_noedit
+    manager._is_noedit = True
     return manager._run_llm_cli(prompt)  # type: ignore[no-any-return]
 
 

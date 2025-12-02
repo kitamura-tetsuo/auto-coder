@@ -47,11 +47,12 @@ class JulesClient(LLMClientBase):
         ) as e:
             raise RuntimeError(f"Jules CLI not available: {e}")
 
-    def start_session(self, prompt: str) -> str:
+    def start_session(self, prompt: str, is_noedit: bool = False) -> str:
         """Start a new Jules session with the given prompt.
 
         Args:
             prompt: The prompt to send to Jules
+            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
 
         Returns:
             Session ID for the started session
@@ -60,8 +61,10 @@ class JulesClient(LLMClientBase):
             cmd = ["jules", "session", "start"]
 
             # Add configured options from config
-            if self.options:
-                cmd.extend(self.options)
+            # Use options_for_noedit for no-edit operations if available
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            if options_to_use:
+                cmd.extend(options_to_use)
 
             logger.info("Starting Jules session")
             logger.info(f"🤖 Running: jules session start [prompt]")
@@ -209,7 +212,7 @@ class JulesClient(LLMClientBase):
             logger.error(f"Failed to end Jules session {session_id}: {e}")
             return False
 
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run Jules CLI with the given prompt and return response.
 
         This method is kept for compatibility with LLMClientBase interface,
@@ -217,12 +220,13 @@ class JulesClient(LLMClientBase):
 
         Args:
             prompt: The prompt to send
+            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
 
         Returns:
             Response from Jules
         """
         # Start a new session for this prompt
-        session_id = self.start_session(prompt)
+        session_id = self.start_session(prompt, is_noedit)
 
         try:
             # Send the prompt and get response
