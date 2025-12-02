@@ -316,6 +316,8 @@ def _process_pr_for_merge(
         merge_result = _merge_pr(repo_name, pr_data["number"], {}, config, github_client=github_client)
         if merge_result:
             processed_pr.actions_taken.append(f"Successfully merged PR #{pr_data['number']}")
+            # Retain label on successful merge
+            should_process.keep_label()
         else:
             processed_pr.actions_taken.append(f"Failed to merge PR #{pr_data['number']}")
         return processed_pr
@@ -346,6 +348,9 @@ def _process_pr_for_fixes(
             try:
                 actions = _take_pr_actions(github_client, repo_name, pr_data, config)
                 processed_pr.actions_taken = actions
+                # Retain label on successful merge
+                if any("Successfully merged" in action for action in actions):
+                    should_process.keep_label()
             except Exception as e:
                 # Set error in result instead of adding to actions
                 processed_pr.error = f"Processing failed: {str(e)}"
