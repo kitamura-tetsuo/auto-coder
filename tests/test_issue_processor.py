@@ -927,3 +927,198 @@ class TestLabelBasedIssueProcessing:
         # Test that non-breaking labels are correctly identified
         assert _is_breaking_change_issue(["bug"]) is False
         assert _is_breaking_change_issue(["FEATURE"]) is False
+
+
+class TestKeepLabelOnPRCreation:
+    """Test that keep_label() is called on successful PR creation."""
+
+    def test_apply_issue_actions_calls_keep_label_on_successful_pr(self):
+        """Test that _apply_issue_actions_directly calls keep_label when PR is successfully created."""
+        repo_name = "owner/repo"
+        issue_number = 123
+        issue_data = {"number": issue_number, "title": "Test Issue", "body": "Test body"}
+        config = AutomationConfig()
+
+        # Track if keep_label was called
+        keep_label_called = []
+
+        @contextmanager
+        def fake_branch_context(*args, **kwargs):
+            yield
+
+        # Create a mock LabelManagerContext that tracks keep_label calls
+        class MockLabelManagerContext:
+            def __init__(self, should_process):
+                self._should_process = should_process
+
+            def __bool__(self):
+                return self._should_process
+
+            def keep_label(self):
+                keep_label_called.append(True)
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield MockLabelManagerContext(True)
+
+        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+            # Simulate: work branch does not exist locally
+            mock_cmd.run_command.side_effect = [
+                _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+                _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+            ]
+
+            with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                    with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                        with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
+                            # Mock _create_pr_for_issue to return success message
+                            with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
+                                mock_create_pr.return_value = f"Successfully created PR for issue #{issue_number}: Test PR"
+
+                                # Mock GitHub client
+                                github_client = MagicMock()
+                                github_client.get_parent_issue_details.return_value = None
+                                github_client.get_all_sub_issues.return_value = []
+
+                                # Mock LLM response
+                                class DummyLLM:
+                                    def _run_llm_cli(self, *_args, **_kwargs):
+                                        return "Made some changes to fix the issue"
+
+                                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                                    _apply_issue_actions_directly(
+                                        repo_name,
+                                        issue_data,
+                                        config,
+                                        github_client,
+                                    )
+
+        # Verify keep_label was called
+        assert len(keep_label_called) == 1, "keep_label should be called once on successful PR creation"
+
+    def test_apply_issue_actions_does_not_call_keep_label_on_failed_pr(self):
+        """Test that _apply_issue_actions_directly does not call keep_label when PR creation fails."""
+        repo_name = "owner/repo"
+        issue_number = 456
+        issue_data = {"number": issue_number, "title": "Test Issue", "body": "Test body"}
+        config = AutomationConfig()
+
+        # Track if keep_label was called
+        keep_label_called = []
+
+        @contextmanager
+        def fake_branch_context(*args, **kwargs):
+            yield
+
+        # Create a mock LabelManagerContext that tracks keep_label calls
+        class MockLabelManagerContext:
+            def __init__(self, should_process):
+                self._should_process = should_process
+
+            def __bool__(self):
+                return self._should_process
+
+            def keep_label(self):
+                keep_label_called.append(True)
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield MockLabelManagerContext(True)
+
+        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+            # Simulate: work branch does not exist locally
+            mock_cmd.run_command.side_effect = [
+                _cmd_result(success=True, stdout="main", returncode=0),  # get current branch
+                _cmd_result(success=False, stderr="not found", returncode=1),  # rev-parse work branch missing
+            ]
+
+            with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                    with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                        with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
+                            # Mock _create_pr_for_issue to return failure message
+                            with patch("src.auto_coder.issue_processor._create_pr_for_issue") as mock_create_pr:
+                                mock_create_pr.return_value = f"Failed to create PR for issue #{issue_number}: Error"
+
+                                # Mock GitHub client
+                                github_client = MagicMock()
+                                github_client.get_parent_issue_details.return_value = None
+                                github_client.get_all_sub_issues.return_value = []
+
+                                # Mock LLM response
+                                class DummyLLM:
+                                    def _run_llm_cli(self, *_args, **_kwargs):
+                                        return "Made some changes to fix the issue"
+
+                                with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                                    _apply_issue_actions_directly(
+                                        repo_name,
+                                        issue_data,
+                                        config,
+                                        github_client,
+                                    )
+
+        # Verify keep_label was NOT called
+        assert len(keep_label_called) == 0, "keep_label should not be called when PR creation fails"
+
+    def test_apply_issue_actions_does_not_call_keep_label_for_pr_item(self):
+        """Test that _apply_issue_actions_directly does not call keep_label for PR items (they have head_branch)."""
+        repo_name = "owner/repo"
+        issue_number = 789
+        # PR items have head_branch set
+        issue_data = {"number": issue_number, "title": "Test PR", "body": "Test body", "head_branch": "feature-branch"}
+        config = AutomationConfig()
+
+        # Track if keep_label was called
+        keep_label_called = []
+
+        @contextmanager
+        def fake_branch_context(*args, **kwargs):
+            yield
+
+        # Create a mock LabelManagerContext that tracks keep_label calls
+        class MockLabelManagerContext:
+            def __init__(self, should_process):
+                self._should_process = should_process
+
+            def __bool__(self):
+                return self._should_process
+
+            def keep_label(self):
+                keep_label_called.append(True)
+
+        @contextmanager
+        def fake_label_manager(*_args, **_kwargs):
+            yield MockLabelManagerContext(True)
+
+        with patch("src.auto_coder.issue_processor.cmd") as mock_cmd:
+            # Simulate PR branch exists
+            mock_cmd.run_command.side_effect = [
+                _cmd_result(success=True, stdout="feature-branch", returncode=0),
+            ]
+
+            with patch("src.auto_coder.issue_processor.LabelManager", fake_label_manager):
+                with patch("src.auto_coder.issue_processor.branch_context", fake_branch_context):
+                    with patch("src.auto_coder.issue_processor.get_commit_log", return_value=""):
+                        with patch("src.auto_coder.issue_processor.commit_and_push_changes", return_value="Committed"):
+                            # Mock GitHub client
+                            github_client = MagicMock()
+                            github_client.get_parent_issue_details.return_value = None
+                            github_client.get_all_sub_issues.return_value = []
+
+                            # Mock LLM response
+                            class DummyLLM:
+                                def _run_llm_cli(self, *_args, **_kwargs):
+                                    return "Made some changes to fix the issue"
+
+                            with patch("src.auto_coder.issue_processor.get_llm_backend_manager", return_value=DummyLLM()):
+                                _apply_issue_actions_directly(
+                                    repo_name,
+                                    issue_data,
+                                    config,
+                                    github_client,
+                                )
+
+        # Verify keep_label was NOT called (no PR creation for PR items)
+        assert len(keep_label_called) == 0, "keep_label should not be called for PR items (head_branch set)"
