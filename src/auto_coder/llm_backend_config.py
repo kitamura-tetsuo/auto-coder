@@ -172,6 +172,10 @@ class LLMBackendConfiguration:
 
             # Helper to parse a backend config dict
             def parse_backend_config(name: str, config_data: dict) -> BackendConfig:
+                # Set explicit flags based on whether options were actually specified in config
+                options_explicitly_set = "options" in config_data
+                options_for_noedit_explicitly_set = "options_for_noedit" in config_data
+
                 return BackendConfig(
                     name=name,
                     enabled=config_data.get("enabled", True),
@@ -195,8 +199,8 @@ class LLMBackendConfiguration:
                     settings=config_data.get("settings"),
                     usage_markers=config_data.get("usage_markers", []),
                     options_for_noedit=config_data.get("options_for_noedit", []),
-                    options_explicitly_set=config_data.get("options_explicitly_set", False),
-                    options_for_noedit_explicitly_set=config_data.get("options_for_noedit_explicitly_set", False),
+                    options_explicitly_set=options_explicitly_set,
+                    options_for_noedit_explicitly_set=options_for_noedit_explicitly_set,
                 )
 
             # 1. Parse explicit [backends] section
@@ -245,6 +249,18 @@ class LLMBackendConfiguration:
             potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
 
             find_backends_recursive(potential_roots)
+
+            # Post-processing: inherit options from parent backend if backend_type matches
+            # and options were not explicitly set in the child configuration
+            for backend_name, backend_config in backends.items():
+                if backend_config.backend_type and backend_config.backend_type in backends:
+                    parent_config = backends[backend_config.backend_type]
+                    # Inherit options if not explicitly set
+                    if not backend_config.options_explicitly_set:
+                        backend_config.options = list(parent_config.options)
+                    # Inherit options_for_noedit if not explicitly set
+                    if not backend_config.options_for_noedit_explicitly_set:
+                        backend_config.options_for_noedit = list(parent_config.options_for_noedit)
 
             # Add default backends if they are not already in the configuration
             # This ensures that backends like 'jules' are available even if not explicitly defined in the file
@@ -303,6 +319,10 @@ class LLMBackendConfiguration:
 
         # Helper to parse a backend config dict
         def parse_backend_config(name: str, config_data: dict) -> BackendConfig:
+            # Set explicit flags based on whether options were actually specified in config
+            options_explicitly_set = "options" in config_data
+            options_for_noedit_explicitly_set = "options_for_noedit" in config_data
+
             return BackendConfig(
                 name=name,
                 enabled=config_data.get("enabled", True),
@@ -326,8 +346,8 @@ class LLMBackendConfiguration:
                 usage_markers=config_data.get("usage_markers", []),
                 options_for_noedit=config_data.get("options_for_noedit", []),
                 options_for_resume=config_data.get("options_for_resume", []),
-                options_explicitly_set=config_data.get("options_explicitly_set", False),
-                options_for_noedit_explicitly_set=config_data.get("options_for_noedit_explicitly_set", False),
+                options_explicitly_set=options_explicitly_set,
+                options_for_noedit_explicitly_set=options_for_noedit_explicitly_set,
             )
 
         # 1. Parse explicit [backends] section
@@ -376,6 +396,18 @@ class LLMBackendConfiguration:
         potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
 
         find_backends_recursive(potential_roots)
+
+        # Post-processing: inherit options from parent backend if backend_type matches
+        # and options were not explicitly set in the child configuration
+        for backend_name, backend_config in backends.items():
+            if backend_config.backend_type and backend_config.backend_type in backends:
+                parent_config = backends[backend_config.backend_type]
+                # Inherit options if not explicitly set
+                if not backend_config.options_explicitly_set:
+                    backend_config.options = list(parent_config.options)
+                # Inherit options_for_noedit if not explicitly set
+                if not backend_config.options_for_noedit_explicitly_set:
+                    backend_config.options_for_noedit = list(parent_config.options_for_noedit)
 
         # Add default backends if they are not already in the configuration
         # This ensures that backends like 'jules' are available even if not explicitly defined in the file
