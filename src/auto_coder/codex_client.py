@@ -55,6 +55,7 @@ class CodexClient(LLMClientBase):
                 self.options = config_backend.options_for_noedit
             else:
                 self.options = (config_backend and config_backend.options) or []
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
             self.api_key = api_key or (config_backend and config_backend.api_key)
             self.base_url = base_url or (config_backend and config_backend.base_url)
             self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
@@ -71,6 +72,7 @@ class CodexClient(LLMClientBase):
                 self.options = config_backend.options_for_noedit
             else:
                 self.options = (config_backend and config_backend.options) or []
+            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
             self.api_key = api_key
             self.base_url = base_url
             self.openai_api_key = openai_api_key

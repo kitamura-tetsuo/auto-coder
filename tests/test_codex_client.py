@@ -18,9 +18,18 @@ class TestCodexClient:
     """Test cases for CodexClient class."""
 
     @patch("subprocess.run")
-    def test_init_checks_cli(self, mock_run):
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_init_checks_cli(self, mock_get_config, mock_run):
         """CodexClient should check codex --version at init."""
         mock_run.return_value.returncode = 0
+        
+        # Mock config to return default codex model
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = []
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
+
         client = CodexClient()
         assert client.model_name == "codex"
         # Verify output_logger is initialized
@@ -79,10 +88,18 @@ class TestCodexClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     @patch("builtins.print")
-    def test_json_logging_on_success(self, mock_print, mock_run_command, mock_run, tmp_path):
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_json_logging_on_success(self, mock_get_config, mock_print, mock_run_command, mock_run, tmp_path):
         """Verify that JSON logging is called on successful execution."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = []
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
 
         log_file = tmp_path / "test_log.jsonl"
 
@@ -116,10 +133,18 @@ class TestCodexClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     @patch("builtins.print")
-    def test_json_logging_on_error(self, mock_print, mock_run_command, mock_run, tmp_path):
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_json_logging_on_error(self, mock_get_config, mock_print, mock_run_command, mock_run, tmp_path):
         """Verify that JSON logging is called on error."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(False, "", "boom", 1)
+
+        # Mock config
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = []
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
 
         log_file = tmp_path / "test_log.jsonl"
 
@@ -151,10 +176,18 @@ class TestCodexClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     @patch("builtins.print")
-    def test_user_friendly_summary_on_success(self, mock_print, mock_run_command, mock_run):
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_user_friendly_summary_on_success(self, mock_get_config, mock_print, mock_run_command, mock_run):
         """Verify that user-friendly summary is printed on success."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = []
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
 
         client = CodexClient()
 
@@ -200,10 +233,18 @@ class TestCodexClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     @patch("builtins.print")
-    def test_no_duplicate_logs(self, mock_print, mock_run_command, mock_run, tmp_path):
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_no_duplicate_logs(self, mock_get_config, mock_print, mock_run_command, mock_run, tmp_path):
         """Verify that multiple calls do not create duplicate log entries."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = []
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
 
         log_file = tmp_path / "test_log.jsonl"
         from src.auto_coder.llm_output_logger import LLMOutputLogger
@@ -406,9 +447,18 @@ class TestCodexClient:
             assert call_kwargs["env"] is None or call_kwargs["env"] is os.environ.copy()
 
     @patch("subprocess.run")
-    def test_model_name_default_with_custom_config(self, mock_run):
+    @patch("src.auto_coder.codex_client.get_llm_config")
+    def test_model_name_default_with_custom_config(self, mock_get_config, mock_run):
         """CodexClient should use default model when model_name is None with custom config."""
         mock_run.return_value.returncode = 0
+        
+        # Mock config
+        mock_backend = MagicMock()
+        mock_backend.model = "codex"
+        mock_backend.options_for_noedit = []
+        mock_backend.options = []
+        mock_get_config.return_value.get_backend_config.return_value = mock_backend
+
         client = CodexClient(
             api_key="test_api_key",
             base_url="https://test.example.com",
