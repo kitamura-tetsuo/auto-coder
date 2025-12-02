@@ -325,6 +325,7 @@ def render_prompt(
                     labels=None,  # Prevent infinite recursion
                     label_prompt_mappings=None,
                     label_priorities=None,
+                    parent_issue_body=parent_issue_body,
                     **kwargs,
                 )
                 return result  # type: ignore[no-any-return]
