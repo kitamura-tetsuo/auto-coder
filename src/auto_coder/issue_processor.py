@@ -377,20 +377,19 @@ def _process_parent_issue(
                 sub_issues_details.append(sub_issue_dict)
 
                 # Check if this sub-issue has a closing PR
-                # Search for PRs that might close this issue
-                prs = github_client.get_open_pull_requests(repo_name, limit=100)
-                for pr in prs:
-                    closing_issues = github_client.get_pr_closing_issues(repo_name, pr.number)
-                    if sub_issue_number in closing_issues:
-                        sub_issues_with_prs.append(
-                            {
-                                "issue_number": sub_issue_number,
-                                "pr_number": pr.number,
-                                "pr_state": pr.state,
-                                "mergeable": pr.mergeable,
-                            }
-                        )
-                        break
+                closing_pr_number = github_client.find_closing_pr(repo_name, sub_issue_number)
+                if closing_pr_number is not None:
+                    # Get the PR details
+                    repo = github_client.get_repository(repo_name)
+                    pr = repo.get_pull(closing_pr_number)
+                    sub_issues_with_prs.append(
+                        {
+                            "issue_number": sub_issue_number,
+                            "pr_number": pr.number,
+                            "pr_state": pr.state,
+                            "mergeable": pr.mergeable,
+                        }
+                    )
 
             except Exception as e:
                 logger.warning(f"Failed to get details for sub-issue #{sub_issue_number}: {e}")
