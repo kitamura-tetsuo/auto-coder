@@ -1048,7 +1048,7 @@ class TestLabelFamilies:
         # Test with should_process=True
         with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as context:
             # Context should evaluate to True in boolean context
-            assert bool(context) is True
+            assert context
             # Context should be truthy
             if context:
                 pass  # Should enter this block
@@ -1065,7 +1065,7 @@ class TestLabelFamilies:
         # Test with should_process=False
         with LabelManager(mock_github_client, "owner/repo", 456, "issue", config=config) as context:
             # Context should evaluate to False in boolean context
-            assert bool(context) is False
+            assert not context
             # Context should be falsy
             if context:
                 pytest.fail("Context should be falsy when should_process=False")
