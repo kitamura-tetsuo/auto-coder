@@ -516,6 +516,83 @@ If you have issue #100 (parent) with child issue #101:
 - All branch operations and attempts now use #100's context
 - Processing continues with proper parent context maintained
 
+## Parent Issue Context Injection
+
+When processing sub-issues (child issues), Auto-Coder automatically injects parent issue context into LLM prompts to help maintain awareness of the broader context.
+
+### What is Parent Issue Context?
+
+**Parent Issue Context** is a feature that automatically retrieves and includes a parent issue's description and details when processing its sub-issues. This gives the LLM a complete understanding of the larger goal while maintaining focus on the specific sub-issue implementation.
+
+### When and Why It's Used
+
+**When:**
+- Only for sub-issues (issues that have a parent issue)
+- Automatically detected and applied during issue processing
+- Works across all prompt types (default, bug fix, urgent, breaking-change)
+
+**Why:**
+- Helps the LLM understand the broader context and goals
+- Ensures sub-issue implementations align with parent requirements
+- Provides visibility into the overall feature or project scope
+- Enables better decision-making during implementation
+
+### How It Works
+
+When processing a sub-issue:
+
+1. **Detection**: Auto-Coder detects if the issue has a parent using GitHub's sub-issues API
+2. **Context Retrieval**: Fetches the parent issue's title, body, and details
+3. **Prompt Injection**: Injects parent context into the LLM prompt with explicit scope limitations
+4. **LLM Processing**: The LLM receives both sub-issue and parent context to make informed decisions
+
+### Scope Limitations
+
+To prevent over-implementation, the feature includes **explicit scope limitations** in the prompt:
+
+```
+PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+This issue is a sub-issue of #<parent_number>: <parent_title>
+
+Parent Issue Description:
+<parent_body>...
+
+IMPORTANT SCOPE LIMITATIONS:
+- The parent issue content above is for CONTEXT ONLY
+- Implementation must be LIMITED to the current sub-issue scope (Issue #<number>)
+- Changes should align with parent goals but only implement the specific requirements of this sub-issue
+- Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+```
+
+### Example Scenario
+
+**Parent Issue #200**: "Implement user authentication system"
+
+**Sub-Issue #201**: "Add password reset functionality"
+
+When processing sub-issue #201:
+- The LLM receives context about the parent authentication system
+- Understands that password reset is part of a larger authentication feature
+- Remains focused on implementing only the password reset functionality
+- Ensures the implementation aligns with the overall authentication architecture
+
+### Benefits
+
+1. **Informed Decisions**: LLM can make better implementation choices with full context
+2. **Architectural Consistency**: Sub-issues align with overall parent goals
+3. **Reduced Rework**: Fewer implementation conflicts between parent and children
+4. **Better Testing**: Tests consider parent context for more comprehensive coverage
+
+### Technical Details
+
+- Uses GitHub's GraphQL API with the `sub_issues` feature flag
+- Retrieves parent issue via `get_parent_issue_details()` and `get_parent_issue_body()`
+- Injects context into all label-based prompts (default, bug, urgent, breaking-change, etc.)
+- Does not affect regular issues without parent issues
+- Branch and attempt tracking also respect parent-child relationships
+
+For complete technical documentation, see [docs/parent_issue_context.md](docs/parent_issue_context.md).
+
 ## Configuration
 
 ### Configuration File Locations
