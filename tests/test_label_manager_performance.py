@@ -30,7 +30,7 @@ class TestLabelManagerPerformance:
         # Measure time for single operation
         start = time.perf_counter()
         with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
-            assert should_process is True
+            assert should_process
         end = time.perf_counter()
         single_op_time = end - start
 
@@ -85,7 +85,7 @@ class TestLabelManagerPerformance:
         # Measure time with retries
         start = time.perf_counter()
         with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config, max_retries=3, retry_delay=0.01) as should_process:
-            assert should_process is True
+            assert should_process
         end = time.perf_counter()
         retry_time = end - start
 
@@ -166,7 +166,7 @@ class TestLabelManagerPerformance:
         # Measure time with disabled labels (should be very fast)
         start = time.perf_counter()
         with LabelManager(mock_github_client, "owner/repo", 123, "issue", config=config) as should_process:
-            assert should_process is True
+            assert should_process
         end = time.perf_counter()
         disabled_time = end - start
 
@@ -217,7 +217,7 @@ class TestLabelManagerPerformance:
         for i in range(iterations):
             start = time.perf_counter()
             with LabelManager(mock_github_client, "owner/repo", i, "issue", config=config) as should_process:
-                assert should_process is True
+                assert should_process
             end = time.perf_counter()
             # The entire context manager time includes cleanup
             total_cleanup_time += end - start
@@ -244,7 +244,7 @@ class TestLabelManagerPerformance:
 
         for i in range(iterations):
             with LabelManager(mock_github_client, "owner/repo", i, item_type=item_type, config=config) as should_process:
-                assert should_process is True
+                assert should_process
 
         end = time.perf_counter()
         elapsed_time = end - start
