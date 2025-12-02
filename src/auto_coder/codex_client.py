@@ -103,7 +103,7 @@ class CodexClient(LLMClientBase):
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run codex CLI with the given prompt and show real-time output."""
         start_time = time.time()
         status = "success"
@@ -120,8 +120,10 @@ class CodexClient(LLMClientBase):
             ]
 
             # Add configured options from config
-            if self.options:
-                cmd.extend(self.options)
+            # Use options_for_noedit for no-edit operations if available
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            if options_to_use:
+                cmd.extend(options_to_use)
 
             # Add --model flag if model_name is specified
             if self.model_name:
