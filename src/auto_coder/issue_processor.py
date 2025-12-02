@@ -1026,6 +1026,10 @@ def _apply_issue_actions_directly(
                                 config=config,
                             )
                         actions.append(pr_creation_result)
+
+                        # Retain the label if PR creation was successful
+                        if pr_creation_result.startswith("Successfully created PR"):
+                            should_process.keep_label()
                 else:
                     actions.append("LLM CLI did not provide a clear response for issue analysis")
 
