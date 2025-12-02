@@ -38,9 +38,9 @@ def ensure_parent_issue_open(
     """
     Ensure parent issue is open, reopening if necessary.
 
-    This is a minimal hook for reopening closed parent issues when processing
-    child issues. Currently implements placeholder logic - full implementation
-    to be added in follow-up issues.
+    This hook checks the state of the parent issue and reopens it if it's closed
+    before processing the child issue. This ensures parent issues remain open
+    during sub-issue processing and can track progress properly.
 
     Args:
         github_client: GitHub client for API operations
@@ -51,11 +51,9 @@ def ensure_parent_issue_open(
     Returns:
         bool: True if parent issue is open (or was reopened), False otherwise
 
-    TODO:
-        - Implement actual parent issue reopening logic in follow-up issues
-        - Add configuration flag to enable/disable automatic reopening
-        - Add appropriate error handling and retry logic
-        - Add comprehensive logging for reopening actions
+    Note:
+        Adds an audit comment when reopening to track when and why the parent
+        issue was reopened for child issue processing.
     """
     parent_issue_number = parent_issue_details.get("number")
     parent_state = parent_issue_details.get("state", "UNKNOWN").upper()
@@ -142,6 +140,10 @@ def _create_pr_for_parent_issue(
 
     This function creates a PR that confirms the completion of a parent issue.
     The PR links to the parent issue and documents the verification results.
+
+    The function manages branch creation/switching for the parent issue, creates
+    a completion marker file documenting the verification results, and creates
+    a PR that properly links to the parent issue for tracking.
 
     Args:
         repo_name: Repository name (e.g., 'owner/repo')
@@ -329,9 +331,10 @@ def _process_parent_issue(
 
     The function:
     1. Retrieves all sub-issues and their details
-    2. Checks if sub-issues have corresponding merged/closed PRs
-    3. Uses backend_for_noedit to verify if the parent issue requirements are met
-    4. Closes the parent issue if requirements are satisfied
+    2. Uses find_closing_pr to efficiently locate closing PRs for each sub-issue
+    3. Checks if sub-issues have corresponding merged/closed PRs using their closing PRs
+    4. Uses backend_for_noedit to verify if the parent issue requirements are met
+    5. Creates a completion PR and closes the parent issue if requirements are satisfied
 
     Args:
         repo_name: Repository name (e.g., 'owner/repo')
