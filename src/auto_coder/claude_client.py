@@ -283,14 +283,33 @@ class ClaudeClient(LLMClientBase):
         """
         return self._last_session_id
 
+    def _is_valid_uuid(self, session_id: str) -> bool:
+        """Validate that a string is a valid UUID format.
+
+        Args:
+            session_id: String to validate
+
+        Returns:
+            True if the string is a valid UUID, False otherwise
+        """
+        import uuid
+
+        try:
+            uuid.UUID(session_id)
+            return True
+        except (ValueError, AttributeError):
+            return False
+
     def _extract_and_store_session_id(self, output: str) -> None:
         """Extract session ID from Claude CLI output and store it.
 
         Looks for patterns like:
-        - Session ID: abc123
-        - Session: abc123
-        - session_id=abc123
-        - /sessions/abc123
+        - Session ID: 550e8400-e29b-41d4-a716-446655440000
+        - Session: 550e8400-e29b-41d4-a716-446655440000
+        - session_id=550e8400-e29b-41d4-a716-446655440000
+        - /sessions/550e8400-e29b-41d4-a716-446655440000
+
+        Only matches valid UUID format (8-4-4-4-12 hexadecimal digits).
 
         Args:
             output: The output from Claude CLI
@@ -298,29 +317,44 @@ class ClaudeClient(LLMClientBase):
         if not output:
             return
 
-        # Pattern 1: Look for "Session ID:" or "Session:" followed by alphanumeric ID
-        session_pattern = r"(?:session\s*id:|session:)\s*([a-zA-Z0-9-_]+)"
+        # UUID pattern: 8-4-4-4-12 hexadecimal digits
+        uuid_pattern = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+        # Pattern 1: Look for "Session ID:" or "Session:" followed by UUID
+        session_pattern = rf"(?:session\s*id:|session:)\s*({uuid_pattern})"
         match = re.search(session_pattern, output, re.IGNORECASE)
         if match:
-            self._last_session_id = match.group(1)
-            logger.debug(f"Extracted session ID from output: {self._last_session_id}")
+            extracted_id = match.group(1)
+            if self._is_valid_uuid(extracted_id):
+                self._last_session_id = extracted_id
+                logger.debug(f"Extracted session ID from output: {self._last_session_id}")
+            else:
+                logger.debug(f"Extracted session ID failed UUID validation: {extracted_id}")
             return
 
         # Pattern 2: Look for session_id= or session= in URLs/parameters
-        session_param_pattern = r"(?:session_id|session)=([a-zA-Z0-9-_]+)"
+        session_param_pattern = rf"(?:session_id|session)=({uuid_pattern})"
         match = re.search(session_param_pattern, output, re.IGNORECASE)
         if match:
-            self._last_session_id = match.group(1)
-            logger.debug(f"Extracted session ID from URL parameter: {self._last_session_id}")
+            extracted_id = match.group(1)
+            if self._is_valid_uuid(extracted_id):
+                self._last_session_id = extracted_id
+                logger.debug(f"Extracted session ID from URL parameter: {self._last_session_id}")
+            else:
+                logger.debug(f"Extracted session ID failed UUID validation: {extracted_id}")
             return
 
-        # Pattern 3: Look for /sessions/abc123 in URLs
-        session_path_pattern = r"/sessions/([a-zA-Z0-9-_]+)"
+        # Pattern 3: Look for /sessions/<uuid> in URLs
+        session_path_pattern = rf"/sessions/({uuid_pattern})"
         match = re.search(session_path_pattern, output, re.IGNORECASE)
         if match:
-            self._last_session_id = match.group(1)
-            logger.debug(f"Extracted session ID from path: {self._last_session_id}")
+            extracted_id = match.group(1)
+            if self._is_valid_uuid(extracted_id):
+                self._last_session_id = extracted_id
+                logger.debug(f"Extracted session ID from path: {self._last_session_id}")
+            else:
+                logger.debug(f"Extracted session ID failed UUID validation: {extracted_id}")
             return
 
-        # If no session ID found, keep previous value
-        logger.debug("No session ID found in output")
+        # If no valid UUID session ID found, keep previous value
+        logger.debug("No valid UUID session ID found in output")

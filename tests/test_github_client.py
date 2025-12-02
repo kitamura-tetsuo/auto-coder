@@ -1821,3 +1821,226 @@ class TestGitHubClientSubIssueCaching:
         assert result2 == [456]
         assert mock_subprocess.call_count == 2  # API should be called twice (cache was cleared)
         assert result1 == result2  # Results should still be identical
+
+
+class TestGitHubClientFindClosingPr:
+    """Test cases for find_closing_pr functionality."""
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_find_closing_pr_via_graphql_closing_references(self, mock_run, mock_github_class, mock_github_token):
+        """Test find_closing_pr finds PR via closingIssuesReferences."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # First call: get_linked_prs_via_graphql
+        linked_prs_response = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "timelineItems": {
+                            "nodes": [
+                                {"source": {"number": 456, "state": "OPEN"}},
+                                {"source": {"number": 789, "state": "OPEN"}},
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+        # Second call: get_pr_closing_issues for PR 456
+        closing_issues_response_456 = {
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "number": 456,
+                        "title": "Fix bug",
+                        "closingIssuesReferences": {
+                            "nodes": [
+                                {"number": 123, "title": "Bug report", "state": "OPEN"},
+                            ]
+                        },
+                    }
+                }
+            }
+        }
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+
+        # Use side_effect to return different responses based on call count
+        mock_result.stdout = json.dumps(linked_prs_response)
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        # Patch the get_pr_closing_issues method directly to return the correct closing issues
+        with patch.object(client, "get_pr_closing_issues") as mock_get_closing:
+            mock_get_closing.return_value = [123]
+
+            # Execute
+            result = client.find_closing_pr("test/repo", 123)
+
+            # Assert
+            assert result == 456  # Should return PR 456 as it has issue 123 in closingIssuesReferences
+            mock_get_closing.assert_called_once_with("test/repo", 456)
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_find_closing_pr_fallback_to_text_search(self, mock_run, mock_github_class, mock_github_token):
+        """Test find_closing_pr falls back to text search when closingIssuesReferences not found."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # Create mock PR for text search fallback
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+        mock_pr.number = 789
+        mock_pr.title = "Closes #123"
+        mock_pr.body = "This PR fixes the issue"
+
+        mock_repo = Mock()
+        mock_repo.get_pulls.return_value = [mock_pr]
+        mock_github_class.return_value.get_repo.return_value = mock_repo
+
+        # Mock GraphQL to return no closing PRs
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}})
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        # Patch get_pr_closing_issues to return empty list
+        with patch.object(client, "get_pr_closing_issues") as mock_get_closing:
+            mock_get_closing.return_value = []
+
+            # Execute
+            result = client.find_closing_pr("test/repo", 123)
+
+            # Assert
+            assert result == 789  # Should return PR 789 from text search
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_find_closing_pr_no_closing_pr(self, mock_run, mock_github_class, mock_github_token):
+        """Test find_closing_pr returns None when no closing PR found."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # GraphQL response: no linked PRs
+        linked_prs_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
+
+        # No PRs found in text search either
+        mock_repo = Mock()
+        mock_repo.get_pulls.return_value = []
+        mock_github_class.return_value.get_repo.return_value = mock_repo
+
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(linked_prs_response)
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
+
+        # Assert
+        assert result is None
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_find_closing_pr_handles_graphql_error(self, mock_run, mock_github_class, mock_github_token):
+        """Test find_closing_pr handles GraphQL errors gracefully."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # GraphQL query fails
+        mock_result = Mock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        mock_result.stderr = "GraphQL error"
+        mock_run.return_value = mock_result
+
+        # Create mock PR for text search fallback
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+        mock_pr.number = 456
+        mock_pr.title = "Fixes #123"
+        mock_pr.body = "This PR fixes the issue"
+
+        mock_repo = Mock()
+        mock_repo.get_pulls.return_value = [mock_pr]
+        mock_github_class.return_value.get_repo.return_value = mock_repo
+
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
+
+        # Assert - should fall back to text search and find PR
+        assert result == 456
+
+    @pytest.mark.parametrize(
+        "title,body,pr_number",
+        [
+            ("Fix bug", "closes #123", 456),
+            ("Resolve issue", "resolves #123", 457),
+            ("Fix", "fixes #123", 458),
+            ("Update #123", "Some description", 459),
+            ("Update", "issue #123", 460),
+        ],
+    )
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_find_closing_pr_with_multiple_patterns(self, mock_run, mock_github_class, mock_github_token, title, body, pr_number):
+        """Test find_closing_pr detects various reference patterns in PR text."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        mock_pr = Mock(spec=PullRequest.PullRequest)
+        mock_pr.number = pr_number
+        mock_pr.title = title
+        mock_pr.body = body
+
+        mock_repo = Mock()
+        mock_repo.get_pulls.return_value = [mock_pr]
+        mock_github_class.return_value.get_repo.return_value = mock_repo
+
+        # Mock GraphQL to return no linked PRs
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}})
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
+
+        # Assert
+        assert result == pr_number, f"Failed for title='{title}', body='{body}'"
+
+    @patch("src.auto_coder.github_client.Github")
+    @patch("subprocess.run")
+    def test_find_closing_pr_github_exception(self, mock_run, mock_github_class, mock_github_token):
+        """Test find_closing_pr handles GithubException gracefully."""
+        # Setup
+        client = GitHubClient.get_instance(mock_github_token)
+        client.github = mock_github_class.return_value
+
+        # GraphQL succeeds but get_repo raises exception
+        mock_result = Mock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps({"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}})
+        mock_result.stderr = ""
+        mock_run.return_value = mock_result
+
+        mock_github = Mock()
+        mock_github.get_repo.side_effect = GithubException(500, "Server Error")
+        mock_github_class.return_value = mock_github
+
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
+
+        # Assert
+        assert result is None

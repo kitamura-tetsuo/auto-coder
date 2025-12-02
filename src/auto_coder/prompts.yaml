@@ -474,6 +474,20 @@ issue:
     Issue Description:
     $issue_body...
 
+    $if(parent_issue_number)
+    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
+
+    Parent Issue Description:
+    $parent_issue_body...
+
+    IMPORTANT SCOPE LIMITATIONS:
+    - The parent issue content above is for CONTEXT ONLY
+    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
+    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
+    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
     Issue Labels: $issue_labels
     Issue State: $issue_state
     Created by: $issue_author
@@ -535,6 +549,20 @@ issue:
     Issue Description:
     $issue_body...
 
+    $if(parent_issue_number)
+    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
+
+    Parent Issue Description:
+    $parent_issue_body...
+
+    IMPORTANT SCOPE LIMITATIONS:
+    - The parent issue content above is for CONTEXT ONLY
+    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
+    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
+    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
     Commit History Since Branch Creation:
     $commit_log
 
@@ -574,6 +602,20 @@ issue:
     Issue Description:
     $issue_body...
 
+    $if(parent_issue_number)
+    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
+
+    Parent Issue Description:
+    $parent_issue_body...
+
+    IMPORTANT SCOPE LIMITATIONS:
+    - The parent issue content above is for CONTEXT ONLY
+    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
+    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
+    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
     Commit History Since Branch Creation:
     $commit_log
 
@@ -631,6 +673,20 @@ issue:
     Issue Description:
     $issue_body...
 
+    $if(parent_issue_number)
+    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
+
+    Parent Issue Description:
+    $parent_issue_body...
+
+    IMPORTANT SCOPE LIMITATIONS:
+    - The parent issue content above is for CONTEXT ONLY
+    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
+    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
+    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
     Commit History Since Branch Creation:
     $commit_log
 
@@ -691,6 +747,20 @@ issue:
     Issue Description:
     $issue_body...
 
+    $if(parent_issue_number)
+    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
+
+    Parent Issue Description:
+    $parent_issue_body...
+
+    IMPORTANT SCOPE LIMITATIONS:
+    - The parent issue content above is for CONTEXT ONLY
+    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
+    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
+    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
     Commit History Since Branch Creation:
     $commit_log
 
@@ -752,6 +822,20 @@ issue:
     Issue Description:
     $issue_body...
 
+    $if(parent_issue_number)
+    PARENT ISSUE CONTEXT (CONTEXT ONLY - DO NOT IMPLEMENT):
+    This issue is a sub-issue of #$parent_issue_number: $parent_issue_title
+
+    Parent Issue Description:
+    $parent_issue_body...
+
+    IMPORTANT SCOPE LIMITATIONS:
+    - The parent issue content above is for CONTEXT ONLY
+    - Implementation must be LIMITED to the current sub-issue scope (Issue #$issue_number)
+    - Changes should align with parent goals but only implement the specific requirements of this sub-issue
+    - Do NOT implement features or changes described in the parent issue unless they are directly relevant to this sub-issue
+
+    $endif
     Commit History Since Branch Creation:
     $commit_log
 
