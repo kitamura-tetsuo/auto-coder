@@ -44,6 +44,8 @@ class TestBackendConfig:
         assert config.always_switch_after_execution is False
         assert config.usage_markers == []
         assert config.options_for_noedit == []
+        assert config.options_explicitly_set is False
+        assert config.options_for_noedit_explicitly_set is False
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -69,6 +71,8 @@ class TestBackendConfig:
             always_switch_after_execution=True,
             usage_markers=["marker1", "marker2"],
             options_for_noedit=["noedit_option1", "noedit_option2"],
+            options_explicitly_set=True,
+            options_for_noedit_explicitly_set=True,
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -91,6 +95,8 @@ class TestBackendConfig:
         assert config.always_switch_after_execution is True
         assert config.usage_markers == ["marker1", "marker2"]
         assert config.options_for_noedit == ["noedit_option1", "noedit_option2"]
+        assert config.options_explicitly_set is True
+        assert config.options_for_noedit_explicitly_set is True
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -865,6 +871,80 @@ class TestLLMBackendConfiguration:
             # Should raise ValueError
             with pytest.raises(ValueError, match="Error loading configuration"):
                 LLMBackendConfiguration.load_from_file(str(config_file))
+
+    def test_toml_save_and_load_options_explicitly_set_flags(self):
+        """Test that options_explicitly_set and options_for_noedit_explicitly_set flags are properly saved and loaded."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_explicit_flags.toml"
+
+            # Create configuration with explicit flags settings
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").options_explicitly_set = True
+            config.get_backend_config("gemini").options_for_noedit_explicitly_set = False
+            config.get_backend_config("qwen").options_explicitly_set = False
+            config.get_backend_config("qwen").options_for_noedit_explicitly_set = True
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify flags were persisted
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.options_explicitly_set is True
+            assert gemini_config.options_for_noedit_explicitly_set is False
+
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.options_explicitly_set is False
+            assert qwen_config.options_for_noedit_explicitly_set is True
+
+    def test_backward_compatibility_old_toml_without_explicitly_set_flags(self):
+        """Test loading old TOML files that don't have options_explicitly_set or options_for_noedit_explicitly_set fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_no_explicit_flags.toml"
+
+            # Create a TOML file with the old structure (without explicit set flags)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                        "options": ["option1"],
+                        "options_for_noedit": ["noedit1"],
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Verify flags have default False values when not present in old TOML
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.options_explicitly_set is False
+            assert qwen_config.options_for_noedit_explicitly_set is False
+            assert qwen_config.options == ["option1"]
+            assert qwen_config.options_for_noedit == ["noedit1"]
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.options_explicitly_set is False
+            assert gemini_config.options_for_noedit_explicitly_set is False
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
 
 
 class TestGlobalConfigInstance:
