@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Calendar Versioning](https://calver.org/).
 
+## [2025.12.2] - 2025-12-02
+
+### Added
+
+#### LLM Backend Option Inheritance (#1019)
+
+- **NEW**: LLM backend configurations now support option inheritance from parent backends
+- Define common `options` and `options_for_noedit` once in a parent backend
+- Child backends automatically inherit options by setting `backend_type = "parent_name"`
+- Inheritance only occurs when options are NOT explicitly set in child configuration
+- Options are copied (not referenced) - safe from mutations
+- Simplifies configuration management for multiple similar backends
+
+**Example Configuration:**
+
+```toml
+# Parent backend with common options
+[openrouter-base]
+backend_type = "codex"
+model = "qwen/qwen-2.5-plus"
+openai_api_key = "sk-or-v1-your-key"
+options = ["-o", "HTTPReferer", "https://yourapp.com"]
+options_for_noedit = ["-o", "timeout", "30"]
+
+# Child inherits options from parent
+[qwen-fast]
+backend_type = "openrouter-base"
+model = "qwen/qwen-2.5-plus"
+
+# Child overrides parent options
+[qwen-premium]
+backend_type = "openrouter-base"
+model = "qwen/qwen-2.5-coder-72b"
+options = ["-o", "timeout", "120"]  # Explicit - no inheritance
+```
+
+See `docs/llm_backend_config.example.toml` for complete documentation.
+
 ## [2025.11.26] - 2025-11-26
 
 ### Breaking Changes
