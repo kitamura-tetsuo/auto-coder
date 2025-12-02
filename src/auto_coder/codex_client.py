@@ -115,8 +115,6 @@ class CodexClient(LLMClientBase):
             cmd = [
                 "codex",
                 "exec",
-                "-s",
-                "workspace-write",
             ]
 
             # Add configured options from config
