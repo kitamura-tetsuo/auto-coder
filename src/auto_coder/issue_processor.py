@@ -883,6 +883,13 @@ def _apply_issue_actions_directly(
             # Check for parent issue
             parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
 
+            # Fetch parent issue body for sub-issues
+            parent_issue_body = None
+            if parent_issue_details:
+                parent_issue_body = github_client.get_parent_issue_body(repo_name, issue_number)
+                if parent_issue_body:
+                    logger.info(f"Injecting parent issue #{parent_issue_details['number']} context into prompt for sub-issue #{issue_number}")
+
             base_branch = config.MAIN_BRANCH
             if parent_issue_details:
                 parent_issue_number = parent_issue_details["number"]
@@ -977,6 +984,7 @@ def _apply_issue_actions_directly(
                     labels=issue_labels_list,
                     label_prompt_mappings=config.label_prompt_mappings,
                     label_priorities=config.label_priorities,
+                    parent_issue_body=parent_issue_body or "",
                 )
                 logger.debug(
                     "Prepared issue-action prompt for #%s (preview: %s)",
