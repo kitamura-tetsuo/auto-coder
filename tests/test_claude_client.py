@@ -236,7 +236,7 @@ class TestClaudeClient:
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
     def test_extract_session_id_from_session_id_label(self, mock_run, mock_get_config):
-        """ClaudeClient should extract session ID from 'Session ID:' label."""
+        """ClaudeClient should extract session ID from 'Session ID:' label with UUID format."""
         mock_run.return_value.returncode = 0
 
         # Mock config
@@ -248,15 +248,15 @@ class TestClaudeClient:
 
         client = ClaudeClient()
 
-        # Test extraction
-        output = "Some output\nSession ID: abc123def\nMore output"
+        # Test extraction with valid UUID
+        output = "Some output\nSession ID: 550e8400-e29b-41d4-a716-446655440000\nMore output"
         client._extract_and_store_session_id(output)
-        assert client.get_last_session_id() == "abc123def"
+        assert client.get_last_session_id() == "550e8400-e29b-41d4-a716-446655440000"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
     def test_extract_session_id_from_session_label(self, mock_run, mock_get_config):
-        """ClaudeClient should extract session ID from 'Session:' label."""
+        """ClaudeClient should extract session ID from 'Session:' label with UUID format."""
         mock_run.return_value.returncode = 0
 
         # Mock config
@@ -268,15 +268,15 @@ class TestClaudeClient:
 
         client = ClaudeClient()
 
-        # Test extraction
-        output = "Session: xyz789"
+        # Test extraction with valid UUID
+        output = "Session: a1b2c3d4-e5f6-7890-abcd-ef1234567890"
         client._extract_and_store_session_id(output)
-        assert client.get_last_session_id() == "xyz789"
+        assert client.get_last_session_id() == "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
     def test_extract_session_id_from_url_parameter(self, mock_run, mock_get_config):
-        """ClaudeClient should extract session ID from URL parameters."""
+        """ClaudeClient should extract session ID from URL parameters with UUID format."""
         mock_run.return_value.returncode = 0
 
         # Mock config
@@ -288,15 +288,15 @@ class TestClaudeClient:
 
         client = ClaudeClient()
 
-        # Test extraction
-        output = "https://example.com/page?session_id=param123"
+        # Test extraction with valid UUID
+        output = "https://example.com/page?session_id=12345678-1234-5678-1234-567812345678"
         client._extract_and_store_session_id(output)
-        assert client.get_last_session_id() == "param123"
+        assert client.get_last_session_id() == "12345678-1234-5678-1234-567812345678"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
     def test_extract_session_id_from_path(self, mock_run, mock_get_config):
-        """ClaudeClient should extract session ID from URL paths."""
+        """ClaudeClient should extract session ID from URL paths with UUID format."""
         mock_run.return_value.returncode = 0
 
         # Mock config
@@ -308,15 +308,15 @@ class TestClaudeClient:
 
         client = ClaudeClient()
 
-        # Test extraction
-        output = "Visit https://example.com/sessions/path456 for details"
+        # Test extraction with valid UUID
+        output = "Visit https://example.com/sessions/abcdef12-3456-7890-abcd-ef1234567890 for details"
         client._extract_and_store_session_id(output)
-        assert client.get_last_session_id() == "path456"
+        assert client.get_last_session_id() == "abcdef12-3456-7890-abcd-ef1234567890"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
     def test_extract_session_id_case_insensitive(self, mock_run, mock_get_config):
-        """ClaudeClient should extract session ID case-insensitively."""
+        """ClaudeClient should extract session ID case-insensitively (both label and UUID)."""
         mock_run.return_value.returncode = 0
 
         # Mock config
@@ -328,15 +328,15 @@ class TestClaudeClient:
 
         client = ClaudeClient()
 
-        # Test extraction with uppercase
-        output = "SESSION ID: CASE123"
+        # Test extraction with uppercase UUID and label
+        output = "SESSION ID: ABCDEF12-3456-7890-ABCD-EF1234567890"
         client._extract_and_store_session_id(output)
-        assert client.get_last_session_id() == "CASE123"
+        assert client.get_last_session_id() == "ABCDEF12-3456-7890-ABCD-EF1234567890"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
-    def test_extract_session_id_with_dashes_and_underscores(self, mock_run, mock_get_config):
-        """ClaudeClient should extract session ID with dashes and underscores."""
+    def test_extract_session_id_rejects_invalid_format(self, mock_run, mock_get_config):
+        """ClaudeClient should NOT extract session ID that is not a valid UUID."""
         mock_run.return_value.returncode = 0
 
         # Mock config
@@ -348,10 +348,15 @@ class TestClaudeClient:
 
         client = ClaudeClient()
 
-        # Test extraction
+        # Test that invalid format is NOT extracted
+        output = "Session ID: abc123def"
+        client._extract_and_store_session_id(output)
+        assert client.get_last_session_id() is None
+
+        # Test another invalid format
         output = "Session ID: session-abc_123-def"
         client._extract_and_store_session_id(output)
-        assert client.get_last_session_id() == "session-abc_123-def"
+        assert client.get_last_session_id() is None
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
@@ -370,14 +375,14 @@ class TestClaudeClient:
         # Mock command executor
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Test output\nSession ID: test123"
+        mock_result.stdout = "Test output\nSession ID: 11111111-2222-3333-4444-555555555555"
         mock_result.stderr = ""
         mock_cmd_exec.return_value = mock_result
 
         client = ClaudeClient()
 
         # Set extra args
-        client.set_extra_args(["--resume", "session999"])
+        client.set_extra_args(["--resume", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"])
 
         # Run LLM
         client._run_llm_cli("test prompt")
@@ -385,7 +390,7 @@ class TestClaudeClient:
         # Check that extra args were used in command
         called_cmd = mock_cmd_exec.call_args[0][0]
         assert "--resume" in called_cmd
-        assert "session999" in called_cmd
+        assert "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in called_cmd
 
         # Check that extra args were cleared
         assert client._extra_args == []
@@ -394,7 +399,7 @@ class TestClaudeClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
     def test_session_id_extracted_from_output(self, mock_cmd_exec, mock_run, mock_get_config):
-        """ClaudeClient should extract session ID from command output."""
+        """ClaudeClient should extract session ID from command output (UUID format)."""
         mock_run.return_value.returncode = 0
 
         # Mock config
@@ -407,7 +412,7 @@ class TestClaudeClient:
         # Mock command executor
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = "Response output\nSession ID: extracted789"
+        mock_result.stdout = "Response output\nSession ID: 99999999-8888-7777-6666-555544443333"
         mock_result.stderr = ""
         mock_cmd_exec.return_value = mock_result
 
@@ -417,7 +422,7 @@ class TestClaudeClient:
         client._run_llm_cli("test prompt")
 
         # Check that session ID was extracted
-        assert client.get_last_session_id() == "extracted789"
+        assert client.get_last_session_id() == "99999999-8888-7777-6666-555544443333"
 
     @patch("src.auto_coder.claude_client.get_llm_config")
     @patch("subprocess.run")
