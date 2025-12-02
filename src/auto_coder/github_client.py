@@ -353,6 +353,21 @@ class GitHubClient:
             logger.error(f"Failed to check linked PRs for issue #{issue_number}: {e}")
             return False
 
+    def find_closing_pr(self, repo_name: str, issue_number: int) -> Optional[int]:
+        """Find a PR that closes the given issue.
+
+        This method searches for an open PR that has this issue in its closingIssuesReferences.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            issue_number: Issue number to search for in PR closing references
+
+        Returns:
+            PR number if found, None otherwise
+        """
+        # Placeholder implementation - to be implemented
+        return None
+
     def get_open_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of open sub-issues for a given issue using GitHub GraphQL API.
 
