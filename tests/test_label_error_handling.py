@@ -60,7 +60,7 @@ class TestGitHubAPIRateLimiting:
 
         # Should handle timeout gracefully and return False (skip processing)
         with LabelManager(mock_client, "owner/repo", 123, "issue", config=config) as should_process:
-            assert should_process is False
+            assert not should_process
 
 
 class TestMissingPromptTemplateFiles:

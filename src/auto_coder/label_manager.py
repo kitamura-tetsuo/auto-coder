@@ -269,6 +269,48 @@ class LabelOperationError(Exception):
     pass
 
 
+class LabelManagerContext:
+    """Context object returned by LabelManager.__enter__.
+
+    This class maintains backward compatibility by implementing __bool__,
+    while also providing a keep_label() method to allow retaining the label.
+
+    Usage:
+        with LabelManager(...) as context:
+            if not context:
+                return
+            # Process
+            context.keep_label()  # Keep the label on exit
+    """
+
+    def __init__(self, label_manager: "LabelManager", should_process: bool):
+        """Initialize the context object.
+
+        Args:
+            label_manager: The LabelManager instance that created this context
+            should_process: Boolean indicating whether processing should continue
+        """
+        self._label_manager = label_manager
+        self._should_process = should_process
+        self._keep_label_on_exit = False
+
+    def __bool__(self) -> bool:
+        """Return whether processing should continue (backward compatibility)."""
+        return self._should_process
+
+    def keep_label(self) -> None:
+        """Set flag to keep the label on exit instead of removing it."""
+        self._keep_label_on_exit = True
+
+    def _should_remove_label(self) -> bool:
+        """Check if the label should be removed on exit.
+
+        Returns:
+            True if label should be removed, False otherwise
+        """
+        return not self._keep_label_on_exit
+
+
 class LabelManager:
     _active_items: set[tuple[int, Union[int, str]]] = set()
 
@@ -356,13 +398,14 @@ class LabelManager:
         self._lock = threading.Lock()
         self._label_added = False
         self._reentered = False
+        self._context: Optional[LabelManagerContext] = None
 
-    def __enter__(self) -> bool:
-        """Enter the context manager - add label and return whether to proceed.
+    def __enter__(self) -> LabelManagerContext:
+        """Enter the context manager - add label and return context object.
 
         Returns:
-            True if process should continue (label added or does not exist in check-only mode),
-            False if label already exists (another instance is processing or exists in check-only mode)
+            LabelManagerContext: Context object with __bool__ for backward compatibility
+                                and keep_label() method for retaining the label.
         """
         # Reentrancy detection - check if this (thread, item) combination is already active
         ident = threading.get_ident()
@@ -370,7 +413,9 @@ class LabelManager:
         if item_key in LabelManager._active_items:
             self._reentered = True
             logger.debug(f">>> Should process. Already active for this item in this thread for {self.item_type} #{self.item_number}")
-            return True
+            # Create context with should_process=True for reentrancy
+            self._context = LabelManagerContext(self, True)
+            return self._context
         else:
             self._reentered = False
             LabelManager._active_items.add(item_key)
@@ -383,15 +428,18 @@ class LabelManager:
                 logger.debug(f"Labels disabled - proceeding without label management for {self.item_type} #{self.item_number}")
                 # In check-only mode, always return True when labels are disabled
                 if self.skip_label_add:
-                    return True
-                return True
+                    self._context = LabelManagerContext(self, True)
+                    return self._context
+                self._context = LabelManagerContext(self, True)
+                return self._context
 
             # Check-only mode: only verify label existence without adding
             if self.skip_label_add:
                 logger.debug(f"Check-only mode: verifying if '{self.label_name}' label exists on {self.item_type} #{self.item_number}")
                 # Use helper that fails-open (returns True to continue on errors)
                 should_process = self._check_label_exists()
-                return should_process
+                self._context = LabelManagerContext(self, should_process)
+                return self._context
 
             # Normal mode: add label with retry logic
             # When check_labels=False (WIP mode), skip pre-check and proceed
@@ -401,7 +449,8 @@ class LabelManager:
                     should_process = self._check_label_exists()
                     if not should_process:
                         logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label already exists")
-                        return False
+                        self._context = LabelManagerContext(self, False)
+                        return self._context
                 except Exception:
                     # _check_label_exists() is defensive and should not raise, but guard anyway
                     pass
@@ -420,10 +469,12 @@ class LabelManager:
                     )
                     if result:
                         self._label_added = True
-                        return True
+                        self._context = LabelManagerContext(self, True)
+                        return self._context
                     else:
                         logger.info(f"Skipping {self.item_type} #{self.item_number} - '{self.label_name}' label was just added by another instance")
-                        return False
+                        self._context = LabelManagerContext(self, False)
+                        return self._context
 
                 except Exception as e:
                     if attempt < self.max_retries - 1:
@@ -432,13 +483,15 @@ class LabelManager:
                     else:
                         logger.error(f"Failed to add '{self.label_name}' label to {self.item_type} #{self.item_number} " f"after {self.max_retries} attempts: {e}")
                         # On error, allow processing to continue
-                        return True
+                        self._context = LabelManagerContext(self, True)
+                        return self._context
 
             # Should not reach here, but just in case
-            return True
+            self._context = LabelManagerContext(self, True)
+            return self._context
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Exit the context manager - remove label if it was added.
+        """Exit the context manager - remove label if it was added and not retained.
 
         Args:
             exc_type: Exception type (if any)
@@ -459,6 +512,11 @@ class LabelManager:
         # In check-only mode, never remove labels
         if self.skip_label_add:
             logger.debug(f"Check-only mode: skipping label removal for {self.item_type} #{self.item_number}")
+            return
+
+        # Check if the context has the keep_label flag set
+        if hasattr(self, "_context") and not self._context._should_remove_label():
+            logger.debug(f"Keeping '{self.label_name}' label on exit as requested for {self.item_type} #{self.item_number}")
             return
 
         # Use lock to ensure thread-safe operations
