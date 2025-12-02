@@ -44,6 +44,8 @@ class TestBackendConfig:
         assert config.always_switch_after_execution is False
         assert config.usage_markers == []
         assert config.options_for_noedit == []
+        assert config.options_explicitly_set is False
+        assert config.options_for_noedit_explicitly_set is False
 
     def test_backend_config_with_custom_values(self):
         """Test creating a BackendConfig with custom values."""
@@ -69,6 +71,8 @@ class TestBackendConfig:
             always_switch_after_execution=True,
             usage_markers=["marker1", "marker2"],
             options_for_noedit=["noedit_option1", "noedit_option2"],
+            options_explicitly_set=True,
+            options_for_noedit_explicitly_set=True,
         )
         assert config.name == "gemini"
         assert config.enabled is False
@@ -91,6 +95,8 @@ class TestBackendConfig:
         assert config.always_switch_after_execution is True
         assert config.usage_markers == ["marker1", "marker2"]
         assert config.options_for_noedit == ["noedit_option1", "noedit_option2"]
+        assert config.options_explicitly_set is True
+        assert config.options_for_noedit_explicitly_set is True
 
     def test_backend_config_extra_args_default(self):
         """Test that extra_args has a proper default factory."""
@@ -865,6 +871,94 @@ class TestLLMBackendConfiguration:
             # Should raise ValueError
             with pytest.raises(ValueError, match="Error loading configuration"):
                 LLMBackendConfiguration.load_from_file(str(config_file))
+
+    def test_toml_save_and_load_options_explicitly_set_flags(self):
+        """Test that options_explicitly_set flags are determined by presence of options key in TOML.
+
+        Note: The options_explicitly_set flags are not stored/loaded from TOML.
+        They are computed dynamically based on whether the 'options' or 'options_for_noedit'
+        keys are present in the loaded configuration data.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "test_explicit_flags.toml"
+
+            # Create configuration with options set for gemini but not for qwen
+            config = LLMBackendConfiguration()
+            config.get_backend_config("gemini").options = ["--test-opt"]
+            config.get_backend_config("gemini").options_for_noedit = ["--noedit-opt"]
+            # qwen has no options set (empty list from default)
+
+            # Save to file
+            config.save_to_file(str(config_file))
+
+            # Load from file
+            loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # Gemini should have flags set because options keys are present in saved TOML
+            gemini_config = loaded_config.get_backend_config("gemini")
+            assert gemini_config.options_explicitly_set is True
+            assert gemini_config.options_for_noedit_explicitly_set is True
+            assert gemini_config.options == ["--test-opt"]
+            assert gemini_config.options_for_noedit == ["--noedit-opt"]
+
+            # Qwen should also have flags set because save_to_file writes all fields
+            qwen_config = loaded_config.get_backend_config("qwen")
+            assert qwen_config.options_explicitly_set is True
+            assert qwen_config.options_for_noedit_explicitly_set is True
+
+    def test_backward_compatibility_old_toml_without_explicitly_set_flags(self):
+        """Test loading TOML files with options - flags are determined by presence of options key.
+
+        Note: When options/options_for_noedit keys exist in TOML, the corresponding
+        explicitly_set flags will be True. This is the correct behavior for option
+        inheritance - if a config explicitly sets options (even to a value), it should
+        not inherit from parent.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "old_config_no_explicit_flags.toml"
+
+            # Create a TOML file with the old structure (without explicit set flags)
+            data = {
+                "backend": {"default": "qwen", "order": ["qwen", "gemini"]},
+                "backends": {
+                    "qwen": {
+                        "enabled": True,
+                        "model": "qwen3-coder-plus",
+                        "providers": ["qwen-open-router"],
+                        "temperature": 0.7,
+                        "options": ["option1"],
+                        "options_for_noedit": ["noedit1"],
+                    },
+                    "gemini": {
+                        "enabled": True,
+                        "model": "gemini-pro",
+                        "timeout": 30,
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            # Load the configuration
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            # When options/options_for_noedit keys exist in TOML, flags should be True
+            qwen_config = config.get_backend_config("qwen")
+            assert qwen_config is not None
+            assert qwen_config.options_explicitly_set is True
+            assert qwen_config.options_for_noedit_explicitly_set is True
+            assert qwen_config.options == ["option1"]
+            assert qwen_config.options_for_noedit == ["noedit1"]
+            assert qwen_config.model == "qwen3-coder-plus"
+            assert qwen_config.temperature == 0.7
+
+            # Gemini doesn't have options key in TOML, so flags should be False
+            gemini_config = config.get_backend_config("gemini")
+            assert gemini_config is not None
+            assert gemini_config.options_explicitly_set is False
+            assert gemini_config.options_for_noedit_explicitly_set is False
+            assert gemini_config.model == "gemini-pro"
+            assert gemini_config.timeout == 30
 
 
 class TestGlobalConfigInstance:
@@ -2081,3 +2175,257 @@ model = "gemini-2.5-pro"
             # Verify the deprecated methods still work
             assert loaded_config.get_noedit_default_backend() == "gemini"
             assert loaded_config.get_active_noedit_backends() == ["gemini", "qwen"]
+
+
+class TestOptionInheritance:
+    """Test cases for option inheritance from parent backends."""
+
+    def test_options_inherited_from_parent_backend(self):
+        """Test that options are inherited from parent backend when not explicitly set."""
+        config_data = {
+            "backends": {
+                "codex": {
+                    "enabled": True,
+                    "options": ["--parent-opt1", "--parent-opt2"],
+                    "options_for_noedit": ["--parent-noedit1"],
+                },
+                "child": {
+                    "enabled": True,
+                    "backend_type": "codex",
+                    "model": "child-model",
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        child_config = config.get_backend_config("child")
+        assert child_config is not None
+        assert child_config.options == ["--parent-opt1", "--parent-opt2"]
+        assert child_config.options_for_noedit == ["--parent-noedit1"]
+
+    def test_options_not_inherited_when_explicitly_set(self):
+        """Test that options are NOT inherited when explicitly set in child."""
+        config_data = {
+            "backends": {
+                "codex": {
+                    "enabled": True,
+                    "options": ["--parent-opt1", "--parent-opt2"],
+                    "options_for_noedit": ["--parent-noedit1"],
+                },
+                "child": {
+                    "enabled": True,
+                    "backend_type": "codex",
+                    "model": "child-model",
+                    "options": ["--child-opt1"],
+                    "options_for_noedit": ["--child-noedit1"],
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        child_config = config.get_backend_config("child")
+        assert child_config is not None
+        assert child_config.options == ["--child-opt1"]
+        assert child_config.options_for_noedit == ["--child-noedit1"]
+        assert child_config.options_explicitly_set is True
+        assert child_config.options_for_noedit_explicitly_set is True
+
+    def test_options_explicitly_set_flag_detected(self):
+        """Test that options_explicitly_set flag is correctly detected."""
+        config_data = {
+            "backends": {
+                "parent": {
+                    "enabled": True,
+                    "options": ["--parent-opt"],
+                },
+                "child_with_options": {
+                    "enabled": True,
+                    "backend_type": "parent",
+                    "options": [],
+                },
+                "child_without_options": {
+                    "enabled": True,
+                    "backend_type": "parent",
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        # Child with explicitly set options (even empty list)
+        child_with = config.get_backend_config("child_with_options")
+        assert child_with is not None
+        assert child_with.options_explicitly_set is True
+        assert child_with.options == []
+
+        # Child without explicitly set options should inherit
+        child_without = config.get_backend_config("child_without_options")
+        assert child_without is not None
+        assert child_without.options_explicitly_set is False
+        assert child_without.options == ["--parent-opt"]
+
+    def test_options_for_noedit_explicitly_set_flag_detected(self):
+        """Test that options_for_noedit_explicitly_set flag is correctly detected."""
+        config_data = {
+            "backends": {
+                "parent": {
+                    "enabled": True,
+                    "options_for_noedit": ["--parent-noedit"],
+                },
+                "child_with_noedit": {
+                    "enabled": True,
+                    "backend_type": "parent",
+                    "options_for_noedit": [],
+                },
+                "child_without_noedit": {
+                    "enabled": True,
+                    "backend_type": "parent",
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        # Child with explicitly set options_for_noedit (even empty list)
+        child_with = config.get_backend_config("child_with_noedit")
+        assert child_with is not None
+        assert child_with.options_for_noedit_explicitly_set is True
+        assert child_with.options_for_noedit == []
+
+        # Child without explicitly set options_for_noedit should inherit
+        child_without = config.get_backend_config("child_without_noedit")
+        assert child_without is not None
+        assert child_without.options_for_noedit_explicitly_set is False
+        assert child_without.options_for_noedit == ["--parent-noedit"]
+
+    def test_no_inheritance_when_parent_not_found(self):
+        """Test that no inheritance occurs when parent backend doesn't exist."""
+        config_data = {
+            "backends": {
+                "child": {
+                    "enabled": True,
+                    "backend_type": "nonexistent_parent",
+                    "model": "child-model",
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        child_config = config.get_backend_config("child")
+        assert child_config is not None
+        assert child_config.options == []
+        assert child_config.options_for_noedit == []
+
+    def test_inheritance_with_load_from_file(self):
+        """Test that option inheritance works with load_from_file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_file = Path(tmpdir) / "inheritance_config.toml"
+            data = {
+                "backend": {"default": "child", "order": ["child", "parent"]},
+                "backends": {
+                    "parent": {
+                        "enabled": True,
+                        "options": ["--parent-flag"],
+                        "options_for_noedit": ["--parent-noedit-flag"],
+                    },
+                    "child": {
+                        "enabled": True,
+                        "backend_type": "parent",
+                        "model": "child-model",
+                    },
+                },
+            }
+            with open(config_file, "w", encoding="utf-8") as fh:
+                toml.dump(data, fh)
+
+            config = LLMBackendConfiguration.load_from_file(str(config_file))
+
+            child_config = config.get_backend_config("child")
+            assert child_config is not None
+            assert child_config.backend_type == "parent"
+            assert child_config.options == ["--parent-flag"]
+            assert child_config.options_for_noedit == ["--parent-noedit-flag"]
+            assert child_config.options_explicitly_set is False
+            assert child_config.options_for_noedit_explicitly_set is False
+
+    def test_partial_inheritance(self):
+        """Test that only non-explicitly set options are inherited."""
+        config_data = {
+            "backends": {
+                "parent": {
+                    "enabled": True,
+                    "options": ["--parent-opt"],
+                    "options_for_noedit": ["--parent-noedit"],
+                },
+                "child": {
+                    "enabled": True,
+                    "backend_type": "parent",
+                    "options": ["--child-opt"],
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        child_config = config.get_backend_config("child")
+        assert child_config is not None
+        assert child_config.options == ["--child-opt"]
+        assert child_config.options_for_noedit == ["--parent-noedit"]
+        assert child_config.options_explicitly_set is True
+        assert child_config.options_for_noedit_explicitly_set is False
+
+    def test_inheritance_creates_copy_not_reference(self):
+        """Test that inherited options are copied, not referenced."""
+        config_data = {
+            "backends": {
+                "parent": {
+                    "enabled": True,
+                    "options": ["--parent-opt"],
+                },
+                "child": {
+                    "enabled": True,
+                    "backend_type": "parent",
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        parent_config = config.get_backend_config("parent")
+        child_config = config.get_backend_config("child")
+
+        assert parent_config is not None
+        assert child_config is not None
+
+        child_config.options.append("--child-added-opt")
+        assert "--child-added-opt" not in parent_config.options
+
+    def test_nested_inheritance_not_supported(self):
+        """Test that grandparent inheritance is not directly supported (only immediate parent)."""
+        config_data = {
+            "backends": {
+                "grandparent": {
+                    "enabled": True,
+                    "options": ["--grandparent-opt"],
+                },
+                "parent": {
+                    "enabled": True,
+                    "backend_type": "grandparent",
+                },
+                "child": {
+                    "enabled": True,
+                    "backend_type": "parent",
+                },
+            }
+        }
+
+        config = LLMBackendConfiguration.load_from_dict(config_data)
+
+        parent_config = config.get_backend_config("parent")
+        child_config = config.get_backend_config("child")
+
+        assert parent_config.options == ["--grandparent-opt"]
+        assert child_config.options == ["--grandparent-opt"]
