@@ -112,7 +112,7 @@ class QwenClient(LLMClientBase):
         return prompt.strip()
 
     # ----- Core execution -----
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Execute LLM with the given prompt.
 
         This method is called by BackendManager which handles provider rotation.
@@ -120,6 +120,7 @@ class QwenClient(LLMClientBase):
 
         Args:
             prompt: The prompt to send to the LLM
+            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
 
         Returns:
             The LLM's response as a string
@@ -130,6 +131,7 @@ class QwenClient(LLMClientBase):
         provider_model = os.environ.get("QWEN_MODEL")
 
         # Always use OAuth path (native Qwen CLI)
+        # Note: options_for_noedit is already used in self.options during initialization
         return self._run_qwen_cli(escaped_prompt, provider_model)
 
     def _run_qwen_cli(self, escaped_prompt: str, model: Optional[str]) -> str:

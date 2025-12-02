@@ -103,7 +103,7 @@ class ClaudeClient(LLMClientBase):
         """Escape special characters that may confuse shell/CLI."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run claude CLI with the given prompt and show real-time output."""
         try:
             escaped_prompt = self._escape_prompt(prompt)
@@ -115,7 +115,9 @@ class ClaudeClient(LLMClientBase):
             ]
 
             # Add configurable options from config
-            cmd.extend(self.options)
+            # Use options_for_noedit for no-edit operations if available
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            cmd.extend(options_to_use)
 
             if self.settings:
                 cmd.extend(["--settings", self.settings])

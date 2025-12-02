@@ -115,7 +115,7 @@ class GeminiClient(LLMClientBase):
         """Escape @ characters in prompt for Gemini."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run gemini CLI with the given prompt and show real-time output."""
         start_time = time.time()
         status = "success"
@@ -132,7 +132,9 @@ class GeminiClient(LLMClientBase):
             ]
 
             # Add configured options
-            cmd.extend(self.options)
+            # Use options_for_noedit for no-edit operations if available
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            cmd.extend(options_to_use)
 
             # Append any resume/continuation flags before the prompt payload
             extra_args = self.consume_extra_args()

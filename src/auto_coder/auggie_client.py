@@ -162,7 +162,7 @@ class AuggieClient(LLMClientBase):
         """Escape characters that can confuse shell commands."""
         return prompt.replace("@", "\\@").strip()
 
-    def _run_auggie_cli(self, prompt: str) -> str:
+    def _run_auggie_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Execute Auggie CLI and stream output via logger."""
         self._check_and_increment_usage()
         escaped_prompt = self._escape_prompt(prompt)
@@ -173,7 +173,9 @@ class AuggieClient(LLMClientBase):
         ]
 
         # Add configured options
-        cmd.extend(self.options)
+        # Use options_for_noedit for no-edit operations if available
+        options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+        cmd.extend(options_to_use)
 
         extra_args = self.consume_extra_args()
         if extra_args:
@@ -229,16 +231,17 @@ class AuggieClient(LLMClientBase):
                 process.kill()
             raise AutoCoderTimeoutError("auggie CLI timed out after 7200 seconds")
 
-    def _run_llm_cli(self, prompt: str) -> str:
+    def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Execute LLM with the given prompt.
 
         Args:
             prompt: The prompt to send to the LLM
+            is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
 
         Returns:
             The LLM's response as a string
         """
-        return self._run_auggie_cli(prompt)
+        return self._run_auggie_cli(prompt, is_noedit)
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Auggie CLI.
