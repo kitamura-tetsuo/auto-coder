@@ -128,8 +128,10 @@ backend_type = "codex"
 # You can create custom aliases that point to underlying backend types
 # This allows you to have multiple configurations for the same backend
 
-# Example 1: Qwen via OpenRouter with faster model
-[qwen-fast]
+# Example 1: Parent backend with common OpenRouter configuration
+# ================================================================
+# This parent defines common options that child backends can inherit
+[openrouter-base]
 # enabled = true is the default (no need to specify)
 model = "qwen/qwen-2.5-plus"
 openai_api_key = "sk-or-v1-your-openrouter-key-here"
@@ -138,31 +140,42 @@ openai_base_url = "https://openrouter.ai/api/v1"
 # Use 'codex' backend type (OpenAI-compatible)
 backend_type = "codex"
 
-# Custom options for faster responses
+# Common options for all OpenRouter backends
 # options: Used for code editing operations
 # options_for_noedit: Used for message generation (commit messages, PR descriptions)
-options = ["-o", "timeout", "30", "-o", "stream", "true"]
-options_for_noedit = ["-o", "timeout", "30", "-o", "stream", "true"]
-
-
-# Example 2: Qwen via OpenRouter with premium model
-[qwen-premium]
-# enabled = true is the default (no need to specify)
-model = "qwen/qwen-2.5-coder-72b-instruct"
-openai_api_key = "sk-or-v1-your-openrouter-key-here"
-openai_base_url = "https://openrouter.ai/api/v1"
-
-# Use 'codex' backend type (OpenAI-compatible)
-backend_type = "codex"
-
-# Premium model with additional options
-# options: Used for code editing operations
-# options_for_noedit: Used for message generation (commit messages, PR descriptions)
+# Child backends can inherit these options automatically!
 options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 options_for_noedit = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
 
 
-# Example 3: Azure OpenAI with Qwen model
+# Example 2: Child backend inheriting from parent
+# ===============================================
+# This child inherits options from openrouter-base
+[qwen-fast]
+# enabled = true is the default (no need to specify)
+model = "qwen/qwen-2.5-plus"
+
+# Inherit backend_type and options from openrouter-base!
+backend_type = "openrouter-base"
+
+# No need to specify options - automatically inherited from openrouter-base
+# options = []  # <-- This would prevent inheritance! Don't add it unless you want to override
+
+
+# Example 3: Child backend with custom model but inherited options
+# ================================================================
+[qwen-premium]
+# enabled = true is the default (no need to specify)
+model = "qwen/qwen-2.5-coder-72b-instruct"
+
+# Inherit backend_type and options from openrouter-base!
+backend_type = "openrouter-base"
+
+# No need to specify options - automatically inherited from openrouter-base
+# The premium model uses the same options as defined in openrouter-base
+
+
+# Example 4: Azure OpenAI with Qwen model
 # NOTE: Disabled by default (optional service)
 [qwen-azure]
 enabled = false
@@ -180,7 +193,7 @@ options = ["-o", "api_version", "2024-02-01"]
 options_for_noedit = ["-o", "api_version", "2024-02-01"]
 
 
-# Example 4: Custom OpenAI-compatible endpoint
+# Example 5: Custom OpenAI-compatible endpoint
 # NOTE: Disabled by default (optional service)
 [qwen-custom]
 enabled = false
@@ -423,6 +436,46 @@ options_for_noedit = []
 # 3. The `backend_type` field allows you to create custom aliases that
 #    map to underlying backend implementations. This is useful when you
 #    want multiple configurations for the same backend type.
+
+# Backend Inheritance (Important!)
+# ---------------------------------
+# The configuration system supports option inheritance from parent backends.
+# This allows you to define common options once and reuse them across multiple backends.
+#
+# How It Works:
+# 1. Define a parent backend with common options
+# 2. Create child backends that specify `backend_type = "parent_name"`
+# 3. Child backends automatically inherit `options` and `options_for_noedit` from the parent
+# 4. Inheritance ONLY occurs when child backends do NOT explicitly define these fields
+# 5. If a child explicitly sets `options` (even to an empty list []), no inheritance occurs
+#
+# Example - Parent with common options:
+# [openrouter-base]
+# backend_type = "codex"
+# model = "qwen/qwen-2.5-plus"
+# openai_api_key = "sk-or-v1-your-openrouter-key"
+# openai_base_url = "https://openrouter.ai/api/v1"
+# options = ["-o", "HTTPReferer", "https://yourapp.com", "-o", "XTitle", "Auto-Coder"]
+# options_for_noedit = ["-o", "timeout", "30"]
+#
+# Child inherits from parent:
+# [qwen-fast]
+# backend_type = "openrouter-base"  # Inherits options from openrouter-base
+# model = "qwen/qwen-2.5-plus"
+#
+# Child overrides parent:
+# [qwen-premium]
+# backend_type = "openrouter-base"
+# model = "qwen/qwen-2.5-coder-72b"
+# options = ["-o", "timeout", "120"]  # Explicitly set - NO inheritance!
+#
+# Key Rules:
+# - Parent backends are identified by their name
+# - Child backends use `backend_type = "parent_name"` to inherit
+# - Options are copied (not referenced) - modifying child options won't affect parent
+# - Only immediate parent inheritance is supported (no multi-level chaining)
+# - Inheritance happens automatically during config loading
+# - Explicit configuration always takes precedence over inheritance
 
 # Environment Variables
 # --------------------
