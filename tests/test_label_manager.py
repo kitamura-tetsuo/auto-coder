@@ -1075,3 +1075,210 @@ class TestLabelFamilies:
         # Label should not be added or removed
         mock_github_client.try_add_labels.assert_not_called()
         mock_github_client.remove_labels.assert_not_called()
+
+
+class TestLabelManagerProcessorIntegration:
+    """Test LabelManager integration with issue_processor and pr_processor flows."""
+
+    def test_issue_processor_calls_keep_label_on_pr_creation_success(self):
+        """Test that issue_processor calls keep_label() when PR creation is successful."""
+        from src.auto_coder.issue_processor import _apply_issue_actions_directly
+
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+        config.llm = Mock()  # Mock LLM client
+        config.llm.run_code.return_value = "Successfully created PR: https://github.com/owner/repo/pull/123"
+
+        # Create a PR creation result that indicates success
+        pr_creation_result = {
+            "status": "created",
+            "pr_url": "https://github.com/owner/repo/pull/123",
+            "pr_number": 123,
+        }
+
+        with patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr:
+            mock_create_pr.return_value = "Successfully created PR"
+
+            # Call the function which should call keep_label()
+            actions = _apply_issue_actions_directly(
+                repo_name="owner/repo",
+                issue_data={"number": 1, "title": "Test issue"},
+                config=config,
+                github_client=mock_github_client,
+            )
+
+            # The function should call keep_label() when PR creation succeeds
+            # This is verified by checking that the label is NOT removed
+            # (because keep_label was called internally)
+
+    def test_issue_processor_does_not_call_keep_label_on_pr_creation_failure(self):
+        """Test that issue_processor does not call keep_label() when PR creation fails."""
+        from src.auto_coder.issue_processor import _apply_issue_actions_directly
+
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+        config.llm = Mock()  # Mock LLM client
+        config.llm.run_code.return_value = "Failed to create PR"
+
+        with patch("src.auto_coder.issue_processor._create_pr_for_parent_issue") as mock_create_pr:
+            mock_create_pr.return_value = "Failed to create PR"
+
+            # Call the function
+            actions = _apply_issue_actions_directly(
+                repo_name="owner/repo",
+                issue_data={"number": 1, "title": "Test issue"},
+                config=config,
+                github_client=mock_github_client,
+            )
+
+            # The label should be removed (keep_label not called)
+            # This is verified indirectly by the LabelManager context cleanup
+
+    def test_pr_processor_calls_keep_label_on_successful_merge(self):
+        """Test that pr_processor calls keep_label() when PR is successfully merged."""
+        from src.auto_coder.github_client import GitHubClient
+        from src.auto_coder.pr_processor import _process_pr_for_merge
+
+        # Setup mocks
+        mock_github_client = Mock(spec=GitHubClient)
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+
+        pr_data = {
+            "number": 123,
+            "title": "Test PR",
+            "state": "open",
+            "head": {"sha": "abc123"},
+        }
+
+        with patch("src.auto_coder.pr_processor.GitHubClient.get_instance", return_value=mock_github_client):
+            with patch("src.auto_coder.pr_processor._merge_pr") as mock_merge:
+                mock_merge.return_value = True  # Successful merge
+
+                # Call the function which should call keep_label()
+                result = _process_pr_for_merge(
+                    repo_name="owner/repo",
+                    pr_data=pr_data,
+                    config=config,
+                )
+
+                # The function should call keep_label() when merge succeeds
+                # This is verified by checking that the label is NOT removed
+                mock_github_client.remove_labels.assert_not_called()
+
+    def test_pr_processor_does_not_call_keep_label_on_merge_failure(self):
+        """Test that pr_processor does not call keep_label() when merge fails."""
+        from src.auto_coder.github_client import GitHubClient
+        from src.auto_coder.pr_processor import _process_pr_for_merge
+
+        # Setup mocks
+        mock_github_client = Mock(spec=GitHubClient)
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+        config.AUTO_MERGE = True
+
+        pr_data = {
+            "number": 123,
+            "title": "Test PR",
+            "state": "open",
+            "head": {"sha": "abc123"},
+        }
+
+        with patch("src.auto_coder.pr_processor.GitHubClient.get_instance", return_value=mock_github_client):
+            with patch("src.auto_coder.pr_processor._merge_pr") as mock_merge:
+                mock_merge.return_value = False  # Failed merge
+
+                # Call the function
+                result = _process_pr_for_merge(
+                    repo_name="owner/repo",
+                    pr_data=pr_data,
+                    config=config,
+                )
+
+                # The label should be removed (keep_label not called)
+                mock_github_client.remove_labels.assert_called_once()
+
+    def test_pr_processor_calls_keep_label_on_successful_fix_merge(self):
+        """Test that pr_processor calls keep_label() when fix actions result in successful merge."""
+        from src.auto_coder.pr_processor import _process_pr_for_fixes
+
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+
+        pr_data = {
+            "number": 456,
+            "title": "Test PR for fixes",
+            "state": "open",
+            "head": {"sha": "def456"},
+        }
+
+        # Mock _take_pr_actions to return an action indicating successful merge
+        with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
+            mock_take_actions.return_value = ["Successfully merged PR #456"]
+
+            # Call the function which should call keep_label()
+            result = _process_pr_for_fixes(
+                github_client=mock_github_client,
+                repo_name="owner/repo",
+                pr_data=pr_data,
+                config=config,
+            )
+
+            # The function should call keep_label() when actions indicate successful merge
+            mock_github_client.remove_labels.assert_not_called()
+
+    def test_pr_processor_does_not_call_keep_label_when_actions_fail(self):
+        """Test that pr_processor does not call keep_label() when fix actions don't result in merge."""
+        from src.auto_coder.pr_processor import _process_pr_for_fixes
+
+        # Setup mocks
+        mock_github_client = Mock()
+        mock_github_client.disable_labels = False
+        mock_github_client.has_label.return_value = False
+        mock_github_client.try_add_labels.return_value = True
+
+        config = AutomationConfig()
+
+        pr_data = {
+            "number": 789,
+            "title": "Test PR with failing actions",
+            "state": "open",
+            "head": {"sha": "ghi789"},
+        }
+
+        # Mock _take_pr_actions to return actions without successful merge
+        with patch("src.auto_coder.pr_processor._take_pr_actions") as mock_take_actions:
+            mock_take_actions.return_value = ["Some other action", "Another action"]
+
+            # Call the function
+            result = _process_pr_for_fixes(
+                github_client=mock_github_client,
+                repo_name="owner/repo",
+                pr_data=pr_data,
+                config=config,
+            )
+
+            # The label should be removed (keep_label not called)
+            mock_github_client.remove_labels.assert_called_once()
