@@ -356,7 +356,8 @@ class GitHubClient:
     def find_closing_pr(self, repo_name: str, issue_number: int) -> Optional[int]:
         """Find a PR that closes the given issue.
 
-        This method searches for an open PR that has this issue in its closingIssuesReferences.
+        This method searches for an open PR that has this issue in its closingIssuesReferences
+        or that references the issue with "Closes #xxx" syntax.
 
         Args:
             repo_name: Repository name in format 'owner/repo'
@@ -365,8 +366,44 @@ class GitHubClient:
         Returns:
             PR number if found, None otherwise
         """
-        # Placeholder implementation - to be implemented
-        return None
+        try:
+            # First, try to find PRs linked via GraphQL timeline (CONNECTED_EVENT)
+            linked_pr_numbers = self.get_linked_prs_via_graphql(repo_name, issue_number)
+
+            # Check each linked PR to see if it has this issue in closingIssuesReferences
+            for pr_number in linked_pr_numbers:
+                closing_issues = self.get_pr_closing_issues(repo_name, pr_number)
+                if issue_number in closing_issues:
+                    logger.info(f"Found closing PR #{pr_number} for issue #{issue_number} via closingIssuesReferences")
+                    return pr_number
+
+            # Fallback: Search for PRs that reference this issue in title/body
+            repo = self.get_repository(repo_name)
+            prs = repo.get_pulls(state="open")
+
+            issue_ref_patterns = [
+                f"#{issue_number}",
+                f"issue #{issue_number}",
+                f"fixes #{issue_number}",
+                f"closes #{issue_number}",
+                f"resolves #{issue_number}",
+            ]
+
+            for pr in prs:
+                pr_text = f"{pr.title} {pr.body or ''}".lower()
+                if any(pattern.lower() in pr_text for pattern in issue_ref_patterns):
+                    logger.info(f"Found closing PR #{pr.number} for issue #{issue_number} via text search")
+                    return pr.number
+
+            logger.debug(f"No closing PR found for issue #{issue_number}")
+            return None
+
+        except GithubException as e:
+            logger.error(f"Failed to find closing PR for issue #{issue_number}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error finding closing PR for issue #{issue_number}: {e}")
+            return None
 
     def get_open_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of open sub-issues for a given issue using GitHub GraphQL API.
