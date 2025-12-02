@@ -156,7 +156,7 @@ fi
 # Always sync dependencies with uv when available
 # Skip sync in CI to avoid conflicts with pre-synced environment
 if [ "$USE_UV" -eq 1 ] && [ "${GITHUB_ACTIONS:-}" != "true" ] && [ "${CI:-}" != "true" ]; then
-  uv sync -q
+  uv sync -q --extra test
   # Install test dependencies including pytest-timeout
   # Note: We need to ensure pytest-timeout is installed in the environment that uv uses
   if ! uv run python -c "import pytest_timeout" 2>/dev/null; then
@@ -233,7 +233,7 @@ if [ $# -ge 1 ]; then
     if [ -f "$SPECIFIC_TEST_FILE" ]; then
         echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
         # Don't generate HTML coverage report for single test files (faster)
-        $RUN pytest $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE" "$@"
+        $RUN pytest -n auto $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE" "$@"
         exit $?
     else
         echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
@@ -248,7 +248,7 @@ TEST_OUTPUT_FILE=$(mktemp)
 # Don't exit on errors - we want to capture the exit code
 set +e
 
-$RUN pytest $PYTEST_ALL_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
+$RUN pytest -n auto $PYTEST_ALL_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
 EXIT_CODE=${PIPESTATUS[0]}
 
 # Re-enable exit on errors
@@ -277,7 +277,7 @@ if [ $EXIT_CODE -ne 0 ]; then
     # If we found a failed test, run only that test
     if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
         echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        $RUN pytest $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
+        $RUN pytest -n auto $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
         RESULT=$?
         rm "$TEST_OUTPUT_FILE"
         exit $RESULT
