@@ -7,6 +7,7 @@ repository, and hostname.
 """
 
 import csv
+import json
 import os
 import socket
 import subprocess
@@ -83,6 +84,25 @@ class GHCommandLogger:
         today = datetime.now().strftime("%Y-%m-%d")
         return self.log_dir / f"gh_commands_{today}.csv"
 
+    def _compress_json_string(self, text: str) -> str:
+        """
+        Compress JSON strings by removing whitespace and newlines.
+
+        Attempts to parse the input as JSON and return a compact version.
+        If parsing fails, returns the original string unchanged.
+
+        Args:
+            text: String that may contain JSON
+
+        Returns:
+            Compressed JSON string if valid JSON, otherwise original string
+        """
+        try:
+            parsed = json.loads(text)
+            return json.dumps(parsed, separators=(",", ":"))
+        except (json.JSONDecodeError, TypeError):
+            return text
+
     def _format_csv_row(
         self,
         caller_file: str,
@@ -109,7 +129,7 @@ class GHCommandLogger:
             "caller_file": caller_file,
             "caller_line": str(caller_line),
             "command": command,
-            "args": " ".join(args) if args else "",
+            "args": " ".join(self._compress_json_string(arg) for arg in args) if args else "",
             "repo": repo or "",
             "hostname": self._hostname,
         }
