@@ -1947,6 +1947,90 @@ class TestGetCandidates:
 
     @patch("src.auto_coder.util.github_action._check_github_actions_status")
     @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_ignore_dependabot_prs_skips_all(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """When IGNORE_DEPENDABOT_PRS is True, all Dependabot PRs are skipped (including ready ones)."""
+        config = AutomationConfig()
+        config.IGNORE_DEPENDABOT_PRS = True
+        config.AUTO_MERGE_DEPENDABOT_PRS = True  # This should be ignored when IGNORE_DEPENDABOT_PRS is True
+        engine = AutomationEngine(mock_github_client, config=config)
+
+        # Three dependency-bot PRs: one green/mergeable, one failing, one unmergeable
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),
+            Mock(number=3, created_at="2024-01-03T00:00:00Z"),
+        ]
+        mock_github_client.get_open_issues.return_value = []
+
+        pr_data = {
+            1: {
+                "number": 1,
+                "title": "Dependabot green PR",
+                "body": "",
+                "head": {"ref": "bot-pr-1"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-01T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+            2: {
+                "number": 2,
+                "title": "Dependabot failing PR",
+                "body": "",
+                "head": {"ref": "bot-pr-2"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-02T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+            3: {
+                "number": 3,
+                "title": "Dependabot unmergeable PR",
+                "body": "",
+                "head": {"ref": "bot-pr-3"},
+                "labels": [],
+                "mergeable": False,
+                "created_at": "2024-01-03T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+        }
+
+        def get_pr_details_side_effect(pr):
+            return pr_data[pr.number]
+
+        mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
+
+        def check_actions_side_effect(repo_name, pr_details, config_obj):
+            if pr_details["number"] == 1:
+                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+            if pr_details["number"] == 2:
+                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
+            if pr_details["number"] == 3:
+                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+            return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+
+        mock_check_actions.side_effect = check_actions_side_effect
+
+        mock_extract_issues.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        with patch("src.auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            mock_label_mgr.return_value.__enter__.return_value = True
+
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # All dependency-bot PRs should be skipped when IGNORE_DEPENDABOT_PRS is True
+        assert [c.data["number"] for c in candidates] == []
+
+    @patch("src.auto_coder.util.github_action._check_github_actions_status")
+    @patch("src.auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_items_with_auto_coder_label(
         self,
         mock_extract_issues,
