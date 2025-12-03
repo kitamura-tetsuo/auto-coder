@@ -182,6 +182,40 @@ class TestCLI:
             body="Description",
             labels=["bug"],
             assignees=["user1"],
+            body_file=None,
+        )
+
+    @patch("github_sub_issue.cli.GitHubSubIssueAPI")
+    def test_create_command_with_body_file(self, mock_api_class: MagicMock) -> None:
+        """Verify that create command works correctly with --body-file option."""
+        mock_api = MagicMock()
+        mock_api.create_sub_issue.return_value = {
+            "number": 789,
+            "title": "New Issue",
+            "url": "https://github.com/owner/repo/issues/789",
+        }
+        mock_api_class.return_value = mock_api
+
+        result = self.runner.invoke(
+            main,
+            [
+                "create",
+                "--parent", "123",
+                "--title", "New Issue",
+                "--body-file", "/path/to/body.txt",
+                "--label", "bug",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "Created sub-issue #789: New Issue" in result.output
+        mock_api.create_sub_issue.assert_called_once_with(
+            "123",
+            "New Issue",
+            body=None,
+            labels=["bug"],
+            assignees=None,
+            body_file="/path/to/body.txt",
         )
 
     @patch("github_sub_issue.cli.GitHubSubIssueAPI")
