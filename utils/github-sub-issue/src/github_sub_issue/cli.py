@@ -69,6 +69,7 @@ def add(ctx: click.Context, parent: str, sub_issues: tuple[str, ...], replace_pa
 @click.option("--parent", "-p", required=True, help="Parent issue number or URL")
 @click.option("--title", "-t", required=True, help="Issue title")
 @click.option("--body", "-b", help="Issue body")
+@click.option("--body-file", help="Path to file containing issue body")
 @click.option("--label", "-l", multiple=True, help="Label (can be specified multiple times)")
 @click.option("--assignee", "-a", multiple=True, help="User to assign (can be specified multiple times)")
 @click.pass_context
@@ -77,6 +78,7 @@ def create(
     parent: str,
     title: str,
     body: Optional[str],
+    body_file: Optional[str],
     label: tuple[str, ...],
     assignee: tuple[str, ...],
 ) -> None:
@@ -92,8 +94,9 @@ def create(
             body=body,
             labels=list(label) if label else None,
             assignees=list(assignee) if assignee else None,
+            body_file=body_file,
         )
-        
+
         click.echo(f"✅ Created sub-issue #{result['number']}: {result['title']}")
         click.echo(f"   URL: {result['url']}")
     except Exception as e:

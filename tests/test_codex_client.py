@@ -22,7 +22,7 @@ class TestCodexClient:
     def test_init_checks_cli(self, mock_get_config, mock_run):
         """CodexClient should check codex --version at init."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config to return default codex model
         mock_backend = MagicMock()
         mock_backend.model = "codex"
@@ -451,7 +451,7 @@ class TestCodexClient:
     def test_model_name_default_with_custom_config(self, mock_get_config, mock_run):
         """CodexClient should use default model when model_name is None with custom config."""
         mock_run.return_value.returncode = 0
-        
+
         # Mock config
         mock_backend = MagicMock()
         mock_backend.model = "codex"
