@@ -279,3 +279,141 @@ class TestGHCommandLogger:
                 assert len(rows) == 1
                 # Special characters should be preserved
                 assert "query=query { ... }" in rows[0]["args"]
+
+    def test_compress_json_string_with_valid_json(self):
+        """Test _compress_json_string with valid JSON."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+
+            # Test with valid JSON object
+            result = logger._compress_json_string('{"key": "value", "nested": {"a": 1}}')
+            assert result == '{"key":"value","nested":{"a":1}}'
+
+            # Test with valid JSON array
+            result = logger._compress_json_string("[1, 2, 3]")
+            assert result == "[1,2,3]"
+
+            # Test with multi-line JSON with indentation
+            multi_line_json = """{
+                "key": "value",
+                "nested": {
+                    "a": 1
+                }
+            }"""
+            result = logger._compress_json_string(multi_line_json)
+            assert result == '{"key":"value","nested":{"a":1}}'
+
+    def test_compress_json_string_with_non_json(self):
+        """Test _compress_json_string with non-JSON strings."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+
+            # Test with non-JSON strings - should remain unchanged
+            assert logger._compress_json_string("auth") == "auth"
+            assert logger._compress_json_string("status") == "status"
+            assert logger._compress_json_string("graphql") == "graphql"
+            assert logger._compress_json_string("not-a-json") == "not-a-json"
+
+    def test_compress_json_string_with_malformed_json(self):
+        """Test _compress_json_string with malformed JSON."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+
+            # Test with incomplete JSON
+            result = logger._compress_json_string('{"incomplete": ')
+            assert result == '{"incomplete": '
+
+            # Test with invalid JSON syntax (missing quotes)
+            result = logger._compress_json_string("{key: value}")
+            assert result == "{key: value}"
+
+    def test_log_command_with_json_args(self, _use_custom_subprocess_mock):
+        """Test that JSON in command args is compressed when logged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = Path(tmpdir)
+            logger = GHCommandLogger(log_dir=test_dir)
+
+            # Log a command with JSON argument
+            logger.log_command(
+                command_list=["gh", "api", "graphql", "-f", 'query={"user": "test"}'],
+                caller_file="/test/file.py",
+                caller_line=1,
+            )
+
+            # Read the CSV file and verify the args column contains compressed JSON
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                # Verify JSON is compressed (no newlines or extra spaces)
+                assert 'query={"user":"test"}' in rows[0]["args"]
+
+    def test_log_command_with_graphql_query(self, _use_custom_subprocess_mock):
+        """Test real-world GraphQL query compression."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = Path(tmpdir)
+            logger = GHCommandLogger(log_dir=test_dir)
+
+            # Log a command with multi-line JSON query (representing a GraphQL query as JSON)
+            graphql_query = """{
+    "query": "query { user(id: 123) { name email } }",
+    "variables": {
+        "id": 123
+    }
+}"""
+            logger.log_command(
+                command_list=["gh", "api", "graphql", "-f", graphql_query],
+                caller_file="/test/graphql_client.py",
+                caller_line=42,
+                repo="owner/repo",
+            )
+
+            # Read the CSV file and verify JSON query is compressed
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+                assert len(rows) == 1
+                # Verify JSON is compressed to single-line (no newlines)
+                assert rows[0]["args"].count("\n") == 0
+                # Verify the compressed JSON is valid when parsed
+                # The JSON should be the last argument (after -f flag)
+                import json
+
+                # Extract the JSON part from args - it's everything after "-f"
+                args_parts = rows[0]["args"].split(" ", 3)  # Split into max 4 parts
+                assert len(args_parts) >= 4
+                json_part = args_parts[3]  # The JSON is the 4th part
+                # Parse the compressed JSON to verify it's valid
+                parsed = json.loads(json_part)
+                assert "query" in parsed
+                assert "variables" in parsed
+                assert parsed["variables"]["id"] == 123
+
+    def test_format_csv_row_with_mixed_args(self):
+        """Test that a mix of JSON and non-JSON args are handled correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            logger = GHCommandLogger(log_dir=Path(tmpdir))
+
+            # Format CSV row with mixed args
+            row = logger._format_csv_row(
+                caller_file="/test/mixed_args.py",
+                caller_line=50,
+                command="gh",
+                args=["api", "graphql", "-f", 'query={"test": 1}'],
+                repo="owner/repo",
+            )
+
+            # Verify non-JSON args remain unchanged
+            assert "api" in row["args"]
+            assert "graphql" in row["args"]
+            assert "-f" in row["args"]
+
+            # Verify JSON args are compressed
+            assert 'query={"test":1}' in row["args"]
+
+            # Verify all args are joined with spaces
+            assert 'api graphql -f query={"test":1}' == row["args"]

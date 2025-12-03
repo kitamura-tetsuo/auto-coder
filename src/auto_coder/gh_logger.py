@@ -89,7 +89,9 @@ class GHCommandLogger:
         Compress JSON strings by removing whitespace and newlines.
 
         Attempts to parse the input as JSON and return a compact version.
-        If parsing fails, returns the original string unchanged.
+        If parsing fails, attempts to extract and compress JSON from within
+        strings containing key=value patterns (e.g., "query={...}", "variables={...}").
+        If all attempts fail, returns the original string unchanged.
 
         Args:
             text: String that may contain JSON
@@ -97,11 +99,32 @@ class GHCommandLogger:
         Returns:
             Compressed JSON string if valid JSON, otherwise original string
         """
+        import re
+
+        # First, try to parse the entire string as JSON
         try:
             parsed = json.loads(text)
             return json.dumps(parsed, separators=(",", ":"))
         except (json.JSONDecodeError, TypeError):
-            return text
+            pass
+
+        # Try to extract and compress JSON from key=value patterns
+        # Match patterns like "query={...}", "variables={...}", etc.
+        # Using [\s\S]* to match any character including newlines
+        match = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*=)({[\s\S]*})$", text)
+        if match:
+            prefix = match.group(1)
+            json_part = match.group(2)
+            try:
+                # Try to parse the JSON part
+                parsed = json.loads(json_part)
+                compressed_json = json.dumps(parsed, separators=(",", ":"))
+                return prefix + compressed_json
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # If all else fails, return original string unchanged
+        return text
 
     def _format_csv_row(
         self,
