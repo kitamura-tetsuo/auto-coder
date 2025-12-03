@@ -262,6 +262,7 @@ class GitHubSubIssueAPI:
         body: Optional[str] = None,
         labels: Optional[List[str]] = None,
         assignees: Optional[List[str]] = None,
+        body_file: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Create a new sub-issue.
 
@@ -271,6 +272,7 @@ class GitHubSubIssueAPI:
             body: Issue body
             labels: List of labels
             assignees: List of users to assign
+            body_file: Path to file containing issue body
 
         Returns:
             Created issue information
@@ -282,14 +284,18 @@ class GitHubSubIssueAPI:
 
         # Create issue first
         cmd = ["gh", "issue", "create", "--repo", parent_repo, "--title", title]
-        
+
+        # Handle body and body_file options
+        # If both body and body_file are provided, body takes precedence (following gh behavior)
         if body:
             cmd.extend(["--body", body])
-        
+        elif body_file:
+            cmd.extend(["--body-file", body_file])
+
         if labels:
             for label in labels:
                 cmd.extend(["--label", label])
-        
+
         if assignees:
             for assignee in assignees:
                 cmd.extend(["--assignee", assignee])
