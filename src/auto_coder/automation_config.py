@@ -499,7 +499,13 @@ class AutomationConfig:
     AUTO_MERGE: bool = True
 
     # Enable/disable auto-merge for Dependabot PRs
-    # Default: True (auto-merge for Dependabot enabled)
+    # When IGNORE_DEPENDABOT_PRS is False and this is True:
+    # - Only process dependency-bot PRs with passing tests and mergeable state
+    # - These PRs will be auto-merged automatically
+    # - Non-ready PRs are skipped (do nothing)
+    # When this is False:
+    # - Process all dependency-bot PRs, attempting to fix failing ones
+    # Default: True (auto-merge for ready Dependabot PRs enabled)
     AUTO_MERGE_DEPENDABOT_PRS: bool = True
 
     # PR label copying configuration
