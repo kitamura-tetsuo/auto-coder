@@ -459,8 +459,8 @@ class AutomationConfig:
     # Default: True (automatically handle non-mergeable PRs)
     ENABLE_MERGEABILITY_REMEDIATION: bool = True
 
-    # Skip dependency-bot PRs (Dependabot/Renovate/[bot]) for fix flows.
-    # Green, mergeable dependency-bot PRs are still auto-merge candidates.
+    # Skip all dependency-bot PRs (Dependabot/Renovate/[bot]), including ready ones.
+    # This provides a way to completely ignore dependency updates.
     IGNORE_DEPENDABOT_PRS: bool = False
 
     # Force clean workspace before PR checkout (git reset --hard + git clean -fd)

@@ -113,7 +113,8 @@ auto-coder process-issues [OPTIONS]
 - `--disable-labels / --no-disable-labels`: Disable GitHub label operations (default: false).
 - `--check-labels / --no-check-labels`: Enable checking for existing @auto-coder label (default: enabled).
 - `--skip-main-update / --no-skip-main-update`: Skip merging base branch into PR when checks fail (default: skip).
-- `--ignore-dependabot-prs / --no-ignore-dependabot-prs`: Skip non-ready dependency-bot PRs (default: false).
+- `--ignore-dependabot-prs / --no-ignore-dependabot-prs`: Skip all dependency-bot PRs (Dependabot/Renovate/[bot]), including ready ones (default: false).
+- `--auto-merge-dependabot-prs / --no-auto-merge-dependabot-prs`: When `--no-ignore-dependabot-prs` is set, only process dependency-bot PRs that have passing tests and are mergeable. If disabled, attempt to fix failing PRs (default: enabled).
 - `--force-clean-before-checkout / --no-force-clean-before-checkout`: Force clean workspace before checkout (default: false).
 - `--enable-graphrag / --disable-graphrag`: Enable GraphRAG integration (default: enabled).
 - `--only TEXT`: Process only a specific issue/PR by URL or number.
@@ -155,6 +156,26 @@ auto-coder fix-to-pass-tests [OPTIONS]
 - `--force-reindex`: Force GraphRAG reindexing.
 - `--log-level`: Set logging level.
 - `--verbose`: Enable verbose logging.
+
+#### Dependabot PR Handling
+
+Auto-Coder handles dependency-bot PRs (Dependabot, Renovate, or any bot account ending with `[bot]`) based on the following configuration:
+
+| Configuration | Behavior |
+|--------------|----------|
+| `--ignore-dependabot-prs` | Skip **all** dependency-bot PRs (both ready and non-ready) |
+| `--no-ignore-dependabot-prs --auto-merge-dependabot-prs` (default) | Only process dependency-bot PRs with **passing tests** and **mergeable state**. These PRs will be auto-merged. Non-ready PRs are skipped. |
+| `--no-ignore-dependabot-prs --no-auto-merge-dependabot-prs` | Process **all** dependency-bot PRs, attempting to fix failing ones |
+
+**Default Behavior:**
+
+With default settings, Auto-Coder will:
+1. Detect dependency-bot PRs by author name
+2. Check if tests are passing and PR is mergeable
+3. If yes → automatically merge the PR
+4. If no → skip the PR (do nothing)
+
+This ensures dependency updates are merged quickly when safe, without manual intervention.
 
 ### Authentication
 
