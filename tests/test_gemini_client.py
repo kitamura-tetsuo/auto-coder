@@ -30,6 +30,7 @@ class TestGeminiClient:
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
         mock_backend_config.validate_required_options.return_value = []
+        mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -56,6 +57,7 @@ class TestGeminiClient:
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
         mock_backend_config.validate_required_options.return_value = []
+        mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -65,8 +67,8 @@ class TestGeminiClient:
         _ = client._run_llm_cli("ping")
 
         called_cmd = mock_run_command.call_args[0][0]
-        assert called_cmd[-2:] == ["--prompt", "ping"]
-        assert called_cmd[-4:-2] == ["--resume", "session42"]
+        assert called_cmd[-1] == "ping"
+        assert called_cmd[-3:-1] == ["--resume", "session42"]
 
     """Test cases for GeminiClient class."""
 
@@ -564,14 +566,15 @@ class TestGeminiClient:
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
 
-        # Mock config with options
+        # Mock config with options including [model_name] placeholder
         mock_config_instance = Mock()
         mock_backend_config = Mock()
         mock_backend_config.model = "gemini-2.5-pro"
-        mock_backend_config.options = ["--yolo", "--force-model"]
+        mock_backend_config.options = ["--yolo", "--model", "[model_name]"]
         mock_backend_config.options_for_noedit = []
         mock_backend_config.api_key = "test-key"
         mock_backend_config.validate_required_options.return_value = []
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--yolo", "--model", "gemini-2.5-pro"], "options_for_noedit": [], "options_for_resume": []}
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 
@@ -583,10 +586,48 @@ class TestGeminiClient:
         # Verify command includes configured options
         called_cmd = mock_run_command.call_args[0][0]
         assert "--yolo" in called_cmd
-        assert "--force-model" in called_cmd
-        assert "gemini" in called_cmd
         assert "--model" in called_cmd
         assert "gemini-2.5-pro" in called_cmd
+        assert "gemini" in called_cmd
+        assert "--prompt" not in called_cmd
+
+    @patch("src.auto_coder.gemini_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.gemini_client.CommandExecutor.run_command")
+    def test_placeholder_replacement(self, mock_run_command, mock_run, mock_get_config):
+        """Test that [model_name] placeholder is replaced with actual model name."""
+        # Mock subprocess for version check
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "ok\n", "", 0)
+
+        # Mock config with placeholder
+        mock_config_instance = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.model = "gemini-2.5-pro"
+        mock_backend_config.options = ["--model", "[model_name]", "--output-format", "stream-json"]
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = "test-key"
+        mock_backend_config.validate_required_options.return_value = []
+        # Verify replace_placeholders is called with model_name
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--model", "gemini-2.5-pro", "--output-format", "stream-json"], "options_for_noedit": [], "options_for_resume": []}
+        mock_config_instance.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config_instance
+
+        client = GeminiClient()
+
+        # Run CLI
+        _ = client._run_llm_cli("test prompt")
+
+        # Verify replace_placeholders was called with correct model_name
+        mock_backend_config.replace_placeholders.assert_called_once_with(model_name="gemini-2.5-pro")
+
+        # Verify command contains replaced placeholder
+        called_cmd = mock_run_command.call_args[0][0]
+        assert "--model" in called_cmd
+        assert "gemini-2.5-pro" in called_cmd
+        assert "--output-format" in called_cmd
+        assert "stream-json" in called_cmd
+        assert "--prompt" not in called_cmd
 
     @patch("src.auto_coder.gemini_client.get_llm_config")
     @patch("subprocess.run")
@@ -605,6 +646,7 @@ class TestGeminiClient:
         mock_backend_config.options_for_noedit = []
         mock_backend_config.api_key = "test-key"
         mock_backend_config.validate_required_options.return_value = []
+        mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
         mock_config_instance.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config_instance
 

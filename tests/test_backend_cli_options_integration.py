@@ -264,6 +264,8 @@ class TestBackendCLIOptions:
             mock_backend_config.api_key = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return the options
+            mock_backend_config.replace_placeholders.return_value = {"options": ["-o", "temperature", "0.7", "-o", "max-tokens", "2048"], "options_for_noedit": ["-o", "read-only"], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -304,6 +306,8 @@ class TestBackendCLIOptions:
             mock_backend_config.api_key = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return empty options
+            mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
