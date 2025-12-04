@@ -34,35 +34,35 @@ class ClaudeClient(LLMClientBase):
 
         # If backend_name is provided, get config from that backend
         if backend_name:
-            config_backend = config.get_backend_config(backend_name)
+            self.config_backend = config.get_backend_config(backend_name)
             # Use backend config, fall back to default "sonnet"
-            self.model_name = (config_backend and config_backend.model) or "sonnet"
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            self.settings = config_backend and config_backend.settings
+            self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
+            self.api_key = self.config_backend and self.config_backend.api_key
+            self.base_url = self.config_backend and self.config_backend.base_url
+            self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
+            self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
+            self.settings = self.config_backend and self.config_backend.settings
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
-            self.options = (config_backend and config_backend.options) or []
+            self.options = (self.config_backend and self.config_backend.options) or []
             # Store options_for_noedit from config
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         else:
             # Fall back to default claude config
-            config_backend = config.get_backend_config("claude")
-            self.model_name = (config_backend and config_backend.model) or "sonnet"
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            self.settings = config_backend and config_backend.settings
+            self.config_backend = config.get_backend_config("claude")
+            self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
+            self.api_key = self.config_backend and self.config_backend.api_key
+            self.base_url = self.config_backend and self.config_backend.base_url
+            self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
+            self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
+            self.settings = self.config_backend and self.config_backend.settings
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
-            self.options = (config_backend and config_backend.options) or []
+            self.options = (self.config_backend and self.config_backend.options) or []
             # Store options_for_noedit from config
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
 
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
@@ -74,8 +74,8 @@ class ClaudeClient(LLMClientBase):
         self._last_output: Optional[str] = None
 
         # Validate required options for this backend
-        if config_backend:
-            required_errors = config_backend.validate_required_options()
+        if self.config_backend:
+            required_errors = self.config_backend.validate_required_options()
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)
@@ -107,20 +107,23 @@ class ClaudeClient(LLMClientBase):
         """Run claude CLI with the given prompt and show real-time output."""
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            cmd = [
-                "claude",
-                "--print",
-                "--model",
-                self.model_name,
-            ]
+            cmd = ["claude"]
 
-            # Add configurable options from config
+            # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
-            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-            cmd.extend(options_to_use)
+            if self.config_backend:
+                processed_options = self.config_backend.replace_placeholders(model_name=self.model_name, settings=self.settings)
+                if is_noedit and self.options_for_noedit:
+                    options_to_use = processed_options.get("options_for_noedit", [])
+                else:
+                    options_to_use = processed_options.get("options", [])
+            else:
+                # Fallback if config_backend is not available
+                options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
 
-            if self.settings:
-                cmd.extend(["--settings", self.settings])
+            # Add configured options from config
+            if options_to_use:
+                cmd.extend(options_to_use)
 
             # Append extra args if any (e.g., --resume <session_id>)
             extra_args = self.consume_extra_args()
@@ -144,8 +147,8 @@ class ClaudeClient(LLMClientBase):
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
             # Build command string for logging
-            options_str = " ".join(self.options) if self.options else ""
-            logger.info(f"🤖 Running: claude --print {options_str} --model {self.model_name} [prompt]")
+            display_cmd = " ".join(cmd[:3]) + "..." if len(cmd) > 3 else " ".join(cmd)
+            logger.info(f"🤖 Running: {display_cmd}")
             logger.info("=" * 60)
 
             # Use configured usage_markers if available, otherwise fall back to defaults
