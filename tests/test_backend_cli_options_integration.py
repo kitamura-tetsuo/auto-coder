@@ -100,6 +100,8 @@ class TestBackendCLIOptions:
             mock_backend_config.model_provider = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return the options
+            mock_backend_config.replace_placeholders.return_value = {"options": ["-o", "timeout", "30", "-o", "stream", "true"], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -120,7 +122,7 @@ class TestBackendCLIOptions:
 
         # Verify the command starts with expected elements
         assert cmd[0] == "codex"
-        assert "exec" in cmd
+        # Note: "exec" subcommand has been removed
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -142,6 +144,8 @@ class TestBackendCLIOptions:
             mock_backend_config.model_provider = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return empty options
+            mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -154,7 +158,6 @@ class TestBackendCLIOptions:
 
         # Verify basic command structure
         assert cmd[0] == "codex"
-        assert "exec" in cmd
 
         # Verify no options flags are present
         assert "-o" not in cmd
