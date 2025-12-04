@@ -282,6 +282,7 @@ class CommandExecutor:
         cwd: Optional[str],
         env: Optional[Dict[str, str]],
         on_stream: Optional[Callable[[str, str], None]] = None,
+        dot_format: bool = False,
     ) -> Tuple[int, str, str]:
         """Run a command while streaming stdout/stderr to the logger.
 
@@ -338,9 +339,19 @@ class CommandExecutor:
                         # Skip empty lines and don't log them
                         stripped_chunk = chunk.rstrip("\n")
                         if stripped_chunk:
-                            # Also output stderr at INFO level
-                            # depth=2 to show the caller of _run_with_streaming
-                            logger.opt(depth=2).info(stripped_chunk)
+                            verbose_requested = os.environ.get(VERBOSE_ENV_FLAG, "").strip().lower() in {
+                                "1",
+                                "true",
+                                "yes",
+                            }
+                            if dot_format and not verbose_requested:
+                                # Print dot to stderr when dot_format is enabled and verbose is False
+                                print(".", end="", file=sys.stderr)
+                                sys.stderr.flush()
+                            else:
+                                # Also output stderr at INFO level
+                                # depth=2 to show the caller of _run_with_streaming
+                                logger.opt(depth=2).info(stripped_chunk)
 
                         # Optional per-chunk callback for early aborts
                         if on_stream is not None:
@@ -408,6 +419,7 @@ class CommandExecutor:
         env: Optional[Dict[str, str]] = None,
         env_overrides: Optional[Dict[str, str]] = None,
         on_stream: Optional[Callable[[str, str], None]] = None,
+        dot_format: bool = False,
     ) -> CommandResult:
         """Run a command with consistent error handling."""
         if timeout is None:
@@ -439,7 +451,7 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, effective_env, on_stream)
+                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, effective_env, on_stream, dot_format)
             else:
                 result = subprocess.run(
                     cmd,
