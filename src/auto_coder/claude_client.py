@@ -153,7 +153,7 @@ class ClaudeClient(LLMClientBase):
                 usage_markers = self.usage_markers
             else:
                 # Default hardcoded usage markers
-                usage_markers = ('api error: 429 {"type":"error","error":{"type":"rate_limit_error","message":"usage limit exceeded', "5-hour limit reached · resets")
+                usage_markers = ('{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",', "5-hour limit reached · resets")
 
             result = CommandExecutor.run_command(
                 cmd,

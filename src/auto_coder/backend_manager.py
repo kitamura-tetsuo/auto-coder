@@ -687,7 +687,37 @@ class BackendManager(LLMBackendManagerBase):
             raise ValueError(f"Failed to parse output as JSON: No JSON object could be decoded\nOutput: {output}")
 
         # Use the last successfully parsed JSON block (handles prompt + JSON scenarios)
-        return _extract_content(json_candidates[-1])
+        parsed_json = _extract_content(json_candidates[-1])
+
+        # Special handling for agent runner output which wraps result in a "result" field
+        # and sometimes that result is a string containing JSON that needs to be parsed again
+        if isinstance(parsed_json, dict) and "result" in parsed_json:
+            inner_result = parsed_json["result"]
+            # If inner result is a string, try to parse it as JSON
+            if isinstance(inner_result, str):
+                try:
+                    # Check for markdown code blocks in the inner string
+                    if "```json" in inner_result:
+                        inner_json_match = inner_result.split("```json")[1].split("```")[0].strip()
+                        return json.loads(inner_json_match)
+                    elif "```" in inner_result:
+                        inner_json_match = inner_result.split("```")[1].split("```")[0].strip()
+                        return json.loads(inner_json_match)
+                    else:
+                        # Try direct parsing
+                        return json.loads(inner_result.strip())
+                except (json.JSONDecodeError, IndexError):
+                    # If parsing fails, return the original parsed_json or the inner_result?
+                    # Let's return the inner_result if it looks like it might be what we want,
+                    # otherwise return the full object.
+                    # But for now, if we can't parse the inner string as JSON, just return the full object
+                    # and let the caller decide.
+                    pass
+            # If inner result is already a dict/list, return it
+            elif isinstance(inner_result, (dict, list)):
+                return inner_result
+
+        return parsed_json
 
     # ---------- Compatibility Helpers ----------
     def switch_to_conflict_model(self) -> None:

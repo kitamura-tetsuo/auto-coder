@@ -400,7 +400,7 @@ def _process_parent_issue(
         # Construct a comprehensive prompt for verification
         sub_issues_summary = "\n".join([f"- Sub-issue #{detail['number']}: {detail['title']} (State: {detail['state']})" for detail in sub_issues_details])
 
-        prs_summary = "\n".join([f"- Sub-issue #{pr_info['issue_number']} -> PR #{pr_info['pr_number']} (State: {pr_info['pr_state']}, Mergeable: {pr_info['mergeable']})" for pr_info in sub_issues_with_prs]) if sub_issues_with_prs else "- No PRs found for sub-issues"
+        prs_summary = "\n".join([f"- Sub-issue #{pr_info['issue_number']} -> PR #{pr_info['pr_number']} (State: {pr_info['pr_state']})" for pr_info in sub_issues_with_prs]) if sub_issues_with_prs else "- No PRs found for sub-issues"
 
         verification_prompt = f"""
 You are tasked with verifying if a parent issue's requirements have been met based on its sub-issues and their implementation status.
@@ -450,16 +450,9 @@ Please respond with a JSON object in the following format:
 
             # Parse the JSON response
             try:
-                import json
-
-                # Try to extract JSON from the response (it might have markdown code blocks)
-                json_match = verification_response.strip()
-                if "```json" in verification_response:
-                    json_match = verification_response.split("```json")[1].split("```")[0].strip()
-                elif "```" in verification_response:
-                    json_match = verification_response.split("```")[1].split("```")[0].strip()
-
-                verification_result = json.loads(json_match.strip())
+                # Use the robust parser from backend manager which handles various formats
+                # including markdown code blocks and nested JSON results
+                verification_result = get_noedit_backend_manager().parse_llm_output_as_json(verification_response)
 
                 requirements_met = verification_result.get("requirements_met", False)
                 summary = verification_result.get("summary", "No summary provided")
@@ -482,12 +475,6 @@ Please respond with a JSON object in the following format:
                             reasoning=reasoning,
                         )
                         actions.append(pr_action)
-
-                        # Close the parent issue
-                        close_comment = f"Auto-Coder Verification: All sub-issues have been processed and requirements are met.\n\nSummary: {summary}\n\nReasoning: {reasoning}"
-                        github_client.close_issue(repo_name, issue_number, close_comment)
-                        actions.append(f"Closed parent issue #{issue_number} - requirements verified as met")
-                        logger.info(f"Successfully closed parent issue #{issue_number}")
                     except Exception as e:
                         logger.error(f"Failed to process parent issue #{issue_number}: {e}")
                         actions.append(f"Warning: Could not process parent issue #{issue_number}: {e}")
