@@ -5,7 +5,7 @@ Configuration management for LLM backends using TOML files.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 import toml
@@ -118,6 +118,56 @@ class BackendConfig:
                 errors.append(f"Backend '{self.name}' missing required option: {req_opt}. " f"Add to [backends.{self.name}].options in llm_config.toml")
 
         return errors
+
+    def replace_placeholders(
+        self,
+        model_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Dict[str, List[str]]:
+        """Replace placeholders in option lists with provided values.
+
+        Supports placeholders:
+        - [model_name] - replaced with the model_name parameter
+        - [sessionId] - replaced with the session_id parameter
+
+        Args:
+            model_name: Model name to replace [model_name] placeholders
+            session_id: Session ID to replace [sessionId] placeholders
+
+        Returns:
+            Dictionary with processed option lists:
+            - 'options': processed options list
+            - 'options_for_noedit': processed options_for_noedit list
+            - 'options_for_resume': processed options_for_resume list
+        """
+        # Create a mapping of placeholders to their values
+        placeholder_map = {}
+        if model_name is not None:
+            placeholder_map["[model_name]"] = model_name
+        if session_id is not None:
+            placeholder_map["[sessionId]"] = session_id
+
+        def replace_in_list(option_list: List[str]) -> List[str]:
+            """Replace placeholders in a single option list."""
+            if not placeholder_map:
+                # No placeholders to replace, return a copy of the original list
+                return list(option_list)
+
+            result = []
+            for option in option_list:
+                # Replace all placeholders in this option string
+                replaced_option = option
+                for placeholder, value in placeholder_map.items():
+                    replaced_option = replaced_option.replace(placeholder, value)
+                result.append(replaced_option)
+            return result
+
+        # Process all three option lists
+        return {
+            "options": replace_in_list(self.options),
+            "options_for_noedit": replace_in_list(self.options_for_noedit),
+            "options_for_resume": replace_in_list(self.options_for_resume),
+        }
 
 
 @dataclass
