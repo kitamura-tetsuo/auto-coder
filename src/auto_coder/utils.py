@@ -345,8 +345,16 @@ class CommandExecutor:
                                 "yes",
                             }
                             if dot_format and not verbose_requested:
-                                # Print dot to stderr when dot_format is enabled and verbose is False
-                                print(".", end="", file=sys.stderr)
+                                # Print dot one line above to avoid hiding ProgressStage footer
+                                if sys.stderr.isatty():
+                                    # Use ANSI escape sequences for TTY
+                                    sys.stderr.write("\033[s")  # Save cursor position
+                                    sys.stderr.write("\033[1A")  # Move cursor up one line
+                                    sys.stderr.write(".")  # Print dot
+                                    sys.stderr.write("\033[u")  # Restore cursor position
+                                else:
+                                    # Fallback for non-TTY environments
+                                    print(".", end="", file=sys.stderr)
                                 sys.stderr.flush()
                             else:
                                 # Also output stderr at INFO level
