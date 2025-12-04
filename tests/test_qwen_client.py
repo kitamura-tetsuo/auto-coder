@@ -32,6 +32,35 @@ def make_backend_mock(
     backend.options = options or []
     backend.options_for_noedit = options_for_noedit or []
     backend.usage_markers = usage_markers or []
+
+    # Mock the replace_placeholders method
+    def mock_replace_placeholders(model_name=None, session_id=None):
+        """Mock replace_placeholders to return processed options."""
+
+        def replace_in_list(option_list):
+            if not option_list:
+                return []
+            result = []
+            placeholder_map = {}
+            if model_name is not None:
+                placeholder_map["[model_name]"] = model_name
+            if session_id is not None:
+                placeholder_map["[sessionId]"] = session_id
+
+            for option in option_list:
+                replaced_option = option
+                for placeholder, value in placeholder_map.items():
+                    replaced_option = replaced_option.replace(placeholder, value)
+                result.append(replaced_option)
+            return result
+
+        return {
+            "options": replace_in_list(backend.options),
+            "options_for_noedit": replace_in_list(backend.options_for_noedit),
+            "options_for_resume": [],
+        }
+
+    backend.replace_placeholders = mock_replace_placeholders
     return backend
 
 
@@ -100,9 +129,9 @@ class TestQwenClient:
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "response", "", 0)
 
-        # Mock config
+        # Mock config with standard options including -y and -p
         mock_config = MagicMock()
-        mock_backend = make_backend_mock(api_key=None)
+        mock_backend = make_backend_mock(api_key=None, options=["-y", "-p"])
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -199,18 +228,18 @@ class TestQwenClient:
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "response", "", 0)
 
-        # Mock config
+        # Mock config with -m [model_name] placeholder
         mock_config = MagicMock()
-        mock_backend = make_backend_mock(model="custom-qwen-model")
+        mock_backend = make_backend_mock(model="custom-qwen-model", options=["-y", "-m", "[model_name]", "-p"])
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
         client = QwenClient()
         client._run_llm_cli("test")
 
-        # Verify custom model is used in command
+        # Verify custom model is used in command (placeholder should be replaced)
         args = mock_run_command.call_args[0][0]
-        # Should have model flag
+        # Should have model flag with the custom model name
         assert "-m" in args
         assert "custom-qwen-model" in args
 
@@ -218,7 +247,7 @@ class TestQwenClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
     def test_options_for_noedit_used_when_present(self, mock_run_command, mock_run, mock_get_config):
-        """Ensure options_for_noedit overrides general options for CLI invocation."""
+        """Ensure options_for_noedit is used when is_noedit=True."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "response", "", 0)
 
@@ -228,7 +257,7 @@ class TestQwenClient:
         mock_get_config.return_value = mock_config
 
         client = QwenClient()
-        client._run_llm_cli("test prompt")
+        client._run_llm_cli("test prompt", is_noedit=True)
 
         args = mock_run_command.call_args[0][0]
         assert "--noedit-flag" in args
@@ -284,3 +313,84 @@ class TestQwenClient:
         assert env.get("QWEN_BASE_URL") == "https://qwen.example.com"
         assert env.get("OPENAI_API_KEY") == "openai-key"
         assert env.get("OPENAI_BASE_URL") == "https://openai.example.com"
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_configuration_based_options(self, mock_run_command, mock_run, mock_get_config):
+        """Test that all options come from configuration with placeholder replacement."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        # Mock config with all options in configuration including placeholders
+        mock_config = MagicMock()
+        mock_backend = make_backend_mock(model="test-model", options=["-y", "-m", "[model_name]", "--output-format", "json", "-p"])
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        client = QwenClient()
+        client._run_llm_cli("test prompt")
+
+        # Verify command structure
+        args = mock_run_command.call_args[0][0]
+
+        # Should start with qwen
+        assert args[0] == "qwen"
+
+        # Should have configured options with placeholders replaced
+        assert "-y" in args
+        assert "-m" in args
+        assert "test-model" in args  # Placeholder should be replaced
+        assert "--output-format" in args
+        assert "json" in args
+        assert "-p" in args
+
+        # Prompt should be last argument
+        assert args[-1] == "test prompt"
+
+        # Should not have hardcoded model passing logic
+        # (all model passing should be via config)
+        model_idx = args.index("-m")
+        assert args[model_idx + 1] == "test-model"
+
+    @patch("src.auto_coder.qwen_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
+    def test_use_env_vars_false_mode(self, mock_run_command, mock_run, mock_get_config):
+        """Test that use_env_vars=False works correctly with configuration-based options."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "response", "", 0)
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = make_backend_mock(options=["-y", "-m", "[model_name]", "-p"])
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Client with use_env_vars=False
+        client = QwenClient(use_env_vars=False)
+
+        # Set a custom model
+        client.model_name = "custom-model"
+        client._run_llm_cli("test prompt")
+
+        # Verify command structure
+        args = mock_run_command.call_args[0][0]
+
+        # Should start with qwen
+        assert args[0] == "qwen"
+
+        # Should have configured options
+        assert "-y" in args
+        assert "-m" in args
+        assert "custom-model" in args  # Should use current model_name
+        assert "-p" in args
+
+        # Prompt should be last argument
+        assert args[-1] == "test prompt"
+
+        # Verify environment variables
+        _, kwargs = mock_run_command.call_args
+        env = kwargs.get("env", {})
+        # When use_env_vars=False, QWEN_MODEL should not be set
+        assert "QWEN_MODEL" not in env or env.get("QWEN_MODEL") != "custom-model"

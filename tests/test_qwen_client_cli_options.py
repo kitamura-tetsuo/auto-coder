@@ -61,12 +61,18 @@ def test_qwen_client_options_parameter_qwen_mode(mock_get_config, mock_run_comma
     mock_config = Mock()
     mock_backend_config = Mock()
     mock_backend_config.model = "qwen3-coder-plus"
-    mock_backend_config.options = ["-o", "yolo", "true", "--debug"]
+    mock_backend_config.options = ["-y", "-o", "yolo", "true", "--debug"]  # Include required "-y" option
     mock_backend_config.api_key = None
     mock_backend_config.base_url = None
     mock_backend_config.openai_api_key = None
     mock_backend_config.openai_base_url = None
     mock_backend_config.validate_required_options.return_value = []
+    # Mock replace_placeholders to return a dict
+    mock_backend_config.replace_placeholders.return_value = {
+        "options": ["-y", "-o", "yolo", "true", "--debug"],
+        "options_for_noedit": [],
+        "options_for_resume": [],
+    }
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 
@@ -239,12 +245,18 @@ def test_qwen_client_oauth_mode_with_options(mock_get_config, mock_run_command, 
     mock_config = Mock()
     mock_backend_config = Mock()
     mock_backend_config.model = "qwen3-coder-plus"
-    mock_backend_config.options = ["-o", "stream", "false"]
+    mock_backend_config.options = ["-y", "-o", "stream", "false"]  # Include required "-y" option
     mock_backend_config.api_key = None
     mock_backend_config.base_url = None
     mock_backend_config.openai_api_key = None
     mock_backend_config.openai_base_url = None
     mock_backend_config.validate_required_options.return_value = []
+    # Mock replace_placeholders to return a dict
+    mock_backend_config.replace_placeholders.return_value = {
+        "options": ["-y", "-o", "stream", "false"],
+        "options_for_noedit": [],
+        "options_for_resume": [],
+    }
     mock_config.get_backend_config.return_value = mock_backend_config
     mock_get_config.return_value = mock_config
 
@@ -269,11 +281,33 @@ def test_qwen_client_oauth_mode_with_options(mock_get_config, mock_run_command, 
 
 @patch("subprocess.run")
 @patch("src.auto_coder.qwen_client.CommandExecutor.run_command")
-def test_qwen_client_options_empty_by_default(mock_run_command, mock_run):
+@patch("src.auto_coder.qwen_client.get_llm_config")
+def test_qwen_client_options_empty_by_default(mock_get_config, mock_run_command, mock_run):
     """Test that no extra options are passed when options list is empty."""
     # Pretend qwen --version works
     mock_run.return_value.returncode = 0
     mock_run_command.return_value = CommandResult(True, "done\n", "", 0)
+
+    # Mock config with default qwen backend that has required "-y" option
+    from unittest.mock import Mock
+
+    mock_config = Mock()
+    mock_backend_config = Mock()
+    mock_backend_config.model = "qwen3-coder-plus"
+    mock_backend_config.options = ["-y"]  # Default required option
+    mock_backend_config.api_key = None
+    mock_backend_config.base_url = None
+    mock_backend_config.openai_api_key = None
+    mock_backend_config.openai_base_url = None
+    mock_backend_config.validate_required_options.return_value = []
+    # Mock replace_placeholders to return default options
+    mock_backend_config.replace_placeholders.return_value = {
+        "options": ["-y"],
+        "options_for_noedit": [],
+        "options_for_resume": [],
+    }
+    mock_config.get_backend_config.return_value = mock_backend_config
+    mock_get_config.return_value = mock_config
 
     client = QwenClient(
         backend_name="qwen",
