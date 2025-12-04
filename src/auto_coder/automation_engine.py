@@ -182,6 +182,16 @@ class AutomationEngine:
                 # Handle dependency-bot PRs based on configuration
                 is_dependency_bot = _is_dependabot_pr(pr_data)
                 if is_dependency_bot:
+                    # Get author information for logging
+                    author = pr_data.get("author", "unknown")
+                    logger.debug(f"PR #{pr_number}: Detected as dependency-bot PR (author: {author})")
+
+                    # Log the current configuration values
+                    logger.debug(f"PR #{pr_number}: IGNORE_DEPENDABOT_PRS={self.config.IGNORE_DEPENDABOT_PRS}, AUTO_MERGE_DEPENDABOT_PRS={self.config.AUTO_MERGE_DEPENDABOT_PRS}")
+
+                    # Log GitHub Actions check results
+                    logger.debug(f"PR #{pr_number}: checks.success={checks.success}, mergeable={mergeable}")
+
                     if self.config.IGNORE_DEPENDABOT_PRS:
                         # When IGNORE_DEPENDABOT_PRS is True: Skip ALL Dependabot PRs
                         logger.debug(f"Skipping dependency-bot PR #{pr_number} - IGNORE_DEPENDABOT_PRS is enabled")
@@ -191,8 +201,10 @@ class AutomationEngine:
                         # - If passing & mergeable: Process (allow auto-merge)
                         # - Else: Skip (ignore)
                         if not (checks.success and bool(mergeable)):
-                            logger.debug(f"Skipping dependency-bot PR #{pr_number} - AUTO_MERGE_DEPENDABOT_PRS is enabled but PR is not passing/mergeable")
+                            logger.debug(f"Skipping dependency-bot PR #{pr_number} - checks not passing (success={checks.success}) or not mergeable (mergeable={mergeable})")
                             continue
+                        else:
+                            logger.info(f"Processing dependency-bot PR #{pr_number} - checks passed and mergeable")
                     # If both flags are False: Process all Dependabot PRs (try to fix failing)
 
                 # Count only PRs that we will actually consider as candidates
