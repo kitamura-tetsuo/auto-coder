@@ -123,16 +123,19 @@ class BackendConfig:
         self,
         model_name: Optional[str] = None,
         session_id: Optional[str] = None,
+        settings: Optional[str] = None,
     ) -> Dict[str, List[str]]:
         """Replace placeholders in option lists with provided values.
 
         Supports placeholders:
         - [model_name] - replaced with the model_name parameter
         - [sessionId] - replaced with the session_id parameter
+        - [settings] - replaced with the settings parameter
 
         Args:
             model_name: Model name to replace [model_name] placeholders
             session_id: Session ID to replace [sessionId] placeholders
+            settings: Settings file path to replace [settings] placeholders
 
         Returns:
             Dictionary with processed option lists:
@@ -146,6 +149,8 @@ class BackendConfig:
             placeholder_map["[model_name]"] = model_name
         if session_id is not None:
             placeholder_map["[sessionId]"] = session_id
+        if settings is not None:
+            placeholder_map["[settings]"] = settings
 
         def replace_in_list(option_list: List[str]) -> List[str]:
             """Replace placeholders in a single option list."""
