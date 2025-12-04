@@ -197,6 +197,13 @@ class LLMBackendConfiguration:
             for backend_name in default_backends:
                 self.backends[backend_name] = BackendConfig(name=backend_name)
 
+            # Set default options for backends that require them
+            # All backends here are newly created, so set required options for those that need them
+            for backend_name, required_options in REQUIRED_OPTIONS_BY_BACKEND.items():
+                if backend_name in self.backends and required_options:
+                    # Set required options since these backends were just created
+                    self.backends[backend_name].options = list(required_options)
+
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "LLMBackendConfiguration":
         """Load configuration from TOML file."""
@@ -212,139 +219,8 @@ class LLMBackendConfiguration:
             with open(config_path, "r") as f:
                 data = toml.load(f)
 
-            # Parse general backend settings
-            backend_order = data.get("backend", {}).get("order", [])
-            default_backend = data.get("backend", {}).get("default", "codex")
-
-            # Parse backends
-            backends_data = data.get("backends", {})
-            backends = {}
-
-            # Helper to parse a backend config dict
-            def parse_backend_config(name: str, config_data: dict) -> BackendConfig:
-                # Set explicit flags based on whether options were actually specified in config
-                options_explicitly_set = "options" in config_data
-                options_for_noedit_explicitly_set = "options_for_noedit" in config_data
-
-                return BackendConfig(
-                    name=name,
-                    enabled=config_data.get("enabled", True),
-                    model=config_data.get("model"),
-                    api_key=config_data.get("api_key"),
-                    base_url=config_data.get("base_url"),
-                    temperature=config_data.get("temperature"),
-                    timeout=config_data.get("timeout"),
-                    max_retries=config_data.get("max_retries"),
-                    openai_api_key=config_data.get("openai_api_key"),
-                    openai_base_url=config_data.get("openai_base_url"),
-                    extra_args=config_data.get("extra_args", {}),
-                    providers=config_data.get("providers", []),
-                    usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
-                    usage_limit_retry_wait_seconds=config_data.get("usage_limit_retry_wait_seconds", 0),
-                    options=config_data.get("options", []),
-                    options_for_resume=config_data.get("options_for_resume", []),
-                    backend_type=config_data.get("backend_type"),
-                    model_provider=config_data.get("model_provider"),
-                    always_switch_after_execution=config_data.get("always_switch_after_execution", False),
-                    settings=config_data.get("settings"),
-                    usage_markers=config_data.get("usage_markers", []),
-                    options_for_noedit=config_data.get("options_for_noedit", []),
-                    options_explicitly_set=options_explicitly_set,
-                    options_for_noedit_explicitly_set=options_for_noedit_explicitly_set,
-                )
-
-            # 1. Parse explicit [backends] section
-            for name, config_data in backends_data.items():
-                backends[name] = parse_backend_config(name, config_data)
-
-            # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
-            # This handles cases where TOML parses dotted keys as nested dictionaries
-            # e.g. [grok-4.1-fast] -> {'grok-4': {'1-fast': {...}}}
-
-            def is_potential_backend_config(d: dict) -> bool:
-                # Heuristic: if it has specific backend keys, it's likely a config
-                # We check for keys that are commonly used in backend definitions
-                common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_noedit", "options_for_resume"}
-                # Also check if 'enabled' is present, but it's very common so we combine it
-                # with the fact that we are looking for backends.
-                # If a dict has 'enabled' and is in the top-level (or nested from top-level),
-                # it's a strong candidate.
-                if "enabled" in d:
-                    return True
-                return any(k in d for k in common_keys)
-
-            def find_backends_recursive(current_data: dict, prefix: str = ""):
-                for key, value in current_data.items():
-                    if not isinstance(value, dict):
-                        continue
-
-                    # Skip known non-backend dict fields to avoid false positives
-                    if key in {"extra_args"}:
-                        continue
-
-                    full_key = f"{prefix}.{key}" if prefix else key
-
-                    # Check if this node itself is a backend config
-                    if is_potential_backend_config(value):
-                        if full_key not in backends:
-                            backends[full_key] = parse_backend_config(full_key, value)
-
-                    # Recurse to find nested backends (e.g. grok-4.1-fast)
-                    find_backends_recursive(value, full_key)
-
-            # Exclude reserved top-level keys from recursion
-            reserved_keys = {"backend", "message_backend", "backends"}
-
-            # Create a dict of potential top-level backends to recurse
-            potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
-
-            find_backends_recursive(potential_roots)
-
-            # Post-processing: inherit options from parent backend if backend_type matches
-            # and options were not explicitly set in the child configuration
-            for backend_name, backend_config in backends.items():
-                if backend_config.backend_type and backend_config.backend_type in backends:
-                    parent_config = backends[backend_config.backend_type]
-                    # Inherit options if not explicitly set
-                    if not backend_config.options_explicitly_set:
-                        backend_config.options = list(parent_config.options)
-                    # Inherit options_for_noedit if not explicitly set
-                    if not backend_config.options_for_noedit_explicitly_set:
-                        backend_config.options_for_noedit = list(parent_config.options_for_noedit)
-
-            # Add default backends if they are not already in the configuration
-            # This ensures that backends like 'jules' are available even if not explicitly defined in the file
-            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
-            for backend_name in default_backends:
-                if backend_name not in backends:
-                    backends[backend_name] = BackendConfig(name=backend_name)
-
-            # Parse backend for non-editing operations settings
-            # Try new key first, then fall back to old key for backward compatibility
-            backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
-            backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
-
-            # Backward compatibility: check old key if new key not found
-            if not backend_for_noedit_order and not backend_for_noedit_default:
-                old_order = data.get("message_backend", {}).get("order", [])
-                old_default = data.get("message_backend", {}).get("default")
-                if old_order or old_default:
-                    logger = get_logger(__name__)
-                    logger.warning("Configuration uses deprecated 'message_backend' key. " "Please update to 'backend_for_noedit' in your config file.")
-                    backend_for_noedit_order = old_order
-                    backend_for_noedit_default = old_default
-
-            # Parse backend_for_failed_pr section
-            backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
-            backend_for_failed_pr = None
-            if backend_for_failed_pr_data:
-                # Use "backend_for_failed_pr" as default name if not specified in data
-                fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
-                backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
-
-            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
-
-            return config
+            # Delegate to _load_from_data to parse the configuration
+            return cls._load_from_data(data, config_path=config_path)
         except Exception as e:
             raise ValueError(f"Error loading configuration from {config_path}: {e}")
 
@@ -401,8 +277,11 @@ class LLMBackendConfiguration:
             )
 
         # 1. Parse explicit [backends] section
+        # Track which backends were explicitly configured
+        explicitly_configured_backends = set()
         for name, config_data in backends_data.items():
             backends[name] = parse_backend_config(name, config_data)
+            explicitly_configured_backends.add(name)
 
         # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
         # This handles cases where TOML parses dotted keys as nested dictionaries
@@ -435,6 +314,7 @@ class LLMBackendConfiguration:
                 if is_potential_backend_config(value):
                     if full_key not in backends:
                         backends[full_key] = parse_backend_config(full_key, value)
+                        explicitly_configured_backends.add(full_key)
 
                 # Recurse to find nested backends (e.g. grok-4.1-fast)
                 find_backends_recursive(value, full_key)
@@ -465,6 +345,16 @@ class LLMBackendConfiguration:
         for backend_name in default_backends:
             if backend_name not in backends:
                 backends[backend_name] = BackendConfig(name=backend_name)
+
+        # Set default options for backends that require them
+        # Only add required options to backends that were NOT explicitly configured in the dict
+        # This preserves backward compatibility with old config dicts that don't have options field
+        for backend_name, required_options in REQUIRED_OPTIONS_BY_BACKEND.items():
+            if backend_name in backends and required_options:
+                backend = backends[backend_name]
+                # Only set required options if the backend was NOT explicitly configured
+                if backend_name not in explicitly_configured_backends:
+                    backend.options = list(required_options)
 
         # Parse backend for non-editing operations settings
         # Try new key first, then fall back to old key for backward compatibility

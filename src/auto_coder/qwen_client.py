@@ -186,13 +186,17 @@ class QwenClient(LLMClientBase):
         if options_to_use:
             cmd.extend(options_to_use)
 
+        # Add model flag if model is specified
+        if model_to_use:
+            cmd.extend(["-m", model_to_use])
+
         # Apply any extra arguments (e.g., session resume flags) before the prompt
         extra_args = self.consume_extra_args()
         if extra_args:
             cmd.extend(extra_args)
 
-        # Prompt should be last argument
-        cmd.append(escaped_prompt)
+        # Add prompt flag and prompt
+        cmd.extend(["-p", escaped_prompt])
 
         return self._execute_cli(cmd, "qwen", env, model_to_use)
 
