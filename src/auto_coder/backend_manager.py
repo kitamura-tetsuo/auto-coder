@@ -45,7 +45,124 @@ __all__ = [
     "get_message_backend_manager",
     "run_llm_message_prompt",
     "get_message_backend_and_model",
+    # Utility functions
+    "parse_llm_output_as_json",
 ]
+
+
+def parse_llm_output_as_json(output: str) -> Any:
+    """
+    Parse LLM output as JSON and extract content.
+
+    This standalone helper function handles various JSON output formats:
+    - Pure JSON (dict or list)
+    - Text followed by JSON (e.g., "Here's the result: {...}")
+    - JSON followed by text (e.g., "{...}\n\nAdditional info")
+    - Text, JSON, and more text (e.g., "Result: {...}\nEnd")
+    - Responses that include the prompt content before the final JSON block
+    - Markdown code blocks (e.g., "```json\n{...}\n```")
+
+    For list outputs (conversation history), extracts the content from the last message.
+    For dict outputs, returns the dict directly.
+
+    Args:
+        output: The raw LLM output string to parse
+
+    Returns:
+        The extracted content (dict or string from the last message in a list)
+
+    Raises:
+        ValueError: If the output cannot be parsed as JSON
+    """
+
+    def _extract_content(parsed: Any) -> Any:
+        """Extract the relevant content from parsed JSON."""
+        if isinstance(parsed, list):
+            if not parsed:
+                raise ValueError("Parsed JSON is an empty list")
+            last_message = parsed[-1]
+            if isinstance(last_message, dict):
+                for key in ("content", "message", "text", "response"):
+                    if key in last_message:
+                        return last_message[key]
+                return last_message
+            return last_message
+        if isinstance(parsed, dict):
+            return parsed
+        return parsed
+
+    # First, try to handle markdown code blocks (common in LLM responses)
+    stripped_output = output.strip()
+    if "```json" in stripped_output:
+        try:
+            json_match = stripped_output.split("```json")[1].split("```")[0].strip()
+            parsed = json.loads(json_match)
+            return _extract_content(parsed)
+        except (json.JSONDecodeError, IndexError):
+            pass
+    elif "```" in stripped_output:
+        try:
+            json_match = stripped_output.split("```")[1].split("```")[0].strip()
+            parsed = json.loads(json_match)
+            return _extract_content(parsed)
+        except (json.JSONDecodeError, IndexError):
+            pass
+
+    # Try to parse the entire output (covers primitive JSON values)
+    try:
+        parsed_full = json.loads(stripped_output)
+        return _extract_content(parsed_full)
+    except json.JSONDecodeError:
+        pass
+
+    # Fall back to scanning for the last valid JSON block in the output
+    decoder = json.JSONDecoder()
+    json_candidates: List[Any] = []
+    search_pos = 0
+
+    while search_pos < len(output):
+        match = re.search(r"[\\[{]", output[search_pos:])
+        if not match:
+            break
+        start = search_pos + match.start()
+        try:
+            parsed_partial, end = decoder.raw_decode(output[start:])
+            json_candidates.append(parsed_partial)
+            search_pos = start + end
+        except json.JSONDecodeError:
+            search_pos = start + 1
+
+    if not json_candidates:
+        raise ValueError(f"Failed to parse output as JSON: No JSON object could be decoded\nOutput: {output}")
+
+    # Use the last successfully parsed JSON block (handles prompt + JSON scenarios)
+    parsed_json = _extract_content(json_candidates[-1])
+
+    # Special handling for agent runner output which wraps result in a "result" field
+    # and sometimes that result is a string containing JSON that needs to be parsed again
+    if isinstance(parsed_json, dict) and "result" in parsed_json:
+        inner_result = parsed_json["result"]
+        # If inner result is a string, try to parse it as JSON
+        if isinstance(inner_result, str):
+            try:
+                # Check for markdown code blocks in the inner string
+                if "```json" in inner_result:
+                    inner_json_match = inner_result.split("```json")[1].split("```")[0].strip()
+                    return json.loads(inner_json_match)
+                elif "```" in inner_result:
+                    inner_json_match = inner_result.split("```")[1].split("```")[0].strip()
+                    return json.loads(inner_json_match)
+                else:
+                    # Try direct parsing
+                    return json.loads(inner_result.strip())
+            except (json.JSONDecodeError, IndexError):
+                # If parsing fails, return the original parsed_json
+                pass
+        # If inner result is already a dict/list, return it
+        elif isinstance(inner_result, (dict, list)):
+            return inner_result
+
+    return parsed_json
 
 
 class BackendManager(LLMBackendManagerBase):
@@ -622,15 +739,8 @@ class BackendManager(LLMBackendManagerBase):
         """
         Parse LLM output as JSON and extract content.
 
-        This helper method handles various JSON output formats:
-        - Pure JSON (dict or list)
-        - Text followed by JSON (e.g., "Here's the result: {...}")
-        - JSON followed by text (e.g., "{...}\n\nAdditional info")
-        - Text, JSON, and more text (e.g., "Result: {...}\nEnd")
-        - Responses that include the prompt content before the final JSON block
-
-        For list outputs (conversation history), extracts the content from the last message.
-        For dict outputs, returns the dict directly.
+        This helper method delegates to the standalone parse_llm_output_as_json function.
+        Kept for backward compatibility with code that uses the instance method.
 
         Args:
             output: The raw LLM output string to parse
@@ -641,83 +751,7 @@ class BackendManager(LLMBackendManagerBase):
         Raises:
             ValueError: If the output cannot be parsed as JSON
         """
-
-        def _extract_content(parsed: Any) -> Any:
-            """Extract the relevant content from parsed JSON."""
-            if isinstance(parsed, list):
-                if not parsed:
-                    raise ValueError("Parsed JSON is an empty list")
-                last_message = parsed[-1]
-                if isinstance(last_message, dict):
-                    for key in ("content", "message", "text", "response"):
-                        if key in last_message:
-                            return last_message[key]
-                    return last_message
-                return last_message
-            if isinstance(parsed, dict):
-                return parsed
-            return parsed
-
-        # First, try to parse the entire output (covers primitive JSON values)
-        stripped_output = output.strip()
-        try:
-            parsed_full = json.loads(stripped_output)
-            return _extract_content(parsed_full)
-        except json.JSONDecodeError:
-            pass
-
-        # Fall back to scanning for the last valid JSON block in the output
-        decoder = json.JSONDecoder()
-        json_candidates: List[Any] = []
-        search_pos = 0
-
-        while search_pos < len(output):
-            match = re.search(r"[\\[{]", output[search_pos:])
-            if not match:
-                break
-            start = search_pos + match.start()
-            try:
-                parsed_partial, end = decoder.raw_decode(output[start:])
-                json_candidates.append(parsed_partial)
-                search_pos = start + end
-            except json.JSONDecodeError:
-                search_pos = start + 1
-
-        if not json_candidates:
-            raise ValueError(f"Failed to parse output as JSON: No JSON object could be decoded\nOutput: {output}")
-
-        # Use the last successfully parsed JSON block (handles prompt + JSON scenarios)
-        parsed_json = _extract_content(json_candidates[-1])
-
-        # Special handling for agent runner output which wraps result in a "result" field
-        # and sometimes that result is a string containing JSON that needs to be parsed again
-        if isinstance(parsed_json, dict) and "result" in parsed_json:
-            inner_result = parsed_json["result"]
-            # If inner result is a string, try to parse it as JSON
-            if isinstance(inner_result, str):
-                try:
-                    # Check for markdown code blocks in the inner string
-                    if "```json" in inner_result:
-                        inner_json_match = inner_result.split("```json")[1].split("```")[0].strip()
-                        return json.loads(inner_json_match)
-                    elif "```" in inner_result:
-                        inner_json_match = inner_result.split("```")[1].split("```")[0].strip()
-                        return json.loads(inner_json_match)
-                    else:
-                        # Try direct parsing
-                        return json.loads(inner_result.strip())
-                except (json.JSONDecodeError, IndexError):
-                    # If parsing fails, return the original parsed_json or the inner_result?
-                    # Let's return the inner_result if it looks like it might be what we want,
-                    # otherwise return the full object.
-                    # But for now, if we can't parse the inner string as JSON, just return the full object
-                    # and let the caller decide.
-                    pass
-            # If inner result is already a dict/list, return it
-            elif isinstance(inner_result, (dict, list)):
-                return inner_result
-
-        return parsed_json
+        return parse_llm_output_as_json(output)
 
     # ---------- Compatibility Helpers ----------
     def switch_to_conflict_model(self) -> None:
