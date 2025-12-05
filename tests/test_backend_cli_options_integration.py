@@ -432,10 +432,16 @@ class TestBackendCLIOptions:
             mock_config = Mock()
             mock_backend_config = Mock()
             mock_backend_config.model = "GPT-5"
-            mock_backend_config.options = ["-o", "creativity", "high", "-o", "verbosity", "detailed"]
-            mock_backend_config.options_for_noedit = ["-o", "read-only"]
+            mock_backend_config.options = ["--model", "[model_name]", "-o", "creativity", "high", "-o", "verbosity", "detailed"]
+            mock_backend_config.options_for_noedit = ["--model", "[model_name]", "-o", "read-only"]
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock the replace_placeholders method
+            mock_backend_config.replace_placeholders.return_value = {
+                "options": ["--model", "GPT-5", "-o", "creativity", "high", "-o", "verbosity", "detailed"],
+                "options_for_noedit": ["--model", "GPT-5", "-o", "read-only"],
+                "options_for_resume": [],
+            }
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -473,6 +479,12 @@ class TestBackendCLIOptions:
             mock_backend_config.options_for_noedit = []
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock the replace_placeholders method
+            mock_backend_config.replace_placeholders.return_value = {
+                "options": [],
+                "options_for_noedit": [],
+                "options_for_resume": [],
+            }
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -485,8 +497,8 @@ class TestBackendCLIOptions:
 
         # Verify basic command structure
         assert cmd[0] == "auggie"
-        assert "--model" in cmd
-        assert "GPT-5" in cmd
+        # With empty options, --model should NOT be in the command
+        assert "--model" not in cmd
 
         # Verify no custom options are present
         assert "-o" not in cmd
