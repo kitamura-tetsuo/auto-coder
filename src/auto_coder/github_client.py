@@ -379,7 +379,7 @@ class GitHubClient:
 
             # Fallback: Search for PRs that reference this issue in title/body
             repo = self.get_repository(repo_name)
-            prs = repo.get_pulls(state="closed")
+            prs = repo.get_pulls(state="open")
 
             issue_ref_patterns = [
                 f"fixes #{issue_number}",
@@ -387,6 +387,8 @@ class GitHubClient:
                 f"close #{issue_number}",
                 f"closes #{issue_number}",
                 f"resolves #{issue_number}",
+                f"#{issue_number}",  # Direct issue reference in title
+                f"issue #{issue_number}",  # Issue reference in body
             ]
 
             for pr in prs:
