@@ -11,7 +11,7 @@ from auto_coder.util.github_action import _check_github_actions_status, check_an
 
 from .attempt_manager import get_current_attempt
 from .automation_config import AutomationConfig, ProcessedIssueResult, ProcessResult
-from .backend_manager import get_llm_backend_manager, get_noedit_backend_manager, run_llm_noedit_prompt
+from .backend_manager import get_llm_backend_manager, parse_llm_output_as_json, run_llm_noedit_prompt
 from .cloud_manager import CloudManager
 from .gh_logger import get_gh_logger
 from .git_branch import branch_context, extract_attempt_from_branch
@@ -450,9 +450,9 @@ Please respond with a JSON object in the following format:
 
             # Parse the JSON response
             try:
-                # Use the robust parser from backend manager which handles various formats
+                # Use the robust standalone parser which handles various formats
                 # including markdown code blocks and nested JSON results
-                verification_result = get_noedit_backend_manager().parse_llm_output_as_json(verification_response)
+                verification_result = parse_llm_output_as_json(verification_response)
 
                 requirements_met = verification_result.get("requirements_met", False)
                 summary = verification_result.get("summary", "No summary provided")
@@ -475,6 +475,12 @@ Please respond with a JSON object in the following format:
                             reasoning=reasoning,
                         )
                         actions.append(pr_action)
+
+                        # Close the parent issue after PR creation with verification comment
+                        closing_comment = f"**Auto-Coder Verification**\n\n{summary}\n\n**Reasoning:** {reasoning}"
+                        github_client.close_issue(repo_name, issue_number, closing_comment)
+                        actions.append(f"Closed parent issue #{issue_number}")
+                        logger.info(f"Successfully closed parent issue #{issue_number}")
                     except Exception as e:
                         logger.error(f"Failed to process parent issue #{issue_number}: {e}")
                         actions.append(f"Warning: Could not process parent issue #{issue_number}: {e}")
@@ -675,11 +681,10 @@ def _create_pr_for_issue(
             pr_message_response = run_llm_noedit_prompt(pr_message_prompt)
 
             if pr_message_response and len(pr_message_response.strip()) > 0:
-                # Parse the JSON response using the backend manager's parser
+                # Parse the JSON response using the standalone parser
                 # This handles conversation history and extracts the last message
                 try:
-                    noedit_backend = get_noedit_backend_manager()
-                    pr_message_json = noedit_backend.parse_llm_output_as_json(pr_message_response)
+                    pr_message_json = parse_llm_output_as_json(pr_message_response)
                     pr_title = pr_message_json.get("title", "")
                     pr_body = pr_message_json.get("body", "")
                     logger.info(f"Generated PR message using message backend: {pr_title}")
