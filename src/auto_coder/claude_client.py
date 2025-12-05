@@ -144,8 +144,8 @@ class ClaudeClient(LLMClientBase):
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
             # Build command string for logging
-            options_str = " ".join(self.options) if self.options else ""
-            logger.info(f"🤖 Running: claude --print {options_str} --model {self.model_name} [prompt]")
+            cmd_str = " ".join(cmd)
+            logger.info(f"🤖 Running: {cmd_str}")
             logger.info("=" * 60)
 
             # Use configured usage_markers if available, otherwise fall back to defaults

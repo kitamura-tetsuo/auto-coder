@@ -765,7 +765,7 @@ def create_failed_pr_backend_manager() -> Optional[BackendManager]:
         BackendManager instance if backend_for_failed_pr is configured, None otherwise.
     """
     config = get_llm_config()
-    
+
     # Check for order first
     failed_pr_order = config.backend_for_failed_pr_order
     failed_pr_config = config.get_backend_for_failed_pr()
@@ -777,18 +777,18 @@ def create_failed_pr_backend_manager() -> Optional[BackendManager]:
     if failed_pr_order:
         selected_backends = failed_pr_order
         primary_backend = failed_pr_order[0]
-        
+
         # Build models map for these backends
         models = {}
         for backend_name in selected_backends:
             models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
-            
+
     else:
         # Fallback to single backend config (legacy behavior)
         backend_name = failed_pr_config.name
         selected_backends = [backend_name]
         primary_backend = backend_name
-        
+
         # Determine model: use configured model or fallback to name
         model = failed_pr_config.model or backend_name
         models = {backend_name: model}

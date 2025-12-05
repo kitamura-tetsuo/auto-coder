@@ -72,14 +72,14 @@ class TestPRProcessorBackendSwitching:
         # Assert
         # Check calls to _apply_local_test_fix
         assert mock_apply_local_fix.call_count == 2
-        
+
         # First call (attempt 1) should use default manager
         call_args_1 = mock_apply_local_fix.call_args_list[0]
-        assert call_args_1.kwargs['backend_manager'] == default_manager
-        
+        assert call_args_1.kwargs["backend_manager"] == default_manager
+
         # Second call (attempt 2) should use failed manager
         call_args_2 = mock_apply_local_fix.call_args_list[1]
-        assert call_args_2.kwargs['backend_manager'] == failed_manager
+        assert call_args_2.kwargs["backend_manager"] == failed_manager
 
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
@@ -193,13 +193,13 @@ class TestPRProcessorBackendSwitching:
         # Assert
         # Check calls to _apply_local_test_fix
         assert mock_apply_local_fix.call_count == 3
-        
+
         # Attempt 1: default manager
-        assert mock_apply_local_fix.call_args_list[0].kwargs['backend_manager'] == default_manager
+        assert mock_apply_local_fix.call_args_list[0].kwargs["backend_manager"] == default_manager
         # Attempt 2: failed manager
-        assert mock_apply_local_fix.call_args_list[1].kwargs['backend_manager'] == failed_manager
+        assert mock_apply_local_fix.call_args_list[1].kwargs["backend_manager"] == failed_manager
         # Attempt 3: failed manager
-        assert mock_apply_local_fix.call_args_list[2].kwargs['backend_manager'] == failed_manager
+        assert mock_apply_local_fix.call_args_list[2].kwargs["backend_manager"] == failed_manager
 
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
@@ -254,11 +254,11 @@ class TestPRProcessorBackendSwitching:
         # Assert
         # Check calls to _apply_local_test_fix
         assert mock_apply_local_fix.call_count == 2
-        
+
         # Attempt 1: default manager
-        assert mock_apply_local_fix.call_args_list[0].kwargs['backend_manager'] == default_manager
+        assert mock_apply_local_fix.call_args_list[0].kwargs["backend_manager"] == default_manager
         # Attempt 2: failed manager
-        assert mock_apply_local_fix.call_args_list[1].kwargs['backend_manager'] == failed_manager
+        assert mock_apply_local_fix.call_args_list[1].kwargs["backend_manager"] == failed_manager
 
 
 class TestKeepLabelOnPRMerge:
