@@ -226,8 +226,6 @@ NEXT_SESSION_PROMPT.md
 MCP_SERVER_TEST_REPORT.md
 CONTINUATION_SESSION_PROMPT.md
 
-*.txt
-
 # Temporary test files in root
 /test_*.py
 /test_*.sh

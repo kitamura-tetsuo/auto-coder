@@ -14,7 +14,8 @@ import zipfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from auto_coder.backend_manager import get_llm_backend_manager, run_llm_prompt
+from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
+from auto_coder.cli_helpers import create_failed_pr_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
@@ -425,46 +426,6 @@ def _trigger_fallback_for_pr_failure(
 
     except Exception as e:
         logger.error(f"Error triggering fallback for PR #{pr_data['number']}: {e}")
-
-
-def _switch_to_fallback_backend(repo_name: str, pr_number: int) -> bool:
-    """Switch to the fallback backend for failed PR processing.
-
-    Args:
-        repo_name: Repository name in format 'owner/repo'
-        pr_number: PR number for logging
-
-    Returns:
-        True if switch succeeded or no fallback configured, False if switch failed
-    """
-    try:
-        from .llm_backend_config import get_llm_config
-
-        # Get fallback backend configuration
-        llm_config = get_llm_config()
-        fallback_config = llm_config.get_backend_for_failed_pr()
-
-        if not fallback_config:
-            logger.debug(f"No fallback backend configured for PR #{pr_number}")
-            return True  # No fallback configured, not an error
-
-        fallback_backend_name = fallback_config.name
-        if fallback_backend_name == "backend_for_failed_pr":
-            # Use model from config if name is generic
-            fallback_model = llm_config.get_model_for_failed_pr_backend()
-            if fallback_model:
-                fallback_backend_name = fallback_model
-
-        # Switch to fallback backend
-        backend_manager = get_llm_backend_manager()
-        backend_manager._switch_to_backend_by_name(fallback_backend_name)
-
-        logger.info(f"Switched to fallback backend '{fallback_backend_name}' for PR #{pr_number}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to switch to fallback backend for PR #{pr_number}: {e}")
-        return False
 
 
 def _apply_pr_actions_directly(
@@ -1688,6 +1649,10 @@ def _fix_pr_issues_with_testing(
     actions = []
     pr_number = pr_data["number"]
 
+    # Initialize backend managers
+    current_backend_manager = get_llm_backend_manager()
+    failed_pr_backend_manager = create_failed_pr_backend_manager()
+
     # Track history of previous attempts for context
     attempt_history: List[Dict[str, Any]] = []
 
@@ -1712,9 +1677,11 @@ def _fix_pr_issues_with_testing(
                 attempt += 1
 
                 # Backend switching logic: switch to fallback after 2 attempts
-                if attempt >= 2:
-                    logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
-                    _switch_to_fallback_backend(repo_name, pr_number)
+                if attempt >= 2 and failed_pr_backend_manager:
+                    if current_backend_manager != failed_pr_backend_manager:
+                        logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
+                        current_backend_manager = failed_pr_backend_manager
+                        actions.append(f"Switched to fallback backend for PR #{pr_number}")
 
                 actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")
 
@@ -1743,7 +1710,14 @@ def _fix_pr_issues_with_testing(
                         actions.append(f"Max fix attempts ({attempts_limit}) reached for PR #{pr_number}")
                         break
                     else:
-                        local_fix_actions, llm_response = _apply_local_test_fix(repo_name, pr_data, config, test_result, attempt_history)
+                        local_fix_actions, llm_response = _apply_local_test_fix(
+                            repo_name,
+                            pr_data,
+                            config,
+                            test_result,
+                            attempt_history,
+                            backend_manager=current_backend_manager,
+                        )
                         actions.extend(local_fix_actions)
 
                         # Store this attempt in history for future reference
@@ -1844,6 +1818,7 @@ def _apply_local_test_fix(
     config: AutomationConfig,
     test_result: Dict[str, Any],
     attempt_history: List[Dict[str, Any]],
+    backend_manager: Optional[BackendManager] = None,
 ) -> Tuple[List[str], str]:
     """Apply fix using local test failure logs.
 
@@ -1856,6 +1831,7 @@ def _apply_local_test_fix(
         config: AutomationConfig instance
         test_result: Test result dictionary from run_local_tests
         attempt_history: List of previous attempts with LLM outputs and test results
+        backend_manager: Optional BackendManager instance to use (defaults to global singleton)
 
     Returns:
         Tuple of (actions_list, llm_response)
@@ -1930,7 +1906,8 @@ def _apply_local_test_fix(
                 tr.test_file = extract_first_failed_test(tr.output, tr.errors)
 
             # BackendManager with test file tracking
-            llm_response = get_llm_backend_manager().run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
+            manager = backend_manager or get_llm_backend_manager()
+            llm_response = manager.run_test_fix_prompt(fix_prompt, current_test_file=tr.test_file)
 
             if llm_response:
                 response_preview = llm_response.strip()[: config.MAX_RESPONSE_SIZE] if llm_response.strip() else "No response"

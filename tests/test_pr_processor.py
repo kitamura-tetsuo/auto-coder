@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _fix_pr_issues_with_testing, _switch_to_fallback_backend
+from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
 
 
 class TestPRProcessorBackendSwitching:
@@ -18,14 +18,16 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor._switch_to_fallback_backend")
+    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_backend_switching_on_attempt_2(
         self,
         mock_check_updates,
         mock_commit,
-        mock_switch_backend,
+        mock_get_default_manager,
+        mock_create_failed_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -45,6 +47,12 @@ class TestPRProcessorBackendSwitching:
 
         repo_name = "test/repo"
 
+        # Mock managers
+        default_manager = Mock(name="default_manager")
+        failed_manager = Mock(name="failed_manager")
+        mock_get_default_manager.return_value = default_manager
+        mock_create_failed_manager.return_value = failed_manager
+
         # Mock the test results - fail first, pass on third
         mock_run_tests.side_effect = [
             {"success": False, "output": "Test failed", "errors": "Error details"},  # attempt 1
@@ -62,24 +70,30 @@ class TestPRProcessorBackendSwitching:
         actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
 
         # Assert
-        # Should have called _switch_to_fallback_backend at least once
-        assert mock_switch_backend.called
-        # Should have been called at least once with correct arguments
-        assert mock_switch_backend.call_count >= 1
-        # Verify it was called with attempt 2
-        mock_switch_backend.assert_any_call(repo_name, 123)
+        # Check calls to _apply_local_test_fix
+        assert mock_apply_local_fix.call_count == 2
+        
+        # First call (attempt 1) should use default manager
+        call_args_1 = mock_apply_local_fix.call_args_list[0]
+        assert call_args_1.kwargs['backend_manager'] == default_manager
+        
+        # Second call (attempt 2) should use failed manager
+        call_args_2 = mock_apply_local_fix.call_args_list[1]
+        assert call_args_2.kwargs['backend_manager'] == failed_manager
 
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor._switch_to_fallback_backend")
+    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_no_backend_switching_on_attempt_1(
         self,
         mock_check_updates,
         mock_commit,
-        mock_switch_backend,
+        mock_get_default_manager,
+        mock_create_failed_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -99,6 +113,12 @@ class TestPRProcessorBackendSwitching:
 
         repo_name = "test/repo"
 
+        # Mock managers
+        default_manager = Mock(name="default_manager")
+        failed_manager = Mock(name="failed_manager")
+        mock_get_default_manager.return_value = default_manager
+        mock_create_failed_manager.return_value = failed_manager
+
         # Mock test to pass on first attempt
         mock_run_tests.return_value = {"success": True, "output": "Tests passed", "errors": ""}
 
@@ -112,20 +132,22 @@ class TestPRProcessorBackendSwitching:
         actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
 
         # Assert
-        # Should NOT have called _switch_to_fallback_backend since test passed on first attempt
-        mock_switch_backend.assert_not_called()
+        # Should NOT have called _apply_local_test_fix since test passed
+        mock_apply_local_fix.assert_not_called()
 
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor._switch_to_fallback_backend")
+    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_backend_switching_on_multiple_attempts(
         self,
         mock_check_updates,
         mock_commit,
-        mock_switch_backend,
+        mock_get_default_manager,
+        mock_create_failed_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -145,6 +167,12 @@ class TestPRProcessorBackendSwitching:
 
         repo_name = "test/repo"
 
+        # Mock managers
+        default_manager = Mock(name="default_manager")
+        failed_manager = Mock(name="failed_manager")
+        mock_get_default_manager.return_value = default_manager
+        mock_create_failed_manager.return_value = failed_manager
+
         # Mock test results - fail multiple times
         mock_run_tests.side_effect = [
             {"success": False, "output": "Test failed", "errors": "Error 1"},  # attempt 1
@@ -163,23 +191,29 @@ class TestPRProcessorBackendSwitching:
         actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
 
         # Assert
-        # Should have called _switch_to_fallback_backend for attempts 2, 3, and 4
-        assert mock_switch_backend.call_count == 3
-        # Verify all calls were with correct arguments
-        for call_args in mock_switch_backend.call_args_list:
-            assert call_args[0] == (repo_name, 789)
+        # Check calls to _apply_local_test_fix
+        assert mock_apply_local_fix.call_count == 3
+        
+        # Attempt 1: default manager
+        assert mock_apply_local_fix.call_args_list[0].kwargs['backend_manager'] == default_manager
+        # Attempt 2: failed manager
+        assert mock_apply_local_fix.call_args_list[1].kwargs['backend_manager'] == failed_manager
+        # Attempt 3: failed manager
+        assert mock_apply_local_fix.call_args_list[2].kwargs['backend_manager'] == failed_manager
 
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor._switch_to_fallback_backend")
+    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_backend_switching_with_finite_attempts_limit(
         self,
         mock_check_updates,
         mock_commit,
-        mock_switch_backend,
+        mock_get_default_manager,
+        mock_create_failed_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -199,6 +233,12 @@ class TestPRProcessorBackendSwitching:
 
         repo_name = "test/repo"
 
+        # Mock managers
+        default_manager = Mock(name="default_manager")
+        failed_manager = Mock(name="failed_manager")
+        mock_get_default_manager.return_value = default_manager
+        mock_create_failed_manager.return_value = failed_manager
+
         # Mock test results - always fail
         mock_run_tests.return_value = {"success": False, "output": "Test failed", "errors": "Errors"}
 
@@ -212,11 +252,13 @@ class TestPRProcessorBackendSwitching:
         actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, "GitHub logs")
 
         # Assert
-        # Should have called _switch_to_fallback_backend for attempts 2 and 3
-        assert mock_switch_backend.call_count == 2
-        # Verify all calls were with correct arguments
-        for call_args in mock_switch_backend.call_args_list:
-            assert call_args[0] == (repo_name, 321)
+        # Check calls to _apply_local_test_fix
+        assert mock_apply_local_fix.call_count == 2
+        
+        # Attempt 1: default manager
+        assert mock_apply_local_fix.call_args_list[0].kwargs['backend_manager'] == default_manager
+        # Attempt 2: failed manager
+        assert mock_apply_local_fix.call_args_list[1].kwargs['backend_manager'] == failed_manager
 
 
 class TestKeepLabelOnPRMerge:
