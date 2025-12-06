@@ -100,6 +100,8 @@ class TestBackendCLIOptions:
             mock_backend_config.model_provider = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return the options
+            mock_backend_config.replace_placeholders.return_value = {"options": ["-o", "timeout", "30", "-o", "stream", "true"], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -120,7 +122,7 @@ class TestBackendCLIOptions:
 
         # Verify the command starts with expected elements
         assert cmd[0] == "codex"
-        assert "exec" in cmd
+        # Note: "exec" subcommand has been removed
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -142,6 +144,8 @@ class TestBackendCLIOptions:
             mock_backend_config.model_provider = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return empty options
+            mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -154,7 +158,6 @@ class TestBackendCLIOptions:
 
         # Verify basic command structure
         assert cmd[0] == "codex"
-        assert "exec" in cmd
 
         # Verify no options flags are present
         assert "-o" not in cmd
@@ -184,6 +187,12 @@ class TestBackendCLIOptions:
             mock_backend_config.settings = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return the options
+            mock_backend_config.replace_placeholders.return_value = {
+                "options": ["--model-version", "3.5"],
+                "options_for_noedit": ["--no-edit"],
+                "options_for_resume": [],
+            }
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -222,6 +231,12 @@ class TestBackendCLIOptions:
             mock_backend_config.settings = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return empty options
+            mock_backend_config.replace_placeholders.return_value = {
+                "options": [],
+                "options_for_noedit": [],
+                "options_for_resume": [],
+            }
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -261,6 +276,8 @@ class TestBackendCLIOptions:
             mock_backend_config.api_key = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return the options
+            mock_backend_config.replace_placeholders.return_value = {"options": ["-o", "temperature", "0.7", "-o", "max-tokens", "2048"], "options_for_noedit": ["-o", "read-only"], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -301,6 +318,8 @@ class TestBackendCLIOptions:
             mock_backend_config.api_key = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return empty options
+            mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -340,6 +359,8 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_base_url = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return the options
+            mock_backend_config.replace_placeholders.return_value = {"options": ["-o", "stream", "false", "--debug"], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -378,6 +399,8 @@ class TestBackendCLIOptions:
             mock_backend_config.openai_base_url = None
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock replace_placeholders to return empty options
+            mock_backend_config.replace_placeholders.return_value = {"options": [], "options_for_noedit": [], "options_for_resume": []}
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -409,10 +432,16 @@ class TestBackendCLIOptions:
             mock_config = Mock()
             mock_backend_config = Mock()
             mock_backend_config.model = "GPT-5"
-            mock_backend_config.options = ["-o", "creativity", "high", "-o", "verbosity", "detailed"]
-            mock_backend_config.options_for_noedit = ["-o", "read-only"]
+            mock_backend_config.options = ["--model", "[model_name]", "-o", "creativity", "high", "-o", "verbosity", "detailed"]
+            mock_backend_config.options_for_noedit = ["--model", "[model_name]", "-o", "read-only"]
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock the replace_placeholders method
+            mock_backend_config.replace_placeholders.return_value = {
+                "options": ["--model", "GPT-5", "-o", "creativity", "high", "-o", "verbosity", "detailed"],
+                "options_for_noedit": ["--model", "GPT-5", "-o", "read-only"],
+                "options_for_resume": [],
+            }
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -450,6 +479,12 @@ class TestBackendCLIOptions:
             mock_backend_config.options_for_noedit = []
             mock_backend_config.usage_markers = []
             mock_backend_config.validate_required_options.return_value = []
+            # Mock the replace_placeholders method
+            mock_backend_config.replace_placeholders.return_value = {
+                "options": [],
+                "options_for_noedit": [],
+                "options_for_resume": [],
+            }
             mock_config.get_backend_config.return_value = mock_backend_config
             mock_get_config.return_value = mock_config
 
@@ -462,8 +497,8 @@ class TestBackendCLIOptions:
 
         # Verify basic command structure
         assert cmd[0] == "auggie"
-        assert "--model" in cmd
-        assert "GPT-5" in cmd
+        # With empty options, --model should NOT be in the command
+        assert "--model" not in cmd
 
         # Verify no custom options are present
         assert "-o" not in cmd

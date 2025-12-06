@@ -1,36 +1,183 @@
-# Example LLM Configuration with Fallback Backend for Failed PRs
+# Comprehensive LLM Configuration Example with Fallback Backend
 #
-# This configuration demonstrates the new [backend_for_failed_pr] section
-# that allows you to specify a fallback backend to use when PR processing fails.
+# This example demonstrates all supported placeholders and configuration options:
+#
+# Supported placeholders in options:
+# - [model_name]: Replaced with the backend's model value
+# - [sessionId]: Replaced with session ID (for resume functionality)
+# - [settings]: Replaced with the backend's settings file path
+# - [model_provider]: Replaced with the backend's model_provider value
+#
+# This configuration also shows different backend types, custom backends with
+# backend_type inheritance, and fallback configurations.
 
 [backend]
 # Default backend to use for normal operations
 default = "codex"
 
 # Order of backends to try (first enabled backend is used)
-order = ["codex", "gemini", "qwen"]
+order = ["codex", "gemini", "qwen", "claude", "auggie"]
 
-# Individual backend configurations
+# =============================================================================
+# Basic Backend Configurations with Placeholder Syntax
+# =============================================================================
+
+# Codex Backend - Default primary backend
 [backends.codex]
 enabled = true
-model = "codex"
+model = "gpt-5.1-codex-max"
+options = [
+    "--model", "[model_name]",
+    "--json",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "--search"
+]
+options_for_noedit = [
+    "--model", "[model_name]",
+    "--json",
+    "--sandbox", "read-only",
+    "--search"
+]
 
+# Gemini Backend - Fast conflict resolution
 [backends.gemini]
 enabled = true
 model = "gemini-2.5-pro"
 api_key = "your-gemini-api-key"
+options = [
+    "--model", "[model_name]",
+    "--output-format", "stream-json",
+    "--yolo",
+    "--prompt"
+]
+options_for_noedit = [
+    "--model", "[model_name]",
+    "--output-format", "stream-json",
+    "--prompt"
+]
+options_for_resume = [
+    "--resume", "latest"
+]
 
+# Qwen Backend - Alternative backend
 [backends.qwen]
 enabled = true
 model = "qwen3-coder-plus"
 api_key = "your-qwen-api-key"
+options = [
+    "-y",
+    "-m", "[model_name]",
+    "--output-format", "stream-json",
+    "--yolo",
+    "-p"
+]
+options_for_noedit = [
+    "-y",
+    "-m", "[model_name]",
+    "--output-format", "stream-json",
+    "-p"
+]
+
+# Claude Backend - With resume capability
+[backends.claude]
+enabled = true
+model = "sonnet"
+options = [
+    "--print",
+    "--model", "[model_name]",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions"
+]
+options_for_noedit = [
+    "--print",
+    "--model", "[model_name]",
+    "--output-format", "stream-json",
+    "--verbose"
+]
+options_for_resume = [
+    "--resume", "[sessionId]"
+]
+
+# Auggie Backend - Simple configuration
+[backends.auggie]
+enabled = true
+model = "GPT-5"
+options = [
+    "--model", "[model_name]",
+    "--print"
+]
+
+# =============================================================================
+# Custom Backend Configurations
+# =============================================================================
+
+# MiniMax-M2 Backend - Custom backend using Claude CLI with settings file
+# Uses backend_type to inherit Claude's option structure
+[backends.MiniMax-M2]
+enabled = true
+model = "MiniMax-M2"
+backend_type = "claude"
+settings = "/home/user/.config/claude/minimax-m2/settings.json"
+options = [
+    "--print",
+    "--model", "[model_name]",
+    "--settings", "[settings]",
+    "--output-format", "stream-json",
+    "--verbose",
+    "--dangerously-skip-permissions",
+    "--allow-dangerously-skip-permissions"
+]
+
+# Qwen via OpenRouter - OpenAI-compatible backend
+[backends.qwen-openrouter]
+enabled = true
+model = "qwen/qwen3-coder:free"
+openai_api_key = "sk-or-v1-your-openrouter-key"
+backend_type = "codex"
+model_provider = "openrouter"
+options = [
+    "--model", "[model_name]",
+    "-c", "model_provider=[model_provider]",
+    "--json",
+    "--dangerously-bypass-approvals-and-sandbox"
+]
+
+# Claude via Custom Settings - With custom settings file path
+[backends.claude-custom]
+enabled = false
+model = "opus"
+backend_type = "claude"
+settings = "/path/to/custom/settings.json"
+options = [
+    "--print",
+    "--model", "[model_name]",
+    "--settings", "[settings]",
+    "--output-format", "stream-json",
+    "--verbose"
+]
+
+# =============================================================================
+# Backend Configuration for Non-Editing Operations
+# =============================================================================
+
+# Backend for non-editing operations (message generation, etc.)
+# Separate from regular operations to allow different backends for different use cases
+[backend_for_noedit]
+order = ["claude", "gemini", "codex"]
+default = "claude"
+
+# =============================================================================
+# Fallback Backend for Failed PRs
+# =============================================================================
 
 # Fallback backend for failed PRs
 # This backend will be used as a fallback when the primary backends fail
 # to process a PR successfully. This is useful for resilience and ensuring
 # that PR processing can continue even when the default backend is unavailable.
 [backend_for_failed_pr]
-# The name is optional and used for identification purposes
+# Optional: Name for identification purposes
 name = "gemini-fallback"
 
 # Backend should be enabled (default: true)
@@ -42,37 +189,74 @@ model = "gemini-2.5-flash"
 # Optional: API key (can also be set via environment variable)
 api_key = "your-fallback-api-key"
 
+# Optional: Backend type (e.g., "codex", "gemini", "qwen", "claude")
+backend_type = "gemini"
+
+# Options for fallback backend (using placeholders)
+options = [
+    "--model", "[model_name]",
+    "--output-format", "stream-json",
+    "--yolo",
+    "--prompt"
+]
+
 # Optional: Override default temperature (0.0 to 1.0)
 temperature = 0.2
 
 # Optional: Override default timeout (in seconds)
 timeout = 120
 
-# Optional: Backend type (e.g., "codex", "gemini", "qwen")
-backend_type = "gemini"
-
-# Optional: List of providers for this backend
-providers = ["google"]
-
-# Optional: OpenAI-compatible configuration
-openai_api_key = "your-openai-key"
-openai_base_url = "https://api.openai.com/v1"
-
 # Optional: Usage limit retry configuration
 usage_limit_retry_count = 3
 usage_limit_retry_wait_seconds = 30
 
-# Optional: Additional options
-options = ["stream", "json_mode"]
-
-# Optional: Model provider (e.g., "openrouter", "anthropic", "google")
-model_provider = "google"
+# Optional: Usage markers for tracking usage patterns
+usage_markers = ["fallback", "high_availability"]
 
 # Optional: Always switch to next backend after execution
 always_switch_after_execution = false
 
-# Optional: Path to settings file (for Claude backend)
-# settings = "path/to/settings.json"
+# =============================================================================
+# Additional Configuration Examples
+# =============================================================================
 
-# Optional: Usage markers for tracking
-usage_markers = ["fallback", "high_availability"]
+# OpenAI-Compatible Backend
+[backends.openai-custom]
+enabled = false
+model = "gpt-4o"
+openai_api_key = "sk-your-openai-key"
+openai_base_url = "https://api.openai.com/v1"
+backend_type = "codex"
+model_provider = "openai"
+options = [
+    "--model", "[model_name]",
+    "-c", "model_provider=[model_provider]",
+    "--json",
+    "--dangerously-bypass-approvals-and-sandbox"
+]
+
+# Multiple Provider Configuration
+[backends.gemini-pro]
+enabled = false
+model = "gemini-2.5-pro"
+backend_type = "gemini"
+options = [
+    "--model", "[model_name]",
+    "--output-format", "stream-json",
+    "--yolo",
+    "--prompt"
+]
+
+# Backend with Retry Configuration
+[backends.gemini-retry]
+enabled = false
+model = "gemini-2.5-pro"
+backend_type = "gemini"
+usage_limit_retry_count = 5
+usage_limit_retry_wait_seconds = 60
+options = [
+    "--model", "[model_name]",
+    "--output-format", "stream-json",
+    "--yolo",
+    "--prompt"
+]

@@ -21,6 +21,7 @@ from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
+from .usage_marker_utils import has_usage_marker_match
 
 logger = get_logger(__name__)
 
@@ -39,24 +40,19 @@ class AuggieClient(LLMClientBase):
         super().__init__()
         config = get_llm_config()
 
+        # Store config_backend for placeholder replacement
         if backend_name:
-            config_backend = config.get_backend_config(backend_name)
-            self.model_name = (config_backend and config_backend.model) or "GPT-5"
-            # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
-            # Store options from config
-            self.options = (config_backend and config_backend.options) or []
-            # Store options_for_noedit from config
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.config_backend = config.get_backend_config(backend_name)
         else:
-            config_backend = config.get_backend_config("auggie")
-            self.model_name = (config_backend and config_backend.model) or "GPT-5"
-            # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
-            # Store options from config
-            self.options = (config_backend and config_backend.options) or []
-            # Store options_for_noedit from config
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.config_backend = config.get_backend_config("auggie")
+
+        self.model_name = (self.config_backend and self.config_backend.model) or "GPT-5"
+        # Store usage_markers from config
+        self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
+        # Store options from config
+        self.options = (self.config_backend and self.config_backend.options) or []
+        # Store options_for_noedit from config
+        self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name
@@ -66,8 +62,8 @@ class AuggieClient(LLMClientBase):
         self._usage_count_cache: int = 0
 
         # Validate required options for this backend
-        if config_backend:
-            required_errors = config_backend.validate_required_options()
+        if self.config_backend:
+            required_errors = self.config_backend.validate_required_options()
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)
@@ -166,16 +162,23 @@ class AuggieClient(LLMClientBase):
         """Execute Auggie CLI and stream output via logger."""
         self._check_and_increment_usage()
         escaped_prompt = self._escape_prompt(prompt)
-        cmd = [
-            "auggie",
-            "--model",
-            self.model_name,
-        ]
+        cmd = ["auggie"]
 
-        # Add configured options
+        # Get processed options with placeholders replaced
         # Use options_for_noedit for no-edit operations if available
-        options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-        cmd.extend(options_to_use)
+        if self.config_backend:
+            processed_options = self.config_backend.replace_placeholders(model_name=self.model_name)
+            if is_noedit and self.options_for_noedit:
+                options_to_use = processed_options.get("options_for_noedit", [])
+            else:
+                options_to_use = processed_options.get("options", [])
+        else:
+            # Fallback if config_backend is not available
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+
+        # Add configured options from config
+        if options_to_use:
+            cmd.extend(options_to_use)
 
         extra_args = self.consume_extra_args()
         if extra_args:
@@ -210,7 +213,6 @@ class AuggieClient(LLMClientBase):
             return_code = process.wait(timeout=7200)  # 2 hour timeout
             logger.info("=" * 60)
             full_output = "\n".join(output_lines).strip()
-            low = full_output.lower()
 
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
@@ -219,11 +221,13 @@ class AuggieClient(LLMClientBase):
                 # Default hardcoded usage markers
                 usage_markers = ("rate limit", "quota", "429")
 
+            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+
             if return_code != 0:
-                if any(marker in low for marker in usage_markers):
+                if usage_limit_detected:
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"auggie CLI failed with return code {return_code}\n{full_output}")
-            if any(marker in low for marker in usage_markers):
+            if usage_limit_detected:
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
         except subprocess.TimeoutExpired:

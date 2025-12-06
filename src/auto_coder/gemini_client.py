@@ -20,6 +20,7 @@ from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -42,33 +43,33 @@ class GeminiClient(LLMClientBase):
         config = get_llm_config()
 
         if backend_name:
-            config_backend = config.get_backend_config(backend_name)
+            self.config_backend = config.get_backend_config(backend_name)
             # Use backend config, fall back to default "gemini"
-            self.api_key = (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
-            self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
+            self.api_key = (self.config_backend and self.config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
+            self.model_name = (self.config_backend and self.config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
-            self.options = (config_backend and config_backend.options) or []
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.options = (self.config_backend and self.config_backend.options) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         else:
             # Fall back to default gemini config
-            config_backend = config.get_backend_config("gemini")
-            self.api_key = (config_backend and config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
-            self.model_name = (config_backend and config_backend.model) or "gemini-2.5-pro"
+            self.config_backend = config.get_backend_config("gemini")
+            self.api_key = (self.config_backend and self.config_backend.api_key) or os.environ.get("GEMINI_API_KEY")
+            self.model_name = (self.config_backend and self.config_backend.model) or "gemini-2.5-pro"
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
-            self.options = (config_backend and config_backend.options) or []
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.options = (self.config_backend and self.config_backend.options) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
 
         self.default_model = self.model_name
         self.conflict_model = "gemini-2.5-flash"  # Faster model for conflict resolution
         self.timeout = None  # No timeout - let gemini CLI run as long as needed
 
         # Validate required options for this backend
-        if config_backend:
-            required_errors = config_backend.validate_required_options()
+        if self.config_backend:
+            required_errors = self.config_backend.validate_required_options()
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)
@@ -125,34 +126,37 @@ class GeminiClient(LLMClientBase):
         try:
             escaped_prompt = self._escape_prompt(prompt)
 
-            cmd = [
-                "gemini",
-                "--model",
-                self.model_name,
-            ]
+            cmd = ["gemini"]
 
-            # Add configured options
+            # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
-            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-            cmd.extend(options_to_use)
+            if self.config_backend:
+                processed_options = self.config_backend.replace_placeholders(model_name=self.model_name)
+                if is_noedit and self.options_for_noedit:
+                    options_to_use = processed_options["options_for_noedit"]
+                else:
+                    options_to_use = processed_options["options"]
+            else:
+                # Fallback if config_backend is not available
+                options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+
+            # Add configured options from config
+            if options_to_use:
+                cmd.extend(options_to_use)
 
             # Append any resume/continuation flags before the prompt payload
             extra_args = self.consume_extra_args()
             if extra_args:
                 cmd.extend(extra_args)
 
-            cmd.extend(
-                [
-                    "--prompt",
-                    escaped_prompt,
-                ]
-            )
+            # Prompt should be last argument
+            cmd.append(escaped_prompt)
 
             logger.warning("LLM invocation: gemini CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running gemini CLI with prompt length: {len(prompt)} characters")
             # Build display command for logging
             display_options = " ".join(self.options) if self.options else ""
-            logger.info(f"🤖 Running: gemini --model {self.model_name} {display_options} --prompt [prompt]")
+            logger.info(f"🤖 Running: gemini {display_options} [prompt]")
             logger.info("=" * 60)
 
             result = CommandExecutor.run_command(
@@ -185,8 +189,10 @@ class GeminiClient(LLMClientBase):
                     "[api error: you have exhausted your capacity on this model. your quota will reset after ",
                 )
 
+            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+
             if result.returncode != 0:
-                if any(m in low for m in usage_markers):
+                if usage_limit_detected:
                     status = "error"
                     error_message = full_output
                     raise AutoCoderUsageLimitError(full_output)
@@ -194,7 +200,7 @@ class GeminiClient(LLMClientBase):
                 error_message = f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
                 raise RuntimeError(error_message)
 
-            if any(m in low for m in usage_markers):
+            if usage_limit_detected:
                 status = "error"
                 error_message = full_output
                 raise AutoCoderUsageLimitError(full_output)

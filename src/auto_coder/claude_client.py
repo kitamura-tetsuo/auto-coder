@@ -5,12 +5,13 @@ Claude CLI client for Auto-Coder.
 import os
 import re
 import subprocess
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
+from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -34,35 +35,35 @@ class ClaudeClient(LLMClientBase):
 
         # If backend_name is provided, get config from that backend
         if backend_name:
-            config_backend = config.get_backend_config(backend_name)
+            self.config_backend = config.get_backend_config(backend_name)
             # Use backend config, fall back to default "sonnet"
-            self.model_name = (config_backend and config_backend.model) or "sonnet"
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            self.settings = config_backend and config_backend.settings
+            self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
+            self.api_key = self.config_backend and self.config_backend.api_key
+            self.base_url = self.config_backend and self.config_backend.base_url
+            self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
+            self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
+            self.settings = self.config_backend and self.config_backend.settings
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
-            self.options = (config_backend and config_backend.options) or []
+            self.options = (self.config_backend and self.config_backend.options) or []
             # Store options_for_noedit from config
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
         else:
             # Fall back to default claude config
-            config_backend = config.get_backend_config("claude")
-            self.model_name = (config_backend and config_backend.model) or "sonnet"
-            self.api_key = config_backend and config_backend.api_key
-            self.base_url = config_backend and config_backend.base_url
-            self.openai_api_key = config_backend and config_backend.openai_api_key
-            self.openai_base_url = config_backend and config_backend.openai_base_url
-            self.settings = config_backend and config_backend.settings
+            self.config_backend = config.get_backend_config("claude")
+            self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
+            self.api_key = self.config_backend and self.config_backend.api_key
+            self.base_url = self.config_backend and self.config_backend.base_url
+            self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
+            self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
+            self.settings = self.config_backend and self.config_backend.settings
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
-            self.options = (config_backend and config_backend.options) or []
+            self.options = (self.config_backend and self.config_backend.options) or []
             # Store options_for_noedit from config
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
 
         self.default_model = self.model_name
         self.conflict_model = "sonnet"
@@ -74,8 +75,8 @@ class ClaudeClient(LLMClientBase):
         self._last_output: Optional[str] = None
 
         # Validate required options for this backend
-        if config_backend:
-            required_errors = config_backend.validate_required_options()
+        if self.config_backend:
+            required_errors = self.config_backend.validate_required_options()
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)
@@ -107,23 +108,19 @@ class ClaudeClient(LLMClientBase):
         """Run claude CLI with the given prompt and show real-time output."""
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            cmd = [
-                "claude",
-                "--print",
-                "--model",
-                self.model_name,
-            ]
+            base_cmd = ["claude"]
 
-            # Add configurable options from config
+            # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
             options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
             if options_to_use and isinstance(options_to_use, list):
-                cmd.extend(options_to_use)
+                base_cmd.extend(options_to_use)
 
             if self.settings and isinstance(self.settings, str):
-                cmd.extend(["--settings", self.settings])
+                base_cmd.extend(["--settings", self.settings])
 
             # Append extra args if any (e.g., --resume <session_id>)
+            cmd = base_cmd.copy()
             extra_args = self.consume_extra_args()
             if extra_args:
                 cmd.extend(extra_args)
@@ -156,19 +153,32 @@ class ClaudeClient(LLMClientBase):
                 # Default hardcoded usage markers
                 usage_markers = ('{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",', "5-hour limit reached · resets")
 
-            result = CommandExecutor.run_command(
-                cmd,
-                stream_output=True,
-                env=env if len(env) > len(os.environ) else None,
-                dot_format=True,
-            )
-            logger.info("=" * 60)
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
-            full_output = full_output.strip()
-            low = full_output.lower()
+            def run_cli(command: list[str]) -> tuple[Any, str, str, bool]:
+                display_cmd = " ".join(command[:3]) + "..." if len(command) > 3 else " ".join(command)
+                logger.info(f"🤖 Running: {display_cmd}")
+                logger.info("=" * 60)
+                result = CommandExecutor.run_command(
+                    command,
+                    stream_output=True,
+                    env=env if len(env) > len(os.environ) else None,
+                    dot_format=True,
+                )
+                logger.info("=" * 60)
+                stdout = (result.stdout or "").strip()
+                stderr = (result.stderr or "").strip()
+                combined_parts = [part for part in (stdout, stderr) if part]
+                full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+                full_output = full_output.strip()
+                low_output = full_output.lower()
+                usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+                return result, full_output, low_output, usage_limit_detected
+
+            result, full_output, low, usage_limit_detected = run_cli(cmd)
+
+            if result.returncode != 0 and extra_args:
+                logger.info("claude CLI failed with extra args; retrying without them")
+                retry_cmd = base_cmd + [escaped_prompt]
+                result, full_output, low, usage_limit_detected = run_cli(retry_cmd)
 
             # Store output for session ID extraction
             self._last_output = full_output
@@ -181,9 +191,12 @@ class ClaudeClient(LLMClientBase):
                 raise AutoCoderTimeoutError(full_output)
 
             if result.returncode != 0:
-                if any(marker in low for marker in usage_markers):
+                if usage_limit_detected:
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"claude CLI failed with return code {result.returncode}\n{full_output}")
+
+            if usage_limit_detected:
+                raise AutoCoderUsageLimitError(full_output)
 
             return full_output
         except AutoCoderUsageLimitError:

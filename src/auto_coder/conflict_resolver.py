@@ -134,9 +134,22 @@ def _trigger_fallback_for_conflict_failure(
             logger.debug(f"No linked issues found in PR #{pr_number} body")
             return
 
-        # Increment attempt for each linked issue
+        # Increment attempt and reopen each linked issue
+        from .github_client import GitHubClient
+
+        client = GitHubClient.get_instance()
+
         for issue_number in related_issues:
             try:
+                # Check if the issue is closed and reopen it
+                repo = client.get_repository(repo_name)
+                issue = repo.get_issue(issue_number)
+
+                if issue.state == "closed":
+                    logger.info(f"Reopening closed issue #{issue_number} due to PR #{pr_number} failure")
+                    reopen_comment = f"Auto-Coder: Reopening issue due to PR #{pr_number} failure: {failure_reason}"
+                    client.reopen_issue(repo_name, issue_number, reopen_comment)
+
                 logger.info(f"Incrementing attempt for issue #{issue_number} due to PR #{pr_number} conflict resolution failure: {failure_reason}")
                 increment_attempt(repo_name, issue_number)
             except Exception as e:
@@ -259,6 +272,7 @@ def resolve_merge_conflicts_with_llm(
     pr_data: Dict[str, Any],
     conflict_info: str,
     config: AutomationConfig,
+    repo_name: Optional[str] = None,
 ) -> List[str]:
     """Ask LLM to resolve merge conflicts."""
     actions: List[str] = []
@@ -304,7 +318,7 @@ def resolve_merge_conflicts_with_llm(
             if flagged:
                 actions.append(f"Conflict markers still present in {len(flagged)} file(s): {', '.join(sorted(set(flagged)))}; not committing")
                 # Trigger fallback due to unresolved conflict markers
-                _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "LLM left unresolved conflict markers")
+                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "LLM left unresolved conflict markers")
                 return actions
 
             # Commit via helper and push
@@ -314,7 +328,7 @@ def resolve_merge_conflicts_with_llm(
             else:
                 actions.append(f"Failed to commit resolved merge: {commit_res.stderr or commit_res.stdout}")
                 # Trigger fallback due to commit failure
-                _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "Failed to commit conflict resolution")
+                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "Failed to commit conflict resolution")
                 return actions
 
             push_res = git_push()
@@ -324,17 +338,17 @@ def resolve_merge_conflicts_with_llm(
             else:
                 actions.append(f"Failed to push resolved merge: {push_res.stderr}")
                 # Trigger fallback due to push failure
-                _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "Failed to push conflict resolution")
+                _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "Failed to push conflict resolution")
         else:
             actions.append("LLM did not provide a clear response for merge conflict resolution")
             # Trigger fallback due to no LLM response
-            _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), "LLM provided no response for conflict resolution")
+            _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), "LLM provided no response for conflict resolution")
 
     except Exception as e:
         logger.error(f"Error resolving merge conflicts with LLM: {e}")
         actions.append(f"Error resolving merge conflicts: {e}")
         # Trigger fallback due to exception
-        _trigger_fallback_for_conflict_failure("", pr_data.get("number", 0), f"Exception during conflict resolution: {str(e)}")
+        _trigger_fallback_for_conflict_failure(repo_name or "", pr_data.get("number", 0), f"Exception during conflict resolution: {str(e)}")
 
     return actions
 
@@ -455,7 +469,7 @@ def _perform_base_branch_merge_and_conflict_resolution(
             # Safe to merge, proceed with LLM conflict resolution
             logger.info(f"LLM determined merge is safe for PR #{pr_number}, proceeding with resolution")
 
-            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config)
+            resolve_actions = resolve_merge_conflicts_with_llm(pr_data, conflict_info, config, repo_name)
 
             # Log the resolution actions
             for action in resolve_actions:
