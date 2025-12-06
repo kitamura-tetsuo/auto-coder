@@ -135,6 +135,16 @@ class MyProcessor:
         # Returns to outer stage: [PR #123] Outer Operation
 ```
 
+## Interaction with Dot Format Output
+
+When using `dot_format=True` in `CommandExecutor` along with `ProgressStage`, dots are automatically printed one line above the progress footer to ensure both outputs remain visible:
+
+- **TTY environments**: Dots use ANSI escape sequences to position themselves one line above the footer
+- **Non-TTY environments**: Dots are printed normally without cursor manipulation
+- The ProgressStage footer remains at the bottom line of the terminal
+
+This ensures that long-running commands show progress dots while maintaining visibility of the current processing stage.
+
 ## Practical Usage Examples
 
 ### Usage in GitHub Issue Processor
