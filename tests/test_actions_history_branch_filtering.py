@@ -11,7 +11,7 @@ def _cmd_result(success: bool = True, stdout: str = "", stderr: str = "", return
 
 
 def test_history_uses_branch_filter_when_commit_runs_empty():
-    """Verify that branch filtering works correctly even when --commit finds no runs.
+    """Verify that branch filtering works correctly and only references the correct PR's runs.
 
     Regression: Prevent PR #73's history check from incorrectly referencing PR #133's Run.
     """
@@ -26,10 +26,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         },
     }
 
-    # 1) --commit will not hit
-    commit_run_list = _cmd_result(True, stdout="[]", stderr="", returncode=0)
-
-    # 2) Normal run list mixes other PR's new Run and target PR's old Run
+    # Run list mixes other PR's new Run and target PR's old Run
     other_pr_run_id = 19024332818  # Format close to real example
     target_pr_run_id = 18000000000
 
@@ -69,8 +66,6 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
         ]
     }
 
-    call_count = {"list": 0}
-
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
             # Return PR commit information
@@ -89,11 +84,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
                 returncode=0,
             )
         if cmd[:3] == ["gh", "run", "list"]:
-            call_count["list"] += 1
-            if call_count["list"] == 1:
-                # 1st time (equivalent to commit) will not hit
-                return commit_run_list
-            # 2nd time (fallback) returns candidates
+            # Return runs on first (and only) call - the implementation queries by branch
             return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
             run_id = int(cmd[3])
@@ -117,7 +108,7 @@ def test_history_uses_branch_filter_when_commit_runs_empty():
 
 
 def test_history_filters_to_branch_even_with_head_sha_present():
-    """When head.sha exists but doesn't hit in commit, filter by branch for sure."""
+    """Verify that branch filtering works correctly and filters to the correct branch."""
     config = AutomationConfig()
 
     pr_data = {
@@ -128,8 +119,6 @@ def test_history_filters_to_branch_even_with_head_sha_present():
             "sha": "abc123def456",
         },
     }
-
-    commit_run_list = _cmd_result(True, stdout="[]", stderr="", returncode=0)
 
     # Mix same branch (push) and different branches (PR)
     run_list_payload = [
@@ -167,8 +156,6 @@ def test_history_filters_to_branch_even_with_head_sha_present():
         ]
     }
 
-    call_count = {"list": 0}
-
     def side_effect(cmd, **kwargs):
         if cmd[:3] == ["gh", "pr", "view"]:
             # Return PR commit information
@@ -187,11 +174,7 @@ def test_history_filters_to_branch_even_with_head_sha_present():
                 returncode=0,
             )
         if cmd[:3] == ["gh", "run", "list"]:
-            call_count["list"] += 1
-            if call_count["list"] == 1:
-                # 1st time (equivalent to commit) will not hit
-                return commit_run_list
-            # 2nd time (fallback) returns candidates
+            # Return runs on first (and only) call - the implementation queries by branch
             return run_list_result
         if cmd[:3] == ["gh", "run", "view"]:
             # Should reference only 3000 filtered by branch

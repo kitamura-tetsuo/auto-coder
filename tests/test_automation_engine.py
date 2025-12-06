@@ -600,16 +600,16 @@ class TestAutomationEngine:
 
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_no_checks_reported(self, mock_run_command, mock_github_client, mock_gemini_client):
-        """Handle gh CLI message when no checks are reported."""
+        """Handle gh CLI message when no checks are reported - should return in_progress to avoid premature merge."""
         from src.auto_coder.util.github_action import _check_github_actions_status
 
-        # Mock multiple cmd.run_command calls for the historical fallback
+        # Mock gh pr checks to return "no checks reported" error
         def mock_side_effect(cmd_list, **kwargs):
             if len(cmd_list) >= 3 and cmd_list[1] == "pr" and cmd_list[2] == "checks":
-                # gh pr checks command
+                # gh pr checks command - return "no checks reported" error
                 return Mock(returncode=1, stdout="", stderr="no checks reported on the 'feat/global-search' branch")
             elif len(cmd_list) >= 3 and cmd_list[1] == "pr" and cmd_list[2] == "view":
-                # gh pr view command - return empty commits
+                # gh pr view command - not reached in new logic
                 return Mock(returncode=0, stdout='{"commits": []}', stderr="")
             else:
                 # Other commands
@@ -618,13 +618,14 @@ class TestAutomationEngine:
         mock_run_command.side_effect = mock_side_effect
 
         config = AutomationConfig()
-        # Provide complete PR data including head_branch for historical fallback
+        # Provide complete PR data including head_branch
         pr_data = {"number": 123, "head_branch": "test-branch", "head": {"ref": "test-branch"}}
 
         result = _check_github_actions_status("test/repo", pr_data, config)
 
-        # When there are no checks, should return success
-        assert result.success is True
+        # When there are no checks reported, should return in_progress to wait for checks to start
+        assert result.success is False
+        assert result.in_progress is True
         assert result.ids == []
 
     @patch("auto_coder.gh_logger.subprocess.run")

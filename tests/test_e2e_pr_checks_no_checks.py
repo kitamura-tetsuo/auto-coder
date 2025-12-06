@@ -14,18 +14,18 @@ from src.auto_coder.utils import CommandResult
 @pytest.mark.headless
 class TestPRChecksNoChecks:
     @patch("auto_coder.gh_logger.subprocess.run")
-    def test_pr_with_no_checks_reports_as_success(self, mock_run_command):
-        """Test that when no checks are reported, the status is considered success."""
+    def test_pr_with_no_checks_reports_as_in_progress(self, mock_run_command):
+        """Test that when no checks are reported, the status is considered in_progress to avoid premature merge."""
         token = os.environ.get("GITHUB_TOKEN", "placeholder-token")
         github_client = GitHubClient.get_instance(token)
         engine = AutomationEngine(github_client, None)
         config = AutomationConfig()
 
         # Simulate "no checks reported" scenario
-        # First call to gh pr checks returns empty, second call (pr view for historical fallback) returns empty commits
+        # gh pr checks returns "no checks reported" error
         def mock_side_effect(cmd_list, **kwargs):
             if isinstance(cmd_list, list) and len(cmd_list) >= 3 and cmd_list[1] == "pr" and cmd_list[2] == "checks":
-                # gh pr checks command - return empty result
+                # gh pr checks command - return "no checks reported" error
                 return CommandResult(
                     success=False,
                     stdout="",
@@ -33,14 +33,14 @@ class TestPRChecksNoChecks:
                     returncode=1,
                 )
             elif isinstance(cmd_list, list) and len(cmd_list) >= 3 and cmd_list[1] == "pr" and cmd_list[2] == "view":
-                # gh pr view command - return empty commits
+                # gh pr view command - return empty commits (not needed in new logic)
                 return CommandResult(success=True, stdout='{"commits": []}', stderr="", returncode=0)
             else:
                 return CommandResult(success=True, stdout="", stderr="", returncode=0)
 
         mock_run_command.side_effect = mock_side_effect
 
-        # Provide complete PR data including head_branch for historical fallback
+        # Provide complete PR data including head_branch
         pr_data = {
             "number": 515,
             "head_branch": "test-branch",
@@ -48,6 +48,7 @@ class TestPRChecksNoChecks:
         }
         result = _check_github_actions_status("kitamura-tetsuo/outliner", pr_data, config)
 
-        # When there are no checks reported, should return success
-        assert result.success is True
+        # When there are no checks reported, should return in_progress to wait for checks to start
+        assert result.success is False
+        assert result.in_progress is True
         assert len(result.ids) == 0

@@ -267,6 +267,18 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         # Note: gh pr checks returns non-zero exit code when some checks fail
         # This is expected behavior, not an error
         if result.returncode != 0 and not result.stdout.strip():
+            # Check if this is the "no checks reported" message indicating checks haven't started
+            stderr_lower = result.stderr.lower()
+            if "no checks reported" in stderr_lower:
+                logger.info(f"No checks reported yet for PR #{pr_number} - checks may not have started")
+                log_action(f"No checks reported yet for PR #{pr_number}", False, result.stderr)
+                # Return in_progress=True to indicate we should wait for checks to start
+                return GitHubActionsStatusResult(
+                    success=False,
+                    ids=[],
+                    in_progress=True,
+                )
+
             # Only treat as error if there's no output and no known informational message
             log_action(f"Failed to get PR checks for #{pr_number}", False, result.stderr)
 
@@ -636,8 +648,19 @@ def _check_github_actions_status_from_history(
 
         if not matching_runs:
             logger.info(f"No runs found matching any PR commit for branch {head_branch}")
+            # If there are no runs at all, checks may not have started yet
+            # Return in_progress=True to wait for checks to start
+            if not runs:
+                logger.info(f"No workflow runs found on branch {head_branch} - checks may not have started yet")
+                return GitHubActionsStatusResult(
+                    success=False,
+                    ids=[],
+                    in_progress=True,
+                )
+            # If there are runs but none match, the PR may be old/stale
+            # In this case, assume success (legacy behavior)
             return GitHubActionsStatusResult(
-                success=True,  # Assume success if no matching runs found
+                success=True,
                 ids=[],
                 in_progress=False,
             )
