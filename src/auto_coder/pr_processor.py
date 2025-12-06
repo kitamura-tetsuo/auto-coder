@@ -230,7 +230,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         # Step 1: Get PR details to determine the base branch
         gh_logger = get_gh_logger()
         pr_details_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "base"],
+            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
             capture_output=True,
         )
 
@@ -242,7 +242,7 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
 
         try:
             pr_data = json.loads(pr_details_result.stdout)
-            base_branch = pr_data.get("base", {}).get("ref", "main")
+            base_branch = pr_data.get("baseRefName", "main")
         except Exception:
             base_branch = "main"
 

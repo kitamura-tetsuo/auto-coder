@@ -170,7 +170,7 @@ def test_start_mergeability_remediation_success(mock_update, mock_checkout, mock
     # Mock PR details retrieval
     mock_pr_result = Mock()
     mock_pr_result.success = True
-    mock_pr_result.stdout = '{"base": {"ref": "develop"}}'
+    mock_pr_result.stdout = '{"baseRefName": "develop"}'
     mock_gh_logger.return_value.execute_with_logging.return_value = mock_pr_result
 
     # Mock successful checkout and update
@@ -257,7 +257,7 @@ def test_start_mergeability_remediation_handles_exception(mock_update, mock_chec
     # Mock PR details retrieval
     mock_pr_result = Mock()
     mock_pr_result.success = True
-    mock_pr_result.stdout = '{"base": {"ref": "main"}}'
+    mock_pr_result.stdout = '{"baseRefName": "main"}'
     mock_gh_logger.return_value.execute_with_logging.return_value = mock_pr_result
 
     # Make checkout raise an exception
