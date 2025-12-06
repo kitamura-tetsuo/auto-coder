@@ -8,7 +8,10 @@ from auto_coder.llm_backend_config import BackendConfig
 
 def test_create_failed_pr_backend_manager_no_config():
     with patch("auto_coder.cli_helpers.get_llm_config") as mock_get_config:
-        mock_get_config.return_value.get_backend_for_failed_pr.return_value = None
+        mock_config = MagicMock()
+        mock_config.get_backend_for_failed_pr.return_value = None
+        mock_config.backend_for_failed_pr_order = []  # Empty list to match the actual default
+        mock_get_config.return_value = mock_config
         manager = create_failed_pr_backend_manager()
         assert manager is None
 
@@ -19,7 +22,7 @@ def test_create_failed_pr_backend_manager_with_config():
         mock_config = MagicMock()
         mock_backend_config = BackendConfig(name="failed_backend", model="failed_model")
         mock_config.get_backend_for_failed_pr.return_value = mock_backend_config
-        mock_config.backend_for_failed_pr_order = None  # Ensure order is None to use single backend path
+        mock_config.backend_for_failed_pr_order = []  # Empty list to use single backend path
         mock_get_config.return_value = mock_config
 
         mock_manager = MagicMock()
