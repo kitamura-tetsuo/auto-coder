@@ -1,0 +1,1 @@
+[32m2025-12-06 17:33:37.439[0m | [1mINFO    [0m | tests/test_logger_config.py:176 in [36mtest_logger_console_format_with_colors[0m - [1mTest colored message[0m
