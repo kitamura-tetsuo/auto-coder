@@ -236,3 +236,6 @@ CONTINUATION_SESSION_PROMPT.md
 *.bak
 
 pyright_results.json
+
+# MagicMock test artifact files
+*MagicMock*
