@@ -117,9 +117,10 @@ class ClaudeClient(LLMClientBase):
             # Add configurable options from config
             # Use options_for_noedit for no-edit operations if available
             options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-            cmd.extend(options_to_use)
+            if options_to_use and isinstance(options_to_use, list):
+                cmd.extend(options_to_use)
 
-            if self.settings:
+            if self.settings and isinstance(self.settings, str):
                 cmd.extend(["--settings", self.settings])
 
             # Append extra args if any (e.g., --resume <session_id>)
@@ -143,8 +144,8 @@ class ClaudeClient(LLMClientBase):
 
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
-            # Build command string for logging
-            cmd_str = " ".join(cmd)
+            # Build command string for logging (convert all elements to strings)
+            cmd_str = " ".join(str(item) for item in cmd)
             logger.info(f"🤖 Running: {cmd_str}")
             logger.info("=" * 60)
 
