@@ -194,10 +194,8 @@ class TestPRMessageGeneration:
 
     def _create_pr_with_message_response(self, repo_name, issue_data, work_branch, base_branch, message_response, github_client, config):
         """Helper to create PR with a specific message backend response."""
-        # Create a mock backend manager
-        mock_backend_manager = Mock()
 
-        # Update the mock to return the parsed JSON for the actual response
+        # Mock the parse function to handle various JSON formats
         def parse_response(response):
             import json
             import re
@@ -232,9 +230,7 @@ class TestPRMessageGeneration:
                 # For non-JSON responses, return a default
                 return {"title": "Default", "body": "Default body"}
 
-        mock_backend_manager.parse_llm_output_as_json.side_effect = parse_response
-
-        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_noedit_backend_manager", return_value=mock_backend_manager):
+        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.parse_llm_output_as_json", side_effect=parse_response):
             mock_run_prompt.return_value = message_response
 
             result = _create_pr_for_issue(
@@ -381,11 +377,7 @@ class TestPRLabelCopying:
         # Create JSON response
         json_response = '{"title": ' + f'"{pr_title}"' + ', "body": ' + f'"{pr_body}"' + "}"
 
-        # Create a mock backend manager that parses JSON
-        mock_backend_manager = Mock()
-        mock_backend_manager.parse_llm_output_as_json = Mock(return_value={"title": pr_title, "body": pr_body})
-
-        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.get_noedit_backend_manager", return_value=mock_backend_manager):
+        with patch("src.auto_coder.issue_processor.run_llm_noedit_prompt") as mock_run_prompt, patch("src.auto_coder.issue_processor.parse_llm_output_as_json", return_value={"title": pr_title, "body": pr_body}):
             mock_run_prompt.return_value = json_response
 
             result = _create_pr_for_issue(

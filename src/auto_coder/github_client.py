@@ -382,11 +382,13 @@ class GitHubClient:
             prs = repo.get_pulls(state="open")
 
             issue_ref_patterns = [
-                f"#{issue_number}",
-                f"issue #{issue_number}",
                 f"fixes #{issue_number}",
+                f"fix issue #{issue_number}",
+                f"close #{issue_number}",
                 f"closes #{issue_number}",
                 f"resolves #{issue_number}",
+                f"#{issue_number}",  # Direct issue reference in title
+                f"issue #{issue_number}",  # Issue reference in body
             ]
 
             for pr in prs:

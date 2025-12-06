@@ -557,8 +557,8 @@ class TestResourceLimits:
 
             assert "Value 50.5" in result
             # Nested access should be fast
-            # Note: @log_calls decorator adds overhead, especially in CI environments
-            # Increased threshold to accommodate CI overhead while still catching regressions
+            # Note: @log_calls decorator adds overhead, so we use a more lenient threshold
+            # Increased to 0.5s to account for variance during parallel test execution
             assert elapsed < 0.5, f"Nested template access took {elapsed:.3f}s"
             print(f"✓ Deeply nested templates: {elapsed:.3f}s")
         finally:
