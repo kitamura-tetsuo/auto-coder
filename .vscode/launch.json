@@ -64,6 +64,8 @@
                 "--no-check-labels",
                 // "--force-reindex",
                 "--disable-graphrag",
+                "--verbose",
+                // "--force"
             ],
             "python": "${command:python.interpreterPath}",
             "env": {

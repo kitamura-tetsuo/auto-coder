@@ -1348,7 +1348,21 @@ def _merge_pr(
 
                 # Try to resolve merge conflicts using the new function from conflict_resolver
                 if resolve_pr_merge_conflicts(repo_name, pr_number, config):
-                    # Retry merge after conflict resolution
+                    # Poll for mergeability BEFORE attempting merge to avoid race condition
+                    logger.info(f"Conflicts resolved for PR #{pr_number}, waiting for GitHub to update mergeable state")
+                    log_action(f"Polling mergeable state for PR #{pr_number} after conflict resolution")
+
+                    polling_succeeded = _poll_pr_mergeable(repo_name, pr_number, config)
+
+                    if polling_succeeded:
+                        logger.info(f"GitHub confirmed PR #{pr_number} is mergeable, attempting merge")
+                        log_action(f"GitHub confirmed PR #{pr_number} is mergeable")
+                    else:
+                        # Still attempt merge even if polling timed out
+                        logger.warning(f"Polling timed out for PR #{pr_number} (waited 60s), " "attempting merge anyway since conflicts were resolved")
+                        log_action(f"Mergeable state polling timed out for PR #{pr_number}, proceeding with merge attempt")
+
+                    # Attempt merge after polling (or timeout)
                     gh_logger = get_gh_logger()
                     retry_result = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
                     if retry_result.success:  # type: ignore[attr-defined]
@@ -1356,21 +1370,14 @@ def _merge_pr(
                         _close_linked_issues(repo_name, pr_number)
                         return True
                     else:
-                        # Simple non-LLM fallbacks
+                        # Merge failed even after conflict resolution and polling
+                        logger.warning(f"Merge failed for PR #{pr_number} after conflict resolution: {retry_result.stderr}")
                         log_action(
-                            f"Failed to merge PR #{pr_number} even after conflict resolution",
+                            f"Failed to merge PR #{pr_number} even after conflict resolution and polling",
                             False,
                             retry_result.stderr,
                         )
-                        # 1) Poll mergeable briefly (e.g., GitHub may still be computing)
-                        if _poll_pr_mergeable(repo_name, pr_number, config):
-                            gh_logger = get_gh_logger()
-                            retry_after_poll = gh_logger.execute_with_logging(direct_cmd, repo=repo_name, capture_output=True)
-                            if retry_after_poll.success:  # type: ignore[attr-defined]
-                                log_action(f"Successfully merged PR #{pr_number} after waiting for mergeable state")
-                                _close_linked_issues(repo_name, pr_number)
-                                return True
-                        # 2) Try alternative merge methods allowed by repo
+                        # Try alternative merge methods allowed by repo
                         allowed = _get_allowed_merge_methods(repo_name)
                         # Preserve order preference: configured first, then others
                         methods_order = [config.MERGE_METHOD] + [m for m in ["--squash", "--merge", "--rebase"] if m != config.MERGE_METHOD]
