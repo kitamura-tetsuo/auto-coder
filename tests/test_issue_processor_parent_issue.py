@@ -210,9 +210,10 @@ class TestParentIssueBranchingIntegration:
 class TestCreatePRForParentIssue:
     """Tests for _create_pr_for_parent_issue function."""
 
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
     @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_new_branch(self, mock_gh_logger, mock_cmd):
+    def test_create_pr_for_parent_issue_new_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with new branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -256,9 +257,10 @@ class TestCreatePRForParentIssue:
         assert "Successfully created PR for parent issue" in result
         assert str(issue_number) in result
 
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
     @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_existing_branch(self, mock_gh_logger, mock_cmd):
+    def test_create_pr_for_parent_issue_existing_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR for parent issue with existing branch."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -299,10 +301,11 @@ class TestCreatePRForParentIssue:
         # Should create PR
         assert "Successfully created PR for parent issue" in result
 
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
     @patch("src.auto_coder.issue_processor.get_gh_logger")
     @patch("src.auto_coder.git_branch.git_commit_with_retry")
-    def test_create_pr_for_parent_issue_with_changes(self, mock_git_commit, mock_gh_logger, mock_cmd):
+    def test_create_pr_for_parent_issue_with_changes(self, mock_git_commit, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test creating PR with changes to commit."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -348,8 +351,9 @@ class TestCreatePRForParentIssue:
         # Should create PR
         assert "Successfully created PR for parent issue" in result
 
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
-    def test_create_pr_for_parent_issue_branch_creation_fails(self, mock_cmd):
+    def test_create_pr_for_parent_issue_branch_creation_fails(self, mock_cmd, mock_get_attempt):
         """Test error handling when branch creation fails."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -376,9 +380,10 @@ class TestCreatePRForParentIssue:
         # Should return error message
         assert "Error creating PR" in result
 
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=0)
     @patch("src.auto_coder.issue_processor.cmd")
     @patch("src.auto_coder.issue_processor.get_gh_logger")
-    def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_gh_logger, mock_cmd):
+    def test_create_pr_for_parent_issue_pr_creation_fails(self, mock_gh_logger, mock_cmd, mock_get_attempt):
         """Test error handling when PR creation fails."""
         repo_name = "owner/repo"
         issue_number = 100
@@ -410,6 +415,49 @@ class TestCreatePRForParentIssue:
 
         # Should return error message
         assert "Error creating PR" in result
+
+    @patch("src.auto_coder.issue_processor.get_current_attempt", return_value=2)
+    @patch("src.auto_coder.issue_processor.cmd")
+    @patch("src.auto_coder.issue_processor.get_gh_logger")
+    def test_create_pr_for_parent_issue_with_attempt_branch(self, mock_gh_logger, mock_cmd, mock_get_attempt):
+        """Ensure attempt-specific branch is used when attempts exist."""
+        repo_name = "owner/repo"
+        issue_number = 150
+        issue_data = {
+            "number": issue_number,
+            "title": "Parent Issue Attempt",
+            "body": "Parent issue body",
+        }
+        config = AutomationConfig()
+        summary = "All requirements met"
+        reasoning = "All sub-issues closed and verified"
+
+        github_client = MagicMock()
+
+        mock_cmd.run_command.side_effect = [
+            MagicMock(returncode=1),  # Branch doesn't exist
+            MagicMock(returncode=0, stdout=""),  # Create branch
+            MagicMock(returncode=0, stdout=""),  # Push branch
+            MagicMock(returncode=0, stdout=""),  # Git status (no changes)
+            MagicMock(returncode=0),  # Completion file exists
+        ]
+
+        mock_gh_instance = MagicMock()
+        mock_gh_instance.execute_with_logging.return_value = MagicMock(success=True, stdout="https://github.com/owner/repo/pull/999")
+        mock_gh_logger.return_value = mock_gh_instance
+
+        result = _create_pr_for_parent_issue(repo_name, issue_data, github_client, config, summary, reasoning)
+
+        expected_branch = "issue-150_attempt-2"
+
+        # Branch creation should target attempt-specific branch
+        create_branch_call = mock_cmd.run_command.call_args_list[1][0][0]
+        assert expected_branch in create_branch_call
+
+        # PR creation should use attempt-specific head branch
+        pr_call_args = mock_gh_instance.execute_with_logging.call_args[0][0]
+        assert expected_branch in pr_call_args
+        assert "Successfully created PR for parent issue" in result
 
 
 class TestParentIssueContextInjection:

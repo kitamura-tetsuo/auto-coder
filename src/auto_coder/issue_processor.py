@@ -161,8 +161,11 @@ def _create_pr_for_parent_issue(
     actions_list = []
 
     try:
+        current_attempt = get_current_attempt(repo_name, issue_number)
+        logger.info(f"Current attempt for parent issue #{issue_number}: {current_attempt}")
+
         # Generate branch name for parent issue
-        parent_branch = generate_work_branch_name(issue_number, 0)
+        parent_branch = generate_work_branch_name(issue_number, current_attempt)
 
         # Check if branch already exists
         check_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
