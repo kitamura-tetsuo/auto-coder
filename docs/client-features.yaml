@@ -53,7 +53,7 @@ The system supports extensive backend configuration options. Key fields include:
   - This translates to: `codex -c model="x-ai/grok-4.1-fast:free" -c model_provider=openrouter`
   - Optional field: Backward compatible with existing configurations
 
-- **usage_markers**: Configurable strings to detect rate limits or usage errors in CLI output
+- **usage_markers**: Configurable patterns (strings or JSON snippets) to detect rate limits or usage errors in CLI output
   - Purpose: Enables users to handle different localizations or new error messages without modifying source code
   - Supported by: ClaudeClient, GeminiClient, CodexClient, AuggieClient, QwenClient
   - Default behavior: Each client has built-in default markers (e.g., "rate limit", "quota", "429")
@@ -83,6 +83,7 @@ The system supports extensive backend configuration options. Key fields include:
     - When configured, the specified markers are used to detect usage limit errors
     - When not configured, clients fall back to their built-in default markers
     - Markers are matched case-insensitively against the CLI output
+    - JSON markers are matched as partial JSON (subset) against any JSON payload found in the CLI output, including structured log lines
   - Configuration file: "~/.auto-coder/llm_config.toml"
   - Optional field: Backward compatible with existing configurations
 

@@ -20,6 +20,7 @@ from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -188,8 +189,10 @@ class GeminiClient(LLMClientBase):
                     "[api error: you have exhausted your capacity on this model. your quota will reset after ",
                 )
 
+            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+
             if result.returncode != 0:
-                if any(m in low for m in usage_markers):
+                if usage_limit_detected:
                     status = "error"
                     error_message = full_output
                     raise AutoCoderUsageLimitError(full_output)
@@ -197,7 +200,7 @@ class GeminiClient(LLMClientBase):
                 error_message = f"Gemini CLI failed with return code {result.returncode}\n{full_output}"
                 raise RuntimeError(error_message)
 
-            if any(m in low for m in usage_markers):
+            if usage_limit_detected:
                 status = "error"
                 error_message = full_output
                 raise AutoCoderUsageLimitError(full_output)

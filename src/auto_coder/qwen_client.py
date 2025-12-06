@@ -21,6 +21,7 @@ from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
+from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -316,8 +317,6 @@ class QwenClient(LLMClientBase):
 
     def _is_usage_limit(self, message: str, returncode: int) -> bool:
         """Check if the error message indicates a usage limit."""
-        low = message.lower()
-
         # Use configured usage_markers if available, otherwise fall back to defaults
         if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
             usage_markers = self.usage_markers
@@ -333,7 +332,7 @@ class QwenClient(LLMClientBase):
                 "openai api streaming error: 429 provider returned error",
             )
 
-        return any(marker in low for marker in usage_markers)
+        return has_usage_marker_match(message, usage_markers)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:

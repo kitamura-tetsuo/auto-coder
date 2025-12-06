@@ -21,6 +21,7 @@ from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
+from .usage_marker_utils import has_usage_marker_match
 
 logger = get_logger(__name__)
 
@@ -212,7 +213,6 @@ class AuggieClient(LLMClientBase):
             return_code = process.wait(timeout=7200)  # 2 hour timeout
             logger.info("=" * 60)
             full_output = "\n".join(output_lines).strip()
-            low = full_output.lower()
 
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers and isinstance(self.usage_markers, (list, tuple)):
@@ -221,11 +221,13 @@ class AuggieClient(LLMClientBase):
                 # Default hardcoded usage markers
                 usage_markers = ("rate limit", "quota", "429")
 
+            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+
             if return_code != 0:
-                if any(marker in low for marker in usage_markers):
+                if usage_limit_detected:
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"auggie CLI failed with return code {return_code}\n{full_output}")
-            if any(marker in low for marker in usage_markers):
+            if usage_limit_detected:
                 raise AutoCoderUsageLimitError(full_output)
             return full_output
         except subprocess.TimeoutExpired:

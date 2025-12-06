@@ -14,6 +14,7 @@ from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .llm_output_logger import LLMOutputLogger
 from .logger_config import get_logger
+from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -190,8 +191,10 @@ class CodexClient(LLMClientBase):
             if result.returncode == -1 and "timed out" in low:
                 raise AutoCoderTimeoutError(full_output)
 
+            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+
             if result.returncode != 0:
-                if any(marker in low for marker in usage_markers):
+                if usage_limit_detected:
                     status = "error"
                     error_message = full_output
                     raise AutoCoderUsageLimitError(full_output)
@@ -199,7 +202,7 @@ class CodexClient(LLMClientBase):
                 error_message = f"codex CLI failed with return code {result.returncode}\n{full_output}"
                 raise RuntimeError(error_message)
 
-            if any(marker in low for marker in usage_markers):
+            if usage_limit_detected:
                 status = "error"
                 error_message = full_output
                 raise AutoCoderUsageLimitError(full_output)

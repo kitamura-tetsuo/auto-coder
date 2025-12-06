@@ -11,6 +11,7 @@ from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
+from .usage_marker_utils import has_usage_marker_match
 from .utils import CommandExecutor
 
 logger = get_logger(__name__)
@@ -182,10 +183,15 @@ class ClaudeClient(LLMClientBase):
             if result.returncode == -1 and "timed out" in low:
                 raise AutoCoderTimeoutError(full_output)
 
+            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+
             if result.returncode != 0:
-                if any(marker in low for marker in usage_markers):
+                if usage_limit_detected:
                     raise AutoCoderUsageLimitError(full_output)
                 raise RuntimeError(f"claude CLI failed with return code {result.returncode}\n{full_output}")
+
+            if usage_limit_detected:
+                raise AutoCoderUsageLimitError(full_output)
 
             return full_output
         except AutoCoderUsageLimitError:

@@ -87,6 +87,23 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_usage_limit_error_with_json_marker(self, mock_run_command, mock_run):
+        """Usage limit detection should handle JSON markers with partial matches."""
+        mock_run.return_value.returncode = 0
+        json_log_line = (
+            '2025-12-07 00:06:46.125 | INFO | auto_coder/claude_client.py:161 in _run_llm_cli - '
+            '{"type":"result","subtype":"error","is_error":true,"result":"Limit reached - resets soon"}'
+        )
+        mock_run_command.return_value = CommandResult(False, json_log_line, "", 1)
+
+        client = CodexClient()
+        client.usage_markers = [{"type": "result", "is_error": True, "result": "Limit reached"}]
+
+        with pytest.raises(AutoCoderUsageLimitError):
+            client._run_llm_cli("hello world")
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     @patch("builtins.print")
     @patch("src.auto_coder.codex_client.get_llm_config")
     def test_json_logging_on_success(self, mock_get_config, mock_print, mock_run_command, mock_run, tmp_path):
