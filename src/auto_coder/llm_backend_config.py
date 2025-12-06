@@ -242,14 +242,13 @@ class LLMBackendConfiguration:
         # Parse general backend settings
         backend_order = data.get("backend", {}).get("order", [])
 
-        # Determine default backend from explicit "default" key, then order (first item), then fallback to "codex"
-        backend_config = data.get("backend", {})
-        if "default" in backend_config:
-            default_backend = backend_config["default"]
-        elif backend_order:
-            default_backend = backend_order[0]
-        else:
-            default_backend = "codex"
+        # Determine default backend - prioritize explicit "default" field, then order[0], then fallback to "codex"
+        default_backend = data.get("backend", {}).get("default")
+        if not default_backend:
+            if backend_order:
+                default_backend = backend_order[0]
+            else:
+                default_backend = "codex"
 
         # Parse backends
         backends_data = data.get("backends", {})
@@ -372,9 +371,9 @@ class LLMBackendConfiguration:
         # Try new key first, then fall back to old key for backward compatibility
         backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
 
-        # Determine default for noedit
-        backend_for_noedit_default = None
-        if backend_for_noedit_order:
+        # Determine default for noedit - prioritize explicit "default" field, then order[0]
+        backend_for_noedit_default = data.get("backend_for_noedit", {}).get("default")
+        if not backend_for_noedit_default and backend_for_noedit_order:
             backend_for_noedit_default = backend_for_noedit_order[0]
 
         # Backward compatibility: check old key if new key not found

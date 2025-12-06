@@ -112,19 +112,12 @@ class ClaudeClient(LLMClientBase):
 
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
-            if self.config_backend:
-                processed_options = self.config_backend.replace_placeholders(model_name=self.model_name, settings=self.settings)
-                if is_noedit and self.options_for_noedit:
-                    options_to_use = processed_options.get("options_for_noedit", [])
-                else:
-                    options_to_use = processed_options.get("options", [])
-            else:
-                # Fallback if config_backend is not available
-                options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-
-            # Add configured options from config
-            if options_to_use:
+            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
+            if options_to_use and isinstance(options_to_use, list):
                 base_cmd.extend(options_to_use)
+
+            if self.settings and isinstance(self.settings, str):
+                base_cmd.extend(["--settings", self.settings])
 
             # Append extra args if any (e.g., --resume <session_id>)
             cmd = base_cmd.copy()
@@ -148,6 +141,10 @@ class ClaudeClient(LLMClientBase):
 
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
+            # Build command string for logging (convert all elements to strings)
+            cmd_str = " ".join(str(item) for item in cmd)
+            logger.info(f"🤖 Running: {cmd_str}")
+            logger.info("=" * 60)
 
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers:

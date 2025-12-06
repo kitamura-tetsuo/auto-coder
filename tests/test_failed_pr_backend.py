@@ -19,7 +19,8 @@ def test_create_failed_pr_backend_manager_with_config():
         mock_config = MagicMock()
         mock_backend_config = BackendConfig(name="failed_backend", model="failed_model")
         mock_config.get_backend_for_failed_pr.return_value = mock_backend_config
-        mock_config.backend_for_failed_pr_order = None  # Ensure order is None to use single backend path
+        # Set backend_for_failed_pr_order to empty list so it uses the legacy path
+        mock_config.backend_for_failed_pr_order = []
         mock_get_config.return_value = mock_config
 
         mock_manager = MagicMock()

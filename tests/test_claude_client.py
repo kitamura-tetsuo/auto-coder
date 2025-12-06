@@ -654,6 +654,177 @@ class TestClaudeClient:
         # The --dangerously-skip-permissions option should NOT be in the command for noedit
         assert "--dangerously-skip-permissions" not in called_cmd
 
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_command_logging_includes_all_components(self, mock_cmd_exec, mock_run, mock_get_config):
+        """ClaudeClient should execute the complete command including options, settings, and extra_args."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with all components
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.options = ["--print", "--dangerously-skip-permissions"]
+        mock_backend.options_for_noedit = ["--print", "--dangerously-skip-permissions"]
+        mock_backend.settings = "/path/to/settings.json"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Mock command executor
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+
+        # Set extra args
+        client.set_extra_args(["--resume", "test-session-id"])
+
+        # Run LLM
+        client._run_llm_cli("test prompt")
+
+        # Verify the actual command passed to run_command includes all components
+        called_cmd = mock_cmd_exec.call_args[0][0]
+
+        # Verify all components are in the executed command
+        assert "claude" in called_cmd
+        assert "--print" in called_cmd
+        assert "--model" in called_cmd
+        assert "sonnet" in called_cmd
+        assert "--dangerously-skip-permissions" in called_cmd
+        assert "--settings" in called_cmd
+        assert "/path/to/settings.json" in called_cmd
+        assert "--resume" in called_cmd
+        assert "test-session-id" in called_cmd
+        assert "test prompt" in called_cmd
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_command_logging_with_options_for_noedit(self, mock_cmd_exec, mock_run, mock_get_config):
+        """ClaudeClient should use options_for_noedit when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with different options and options_for_noedit
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.options = ["--option1", "--option2"]
+        mock_backend.options_for_noedit = ["--noedit-option1", "--noedit-option2"]
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Mock command executor
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+
+        # Run LLM with is_noedit=True
+        client._run_llm_cli("test prompt", is_noedit=True)
+
+        # Verify the actual command uses the noedit options
+        called_cmd = mock_cmd_exec.call_args[0][0]
+
+        # Verify noedit options are in the executed command
+        assert "--noedit-option1" in called_cmd
+        assert "--noedit-option2" in called_cmd
+        # Verify regular options are NOT in the executed command
+        assert "--option1" not in called_cmd
+        assert "--option2" not in called_cmd
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_command_logging_without_optional_components(self, mock_cmd_exec, mock_run, mock_get_config):
+        """ClaudeClient should execute basic command when no optional components are present."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with minimal components
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.options = []
+        mock_backend.options_for_noedit = []
+        mock_backend.settings = None
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Mock command executor
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+
+        # Run LLM without extra args
+        client._run_llm_cli("test prompt")
+
+        # Verify the actual command contains basic components
+        called_cmd = mock_cmd_exec.call_args[0][0]
+
+        # Verify basic components are in the executed command
+        assert "claude" in called_cmd
+        assert "--print" in called_cmd
+        assert "--model" in called_cmd
+        assert "sonnet" in called_cmd
+        assert "test prompt" in called_cmd
+        # Verify optional components are NOT in the executed command
+        assert "--settings" not in called_cmd
+        assert "--resume" not in called_cmd
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_command_execution_includes_all_arguments(self, mock_cmd_exec, mock_run, mock_get_config):
+        """ClaudeClient should execute command with all configured arguments."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "opus"
+        mock_backend.options = ["--custom-opt"]
+        mock_backend.options_for_noedit = []
+        mock_backend.settings = "/custom/settings.json"
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Mock command executor
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+        client.set_extra_args(["--verbose"])
+
+        # Run LLM
+        client._run_llm_cli("my test prompt")
+
+        # Get the actual command passed to run_command
+        actual_cmd = mock_cmd_exec.call_args[0][0]
+
+        # Verify all arguments are in the executed command
+        assert "claude" in actual_cmd
+        assert "--print" in actual_cmd
+        assert "--model" in actual_cmd
+        assert "opus" in actual_cmd
+        assert "--custom-opt" in actual_cmd
+        assert "--settings" in actual_cmd
+        assert "/custom/settings.json" in actual_cmd
+        assert "--verbose" in actual_cmd
+        assert "my test prompt" in actual_cmd
+
 
 class TestClaudeClientSessionExtraction:
     """Test cases for session ID extraction in ClaudeClient."""
