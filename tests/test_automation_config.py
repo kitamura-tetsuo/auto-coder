@@ -166,7 +166,7 @@ def test_default_config_values():
     assert config.MAX_FIX_ATTEMPTS == 30
     assert config.MAIN_BRANCH == "main"
     assert config.SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL is True
-    assert config.ENABLE_MERGEABILITY_REMEDIATION is False
+    assert config.ENABLE_MERGEABILITY_REMEDIATION is True
     assert config.IGNORE_DEPENDABOT_PRS is False
     assert config.FORCE_CLEAN_BEFORE_CHECKOUT is False
     assert config.DISABLE_LABELS is False

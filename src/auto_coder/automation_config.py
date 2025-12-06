@@ -146,7 +146,7 @@ class AutomationConfig:
         object.__setattr__(self, "MAX_FIX_ATTEMPTS", 30)
         object.__setattr__(self, "MAIN_BRANCH", "main")
         object.__setattr__(self, "SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL", True)
-        object.__setattr__(self, "ENABLE_MERGEABILITY_REMEDIATION", False)
+        object.__setattr__(self, "ENABLE_MERGEABILITY_REMEDIATION", True)
         object.__setattr__(self, "IGNORE_DEPENDABOT_PRS", False)
         object.__setattr__(self, "FORCE_CLEAN_BEFORE_CHECKOUT", False)
         object.__setattr__(self, "DISABLE_LABELS", False)

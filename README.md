@@ -35,7 +35,7 @@ Auto-Coder includes intelligent handling for PRs that are not immediately mergea
 This feature is controlled by the `ENABLE_MERGEABILITY_REMEDIATION` configuration flag. When enabled, non-mergeable PRs are automatically remediated without manual intervention.
 
 **Related Configuration:**
-- `ENABLE_MERGEABILITY_REMEDIATION` (default: false) - Enables automatic remediation
+- `ENABLE_MERGEABILITY_REMEDIATION` (default: true) - Enables automatic remediation
 - `SKIP_MAIN_UPDATE_WHEN_CHECKS_FAIL` (default: true) - Controls base branch updates during fix flows
 
 See [docs/client-features.yaml](docs/client-features.yaml) for complete technical documentation.
