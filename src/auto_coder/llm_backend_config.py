@@ -242,8 +242,11 @@ class LLMBackendConfiguration:
         # Parse general backend settings
         backend_order = data.get("backend", {}).get("order", [])
 
-        # Determine default backend from order (first item), fallback to "codex"
-        if backend_order:
+        # Determine default backend from explicit "default" key, then order (first item), then fallback to "codex"
+        backend_config = data.get("backend", {})
+        if "default" in backend_config:
+            default_backend = backend_config["default"]
+        elif backend_order:
             default_backend = backend_order[0]
         else:
             default_backend = "codex"
