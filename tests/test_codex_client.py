@@ -90,10 +90,7 @@ class TestCodexClient:
     def test_usage_limit_error_with_json_marker(self, mock_run_command, mock_run):
         """Usage limit detection should handle JSON markers with partial matches."""
         mock_run.return_value.returncode = 0
-        json_log_line = (
-            '2025-12-07 00:06:46.125 | INFO | auto_coder/claude_client.py:161 in _run_llm_cli - '
-            '{"type":"result","subtype":"error","is_error":true,"result":"Limit reached - resets soon"}'
-        )
+        json_log_line = "2025-12-07 00:06:46.125 | INFO | auto_coder/claude_client.py:161 in _run_llm_cli - " '{"type":"result","subtype":"error","is_error":true,"result":"Limit reached - resets soon"}'
         mock_run_command.return_value = CommandResult(False, json_log_line, "", 1)
 
         client = CodexClient()

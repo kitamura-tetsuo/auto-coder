@@ -5,7 +5,7 @@ Claude CLI client for Auto-Coder.
 import os
 import re
 import subprocess
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from .exceptions import AutoCoderTimeoutError, AutoCoderUsageLimitError
 from .llm_backend_config import get_llm_config
@@ -108,7 +108,7 @@ class ClaudeClient(LLMClientBase):
         """Run claude CLI with the given prompt and show real-time output."""
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            cmd = ["claude"]
+            base_cmd = ["claude"]
 
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
@@ -124,9 +124,10 @@ class ClaudeClient(LLMClientBase):
 
             # Add configured options from config
             if options_to_use:
-                cmd.extend(options_to_use)
+                base_cmd.extend(options_to_use)
 
             # Append extra args if any (e.g., --resume <session_id>)
+            cmd = base_cmd.copy()
             extra_args = self.consume_extra_args()
             if extra_args:
                 cmd.extend(extra_args)
@@ -147,10 +148,6 @@ class ClaudeClient(LLMClientBase):
 
             logger.warning("LLM invocation: claude CLI is being called. Keep LLM calls minimized.")
             logger.debug(f"Running claude CLI with prompt length: {len(prompt)} characters")
-            # Build command string for logging
-            display_cmd = " ".join(cmd[:3]) + "..." if len(cmd) > 3 else " ".join(cmd)
-            logger.info(f"🤖 Running: {display_cmd}")
-            logger.info("=" * 60)
 
             # Use configured usage_markers if available, otherwise fall back to defaults
             if self.usage_markers:
@@ -159,19 +156,32 @@ class ClaudeClient(LLMClientBase):
                 # Default hardcoded usage markers
                 usage_markers = ('{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",', "5-hour limit reached · resets")
 
-            result = CommandExecutor.run_command(
-                cmd,
-                stream_output=True,
-                env=env if len(env) > len(os.environ) else None,
-                dot_format=True,
-            )
-            logger.info("=" * 60)
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            combined_parts = [part for part in (stdout, stderr) if part]
-            full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
-            full_output = full_output.strip()
-            low = full_output.lower()
+            def run_cli(command: list[str]) -> tuple[Any, str, str, bool]:
+                display_cmd = " ".join(command[:3]) + "..." if len(command) > 3 else " ".join(command)
+                logger.info(f"🤖 Running: {display_cmd}")
+                logger.info("=" * 60)
+                result = CommandExecutor.run_command(
+                    command,
+                    stream_output=True,
+                    env=env if len(env) > len(os.environ) else None,
+                    dot_format=True,
+                )
+                logger.info("=" * 60)
+                stdout = (result.stdout or "").strip()
+                stderr = (result.stderr or "").strip()
+                combined_parts = [part for part in (stdout, stderr) if part]
+                full_output = "\n".join(combined_parts) if combined_parts else (result.stderr or result.stdout or "")
+                full_output = full_output.strip()
+                low_output = full_output.lower()
+                usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
+                return result, full_output, low_output, usage_limit_detected
+
+            result, full_output, low, usage_limit_detected = run_cli(cmd)
+
+            if result.returncode != 0 and extra_args:
+                logger.info("claude CLI failed with extra args; retrying without them")
+                retry_cmd = base_cmd + [escaped_prompt]
+                result, full_output, low, usage_limit_detected = run_cli(retry_cmd)
 
             # Store output for session ID extraction
             self._last_output = full_output
@@ -182,8 +192,6 @@ class ClaudeClient(LLMClientBase):
             # Check for timeout (returncode -1 and "timed out" in stderr)
             if result.returncode == -1 and "timed out" in low:
                 raise AutoCoderTimeoutError(full_output)
-
-            usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
 
             if result.returncode != 0:
                 if usage_limit_detected:

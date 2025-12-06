@@ -2,10 +2,7 @@ from src.auto_coder.usage_marker_utils import has_usage_marker_match
 
 
 def test_matches_json_fragment_with_prefix_text():
-    output = (
-        '2025-12-07 00:06:46.125 | INFO | auto_coder/claude_client.py:161 in _run_llm_cli - '
-        '{"type":"result","subtype":"success","is_error":true,"result":"Limit reached - resets 2am (Asia/Tokyo)"}'
-    )
+    output = "2025-12-07 00:06:46.125 | INFO | auto_coder/claude_client.py:161 in _run_llm_cli - " '{"type":"result","subtype":"success","is_error":true,"result":"Limit reached - resets 2am (Asia/Tokyo)"}'
     marker = {"type": "result", "is_error": True}
 
     assert has_usage_marker_match(output, [marker])
