@@ -756,3 +756,54 @@ def build_message_backend_manager(
 
     # Get and return the already initialized noedit instance
     return LLMBackendManager.get_noedit_instance()
+
+
+def create_failed_pr_backend_manager() -> Optional[BackendManager]:
+    """Create a BackendManager for the backend_for_failed_pr configuration.
+
+    Returns:
+        BackendManager instance if backend_for_failed_pr is configured, None otherwise.
+    """
+    config = get_llm_config()
+
+    # Check for order first
+    failed_pr_order = config.backend_for_failed_pr_order
+    failed_pr_config = config.get_backend_for_failed_pr()
+
+    if not failed_pr_order and not failed_pr_config:
+        return None
+
+    # If order is present, use it
+    if failed_pr_order:
+        selected_backends = failed_pr_order
+        primary_backend = failed_pr_order[0]
+
+        # Build models map for these backends
+        models = {}
+        for backend_name in selected_backends:
+            models[backend_name] = config.get_model_for_backend(backend_name) or backend_name
+
+    else:
+        # Fallback to single backend config (legacy behavior)
+        backend_name = failed_pr_config.name
+        selected_backends = [backend_name]
+        primary_backend = backend_name
+
+        # Determine model: use configured model or fallback to name
+        model = failed_pr_config.model or backend_name
+        models = {backend_name: model}
+
+    try:
+        # We default enable_graphrag to True as we generally want context for fixes
+        return build_backend_manager(
+            selected_backends=selected_backends,
+            primary_backend=primary_backend,
+            models=models,
+            enable_graphrag=True,
+        )
+    except Exception as e:
+        from .logger_config import get_logger
+
+        logger = get_logger(__name__)
+        logger.error(f"Failed to create backend manager for failed PR: {e}")
+        return None

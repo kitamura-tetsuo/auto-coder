@@ -134,6 +134,7 @@ class LLMBackendConfiguration:
     backend_for_noedit_default: Optional[str] = None
     # Fallback backend configuration for failed PRs
     backend_for_failed_pr: Optional[BackendConfig] = None
+    backend_for_failed_pr_order: List[str] = field(default_factory=list)
     # Environment variable overrides
     env_prefix: str = "AUTO_CODER_"
     # Configuration file path - relative to user's home directory
@@ -287,12 +288,24 @@ class LLMBackendConfiguration:
             # Parse backend_for_failed_pr section
             backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
             backend_for_failed_pr = None
+            backend_for_failed_pr_order = []
             if backend_for_failed_pr_data:
+                # Check for order
+                backend_for_failed_pr_order = backend_for_failed_pr_data.get("order", [])
                 # Use "backend_for_failed_pr" as default name if not specified in data
                 fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
                 backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
 
-            config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
+            config = cls(
+                backend_order=backend_order,
+                default_backend=default_backend,
+                backends=backends,
+                backend_for_noedit_order=backend_for_noedit_order,
+                backend_for_noedit_default=backend_for_noedit_default,
+                backend_for_failed_pr=backend_for_failed_pr,
+                backend_for_failed_pr_order=backend_for_failed_pr_order,
+                config_file_path=config_path,
+            )
 
             return config
         except Exception as e:
@@ -434,12 +447,24 @@ class LLMBackendConfiguration:
         # Parse backend_for_failed_pr section
         backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
         backend_for_failed_pr = None
+        backend_for_failed_pr_order = []
         if backend_for_failed_pr_data:
+            # Check for order
+            backend_for_failed_pr_order = backend_for_failed_pr_data.get("order", [])
             # Use "backend_for_failed_pr" as default name if not specified in data
             fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
             backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
 
-        config = cls(backend_order=backend_order, default_backend=default_backend, backends=backends, backend_for_noedit_order=backend_for_noedit_order, backend_for_noedit_default=backend_for_noedit_default, backend_for_failed_pr=backend_for_failed_pr, config_file_path=config_path)
+        config = cls(
+            backend_order=backend_order,
+            default_backend=default_backend,
+            backends=backends,
+            backend_for_noedit_order=backend_for_noedit_order,
+            backend_for_noedit_default=backend_for_noedit_default,
+            backend_for_failed_pr=backend_for_failed_pr,
+            backend_for_failed_pr_order=backend_for_failed_pr_order,
+            config_file_path=config_path,
+        )
 
         return config
 
