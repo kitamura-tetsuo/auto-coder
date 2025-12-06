@@ -800,6 +800,28 @@ class GitHubClient:
             logger.error(f"Failed to reopen issue #{issue_number}: {e}")
             raise
 
+    def close_pr(self, repo_name: str, pr_number: int, comment: Optional[str] = None) -> None:
+        """Close a pull request with optional comment.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            pr_number: PR number to close
+            comment: Optional comment to add when closing
+        """
+        try:
+            repo = self.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+
+            if comment:
+                pr.create_issue_comment(comment)
+
+            pr.edit(state="closed")
+            logger.info(f"Closed PR #{pr_number}")
+
+        except GithubException as e:
+            logger.error(f"Failed to close PR #{pr_number}: {e}")
+            raise
+
     def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of all sub-issues for a given issue using GitHub GraphQL API.
 

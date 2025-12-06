@@ -202,7 +202,7 @@ def _get_mergeable_state(
     return {"mergeable": mergeable, "merge_state_status": merge_state_status}
 
 
-def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional[str]) -> List[str]:
+def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional[str], repo_name: str = "") -> List[str]:
     """Implement mergeability remediation flow for non-mergeable PRs.
 
     This function handles the end-to-end flow for non-mergeable PRs:
@@ -267,10 +267,37 @@ def _start_mergeability_remediation(pr_number: int, merge_state_status: Optional
         # - Merging base branch
         # - Using _perform_base_branch_merge_and_conflict_resolution for conflicts
         # - Pushing updated branch with retry
-        update_actions = _update_with_base_branch("", {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
+        update_actions = _update_with_base_branch(repo_name, {"number": pr_number, "base_branch": base_branch}, AutomationConfig())
         actions.extend(update_actions)
 
-        # Step 4: Verify successful remediation
+        # Step 4: Check for degrading merge detection
+        if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
+            # LLM determined merge would degrade code quality
+            # The _trigger_fallback_for_conflict_failure has already been called in conflict_resolver
+            # The linked issues have been reopened and attempt incremented
+            # Now we need to close the PR
+            from .github_client import GitHubClient
+
+            try:
+                client = GitHubClient.get_instance()
+                close_comment = "Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
+                client.close_pr(repo_name, pr_number, close_comment)
+                actions.append(f"Closed PR #{pr_number} without merging due to quality degradation risk")
+
+                # Checkout main branch after closing PR
+                main_branch = AutomationConfig().MAIN_BRANCH
+                checkout_result = cmd.run_command(["git", "checkout", main_branch])
+                if checkout_result.success:
+                    actions.append(f"Checked out {main_branch} branch")
+                else:
+                    logger.warning(f"Failed to checkout {main_branch} branch: {checkout_result.stderr}")
+                    actions.append(f"Warning: Failed to checkout {main_branch} branch")
+            except Exception as e:
+                logger.error(f"Failed to close PR #{pr_number}: {e}")
+                actions.append(f"Error closing PR #{pr_number}: {e}")
+            return actions
+
+        # Step 5: Verify successful remediation
         # If push succeeded, the action flag will be set
         if "ACTION_FLAG:SKIP_ANALYSIS" in update_actions or any("Pushed updated branch" in action for action in update_actions):
             actions.append(f"Mergeability remediation completed for PR #{pr_number}")
@@ -632,7 +659,7 @@ def _handle_pr_merge(
             actions.append(f"PR #{pr_number} is not mergeable (state: {state_text})")
 
             if config.ENABLE_MERGEABILITY_REMEDIATION:
-                remediation_actions = _start_mergeability_remediation(pr_number, merge_state_status)
+                remediation_actions = _start_mergeability_remediation(pr_number, merge_state_status, repo_name)
                 actions.extend(remediation_actions)
                 return actions
 
@@ -704,14 +731,25 @@ def _handle_pr_merge(
 
             # Check if LLM determined merge would degrade code quality
             if "ACTION_FLAG:DEGRADING_MERGE_SKIP_MERGE" in update_actions:
-                actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, proceeding to fix phase")
-                # Proceed to fixing phase - the PR content needs to be fixed
-                if failed_checks:
-                    github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
-                    actions.extend(fix_actions)
-                else:
-                    actions.append(f"No specific failed checks found for PR #{pr_number}")
+                actions.append(f"LLM determined merge would degrade code quality for PR #{pr_number}, closing PR without merge")
+                # Close the PR without merging
+                try:
+                    client = GitHubClient.get_instance()
+                    close_comment = f"Auto-Coder: Closing PR because LLM determined merge would degrade code quality. The linked issue(s) have been reopened with incremented attempt count."
+                    client.close_pr(repo_name, pr_number, close_comment)
+                    actions.append(f"Closed PR #{pr_number} without merging")
+
+                    # Checkout main branch after closing PR
+                    main_branch = config.MAIN_BRANCH
+                    checkout_result = cmd.run_command(["git", "checkout", main_branch])
+                    if checkout_result.success:
+                        actions.append(f"Checked out {main_branch} branch")
+                    else:
+                        logger.warning(f"Failed to checkout {main_branch} branch: {checkout_result.stderr}")
+                        actions.append(f"Warning: Failed to checkout {main_branch} branch")
+                except Exception as e:
+                    logger.error(f"Failed to close PR #{pr_number}: {e}")
+                    actions.append(f"Error closing PR #{pr_number}: {e}")
                 return actions
 
             # If base branch update required pushing changes, skip to next PR
@@ -805,47 +843,53 @@ def _force_checkout_pr_manually(repo_name: str, pr_data: Dict[str, Any], config:
     pr_number = pr_data["number"]
 
     try:
-        # Get PR branch information
-        branch_name = pr_data.get("head", {}).get("ref", f"issue-{pr_number}")
+        # Get PR branch information from PR data
+        branch_name = pr_data.get("head", {}).get("ref")
+        if not branch_name:
+            log_action(f"Cannot determine branch name for PR #{pr_number}", False, "No head.ref in PR data")
+            return False
 
         log_action(f"Attempting manual checkout of branch '{branch_name}' for PR #{pr_number}")
 
-        # Fetch the PR branch
-        fetch_result = cmd.run_command(["git", "fetch", "origin", f"pull/{pr_number}/head:{branch_name}"])
-        if not fetch_result.success:
-            log_action(f"Failed to fetch PR #{pr_number} branch", False, fetch_result.stderr)
-            return False
+        # Clean up any existing merge conflicts before checkout
+        log_action(f"Cleaning up workspace before checkout PR #{pr_number}")
 
-        # Try to check out the branch
-        # First, try to check out if it exists
+        # Abort any ongoing merge
+        abort_result = cmd.run_command(["git", "merge", "--abort"])
+        # Ignore errors - there might not be a merge in progress
+
+        # Reset any staged/unstaged changes
+        reset_result = cmd.run_command(["git", "reset", "--hard", "HEAD"])
+        if not reset_result.success:
+            log_action(f"Warning: git reset failed for PR #{pr_number}", False, reset_result.stderr)
+
+        # Clean untracked files and directories
+        clean_result = cmd.run_command(["git", "clean", "-fd"])
+        if not clean_result.success:
+            log_action(f"Warning: git clean failed for PR #{pr_number}", False, clean_result.stderr)
+
+        # Fetch the PR branch directly
+        fetch_result = cmd.run_command(["git", "fetch", "origin", f"{branch_name}:{branch_name}"])
+        if not fetch_result.success:
+            # Try fetching from pull request ref
+            fetch_result = cmd.run_command(["git", "fetch", "origin", f"pull/{pr_number}/head"])
+            if not fetch_result.success:
+                log_action(f"Failed to fetch PR #{pr_number} branch", False, fetch_result.stderr)
+                return False
+
+        # Checkout the branch
         checkout_result = cmd.run_command(["git", "checkout", branch_name])
         if not checkout_result.success:
-            # Branch doesn't exist locally, create it
-            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name])
+            # If branch doesn't exist locally, checkout from fetched ref
+            checkout_result = cmd.run_command(["git", "checkout", "-b", branch_name, "FETCH_HEAD"])
 
             if not checkout_result.success:
                 log_action(
-                    f"Failed to create branch '{branch_name}' for PR #{pr_number}",
+                    f"Failed to checkout branch '{branch_name}' for PR #{pr_number}",
                     False,
                     checkout_result.stderr,
                 )
                 return False
-
-        # Now the branch is checked out, reset it to match the fetched commit
-        reset_result = cmd.run_command(["git", "reset", "--hard", f"refs/remotes/origin/pull/{pr_number}/head"])
-        if not reset_result.success:
-            log_action(
-                f"Failed to reset branch '{branch_name}' to PR head",
-                False,
-                reset_result.stderr,
-            )
-            return False
-
-        # Push the branch to set up tracking
-        push_result = cmd.run_command(["git", "push", "-u", "origin", branch_name])
-        if not push_result.success:
-            log_action(f"Failed to push branch '{branch_name}'", False, push_result.stderr)
-            # Don't fail the entire operation for push issues
 
         log_action(f"Successfully manually checked out PR #{pr_number}")
         return True
