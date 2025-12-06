@@ -179,7 +179,7 @@ class LLMBackendConfiguration:
     def _load_from_data(cls, data: Dict[str, Any], config_path: Optional[str] = None) -> "LLMBackendConfiguration":
         # Parse general backend settings
         backend_order = data.get("backend", {}).get("order", [])
-        
+
         # Determine default backend from order (first item), fallback to "codex"
         if backend_order:
             default_backend = backend_order[0]
@@ -292,12 +292,12 @@ class LLMBackendConfiguration:
         # Parse backend for non-editing operations settings
         # Try new key first, then fall back to old key for backward compatibility
         backend_for_noedit_order = data.get("backend_for_noedit", {}).get("order", [])
-        
+
         # Determine default for noedit
         backend_for_noedit_default = None
         if backend_for_noedit_order:
             backend_for_noedit_default = backend_for_noedit_order[0]
-        
+
         # Backward compatibility: check old key if new key not found
         if not backend_for_noedit_order:
             old_order = data.get("message_backend", {}).get("order", [])
@@ -307,7 +307,7 @@ class LLMBackendConfiguration:
                 backend_for_noedit_order = old_order
                 if backend_for_noedit_order:
                     backend_for_noedit_default = backend_for_noedit_order[0]
-        
+
         # If no specific default for noedit, fallback to general default
         if not backend_for_noedit_default:
             backend_for_noedit_default = default_backend
@@ -316,11 +316,11 @@ class LLMBackendConfiguration:
         backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
         backend_for_failed_pr = None
         backend_for_failed_pr_order = []
-        
+
         if backend_for_failed_pr_data:
             # Check for order
             backend_for_failed_pr_order = backend_for_failed_pr_data.get("order", [])
-            
+
             # Use "backend_for_failed_pr" as default name if not specified in data
             # Only parse as a backend config if it has backend-like fields or if order is empty
             # If it has order, it might still have backend fields, but we prioritize order for the manager
@@ -329,14 +329,14 @@ class LLMBackendConfiguration:
             backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
 
         config = cls(
-            backend_order=backend_order, 
-            default_backend=default_backend, 
-            backends=backends, 
-            backend_for_noedit_order=backend_for_noedit_order, 
-            backend_for_noedit_default=backend_for_noedit_default, 
-            backend_for_failed_pr=backend_for_failed_pr, 
+            backend_order=backend_order,
+            default_backend=default_backend,
+            backends=backends,
+            backend_for_noedit_order=backend_for_noedit_order,
+            backend_for_noedit_default=backend_for_noedit_default,
+            backend_for_failed_pr=backend_for_failed_pr,
             backend_for_failed_pr_order=backend_for_failed_pr_order,
-            config_file_path=config_path
+            config_file_path=config_path,
         )
 
         return config
