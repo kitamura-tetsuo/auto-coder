@@ -47,47 +47,47 @@ class CodexClient(LLMClientBase):
 
         # If backend_name is provided, get config from that backend
         if backend_name:
-            config_backend = config.get_backend_config(backend_name)
+            self.config_backend = config.get_backend_config(backend_name)
             # Use backend config model, fall back to default "codex"
-            self.model_name = (config_backend and config_backend.model) or "codex"
+            self.model_name = (self.config_backend and self.config_backend.model) or "codex"
             # Use options_for_noedit if use_noedit_options is True
-            if use_noedit_options and config_backend and config_backend.options_for_noedit:
-                self.options = config_backend.options_for_noedit
+            if use_noedit_options and self.config_backend and self.config_backend.options_for_noedit:
+                self.options = self.config_backend.options_for_noedit
             else:
-                self.options = (config_backend and config_backend.options) or []
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
-            self.api_key = api_key or (config_backend and config_backend.api_key)
-            self.base_url = base_url or (config_backend and config_backend.base_url)
-            self.openai_api_key = openai_api_key or (config_backend and config_backend.openai_api_key)
-            self.openai_base_url = openai_base_url or (config_backend and config_backend.openai_base_url)
-            self.model_provider = config_backend and config_backend.model_provider
+                self.options = (self.config_backend and self.config_backend.options) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
+            self.api_key = api_key or (self.config_backend and self.config_backend.api_key)
+            self.base_url = base_url or (self.config_backend and self.config_backend.base_url)
+            self.openai_api_key = openai_api_key or (self.config_backend and self.config_backend.openai_api_key)
+            self.openai_base_url = openai_base_url or (self.config_backend and self.config_backend.openai_base_url)
+            self.model_provider = self.config_backend and self.config_backend.model_provider
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
         else:
             # Fall back to default codex config
-            config_backend = config.get_backend_config("codex")
-            self.model_name = (config_backend and config_backend.model) or "codex"
+            self.config_backend = config.get_backend_config("codex")
+            self.model_name = (self.config_backend and self.config_backend.model) or "codex"
             # Use options_for_noedit if use_noedit_options is True
-            if use_noedit_options and config_backend and config_backend.options_for_noedit:
-                self.options = config_backend.options_for_noedit
+            if use_noedit_options and self.config_backend and self.config_backend.options_for_noedit:
+                self.options = self.config_backend.options_for_noedit
             else:
-                self.options = (config_backend and config_backend.options) or []
-            self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+                self.options = (self.config_backend and self.config_backend.options) or []
+            self.options_for_noedit = (self.config_backend and self.config_backend.options_for_noedit) or []
             self.api_key = api_key
             self.base_url = base_url
             self.openai_api_key = openai_api_key
             self.openai_base_url = openai_base_url
             self.model_provider = None
             # Store usage_markers from config
-            self.usage_markers = (config_backend and config_backend.usage_markers) or []
+            self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
 
         self.default_model = self.model_name
         self.conflict_model = self.model_name
         self.timeout = None
 
         # Validate required options for this backend
-        if config_backend:
-            required_errors = config_backend.validate_required_options()
+        if self.config_backend:
+            required_errors = self.config_backend.validate_required_options()
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)
@@ -124,24 +124,23 @@ class CodexClient(LLMClientBase):
 
         try:
             escaped_prompt = self._escape_prompt(prompt)
-            cmd = [
-                "codex",
-                "exec",
-            ]
+            cmd = ["codex"]
+
+            # Get processed options with placeholders replaced
+            # Use options_for_noedit for no-edit operations if available
+            if self.config_backend:
+                processed_options = self.config_backend.replace_placeholders(model_name=self.model_name, session_id=None)
+                if is_noedit and self.options_for_noedit:
+                    options_to_use = processed_options["options_for_noedit"]
+                else:
+                    options_to_use = processed_options["options"]
+            else:
+                # Fallback if config_backend is not available
+                options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
 
             # Add configured options from config
-            # Use options_for_noedit for no-edit operations if available
-            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
             if options_to_use:
                 cmd.extend(options_to_use)
-
-            # Add --model flag if model_name is specified
-            if self.model_name:
-                cmd.extend(["--model", self.model_name])
-
-            # Add model_provider as -c flag if specified
-            if self.model_provider:
-                cmd.extend(["-c", f"model_provider={self.model_provider}"])
 
             # Append any one-time extra arguments (e.g., resume flags)
             extra_args = self.consume_extra_args()

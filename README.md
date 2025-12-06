@@ -673,7 +673,9 @@ openai_base_url = "https://openrouter.ai/api/v1"
 
 Supported `backend_type` values: `codex`, `codex-mcp`, `gemini`, `qwen`, `auggie`, `claude`
 
-For detailed configuration examples and troubleshooting, including the new fallback backend feature, see [Configuration Guide](docs/configuration.md).
+For detailed configuration examples and troubleshooting, including the new fallback backend feature, see:
+- [Configuration Guide](docs/configuration.md) - General configuration overview
+- [Configuration File Format Guide](docs/configuration_guide.md) - Detailed guide on configuration file format and placeholder system
 
 #### Configuring Model Provider
 

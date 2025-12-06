@@ -369,6 +369,17 @@ class TestClaudeClient:
         mock_config = MagicMock()
         mock_backend = MagicMock()
         mock_backend.model = "sonnet"
+        mock_backend.settings = None
+        mock_backend.options = ["--print", "--model", "[model_name]"]
+        mock_backend.options_for_noedit = []
+        mock_backend.options_for_resume = []
+
+        # Mock replace_placeholders to return basic options
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--print", "--model", "sonnet"],
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -387,10 +398,20 @@ class TestClaudeClient:
         # Run LLM
         client._run_llm_cli("test prompt")
 
+        # Check that replace_placeholders was called
+        mock_backend.replace_placeholders.assert_called_once_with(model_name="sonnet", settings=None)
+
         # Check that extra args were used in command
         called_cmd = mock_cmd_exec.call_args[0][0]
-        assert "--resume" in called_cmd
-        assert "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in called_cmd
+        assert called_cmd == [
+            "claude",
+            "--print",
+            "--model",
+            "sonnet",
+            "--resume",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "test prompt",
+        ]
 
         # Check that extra args were cleared
         assert client._extra_args == []
@@ -406,6 +427,17 @@ class TestClaudeClient:
         mock_config = MagicMock()
         mock_backend = MagicMock()
         mock_backend.model = "sonnet"
+        mock_backend.settings = None
+        mock_backend.options = ["--print", "--model", "[model_name]"]
+        mock_backend.options_for_noedit = []
+        mock_backend.options_for_resume = []
+
+        # Mock replace_placeholders to return basic options
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--print", "--model", "sonnet"],
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -477,8 +509,29 @@ class TestClaudeClient:
         mock_config = MagicMock()
         mock_backend = MagicMock()
         mock_backend.model = "sonnet"
-        mock_backend.options = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
-        mock_backend.options_for_noedit = ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]
+        mock_backend.settings = None
+        mock_backend.options = [
+            "--print",
+            "--model",
+            "[model_name]",
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+        ]
+        mock_backend.options_for_noedit = []
+        mock_backend.options_for_resume = []
+
+        # Mock what replace_placeholders is expected to return
+        mock_backend.replace_placeholders.return_value = {
+            "options": [
+                "--print",
+                "--model",
+                "sonnet",
+                "--dangerously-skip-permissions",
+                "--allow-dangerously-skip-permissions",
+            ],
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
         mock_config.get_backend_config.return_value = mock_backend
         mock_get_config.return_value = mock_config
 
@@ -494,12 +547,112 @@ class TestClaudeClient:
         # Run LLM
         client._run_llm_cli("test prompt")
 
+        # Check that replace_placeholders was called with correct parameters
+        mock_backend.replace_placeholders.assert_called_once_with(model_name="sonnet", settings=None)
+
         # Check that configured options were used in command
         called_cmd = mock_cmd_exec.call_args[0][0]
-        assert "--dangerously-skip-permissions" in called_cmd
-        assert "--allow-dangerously-skip-permissions" in called_cmd
+        assert called_cmd == [
+            "claude",
+            "--print",
+            "--model",
+            "sonnet",
+            "--dangerously-skip-permissions",
+            "--allow-dangerously-skip-permissions",
+            "test prompt",
+        ]
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_settings_placeholder_replaced_in_options(self, mock_cmd_exec, mock_run, mock_get_config):
+        """ClaudeClient should replace [settings] placeholder with actual settings path."""
+        mock_run.return_value.returncode = 0
+
+        settings_path = "/home/user/.config/claude/settings.json"
+
+        # Mock config with options containing [settings] placeholder
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.settings = settings_path
+        mock_backend.options = ["--print", "--model", "[model_name]", "--settings", "[settings]"]
+        mock_backend.options_for_noedit = []
+        mock_backend.options_for_resume = []
+
+        # Mock what replace_placeholders is expected to return
+        mock_backend.replace_placeholders.return_value = {
+            "options": ["--print", "--model", "sonnet", "--settings", settings_path],
+            "options_for_noedit": [],
+            "options_for_resume": [],
+        }
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Mock command executor
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+
+        # Run LLM
+        client._run_llm_cli("test prompt")
+
+        # Check that replace_placeholders was called with settings parameter
+        mock_backend.replace_placeholders.assert_called_once_with(model_name="sonnet", settings=settings_path)
+
+        # Check that settings path was used in command
+        called_cmd = mock_cmd_exec.call_args[0][0]
+        assert called_cmd == [
+            "claude",
+            "--print",
+            "--model",
+            "sonnet",
+            "--settings",
+            settings_path,
+            "test prompt",
+        ]
+
+    @patch("src.auto_coder.claude_client.get_llm_config")
+    @patch("subprocess.run")
+    @patch("src.auto_coder.claude_client.CommandExecutor.run_command")
+    def test_options_for_noedit_used_in_run_llm_cli(self, mock_cmd_exec, mock_run, mock_get_config):
+        """ClaudeClient should use options_for_noedit when is_noedit=True."""
+        mock_run.return_value.returncode = 0
+
+        # Mock config with different options_for_noedit
+        mock_config = MagicMock()
+        mock_backend = MagicMock()
+        mock_backend.model = "sonnet"
+        mock_backend.options = ["--print", "--model", "sonnet", "--dangerously-skip-permissions"]
+        mock_backend.options_for_noedit = ["--print", "--model", "sonnet"]
+        # Mock replace_placeholders to return different options_for_noedit
+        mock_backend.replace_placeholders.return_value = {"options": ["--print", "--model", "sonnet", "--dangerously-skip-permissions"], "options_for_noedit": ["--print", "--model", "sonnet"], "options_for_resume": []}
+        mock_config.get_backend_config.return_value = mock_backend
+        mock_get_config.return_value = mock_config
+
+        # Mock command executor
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "Test output"
+        mock_result.stderr = ""
+        mock_cmd_exec.return_value = mock_result
+
+        client = ClaudeClient()
+
+        # Run LLM with is_noedit=True
+        client._run_llm_cli("test prompt", is_noedit=True)
+
+        # Check that options_for_noedit was used (not general options)
+        called_cmd = mock_cmd_exec.call_args[0][0]
+        assert "--print" in called_cmd
         assert "--model" in called_cmd
         assert "sonnet" in called_cmd
+        # The --dangerously-skip-permissions option should NOT be in the command for noedit
+        assert "--dangerously-skip-permissions" not in called_cmd
 
 
 class TestClaudeClientSessionExtraction:

@@ -38,7 +38,7 @@ class TestCodexClient:
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
     def test_run_exec_success(self, mock_run_command, mock_run):
-        """codex exec should stream and aggregate output successfully."""
+        """codex should stream and aggregate output successfully."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "line1\nline2\n", "", 0)
 
@@ -338,8 +338,8 @@ class TestCodexClient:
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_model_flag_passed_to_cli(self, mock_run_command, mock_run):
-        """CodexClient should pass --model flag to codex exec when model_name is specified."""
+    def test_config_options_passed_to_cli(self, mock_run_command, mock_run):
+        """CodexClient should pass configured options to codex CLI."""
         mock_run.return_value.returncode = 0
         mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
 
@@ -361,42 +361,12 @@ class TestCodexClient:
             assert mock_run_command.called
             cmd = mock_run_command.call_args[0][0]
 
-            # Verify --model flag is in the command
-            assert "--model" in cmd
-            model_index = cmd.index("--model")
-            assert cmd[model_index + 1] == "custom-model"
+            # Verify command structure
+            assert cmd[0] == "codex"
+            assert "test prompt" in cmd
 
-        # Verify command structure
-        assert cmd[0] == "codex"
-        assert cmd[1] == "exec"
-        assert "test prompt" in cmd
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_model_flag_not_passed_when_model_name_is_none(self, mock_run_command, mock_run):
-        """CodexClient should not pass --model flag when model_name is None."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
-
-        # Create client with model_name=None via config
-        with patch("src.auto_coder.codex_client.get_llm_config") as mock_config:
-            mock_backend = MagicMock()
-            mock_backend.model = None
-            mock_config.return_value.get_backend_config.return_value = mock_backend
-
-            client = CodexClient()
-            # Force model_name to None (it defaults to "codex" in init if config is None)
-            client.model_name = None
-
-            # Execute the method
-            output = client._run_llm_cli("test prompt")
-
-            # Verify CommandExecutor.run_command was called
-            assert mock_run_command.called
-            cmd = mock_run_command.call_args[0][0]
-
-            # Verify --model flag is NOT in the command
-            assert "--model" not in cmd
+        # Verify command does not contain "exec" subcommand
+        assert "exec" not in cmd
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -468,107 +438,6 @@ class TestCodexClient:
         assert client.base_url == "https://test.example.com"
 
     @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_custom_model_like_grok_passed_to_cli(self, mock_run_command, mock_run):
-        """CodexClient should pass custom models like 'grok-4.1-fast' to codex CLI.
-
-        This test verifies the fix for issue #672 where configured models
-        were allegedly not being passed to the underlying codex CLI.
-        """
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
-
-        # Simulate a user configuring a custom model like in the example config:
-        # [my-openrouter-model]
-        # model = "open-router/grok-4.1-fast"
-        # backend_type = "codex"
-
-        # Mock config to return specific model
-        from unittest.mock import MagicMock
-
-        mock_config = MagicMock()
-        mock_backend_config = MagicMock()
-        mock_backend_config.model = "open-router/grok-4.1-fast"
-        mock_backend_config.api_key = None
-        mock_backend_config.base_url = None
-        mock_backend_config.openai_api_key = "sk-or-v1-test-key"
-        mock_backend_config.openai_base_url = "https://openrouter.ai/api/v1"
-        mock_config.get_backend_config.return_value = mock_backend_config
-
-        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
-            client = CodexClient(
-                backend_name="my-openrouter-model",
-                openai_api_key="sk-or-v1-test-key",
-                openai_base_url="https://openrouter.ai/api/v1",
-            )
-
-        # Verify model is set correctly
-        assert client.model_name == "open-router/grok-4.1-fast"
-
-        # Execute a command
-        output = client._run_llm_cli("test prompt")
-
-        # Verify CommandExecutor.run_command was called
-        assert mock_run_command.called
-        cmd = mock_run_command.call_args[0][0]
-
-        # Verify --model flag is in the command with the custom model
-        assert "--model" in cmd
-        model_index = cmd.index("--model")
-        assert cmd[model_index + 1] == "open-router/grok-4.1-fast"
-
-        # Verify environment variables are set
-        call_kwargs = mock_run_command.call_args[1]
-        assert "env" in call_kwargs
-        env = call_kwargs["env"]
-        assert env["OPENAI_API_KEY"] == "sk-or-v1-test-key"
-        assert env["OPENAI_BASE_URL"] == "https://openrouter.ai/api/v1"
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_minimax_model_passed_to_cli(self, mock_run_command, mock_run):
-        """CodexClient should pass MiniMax models to codex CLI.
-
-        This test verifies another model mentioned in issue #672.
-        """
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
-
-        # Simulate MiniMax-M2 model configuration
-
-        # Mock config to return specific model
-        from unittest.mock import MagicMock
-
-        mock_config = MagicMock()
-        mock_backend_config = MagicMock()
-        mock_backend_config.model = "MiniMax-M2"
-        mock_backend_config.api_key = None
-        mock_backend_config.base_url = None
-        mock_backend_config.openai_api_key = "test-key"
-        mock_backend_config.openai_base_url = "https://api.minimax.com/v1"
-        mock_config.get_backend_config.return_value = mock_backend_config
-
-        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
-            client = CodexClient(
-                backend_name="my-minimax",
-                openai_api_key="test-key",
-                openai_base_url="https://api.minimax.com/v1",
-            )
-
-        # Verify model is set correctly
-        assert client.model_name == "MiniMax-M2"
-
-        # Execute a command
-        output = client._run_llm_cli("test prompt")
-
-        # Verify --model flag is passed with the correct model
-        assert mock_run_command.called
-        cmd = mock_run_command.call_args[0][0]
-        assert "--model" in cmd
-        model_index = cmd.index("--model")
-        assert cmd[model_index + 1] == "MiniMax-M2"
-
-    @patch("subprocess.run")
     def test_init_with_model_provider(self, mock_run):
         """CodexClient should store model_provider from backend config."""
         from unittest.mock import MagicMock
@@ -598,105 +467,6 @@ class TestCodexClient:
         # Create client without backend_name
         client = CodexClient()
         assert client.model_provider is None
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_model_provider_passed_to_cli(self, mock_run_command, mock_run):
-        """CodexClient should pass model_provider as -c flag when specified."""
-        from unittest.mock import MagicMock
-
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
-
-        # Mock the config with model_provider
-        mock_config = MagicMock()
-        mock_backend_config = MagicMock()
-        mock_backend_config.model = "test-model"
-        mock_backend_config.model_provider = "anthropic"
-        mock_backend_config.api_key = None
-        mock_backend_config.base_url = None
-        mock_backend_config.openai_api_key = None
-        mock_backend_config.openai_base_url = None
-        mock_config.get_backend_config.return_value = mock_backend_config
-
-        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
-            client = CodexClient(backend_name="test-backend")
-
-            # Execute the method
-            output = client._run_llm_cli("test prompt")
-
-            # Verify CommandExecutor.run_command was called
-            assert mock_run_command.called
-            cmd = mock_run_command.call_args[0][0]
-
-            # Verify -c flag with model_provider is in the command
-            assert "-c" in cmd
-            c_index = cmd.index("-c")
-            assert cmd[c_index + 1] == "model_provider=anthropic"
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_model_provider_not_passed_when_none(self, mock_run_command, mock_run):
-        """CodexClient should not pass -c flag when model_provider is None."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
-
-        client = CodexClient()
-        client.model_provider = None
-
-        # Execute the method
-        output = client._run_llm_cli("test prompt")
-
-        # Verify CommandExecutor.run_command was called
-        assert mock_run_command.called
-        cmd = mock_run_command.call_args[0][0]
-
-        # Verify -c flag is NOT in the command
-        # Note: There might be other -c flags, but model_provider should not be there
-        cmd_str = " ".join(cmd)
-        assert "model_provider=" not in cmd_str
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
-    def test_model_and_model_provider_both_passed(self, mock_run_command, mock_run):
-        """CodexClient should pass both --model and -c model_provider when both are specified."""
-        from unittest.mock import MagicMock
-
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
-
-        # Mock the config with both model and model_provider
-        mock_config = MagicMock()
-        mock_backend_config = MagicMock()
-        mock_backend_config.model = "grok-4.1-fast"
-        mock_backend_config.model_provider = "openrouter"
-        mock_backend_config.api_key = None
-        mock_backend_config.base_url = None
-        mock_backend_config.openai_api_key = None
-        mock_backend_config.openai_base_url = None
-        mock_config.get_backend_config.return_value = mock_backend_config
-
-        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
-            client = CodexClient(backend_name="test-backend")
-
-            # Execute the method
-            output = client._run_llm_cli("test prompt")
-
-            # Verify CommandExecutor.run_command was called
-            assert mock_run_command.called
-            cmd = mock_run_command.call_args[0][0]
-
-            # Verify both --model and -c flags are in the command
-            assert "--model" in cmd
-            model_index = cmd.index("--model")
-            assert cmd[model_index + 1] == "grok-4.1-fast"
-
-            assert "-c" in cmd
-            c_index = cmd.index("-c")
-            assert cmd[c_index + 1] == "model_provider=openrouter"
-
-            # Verify the order: --model comes before -c
-            assert model_index < c_index
 
     @patch("subprocess.run")
     def test_init_with_options(self, mock_run):
@@ -776,6 +546,8 @@ class TestCodexClient:
         mock_backend_config.base_url = None
         mock_backend_config.openai_api_key = None
         mock_backend_config.openai_base_url = None
+        # Mock replace_placeholders to return the options
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--dangerously-bypass-approvals-and-sandbox", "--custom-flag"], "options_for_noedit": [], "options_for_resume": []}
         mock_config.get_backend_config.return_value = mock_backend_config
 
         with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
@@ -812,9 +584,8 @@ class TestCodexClient:
 
         # Verify command structure is correct (no extra elements)
         assert cmd[0] == "codex"
-        assert cmd[1] == "exec"
-        # Next should be either --model or the prompt, not an option
-        assert cmd[2] == "--model" or isinstance(cmd[2], str)
+        # Next should be either an option or the prompt
+        assert cmd[-1] == "test prompt"
 
     @patch("subprocess.run")
     @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
@@ -829,12 +600,13 @@ class TestCodexClient:
         mock_config = MagicMock()
         mock_backend_config = MagicMock()
         mock_backend_config.model = "custom-model"
-        mock_backend_config.options = ["--dangerously-bypass-approvals-and-sandbox"]
-        mock_backend_config.model_provider = "openrouter"
+        mock_backend_config.options = ["--dangerously-bypass-approvals-and-sandbox", "--model", "custom-model"]
         mock_backend_config.api_key = None
         mock_backend_config.base_url = None
         mock_backend_config.openai_api_key = None
         mock_backend_config.openai_base_url = None
+        # Mock replace_placeholders to return the options
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--dangerously-bypass-approvals-and-sandbox", "--model", "custom-model"], "options_for_noedit": [], "options_for_resume": []}
         mock_config.get_backend_config.return_value = mock_backend_config
 
         with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
@@ -847,12 +619,155 @@ class TestCodexClient:
             assert mock_run_command.called
             cmd = mock_run_command.call_args[0][0]
 
-            # Verify command order: base cmd -> options -> model -> model_provider -> extra args -> prompt
-            options_index = cmd.index("--dangerously-bypass-approvals-and-sandbox")
-            model_index = cmd.index("--model")
-            model_provider_index = cmd.index("-c")
+            # Verify command structure: codex -> options -> prompt
+            assert cmd[0] == "codex"
+            # Options should be in the middle
+            assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+            # Prompt should be at the end
+            assert cmd[-1] == "test prompt"
+            # Command should not contain "exec"
+            assert "exec" not in cmd
 
-            # Options should come before --model
-            assert options_index < model_index
-            # --model should come before -c (model_provider)
-            assert model_index < model_provider_index
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_placeholder_replacement_with_model_name(self, mock_run_command, mock_run):
+        """CodexClient should replace [model_name] placeholders in options."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config with placeholders
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "gpt-5.1-codex-max"
+        mock_backend_config.options = ["--model", "[model_name]", "--json"]
+        mock_backend_config.options_for_noedit = ["--model", "[model_name]"]
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        # Mock replace_placeholders to replace placeholders
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--model", "gpt-5.1-codex-max", "--json"], "options_for_noedit": ["--model", "gpt-5.1-codex-max"], "options_for_resume": []}
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify placeholders were replaced
+            assert "gpt-5.1-codex-max" in cmd
+            assert "[model_name]" not in " ".join(cmd)
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_placeholder_replacement_in_noedit_options(self, mock_run_command, mock_run):
+        """CodexClient should replace placeholders in options_for_noedit."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config with placeholders
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "gpt-5.1-codex-max"
+        mock_backend_config.options = ["--dangerously-bypass-approvals-and-sandbox"]
+        mock_backend_config.options_for_noedit = ["--model", "[model_name]", "--json"]
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        # Mock replace_placeholders to replace placeholders
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--dangerously-bypass-approvals-and-sandbox"], "options_for_noedit": ["--model", "gpt-5.1-codex-max", "--json"], "options_for_resume": []}
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+
+            # Execute the method with is_noedit=True
+            output = client._run_llm_cli("test prompt", is_noedit=True)
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify placeholders in noedit options were replaced
+            assert "gpt-5.1-codex-max" in cmd
+            assert "[model_name]" not in " ".join(cmd)
+            # Should use noedit options, not regular options
+            assert "--json" in cmd
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_no_placeholder_replacement_when_no_config_backend(self, mock_run_command, mock_run):
+        """CodexClient should handle missing config_backend gracefully."""
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Create client with no config_backend
+        client = CodexClient()
+        client.config_backend = None
+        client.options = ["--json", "--dangerously-bypass-approvals-and-sandbox"]
+
+        # Execute the method
+        output = client._run_llm_cli("test prompt")
+
+        # Verify CommandExecutor.run_command was called
+        assert mock_run_command.called
+        cmd = mock_run_command.call_args[0][0]
+
+        # Verify command structure is correct
+        assert cmd[0] == "codex"
+        assert "--json" in cmd
+        assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+        assert cmd[-1] == "test prompt"
+
+    @patch("subprocess.run")
+    @patch("src.auto_coder.codex_client.CommandExecutor.run_command")
+    def test_all_options_from_config_no_hardcoded_flags(self, mock_run_command, mock_run):
+        """CodexClient should use only config-based options without hardcoded flags."""
+        from unittest.mock import MagicMock
+
+        mock_run.return_value.returncode = 0
+        mock_run_command.return_value = CommandResult(True, "test output\n", "", 0)
+
+        # Mock config with complete options
+        mock_config = MagicMock()
+        mock_backend_config = MagicMock()
+        mock_backend_config.model = "custom-model"
+        mock_backend_config.model_provider = "openrouter"
+        mock_backend_config.options = ["--model", "custom-model", "-c", "model_provider=openrouter", "--json", "--dangerously-bypass-approvals-and-sandbox"]
+        mock_backend_config.api_key = None
+        mock_backend_config.base_url = None
+        mock_backend_config.openai_api_key = None
+        mock_backend_config.openai_base_url = None
+        # Mock replace_placeholders to return the options
+        mock_backend_config.replace_placeholders.return_value = {"options": ["--model", "custom-model", "-c", "model_provider=openrouter", "--json", "--dangerously-bypass-approvals-and-sandbox"], "options_for_noedit": [], "options_for_resume": []}
+        mock_config.get_backend_config.return_value = mock_backend_config
+
+        with patch("src.auto_coder.codex_client.get_llm_config", return_value=mock_config):
+            client = CodexClient(backend_name="codex")
+
+            # Execute the method
+            output = client._run_llm_cli("test prompt")
+
+            # Verify CommandExecutor.run_command was called
+            assert mock_run_command.called
+            cmd = mock_run_command.call_args[0][0]
+
+            # Verify command structure
+            assert cmd[0] == "codex"
+            # All options should come from config (including model and model_provider)
+            assert "custom-model" in cmd
+            assert "model_provider=openrouter" in cmd
+            assert "--json" in cmd
+            assert "--dangerously-bypass-approvals-and-sandbox" in cmd
+            # Command should not contain "exec" subcommand
+            assert "exec" not in cmd

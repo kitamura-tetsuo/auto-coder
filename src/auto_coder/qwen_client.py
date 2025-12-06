@@ -50,8 +50,8 @@ class QwenClient(LLMClientBase):
         """
         super().__init__()
         config = get_llm_config()
-        config_backend = config.get_backend_config(backend_name or "qwen")
-        self.model_name = (config_backend and config_backend.model) or "qwen3-coder-plus"
+        self.config_backend = config.get_backend_config(backend_name or "qwen")
+        self.model_name = (self.config_backend and self.config_backend.model) or "qwen3-coder-plus"
 
         def _as_list(value: Any) -> List[str]:
             if isinstance(value, list):
@@ -60,15 +60,18 @@ class QwenClient(LLMClientBase):
                 return list(value)
             return []
 
-        options_for_noedit = _as_list(getattr(config_backend, "options_for_noedit", None) if config_backend else None)
-        general_options = _as_list(config_backend.options if config_backend else None)
+        options_for_noedit = _as_list(getattr(self.config_backend, "options_for_noedit", None) if self.config_backend else None)
+        general_options = _as_list(self.config_backend.options if self.config_backend else None)
+        # Backwards compatibility: use options_for_noedit if present, otherwise use general options
+        # This maintains the old behavior for existing configs
         self.options = options_for_noedit or general_options
-        self.api_key = config_backend and config_backend.api_key
-        self.base_url = config_backend and config_backend.base_url
-        self.openai_api_key = config_backend and config_backend.openai_api_key
-        self.openai_base_url = config_backend and config_backend.openai_base_url
+        self.options_for_noedit = options_for_noedit
+        self.api_key = self.config_backend and self.config_backend.api_key
+        self.base_url = self.config_backend and self.config_backend.base_url
+        self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
+        self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
         # Store usage_markers from config
-        self.usage_markers = _as_list(getattr(config_backend, "usage_markers", None) if config_backend else None)
+        self.usage_markers = _as_list(getattr(self.config_backend, "usage_markers", None) if self.config_backend else None)
 
         self.default_model = self.model_name
         # Use a faster/cheaper coder variant for conflict resolution when switching
@@ -78,8 +81,8 @@ class QwenClient(LLMClientBase):
         self.preserve_existing_env = preserve_existing_env
 
         # Validate required options for this backend
-        if config_backend:
-            required_errors = config_backend.validate_required_options()
+        if self.config_backend:
+            required_errors = self.config_backend.validate_required_options()
             if required_errors:
                 for error in required_errors:
                     logger.warning(error)
@@ -127,14 +130,14 @@ class QwenClient(LLMClientBase):
         """
         escaped_prompt = self._escape_prompt(prompt)
 
-        # Get model from environment or use default
+        # Get model from environment or use current model
         provider_model = os.environ.get("QWEN_MODEL")
 
         # Always use OAuth path (native Qwen CLI)
         # Note: options_for_noedit is already used in self.options during initialization
-        return self._run_qwen_cli(escaped_prompt, provider_model)
+        return self._run_qwen_cli(escaped_prompt, provider_model, is_noedit)
 
-    def _run_qwen_cli(self, escaped_prompt: str, model: Optional[str]) -> str:
+    def _run_qwen_cli(self, escaped_prompt: str, model: Optional[str], is_noedit: bool = False) -> str:
         """Run qwen CLI for OAuth (no provider credentials)."""
         env = os.environ.copy()
 
@@ -146,35 +149,53 @@ class QwenClient(LLMClientBase):
             env["OPENAI_API_KEY"] = self.openai_api_key
         if self.openai_base_url:
             env["OPENAI_BASE_URL"] = self.openai_base_url
-        model_to_use = model or self.default_model
 
-        if not self.preserve_existing_env:
-            # Reset QWEN_MODEL value before applying overrides
-            env.pop("QWEN_MODEL", None)
-
-        cmd = ["qwen", "-y"]
-
-        # Add custom options from configuration
-        if self.options:
-            cmd.extend(self.options)
-
-        if self.use_env_vars:
-            # Pass credentials via environment variables
-            if model_to_use:
-                env["QWEN_MODEL"] = model_to_use
-            # Model flag for qwen CLI
-            if model_to_use:
-                cmd.extend(["-m", model_to_use])
+        # Get model: use provider_model from env, or self.model_name if not set
+        # If provider_model is provided (from env), use it
+        # Otherwise use current self.model_name (may have been switched)
+        # If that's also not set, fall back to self.default_model
+        if model:
+            model_to_use = model
+        elif self.model_name:
+            model_to_use = self.model_name
         else:
-            # Pass credentials via command-line options
-            if model_to_use:
-                cmd.extend(["-m", model_to_use])
+            model_to_use = self.default_model
+
+        # Pass credentials via environment variables if use_env_vars is True
+        if self.use_env_vars:
+            if not self.preserve_existing_env:
+                # Reset QWEN_MODEL value before applying overrides
+                env.pop("QWEN_MODEL", None)
+            env["QWEN_MODEL"] = model_to_use
+
+        cmd = ["qwen"]
+
+        # Get processed options with placeholders replaced
+        if self.config_backend:
+            processed_options = self.config_backend.replace_placeholders(model_name=model_to_use)
+            # Use options_for_noedit if is_noedit is True, otherwise use general options
+            if is_noedit and processed_options["options_for_noedit"]:
+                options_to_use = processed_options["options_for_noedit"]
+            else:
+                options_to_use = processed_options["options"]
+        else:
+            # Fallback if config_backend is not available
+            options_to_use = self.options
+
+        # Add configured options from config
+        if options_to_use:
+            cmd.extend(options_to_use)
+
+        # Add model flag if model is specified
+        if model_to_use:
+            cmd.extend(["-m", model_to_use])
 
         # Apply any extra arguments (e.g., session resume flags) before the prompt
         extra_args = self.consume_extra_args()
         if extra_args:
             cmd.extend(extra_args)
 
+        # Add prompt flag and prompt
         cmd.extend(["-p", escaped_prompt])
 
         return self._execute_cli(cmd, "qwen", env, model_to_use)

@@ -107,6 +107,203 @@ class TestBackendConfig:
         config1.extra_args["test"] = "value"
         assert "test" not in config2.extra_args
 
+    def test_replace_placeholders_with_model_name(self):
+        """Test replacing [model_name] placeholder."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "[model_name]", "--json"],
+            options_for_noedit=["--model", "[model_name]"],
+            options_for_resume=["--model", "[model_name]", "--resume"],
+        )
+
+        result = config.replace_placeholders(model_name="gpt-5.1-codex-max")
+
+        assert result["options"] == ["--model", "gpt-5.1-codex-max", "--json"]
+        assert result["options_for_noedit"] == ["--model", "gpt-5.1-codex-max"]
+        assert result["options_for_resume"] == ["--model", "gpt-5.1-codex-max", "--resume"]
+
+    def test_replace_placeholders_with_session_id(self):
+        """Test replacing [sessionId] placeholder."""
+        config = BackendConfig(
+            name="codex",
+            options=["--session", "[sessionId]", "--flag"],
+            options_for_noedit=["--session", "[sessionId]"],
+            options_for_resume=["--session", "[sessionId]"],
+        )
+
+        result = config.replace_placeholders(session_id="abc123xyz")
+
+        assert result["options"] == ["--session", "abc123xyz", "--flag"]
+        assert result["options_for_noedit"] == ["--session", "abc123xyz"]
+        assert result["options_for_resume"] == ["--session", "abc123xyz"]
+
+    def test_replace_placeholders_with_both_placeholders(self):
+        """Test replacing both [model_name] and [sessionId] placeholders."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "[model_name]", "--session", "[sessionId]"],
+            options_for_noedit=["--model", "[model_name]"],
+            options_for_resume=["--session", "[sessionId]"],
+        )
+
+        result = config.replace_placeholders(model_name="gpt-5.1-codex-max", session_id="abc123xyz")
+
+        assert result["options"] == ["--model", "gpt-5.1-codex-max", "--session", "abc123xyz"]
+        assert result["options_for_noedit"] == ["--model", "gpt-5.1-codex-max"]
+        assert result["options_for_resume"] == ["--session", "abc123xyz"]
+
+    def test_replace_placeholders_multiple_occurrences(self):
+        """Test replacing multiple occurrences of the same placeholder."""
+        config = BackendConfig(
+            name="codex",
+            options=["[model_name]", "--model", "[model_name]", "--flag"],
+            options_for_noedit=["[model_name]", "[model_name]"],
+        )
+
+        result = config.replace_placeholders(model_name="gpt-5.1-codex-max")
+
+        assert result["options"] == ["gpt-5.1-codex-max", "--model", "gpt-5.1-codex-max", "--flag"]
+        assert result["options_for_noedit"] == ["gpt-5.1-codex-max", "gpt-5.1-codex-max"]
+
+    def test_replace_placeholders_no_placeholders(self):
+        """Test that options without placeholders are returned unchanged."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "gpt-4", "--flag"],
+            options_for_noedit=["--json", "--verbose"],
+            options_for_resume=["--resume"],
+        )
+
+        result = config.replace_placeholders(model_name="gpt-5")
+
+        assert result["options"] == ["--model", "gpt-4", "--flag"]
+        assert result["options_for_noedit"] == ["--json", "--verbose"]
+        assert result["options_for_resume"] == ["--resume"]
+
+    def test_replace_placeholders_empty_option_lists(self):
+        """Test with empty option lists."""
+        config = BackendConfig(name="codex")
+
+        result = config.replace_placeholders(model_name="gpt-5")
+
+        assert result["options"] == []
+        assert result["options_for_noedit"] == []
+        assert result["options_for_resume"] == []
+
+    def test_replace_placeholders_no_parameters(self):
+        """Test when no placeholder values are provided."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "[model_name]", "--flag"],
+            options_for_noedit=["--json"],
+        )
+
+        result = config.replace_placeholders()
+
+        # Without providing model_name, placeholders should remain unchanged
+        assert result["options"] == ["--model", "[model_name]", "--flag"]
+        assert result["options_for_noedit"] == ["--json"]
+        assert result["options_for_resume"] == []
+
+    def test_replace_placeholders_returns_new_lists(self):
+        """Test that replace_placeholders returns new lists, not modifies originals."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "[model_name]"],
+            options_for_noedit=["--json"],
+            options_for_resume=["--resume"],
+        )
+
+        original_options = list(config.options)
+        original_noedit = list(config.options_for_noedit)
+        original_resume = list(config.options_for_resume)
+
+        result = config.replace_placeholders(model_name="gpt-5")
+
+        # Verify the original lists were not modified
+        assert config.options == original_options
+        assert config.options_for_noedit == original_noedit
+        assert config.options_for_resume == original_resume
+
+        # Verify the returned lists are different objects
+        assert result["options"] is not config.options
+        assert result["options_for_noedit"] is not config.options_for_noedit
+        assert result["options_for_resume"] is not config.options_for_resume
+
+        # Verify the returned lists have the expected values
+        assert result["options"] == ["--model", "gpt-5"]
+        assert result["options_for_noedit"] == ["--json"]
+        assert result["options_for_resume"] == ["--resume"]
+
+    def test_replace_placeholders_missing_placeholder(self):
+        """Test that missing placeholder values leave placeholders unchanged."""
+        config = BackendConfig(
+            name="codex",
+            options=["[model_name]", "[sessionId]", "--flag"],
+        )
+
+        # Only provide model_name, sessionId should remain
+        result = config.replace_placeholders(model_name="gpt-5")
+
+        assert result["options"] == ["gpt-5", "[sessionId]", "--flag"]
+        assert result["options_for_noedit"] == []
+        assert result["options_for_resume"] == []
+
+    def test_replace_placeholders_with_none_values(self):
+        """Test with None values for placeholders."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "[model_name]", "--session", "[sessionId]"],
+        )
+
+        result = config.replace_placeholders(model_name=None, session_id=None)
+
+        # With None values, placeholders should remain unchanged
+        assert result["options"] == ["--model", "[model_name]", "--session", "[sessionId]"]
+
+    def test_replace_placeholders_with_empty_string_values(self):
+        """Test with empty string values for placeholders."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "[model_name]", "--flag"],
+            options_for_noedit=["--json", "[sessionId]"],
+        )
+
+        result = config.replace_placeholders(model_name="", session_id="")
+
+        assert result["options"] == ["--model", "", "--flag"]
+        assert result["options_for_noedit"] == ["--json", ""]
+        assert result["options_for_resume"] == []
+
+    def test_replace_placeholders_special_characters_in_values(self):
+        """Test replacing placeholders with values containing special characters."""
+        config = BackendConfig(
+            name="codex",
+            options=["--model", "[model_name]"],
+            options_for_noedit=["--session", "[sessionId]"],
+        )
+
+        result = config.replace_placeholders(model_name="gpt-4.1-pro/model:special", session_id="session-123_abc.xyz")
+
+        assert result["options"] == ["--model", "gpt-4.1-pro/model:special"]
+        assert result["options_for_noedit"] == ["--session", "session-123_abc.xyz"]
+
+    def test_replace_placeholders_real_world_example(self):
+        """Test with a real-world configuration example."""
+        config = BackendConfig(
+            name="codex",
+            model="gpt-5.1-codex-max",
+            options=["--model", "[model_name]", "--json", "--dangerously-bypass-approvals-and-sandbox"],
+            options_for_noedit=["--model", "[model_name]", "--json"],
+            options_for_resume=["--model", "[model_name]"],
+        )
+
+        result = config.replace_placeholders(model_name="gpt-5.1-codex-max", session_id="sess_20241204")
+
+        assert result["options"] == ["--model", "gpt-5.1-codex-max", "--json", "--dangerously-bypass-approvals-and-sandbox"]
+        assert result["options_for_noedit"] == ["--model", "gpt-5.1-codex-max", "--json"]
+        assert result["options_for_resume"] == ["--model", "gpt-5.1-codex-max"]
+
 
 class TestLLMBackendConfiguration:
     """Test cases for LLMBackendConfiguration class."""

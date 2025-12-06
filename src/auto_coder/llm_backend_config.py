@@ -5,7 +5,7 @@ Configuration management for LLM backends using TOML files.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 import toml
@@ -119,6 +119,61 @@ class BackendConfig:
 
         return errors
 
+    def replace_placeholders(
+        self,
+        model_name: Optional[str] = None,
+        session_id: Optional[str] = None,
+        settings: Optional[str] = None,
+    ) -> Dict[str, List[str]]:
+        """Replace placeholders in option lists with provided values.
+
+        Supports placeholders:
+        - [model_name] - replaced with the model_name parameter
+        - [sessionId] - replaced with the session_id parameter
+        - [settings] - replaced with the settings parameter
+
+        Args:
+            model_name: Model name to replace [model_name] placeholders
+            session_id: Session ID to replace [sessionId] placeholders
+            settings: Settings file path to replace [settings] placeholders
+
+        Returns:
+            Dictionary with processed option lists:
+            - 'options': processed options list
+            - 'options_for_noedit': processed options_for_noedit list
+            - 'options_for_resume': processed options_for_resume list
+        """
+        # Create a mapping of placeholders to their values
+        placeholder_map = {}
+        if model_name is not None:
+            placeholder_map["[model_name]"] = model_name
+        if session_id is not None:
+            placeholder_map["[sessionId]"] = session_id
+        if settings is not None:
+            placeholder_map["[settings]"] = settings
+
+        def replace_in_list(option_list: List[str]) -> List[str]:
+            """Replace placeholders in a single option list."""
+            if not placeholder_map:
+                # No placeholders to replace, return a copy of the original list
+                return list(option_list)
+
+            result = []
+            for option in option_list:
+                # Replace all placeholders in this option string
+                replaced_option = option
+                for placeholder, value in placeholder_map.items():
+                    replaced_option = replaced_option.replace(placeholder, value)
+                result.append(replaced_option)
+            return result
+
+        # Process all three option lists
+        return {
+            "options": replace_in_list(self.options),
+            "options_for_noedit": replace_in_list(self.options_for_noedit),
+            "options_for_resume": replace_in_list(self.options_for_resume),
+        }
+
 
 @dataclass
 class LLMBackendConfiguration:
@@ -147,6 +202,13 @@ class LLMBackendConfiguration:
             default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
             for backend_name in default_backends:
                 self.backends[backend_name] = BackendConfig(name=backend_name)
+
+            # Set default options for backends that require them
+            # All backends here are newly created, so set required options for those that need them
+            for backend_name, required_options in REQUIRED_OPTIONS_BY_BACKEND.items():
+                if backend_name in self.backends and required_options:
+                    # Set required options since these backends were just created
+                    self.backends[backend_name].options = list(required_options)
 
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "LLMBackendConfiguration":
@@ -180,8 +242,11 @@ class LLMBackendConfiguration:
         # Parse general backend settings
         backend_order = data.get("backend", {}).get("order", [])
 
-        # Determine default backend from order (first item), fallback to "codex"
-        if backend_order:
+        # Determine default backend from explicit "default" key, then order (first item), then fallback to "codex"
+        backend_config = data.get("backend", {})
+        if "default" in backend_config:
+            default_backend = backend_config["default"]
+        elif backend_order:
             default_backend = backend_order[0]
         else:
             default_backend = "codex"
@@ -224,8 +289,11 @@ class LLMBackendConfiguration:
             )
 
         # 1. Parse explicit [backends] section
+        # Track which backends were explicitly configured
+        explicitly_configured_backends = set()
         for name, config_data in backends_data.items():
             backends[name] = parse_backend_config(name, config_data)
+            explicitly_configured_backends.add(name)
 
         # 2. Parse top-level backend definitions (e.g. [grok-4.1-fast])
         # This handles cases where TOML parses dotted keys as nested dictionaries
@@ -258,6 +326,7 @@ class LLMBackendConfiguration:
                 if is_potential_backend_config(value):
                     if full_key not in backends:
                         backends[full_key] = parse_backend_config(full_key, value)
+                        explicitly_configured_backends.add(full_key)
 
                 # Recurse to find nested backends (e.g. grok-4.1-fast)
                 find_backends_recursive(value, full_key)
@@ -288,6 +357,16 @@ class LLMBackendConfiguration:
         for backend_name in default_backends:
             if backend_name not in backends:
                 backends[backend_name] = BackendConfig(name=backend_name)
+
+        # Set default options for backends that require them
+        # Only add required options to backends that were NOT explicitly configured in the dict
+        # This preserves backward compatibility with old config dicts that don't have options field
+        for backend_name, required_options in REQUIRED_OPTIONS_BY_BACKEND.items():
+            if backend_name in backends and required_options:
+                backend = backends[backend_name]
+                # Only set required options if the backend was NOT explicitly configured
+                if backend_name not in explicitly_configured_backends:
+                    backend.options = list(required_options)
 
         # Parse backend for non-editing operations settings
         # Try new key first, then fall back to old key for backward compatibility
