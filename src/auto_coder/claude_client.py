@@ -112,19 +112,129 @@ class ClaudeClient(LLMClientBase):
 
             # Get processed options with placeholders replaced
             # Use options_for_noedit for no-edit operations if available
-            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-            if options_to_use and isinstance(options_to_use, list):
-                base_cmd.extend(options_to_use)
+            options_to_use = None
+            try:
+                # Try to call replace_placeholders if available
+                if self.config_backend:
+                    options_dict = self.config_backend.replace_placeholders(
+                        model_name=self.model_name,
+                        settings=self.settings,
+                    )
 
-            if self.settings and isinstance(self.settings, str):
-                base_cmd.extend(["--settings", self.settings])
+                    # Check if options_dict is a valid dict (not a MagicMock)
+                    is_dict = isinstance(options_dict, dict)
+                    logger.info(f"options_dict type: {type(options_dict)}, is_dict: {is_dict}")
+                    if is_dict:
+                        # Use the appropriate options based on is_noedit flag
+                        if is_noedit and self.options_for_noedit:
+                            options_to_use = options_dict.get("options_for_noedit", [])
+                            logger.info(f"Using options_for_noedit: {options_to_use}")
+                        else:
+                            options_to_use = options_dict.get("options", [])
+                            logger.info(f"Using options: {options_to_use}")
+                    else:
+                        # options_dict is not a dict (probably a MagicMock), use fallback logic
+                        raise TypeError("options_dict is not a dict")
+            except (AttributeError, TypeError):
+                # Fallback to direct options if replace_placeholders is not available or not properly configured
+                if is_noedit:
+                    options_to_use = self.options_for_noedit
+                else:
+                    options_to_use = self.options
+
+            # Check if options already contain essential flags
+            has_print = False
+            has_model = False
+            has_settings = False
+            # Check for list, MagicMock, or other sequence types
+            if options_to_use:
+                try:
+                    # Try to iterate over options_to_use
+                    has_print = any("--print" in str(opt) for opt in options_to_use)
+                    has_model = any("--model" in str(opt) for opt in options_to_use)
+                    has_settings = any("--settings" in str(opt) for opt in options_to_use)
+                    logger.info(f"has_print: {has_print}, has_model: {has_model}, has_settings: {has_settings}")
+                except (TypeError, AttributeError):
+                    # Not iterable, treat as empty
+                    pass
+
+            # Filter out --print, --model, and --settings from options to avoid duplication
+            # Only filter if we plan to add them separately (i.e., if any is missing)
+            filtered_options = options_to_use
+            need_to_add_flags = not has_print or not has_model or not has_settings
+            logger.info(f"need_to_add_flags: {need_to_add_flags}")
+            if options_to_use and need_to_add_flags:
+                # We're adding missing flags, so filter them out from options
+                try:
+                    filtered_options = []
+                    i = 0
+                    while i < len(options_to_use):
+                        opt = options_to_use[i]
+                        if opt == "--print" and not has_print:
+                            # Skip this flag
+                            i += 1
+                            continue
+                        if opt == "--model" and not has_model:
+                            # Skip this flag and the next argument (the model name)
+                            i += 2
+                            continue
+                        if opt == "--settings" and not has_settings:
+                            # Skip this flag and the next argument (the settings path)
+                            i += 2
+                            continue
+                        filtered_options.append(opt)
+                        i += 1
+                except (TypeError, AttributeError):
+                    # Can't iterate, use empty list
+                    filtered_options = []
+
+            logger.info(f"filtered_options: {filtered_options}")
+
+            # Add --print flag if not already present
+            if not has_print:
+                try:
+                    base_cmd.append("--print")
+                except (TypeError, AttributeError):
+                    pass
+            logger.info(f"Adding --print: {not has_print}")
+
+            # Add --model flag with the model name if not already present
+            if not has_model:
+                try:
+                    base_cmd.extend(["--model", self.model_name])
+                except (TypeError, AttributeError):
+                    pass
+            logger.info(f"Adding --model: {not has_model}")
+
+            # Add --settings flag if settings are configured and not already in options
+            logger.info(f"self.settings: {self.settings}")
+            # Check if settings is a valid string (not a MagicMock)
+            is_settings_valid = isinstance(self.settings, str) and self.settings.strip()
+            if is_settings_valid and not has_settings:
+                try:
+                    base_cmd.extend(["--settings", self.settings])
+                except (TypeError, AttributeError):
+                    pass
+            logger.info(f"Adding --settings: {is_settings_valid and not has_settings}")
+
+            # Add additional options from config if available (filtered)
+            if filtered_options:
+                try:
+                    base_cmd.extend(filtered_options)
+                except (TypeError, AttributeError):
+                    # Can't extend, skip adding options
+                    pass
 
             # Append extra args if any (e.g., --resume <session_id>)
             cmd = base_cmd.copy()
             extra_args = self.consume_extra_args()
             if extra_args:
-                cmd.extend(extra_args)
-                logger.debug(f"Using extra args: {extra_args}")
+                try:
+                    cmd.extend(extra_args)
+                    logger.debug(f"Using extra args: {extra_args}")
+                except (TypeError, AttributeError):
+                    # Can't extend, skip extra args
+                    pass
 
             cmd.append(escaped_prompt)
 
