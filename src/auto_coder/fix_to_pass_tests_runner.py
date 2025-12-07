@@ -509,8 +509,8 @@ def apply_workspace_test_fix(
 
 def fix_to_pass_tests(
     config: AutomationConfig,
+    llm_backend_manager: "BackendManager",
     max_attempts: Optional[int] = None,
-    llm_backend_manager: Optional["BackendManager"] = None,
     message_backend_manager: Optional["BackendManager"] = None,
 ) -> Dict[str, Any]:
     """Run tests and, if failing, repeatedly request LLM fixes until tests pass.
@@ -695,8 +695,7 @@ def fix_to_pass_tests(
             summary["messages"].append(errmsg)
             break
 
-        if llm_backend_manager is not None:
-            llm_backend_manager.switch_to_default_backend()
+        llm_backend_manager.switch_to_default_backend()
         # Ask LLM to craft a clear, concise commit message for the applied change
         commit_msg = generate_commit_message_via_llm(
             llm_backend_manager=llm_backend_manager,
@@ -764,7 +763,7 @@ def fix_to_pass_tests(
 
 
 def generate_commit_message_via_llm(
-    llm_backend_manager: Optional["BackendManager"],
+    llm_backend_manager: "BackendManager",
     message_backend_manager: Optional["BackendManager"] = None,
 ) -> str:
     """Use LLM to generate a concise commit message based on the fix context.
@@ -779,9 +778,6 @@ def generate_commit_message_via_llm(
     try:
         # Use message_backend_manager if available, otherwise fall back to llm_backend_manager
         manager = message_backend_manager if message_backend_manager is not None else llm_backend_manager
-
-        if manager is None:
-            return ""
 
         # Get commit log since branch creation for commit message context
         commit_log = get_commit_log()

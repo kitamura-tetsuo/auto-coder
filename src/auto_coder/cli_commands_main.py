@@ -599,7 +599,11 @@ def fix_to_pass_tests_command(
     engine = AutomationEngine(github_client, config=engine_config)  # type: ignore[arg-type]
 
     try:
-        result = engine.fix_to_pass_tests(max_attempts=max_attempts, message_backend_manager=message_manager)
+        result = engine.fix_to_pass_tests(
+            llm_backend_manager=manager,
+            max_attempts=max_attempts,
+            message_backend_manager=message_manager,
+        )
         if result.get("success"):
             click.echo(f"✅ Tests passed in {result.get('attempts')} attempt(s)")
         else:

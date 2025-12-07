@@ -722,6 +722,7 @@ class AutomationEngine:
 
     def fix_to_pass_tests(
         self,
+        llm_backend_manager: Any,
         max_attempts: Optional[int] = None,
         message_backend_manager: Optional[Any] = None,
     ) -> Dict[str, Any]:
@@ -739,13 +740,20 @@ class AutomationEngine:
                     fix_to_pass_tests_runner_module.apply_workspace_test_fix = apply_override
                 return fix_to_pass_tests(
                     self.config,
+                    llm_backend_manager,
                     max_attempts,
+                    message_backend_manager,
                 )
             finally:
                 fix_to_pass_tests_runner_module.run_local_tests = original_run
                 fix_to_pass_tests_runner_module.apply_workspace_test_fix = original_apply
 
-        return fix_to_pass_tests(self.config, max_attempts)
+        return fix_to_pass_tests(
+            self.config,
+            llm_backend_manager,
+            max_attempts,
+            message_backend_manager,
+        )
 
     def _get_llm_backend_info(self) -> Dict[str, Optional[str]]:
         """Get LLM backend, provider, and model information for telemetry."""
