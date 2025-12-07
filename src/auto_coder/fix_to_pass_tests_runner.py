@@ -614,7 +614,7 @@ def fix_to_pass_tests(
 
         # Baseline (pre-fix) outputs for comparison
         baseline_full_output = f"{test_result.get('errors', '')}\n{test_result.get('output', '')}".strip()
-        baseline_error_summary = extract_important_errors(test_result)
+        baseline_error_summary = extract_important_errors(_to_test_result(test_result))
 
         # Re-run tests AFTER LLM edits to measure change and decide commit
         attempt += 1
@@ -643,7 +643,7 @@ def fix_to_pass_tests(
             logger.warning("Failed to write LLM output log for fix-to-pass-tests", exc_info=True)
 
         post_full_output = f"{post_result.get('errors', '')}\n{post_result.get('output', '')}".strip()
-        post_error_summary = extract_important_errors(post_result)
+        post_error_summary = extract_important_errors(_to_test_result(post_result))
 
         # Update previous context for next loop start
         cleanup_pending = False
