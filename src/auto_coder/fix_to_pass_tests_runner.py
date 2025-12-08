@@ -858,7 +858,12 @@ def extract_important_errors(test_result: TestResult) -> str:
     )
 
     if not full_output:
-        return "Tests failed but no error output available"
+        return prefix + "Tests failed but no error output available"
+
+    # Prepend stability warning if detected
+    prefix = ""
+    if test_result.stability_issue:
+        prefix = f"Test stability issue detected: {test_result.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
 
     lines = full_output.split("\n")
 
@@ -884,7 +889,7 @@ def extract_important_errors(test_result: TestResult) -> str:
                 end = min(len(lines), idx_expect + 60)
                 block_str = "\n".join(lines[start:end])
                 if block_str:
-                    return block_str
+                    return prefix + block_str
         except Exception:
             pass
 
@@ -934,7 +939,7 @@ def extract_important_errors(test_result: TestResult) -> str:
                     result = result + "\n\n--- Expectation Details ---\n" + "\n".join(extra_lines)
             if len(result) > 3000:
                 result = result[:3000] + "\n... (output truncated)"
-            return result
+            return prefix + result
     except Exception:
         pass
 
@@ -1000,7 +1005,7 @@ def extract_important_errors(test_result: TestResult) -> str:
     if len(result) > 2000:
         result = result[:2000] + "\n... (output truncated)"
 
-    return result if result else "Tests failed but no specific error information found"
+    return prefix + (result if result else "Tests failed but no specific error information found")
 
 
 def run_pr_tests(config: AutomationConfig, pr_data: Dict[str, Any]) -> Dict[str, Any]:
