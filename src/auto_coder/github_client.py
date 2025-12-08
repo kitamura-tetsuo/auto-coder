@@ -822,6 +822,24 @@ class GitHubClient:
             logger.error(f"Failed to close PR #{pr_number}: {e}")
             raise
 
+    def add_comment_to_pr(self, repo_name: str, pr_number: int, comment: str) -> None:
+        """Add a comment to a pull request.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            pr_number: PR number to comment on
+            comment: Comment body to add
+        """
+        try:
+            repo = self.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+            pr.create_issue_comment(comment)
+            logger.info(f"Added comment to PR #{pr_number}")
+
+        except GithubException as e:
+            logger.error(f"Failed to add comment to PR #{pr_number}: {e}")
+            raise
+
     def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of all sub-issues for a given issue using GitHub GraphQL API.
 

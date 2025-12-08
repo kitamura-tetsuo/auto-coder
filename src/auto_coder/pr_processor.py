@@ -696,7 +696,7 @@ def _handle_pr_merge(
         if _is_jules_pr(pr_data):
             actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
             # Send error logs to Jules and skip local fixing - let Jules handle it
-            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
             actions.extend(jules_feedback_actions)
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
             return actions
@@ -1307,6 +1307,7 @@ def _send_jules_error_feedback(
     pr_data: Dict[str, Any],
     failed_checks: List[Dict[str, Any]],
     config: AutomationConfig,
+    github_client: Optional[Any] = None,
 ) -> List[str]:
     """Send CI error logs to Jules session for Jules-created PRs.
 
@@ -1315,6 +1316,7 @@ def _send_jules_error_feedback(
         pr_data: PR data dictionary
         failed_checks: List of failed GitHub Actions checks
         config: AutomationConfig instance
+        github_client: Optional GitHub client instance
 
     Returns:
         List of action strings describing what was done
@@ -1354,6 +1356,19 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
 
         actions.append(f"Sent CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
         logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
+
+        # Post a comment on the PR stating that a fix has been requested
+        if github_client:
+            comment_body = f"🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
+            try:
+                github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
+                actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
+            except Exception as e:
+                error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
+                logger.error(error_msg)
+                actions.append(error_msg)
+        else:
+            actions.append(f"Skipped posting comment on PR #{pr_number}: no GitHub client available")
 
     except Exception as e:
         error_msg = f"Error sending Jules error feedback for PR #{pr_number}: {e}"
