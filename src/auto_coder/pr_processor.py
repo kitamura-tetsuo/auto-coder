@@ -708,7 +708,7 @@ def _handle_pr_merge(
         current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
         pr_branch_name = pr_data.get("head", {}).get("ref", "")
         already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
-        
+
         checkout_result = _checkout_pr_branch(repo_name, pr_data, config)
         if not checkout_result:
             actions.append(f"Failed to checkout PR #{pr_number} branch")
@@ -723,13 +723,7 @@ def _handle_pr_merge(
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
                 github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                fix_actions = _fix_pr_issues_with_testing(
-                    repo_name, 
-                    pr_data, 
-                    config, 
-                    github_logs, 
-                    skip_github_actions_fix=already_on_pr_branch
-                )
+                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -779,13 +773,7 @@ def _handle_pr_merge(
                 if failed_checks:
                     # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
                     github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                    fix_actions = _fix_pr_issues_with_testing(
-                        repo_name, 
-                        pr_data, 
-                        config, 
-                        github_logs, 
-                        skip_github_actions_fix=already_on_pr_branch
-                    )
+                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs, skip_github_actions_fix=already_on_pr_branch)
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1054,7 +1042,7 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     Looks for patterns like:
     - Session ID: abc123
     - Session: abc123
-    - Link containing session ID
+    - GitHub PR URL: https://github.com/owner/repo/pull/123
     - URLs with session parameters
 
     Args:
@@ -1066,11 +1054,16 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     if not pr_body:
         return None
 
-    # Pattern 1: Look for "Session ID:" or "Session:" followed by alphanumeric ID
-    session_pattern = r"(?:session\s*id:|session:)\s*([a-zA-Z0-9-_]+)"
+    # Pattern 1: Look for "Session ID:" or "Session:" followed by the session ID
+    # This captures either a simple alphanumeric ID or a URL
+    session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
     match = re.search(session_pattern, pr_body, re.IGNORECASE)
     if match:
         session_id = match.group(1).strip()
+        # If the captured text contains a GitHub PR URL, use that
+        github_url_in_session = re.search(r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+", session_id)
+        if github_url_in_session:
+            session_id = github_url_in_session.group(0)
         logger.debug(f"Found session ID pattern 1: {session_id}")
         return session_id
 
@@ -1083,7 +1076,16 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         logger.debug(f"Found session ID pattern 2: {session_id}")
         return session_id
 
-    # Pattern 3: Look for any alphanumeric string that looks like a session ID
+    # Pattern 3: Look for GitHub PR URLs (e.g., https://github.com/owner/repo/pull/123)
+    # This pattern matches the full URL and extracts it as the session ID
+    github_url_pattern = r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+"
+    match = re.search(github_url_pattern, pr_body)
+    if match:
+        session_id = match.group(0).strip()
+        logger.debug(f"Found session ID pattern 3 (GitHub PR URL): {session_id}")
+        return session_id
+
+    # Pattern 4: Look for any alphanumeric string that looks like a session ID
     # (this is a fallback and should be used carefully)
     # Common session ID formats: starts with letter/number, 8-50 chars
     general_pattern = r"\b([a-zA-Z0-9]{10,50})\b"
@@ -1093,7 +1095,7 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         for potential_id in matches:
             # Skip common words that happen to be 10+ chars
             if potential_id.lower() not in ["repository", "pull request", "github", "auto-coder"]:
-                logger.debug(f"Found session ID pattern 3: {potential_id}")
+                logger.debug(f"Found session ID pattern 4: {potential_id}")
                 return potential_id
 
     logger.debug("No session ID found in PR body")
