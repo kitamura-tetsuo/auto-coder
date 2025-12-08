@@ -314,6 +314,7 @@ class CommandExecutor:
             readers.append(cls._spawn_reader(process.stderr, "stderr", output_queue))
 
         start = time.monotonic()
+        dots_printed = 0
 
         try:
             while True:
@@ -350,8 +351,10 @@ class CommandExecutor:
                                     # Use ANSI escape sequences for TTY
                                     sys.stderr.write("\033[s")  # Save cursor position
                                     sys.stderr.write("\033[1A")  # Move cursor up one line
+                                    sys.stderr.write(f"\033[{dots_printed + 1}G")  # Move to correct column
                                     sys.stderr.write(".")  # Print dot
                                     sys.stderr.write("\033[u")  # Restore cursor position
+                                    dots_printed += 1
                                 else:
                                     # Fallback for non-TTY environments
                                     print(".", end="", file=sys.stderr)
