@@ -1302,6 +1302,60 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         logger.warning(f"Error processing linked issues for PR #{pr_number}: {e}")
 
 
+def _archive_jules_session(repo_name: str, pr_number: int) -> None:
+    """Archive Jules session for Jules-created PRs after successful merge.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_number: PR number that was merged
+    """
+    try:
+        # Get PR data to check if it's a Jules PR and extract session ID
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "user,body"],
+            repo=repo_name,
+            capture_output=True,
+        )
+
+        if not result.success or not result.stdout:  # type: ignore[attr-defined]
+            logger.debug(f"Could not retrieve PR #{pr_number} data for Jules session archiving")
+            return
+
+        pr_data = json.loads(result.stdout)
+        pr_author = pr_data.get("user", {}).get("login", "")
+        pr_body = pr_data.get("body", "")
+
+        # Check if this is a Jules-created PR
+        if pr_author != "google-labs-jules":
+            logger.debug(f"PR #{pr_number} is not created by Jules ({pr_author}), skipping session archiving")
+            return
+
+        # Extract session ID from PR body
+        session_id = _extract_session_id_from_pr_body(pr_body)
+        if not session_id:
+            logger.warning(f"No session ID found in Jules PR #{pr_number} body")
+            return
+
+        # Archive the Jules session
+        try:
+            from .jules_client import JulesClient
+
+            jules_client = JulesClient()
+            success = jules_client.archive_session(session_id)
+
+            if success:
+                logger.info(f"Archived Jules session '{session_id}' for PR #{pr_number}")
+                log_action(f"Archived Jules session for PR #{pr_number}")
+            else:
+                logger.warning(f"Failed to archive Jules session '{session_id}' for PR #{pr_number}")
+        except Exception as e:
+            logger.warning(f"Error archiving Jules session for PR #{pr_number}: {e}")
+
+    except Exception as e:
+        logger.warning(f"Error processing Jules session archiving for PR #{pr_number}: {e}")
+
+
 def _send_jules_error_feedback(
     repo_name: str,
     pr_data: Dict[str, Any],
@@ -1406,6 +1460,7 @@ def _merge_pr(
             if result.success:  # type: ignore[attr-defined]
                 log_action(f"Successfully auto-merged PR #{pr_number}")
                 _close_linked_issues(repo_name, pr_number)
+                _archive_jules_session(repo_name, pr_number)
                 return True
             else:
                 # Log the auto-merge failure but continue with direct merge
@@ -1419,6 +1474,7 @@ def _merge_pr(
         if result.success:  # type: ignore[attr-defined]
             log_action(f"Successfully merged PR #{pr_number}")
             _close_linked_issues(repo_name, pr_number)
+            _archive_jules_session(repo_name, pr_number)
             return True
         else:
             # Check if the failure is due to merge conflicts
@@ -1448,6 +1504,7 @@ def _merge_pr(
                     if retry_result.success:  # type: ignore[attr-defined]
                         log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
                         _close_linked_issues(repo_name, pr_number)
+                        _archive_jules_session(repo_name, pr_number)
                         return True
                     else:
                         # Merge failed even after conflict resolution and polling
@@ -1470,6 +1527,7 @@ def _merge_pr(
                             if alt_result.success:  # type: ignore[attr-defined]
                                 log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
                                 _close_linked_issues(repo_name, pr_number)
+                                _archive_jules_session(repo_name, pr_number)
                                 return True
                         # All merge attempts failed, trigger fallback
                         # Get PR data to extract linked issues

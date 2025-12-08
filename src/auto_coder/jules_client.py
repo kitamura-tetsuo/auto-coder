@@ -212,6 +212,47 @@ class JulesClient(LLMClientBase):
             logger.error(f"Failed to end Jules session {session_id}: {e}")
             return False
 
+    def archive_session(self, session_id: str) -> bool:
+        """Archive a Jules session.
+
+        Args:
+            session_id: The session ID to archive
+
+        Returns:
+            True if session was archived successfully, False otherwise
+        """
+        try:
+            # Prepare the request
+            url = f"{self.base_url}/sessions/{session_id}:archive"
+
+            logger.info(f"Archiving Jules session: {session_id}")
+            logger.info(f"🤖 POST {url}")
+            logger.info("=" * 60)
+
+            response = self.session.post(url, json={}, timeout=self.timeout)
+
+            logger.info("=" * 60)
+
+            # Check if request was successful
+            if response.status_code == 200:
+                # Remove from active sessions
+                if session_id in self.active_sessions:
+                    del self.active_sessions[session_id]
+
+                logger.info(f"Archived Jules session: {session_id}")
+                return True
+            else:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Failed to archive Jules session {session_id}: {error_msg}")
+                return False
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to archive Jules session {session_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to archive Jules session {session_id}: {e}")
+            return False
+
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
         """Run Jules HTTP API with the given prompt and return response.
 
