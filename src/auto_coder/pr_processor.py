@@ -702,6 +702,13 @@ def _handle_pr_merge(
             return actions
 
         # Step 5: Checkout PR branch for non-Jules PRs
+        # Check if we are already on the PR branch before checkout
+        # This is used to determine if we should skip GitHub Actions fixes (assuming resumption of work)
+        current_branch_res = cmd.run_command(["git", "branch", "--show-current"])
+        current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
+        pr_branch_name = pr_data.get("head", {}).get("ref", "")
+        already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
+        
         checkout_result = _checkout_pr_branch(repo_name, pr_data, config)
         if not checkout_result:
             actions.append(f"Failed to checkout PR #{pr_number} branch")
@@ -716,7 +723,13 @@ def _handle_pr_merge(
             # Proceed directly to extracting GitHub Actions logs and attempting fixes
             if failed_checks:
                 github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
+                fix_actions = _fix_pr_issues_with_testing(
+                    repo_name, 
+                    pr_data, 
+                    config, 
+                    github_logs, 
+                    skip_github_actions_fix=already_on_pr_branch
+                )
                 actions.extend(fix_actions)
             else:
                 actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -766,7 +779,13 @@ def _handle_pr_merge(
                 if failed_checks:
                     # Unit test expects _get_github_actions_logs(repo_name, failed_checks)
                     github_logs = _get_github_actions_logs(repo_name, config, failed_checks, pr_data)  # type: ignore[arg-type]
-                    fix_actions = _fix_pr_issues_with_testing(repo_name, pr_data, config, github_logs)
+                    fix_actions = _fix_pr_issues_with_testing(
+                        repo_name, 
+                        pr_data, 
+                        config, 
+                        github_logs, 
+                        skip_github_actions_fix=already_on_pr_branch
+                    )
                     actions.extend(fix_actions)
                 else:
                     actions.append(f"No specific failed checks found for PR #{pr_number}")
@@ -1695,6 +1714,7 @@ def _fix_pr_issues_with_testing(
     pr_data: Dict[str, Any],
     config: AutomationConfig,
     github_logs: str,
+    skip_github_actions_fix: bool = False,
 ) -> List[str]:
     """Fix PR issues using GitHub Actions logs first, then local testing loop."""
     actions = []
@@ -1709,10 +1729,14 @@ def _fix_pr_issues_with_testing(
 
     try:
         # Step 1: Initial fix using GitHub Actions logs
-        actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
-
-        initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
-        actions.extend(initial_fix_actions)
+        if skip_github_actions_fix:
+            msg = "Skipping GitHub Actions fix as we were already on the PR branch (assuming resumption)"
+            logger.info(msg)
+            actions.append(msg)
+        else:
+            actions.append(f"Starting PR issue fixing for PR #{pr_number} using GitHub Actions logs")
+            initial_fix_actions = _apply_github_actions_fix(repo_name, pr_data, config, github_logs)
+            actions.extend(initial_fix_actions)
 
         # Step 2: Local testing and iterative fixing loop
         attempts_limit = config.MAX_FIX_ATTEMPTS
