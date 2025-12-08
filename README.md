@@ -280,6 +280,8 @@ Behavior Specification:
     - Falls back to system Python's pytest when uv is not installed
     - Can optionally activate local virtual environment by setting `AC_USE_LOCAL_VENV=1`
     - Always enables automatic dependency synchronization with uv
+    - Automatically applies code style fixes (black, isort) when run in local environments (non-CI)
+    - Runs code style checks in check-only mode when running in CI environments
 - For each failure, extracts important parts from error output and asks LLM for minimal fixes.
 - After fixes, stages and commits. Stops with error if there are no changes at all (`nothing to commit`).
 
