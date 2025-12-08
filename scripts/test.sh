@@ -188,20 +188,40 @@ fi
 echo ""
 echo "Running code quality checks..."
 
-# Run black check
+# Run black (auto-fix in local, check only in CI)
 echo "[CHECK] Running black..."
-if [ "$USE_UV" -eq 1 ]; then
-  uv run black --check src/ tests/
+if [ "$IS_CI" -eq 0 ]; then
+  echo "  [LOCAL] Running black in auto-fix mode..."
+  if [ "$USE_UV" -eq 1 ]; then
+    uv run black src/ tests/
+  else
+    black src/ tests/
+  fi
 else
-  black --check src/ tests/
+  echo "  [CI] Running black in check mode..."
+  if [ "$USE_UV" -eq 1 ]; then
+    uv run black --check src/ tests/
+  else
+    black --check src/ tests/
+  fi
 fi
 
-# Run isort check
+# Run isort (auto-fix in local, check only in CI)
 echo "[CHECK] Running isort..."
-if [ "$USE_UV" -eq 1 ]; then
-  uv run isort --check-only src/ tests/
+if [ "$IS_CI" -eq 0 ]; then
+  echo "  [LOCAL] Running isort in auto-fix mode..."
+  if [ "$USE_UV" -eq 1 ]; then
+    uv run isort src/ tests/
+  else
+    isort src/ tests/
+  fi
 else
-  isort --check-only src/ tests/
+  echo "  [CI] Running isort in check mode..."
+  if [ "$USE_UV" -eq 1 ]; then
+    uv run isort --check-only src/ tests/
+  else
+    isort --check-only src/ tests/
+  fi
 fi
 
 # Run flake8

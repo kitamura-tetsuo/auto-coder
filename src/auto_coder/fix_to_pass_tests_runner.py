@@ -857,13 +857,13 @@ def extract_important_errors(test_result: TestResult) -> str:
         test_result.framework_type or "unknown",
     )
 
-    if not full_output:
-        return prefix + "Tests failed but no error output available"
-
     # Prepend stability warning if detected
     prefix = ""
     if test_result.stability_issue:
         prefix = f"Test stability issue detected: {test_result.test_file or 'unknown'} failed in full suite but passed in isolation.\n\n"
+
+    if not full_output:
+        return prefix + "Tests failed but no error output available"
 
     lines = full_output.split("\n")
 
