@@ -35,19 +35,13 @@ class RecordingPopen:
         return 0
 
 
-def _patch_subprocess_for_auggie_jules(monkeypatch):
-    """Patch subprocess for Auggie and Jules clients."""
+def _patch_subprocess_for_auggie(monkeypatch):
+    """Patch subprocess for Auggie client (Jules now uses HTTP API)."""
     monkeypatch.setattr(
         "src.auto_coder.auggie_client.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
     )
     monkeypatch.setattr("src.auto_coder.auggie_client.subprocess.Popen", RecordingPopen)
-
-    monkeypatch.setattr(
-        "src.auto_coder.jules_client.subprocess.run",
-        lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
-    )
-    monkeypatch.setattr("src.auto_coder.jules_client.subprocess.Popen", RecordingPopen)
 
 
 def _patch_subprocess_for_codex_mcp(monkeypatch):
@@ -425,7 +419,7 @@ class TestBackendCLIOptions:
     def test_auggie_with_configured_options(self, monkeypatch):
         """Test that AuggieClient uses options from config."""
         RecordingPopen.calls = []
-        _patch_subprocess_for_auggie_jules(monkeypatch)
+        _patch_subprocess_for_auggie(monkeypatch)
 
         # Mock config to provide options
         with patch("src.auto_coder.auggie_client.get_llm_config") as mock_get_config:
@@ -468,7 +462,7 @@ class TestBackendCLIOptions:
     def test_auggie_with_empty_options(self, monkeypatch):
         """Test that AuggieClient handles empty options."""
         RecordingPopen.calls = []
-        _patch_subprocess_for_auggie_jules(monkeypatch)
+        _patch_subprocess_for_auggie(monkeypatch)
 
         # Mock config with empty options
         with patch("src.auto_coder.auggie_client.get_llm_config") as mock_get_config:
@@ -506,92 +500,8 @@ class TestBackendCLIOptions:
     # ================================
     # Jules Client Tests
     # ================================
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_jules_with_configured_options(self, mock_run_command, mock_run):
-        """Test that JulesClient uses options from config."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(success=True, stdout="Session started: test_session_123", stderr="", returncode=0)
-
-        # Mock config to provide options
-        with patch("src.auto_coder.jules_client.get_llm_config") as mock_get_config:
-            mock_config = Mock()
-            mock_backend_config = Mock()
-            mock_backend_config.options = ["-o", "session-timeout", "3600", "-o", "verbose"]
-            mock_backend_config.options_for_noedit = ["-o", "no-edit-mode"]
-            mock_backend_config.usage_markers = []
-            mock_backend_config.validate_required_options.return_value = []
-            mock_config.get_backend_config.return_value = mock_backend_config
-            mock_get_config.return_value = mock_config
-
-            client = JulesClient(backend_name="jules")
-            output = client._run_llm_cli("test prompt")
-
-        # Verify the command structure includes options
-        assert mock_run_command.called
-        # Find the call with 'session start'
-        start_call = None
-        for call_args in mock_run_command.call_args_list:
-            cmd = call_args[0][0]
-            if "start" in cmd:
-                start_call = cmd
-                break
-
-        assert start_call is not None
-
-        # Check that options are in the command
-        assert "-o" in start_call
-        assert "session-timeout" in start_call
-        assert "3600" in start_call
-        assert "-o" in start_call[start_call.index("3600") + 1 :]
-        assert "verbose" in start_call[start_call.index("3600") + 1 :]
-
-        # Verify the command starts with expected elements
-        assert start_call[0] == "jules"
-        assert "session" in start_call
-        assert "start" in start_call
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_jules_with_empty_options(self, mock_run_command, mock_run):
-        """Test that JulesClient handles empty options."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(success=True, stdout="Session started: test_session_123", stderr="", returncode=0)
-
-        # Mock config with empty options
-        with patch("src.auto_coder.jules_client.get_llm_config") as mock_get_config:
-            mock_config = Mock()
-            mock_backend_config = Mock()
-            mock_backend_config.options = []
-            mock_backend_config.options_for_noedit = []
-            mock_backend_config.usage_markers = []
-            mock_backend_config.validate_required_options.return_value = []
-            mock_config.get_backend_config.return_value = mock_backend_config
-            mock_get_config.return_value = mock_config
-
-            client = JulesClient(backend_name="jules")
-            output = client._run_llm_cli("test prompt")
-
-        # Verify the command structure without options
-        assert mock_run_command.called
-        # Find the call with 'session start'
-        start_call = None
-        for call_args in mock_run_command.call_args_list:
-            cmd = call_args[0][0]
-            if "start" in cmd:
-                start_call = cmd
-                break
-
-        assert start_call is not None
-
-        # Verify basic command structure
-        assert start_call[0] == "jules"
-        assert "session" in start_call
-        assert "start" in start_call
-
-        # Verify no custom options are present
-        assert "-o" not in start_call
+    # Note: Jules client now uses HTTP API instead of CLI, so CLI option tests are not applicable.
+    # The HTTP API behavior is tested in test_jules_client.py
 
     # ================================
     # Codex-MCP Client Tests

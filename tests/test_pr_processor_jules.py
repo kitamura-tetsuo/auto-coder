@@ -628,13 +628,15 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
 
         # Assert
-        assert len(actions) == 1
+        assert len(actions) == 2
         assert "Sent CI failure logs to Jules session 'sessionABC123' for PR #123" in actions[0]
+        assert "Posted comment on PR #123 stating that a fix has been requested from Jules" in actions[1]
         mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
         mock_jules_client.send_message.assert_called_once()
 
@@ -645,6 +647,9 @@ class TestSendJulesErrorFeedback:
         assert "CI checks failed for PR #123 in owner/repo" in message
         assert "Error: Test failed" in message
         assert "Fix authentication bug" in message
+
+        # Check that comment was posted on PR
+        github_client.add_comment_to_pr.assert_called_once_with(repo_name, 123, "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates.")
 
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     @patch("src.auto_coder.jules_client.JulesClient")
@@ -661,15 +666,18 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
 
         # Assert
         assert len(actions) == 1
         assert "Cannot send error feedback to Jules for PR #123: no session ID found" in actions[0]
         # JulesClient should not be instantiated
         mock_jules_client_class.assert_not_called()
+        # GitHub client should not be called
+        github_client.add_comment_to_pr.assert_not_called()
 
     @patch("src.auto_coder.pr_processor._get_github_actions_logs")
     @patch("src.auto_coder.jules_client.JulesClient")
@@ -690,9 +698,10 @@ class TestSendJulesErrorFeedback:
         failed_checks = [{"name": "test", "status": "failed"}]
         repo_name = "owner/repo"
         config = Mock()
+        github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
 
         # Assert
         assert len(actions) == 1
@@ -720,13 +729,15 @@ class TestSendJulesErrorFeedback:
         failed_checks = []
         repo_name = "owner/repo"
         config = Mock()
+        github_client = Mock()
 
         # Execute
-        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
 
         # Assert
-        assert len(actions) == 1
+        assert len(actions) == 2
         assert "Sent CI failure logs to Jules session 'sessionXYZ789' for PR #456" in actions[0]
+        assert "Posted comment on PR #456 stating that a fix has been requested from Jules" in actions[1]
         mock_get_logs.assert_called_once_with(repo_name, config, failed_checks, pr_data)
         mock_jules_client.send_message.assert_called_once()
 
@@ -734,3 +745,72 @@ class TestSendJulesErrorFeedback:
         call_args = mock_jules_client.send_message.call_args
         message = call_args[0][1]
         assert "CI checks failed for PR #456 in owner/repo" in message
+
+        # Check that comment was posted on PR
+        github_client.add_comment_to_pr.assert_called_once_with(repo_name, 456, "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates.")
+
+    @patch("src.auto_coder.pr_processor._get_github_actions_logs")
+    @patch("src.auto_coder.jules_client.JulesClient")
+    def test_send_jules_error_feedback_no_github_client(self, mock_jules_client_class, mock_get_logs):
+        """Test that PR comment is skipped when no GitHub client is provided."""
+        # Setup
+        mock_jules_client = Mock()
+        mock_jules_client.send_message.return_value = "Acknowledged"
+        mock_jules_client_class.return_value = mock_jules_client
+
+        mock_get_logs.return_value = "Error: Test failed"
+
+        pr_data = {
+            "number": 789,
+            "title": "Fix bug",
+            "user": {"login": "google-labs-jules"},
+            "_jules_session_id": "sessionNoClient",
+        }
+
+        failed_checks = [{"name": "test", "status": "failed"}]
+        repo_name = "owner/repo"
+        config = Mock()
+        # No github_client provided (None)
+
+        # Execute
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client=None)
+
+        # Assert
+        assert len(actions) == 2
+        assert "Sent CI failure logs to Jules session 'sessionNoClient' for PR #789" in actions[0]
+        assert "Skipped posting comment on PR #789: no GitHub client available" in actions[1]
+        mock_jules_client.send_message.assert_called_once()
+
+    @patch("src.auto_coder.pr_processor._get_github_actions_logs")
+    @patch("src.auto_coder.jules_client.JulesClient")
+    def test_send_jules_error_feedback_comment_exception(self, mock_jules_client_class, mock_get_logs):
+        """Test that exception in posting PR comment is handled gracefully."""
+        # Setup
+        mock_jules_client = Mock()
+        mock_jules_client.send_message.return_value = "Acknowledged"
+        mock_jules_client_class.return_value = mock_jules_client
+
+        mock_get_logs.return_value = "Error: Test failed"
+
+        pr_data = {
+            "number": 999,
+            "title": "Fix bug",
+            "user": {"login": "google-labs-jules"},
+            "_jules_session_id": "sessionCommentError",
+        }
+
+        failed_checks = [{"name": "test", "status": "failed"}]
+        repo_name = "owner/repo"
+        config = Mock()
+        github_client = Mock()
+        # Make add_comment_to_pr raise an exception
+        github_client.add_comment_to_pr.side_effect = Exception("GitHub API error")
+
+        # Execute
+        actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+
+        # Assert
+        assert len(actions) == 2
+        assert "Sent CI failure logs to Jules session 'sessionCommentError' for PR #999" in actions[0]
+        assert "Failed to post comment on PR #999: GitHub API error" in actions[1]
+        mock_jules_client.send_message.assert_called_once()

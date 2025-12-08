@@ -696,7 +696,7 @@ def _handle_pr_merge(
         if _is_jules_pr(pr_data):
             actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
             # Send error logs to Jules and skip local fixing - let Jules handle it
-            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config)
+            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
             actions.extend(jules_feedback_actions)
             actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
             return actions
@@ -1042,7 +1042,7 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     Looks for patterns like:
     - Session ID: abc123
     - Session: abc123
-    - Link containing session ID
+    - GitHub PR URL: https://github.com/owner/repo/pull/123
     - URLs with session parameters
 
     Args:
@@ -1054,11 +1054,16 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
     if not pr_body:
         return None
 
-    # Pattern 1: Look for "Session ID:" or "Session:" followed by alphanumeric ID
-    session_pattern = r"(?:session\s*id:|session:)\s*([a-zA-Z0-9-_]+)"
+    # Pattern 1: Look for "Session ID:" or "Session:" followed by the session ID
+    # This captures either a simple alphanumeric ID or a URL
+    session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
     match = re.search(session_pattern, pr_body, re.IGNORECASE)
     if match:
         session_id = match.group(1).strip()
+        # If the captured text contains a GitHub PR URL, use that
+        github_url_in_session = re.search(r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+", session_id)
+        if github_url_in_session:
+            session_id = github_url_in_session.group(0)
         logger.debug(f"Found session ID pattern 1: {session_id}")
         return session_id
 
@@ -1071,7 +1076,16 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         logger.debug(f"Found session ID pattern 2: {session_id}")
         return session_id
 
-    # Pattern 3: Look for any alphanumeric string that looks like a session ID
+    # Pattern 3: Look for GitHub PR URLs (e.g., https://github.com/owner/repo/pull/123)
+    # This pattern matches the full URL and extracts it as the session ID
+    github_url_pattern = r"https?://github\.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+/pull/\d+"
+    match = re.search(github_url_pattern, pr_body)
+    if match:
+        session_id = match.group(0).strip()
+        logger.debug(f"Found session ID pattern 3 (GitHub PR URL): {session_id}")
+        return session_id
+
+    # Pattern 4: Look for any alphanumeric string that looks like a session ID
     # (this is a fallback and should be used carefully)
     # Common session ID formats: starts with letter/number, 8-50 chars
     general_pattern = r"\b([a-zA-Z0-9]{10,50})\b"
@@ -1081,7 +1095,7 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         for potential_id in matches:
             # Skip common words that happen to be 10+ chars
             if potential_id.lower() not in ["repository", "pull request", "github", "auto-coder"]:
-                logger.debug(f"Found session ID pattern 3: {potential_id}")
+                logger.debug(f"Found session ID pattern 4: {potential_id}")
                 return potential_id
 
     logger.debug("No session ID found in PR body")
@@ -1288,11 +1302,66 @@ def _close_linked_issues(repo_name: str, pr_number: int) -> None:
         logger.warning(f"Error processing linked issues for PR #{pr_number}: {e}")
 
 
+def _archive_jules_session(repo_name: str, pr_number: int) -> None:
+    """Archive Jules session for Jules-created PRs after successful merge.
+
+    Args:
+        repo_name: Repository name (owner/repo)
+        pr_number: PR number that was merged
+    """
+    try:
+        # Get PR data to check if it's a Jules PR and extract session ID
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "user,body"],
+            repo=repo_name,
+            capture_output=True,
+        )
+
+        if not result.success or not result.stdout:  # type: ignore[attr-defined]
+            logger.debug(f"Could not retrieve PR #{pr_number} data for Jules session archiving")
+            return
+
+        pr_data = json.loads(result.stdout)
+        pr_author = pr_data.get("user", {}).get("login", "")
+        pr_body = pr_data.get("body", "")
+
+        # Check if this is a Jules-created PR
+        if pr_author != "google-labs-jules":
+            logger.debug(f"PR #{pr_number} is not created by Jules ({pr_author}), skipping session archiving")
+            return
+
+        # Extract session ID from PR body
+        session_id = _extract_session_id_from_pr_body(pr_body)
+        if not session_id:
+            logger.warning(f"No session ID found in Jules PR #{pr_number} body")
+            return
+
+        # Archive the Jules session
+        try:
+            from .jules_client import JulesClient
+
+            jules_client = JulesClient()
+            success = jules_client.archive_session(session_id)
+
+            if success:
+                logger.info(f"Archived Jules session '{session_id}' for PR #{pr_number}")
+                log_action(f"Archived Jules session for PR #{pr_number}")
+            else:
+                logger.warning(f"Failed to archive Jules session '{session_id}' for PR #{pr_number}")
+        except Exception as e:
+            logger.warning(f"Error archiving Jules session for PR #{pr_number}: {e}")
+
+    except Exception as e:
+        logger.warning(f"Error processing Jules session archiving for PR #{pr_number}: {e}")
+
+
 def _send_jules_error_feedback(
     repo_name: str,
     pr_data: Dict[str, Any],
     failed_checks: List[Dict[str, Any]],
     config: AutomationConfig,
+    github_client: Optional[Any] = None,
 ) -> List[str]:
     """Send CI error logs to Jules session for Jules-created PRs.
 
@@ -1301,6 +1370,7 @@ def _send_jules_error_feedback(
         pr_data: PR data dictionary
         failed_checks: List of failed GitHub Actions checks
         config: AutomationConfig instance
+        github_client: Optional GitHub client instance
 
     Returns:
         List of action strings describing what was done
@@ -1341,6 +1411,19 @@ PR Author: {pr_data.get('user', {}).get('login', 'Unknown')}
         actions.append(f"Sent CI failure logs to Jules session '{session_id}' for PR #{pr_number}")
         logger.info(f"Jules response for PR #{pr_number}: {response[:200]}...")
 
+        # Post a comment on the PR stating that a fix has been requested
+        if github_client:
+            comment_body = f"🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
+            try:
+                github_client.add_comment_to_pr(repo_name, pr_number, comment_body)
+                actions.append(f"Posted comment on PR #{pr_number} stating that a fix has been requested from Jules")
+            except Exception as e:
+                error_msg = f"Failed to post comment on PR #{pr_number}: {e}"
+                logger.error(error_msg)
+                actions.append(error_msg)
+        else:
+            actions.append(f"Skipped posting comment on PR #{pr_number}: no GitHub client available")
+
     except Exception as e:
         error_msg = f"Error sending Jules error feedback for PR #{pr_number}: {e}"
         logger.error(error_msg)
@@ -1377,6 +1460,7 @@ def _merge_pr(
             if result.success:  # type: ignore[attr-defined]
                 log_action(f"Successfully auto-merged PR #{pr_number}")
                 _close_linked_issues(repo_name, pr_number)
+                _archive_jules_session(repo_name, pr_number)
                 return True
             else:
                 # Log the auto-merge failure but continue with direct merge
@@ -1390,6 +1474,7 @@ def _merge_pr(
         if result.success:  # type: ignore[attr-defined]
             log_action(f"Successfully merged PR #{pr_number}")
             _close_linked_issues(repo_name, pr_number)
+            _archive_jules_session(repo_name, pr_number)
             return True
         else:
             # Check if the failure is due to merge conflicts
@@ -1419,6 +1504,7 @@ def _merge_pr(
                     if retry_result.success:  # type: ignore[attr-defined]
                         log_action(f"Successfully merged PR #{pr_number} after conflict resolution")
                         _close_linked_issues(repo_name, pr_number)
+                        _archive_jules_session(repo_name, pr_number)
                         return True
                     else:
                         # Merge failed even after conflict resolution and polling
@@ -1441,6 +1527,7 @@ def _merge_pr(
                             if alt_result.success:  # type: ignore[attr-defined]
                                 log_action(f"Successfully merged PR #{pr_number} with fallback method {m}")
                                 _close_linked_issues(repo_name, pr_number)
+                                _archive_jules_session(repo_name, pr_number)
                                 return True
                         # All merge attempts failed, trigger fallback
                         # Get PR data to extract linked issues
