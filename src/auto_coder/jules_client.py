@@ -1,51 +1,67 @@
 """
-Jules CLI client for Auto-Coder.
+Jules HTTP API client for Auto-Coder.
 
 Jules is a session-based AI assistant that can be used for issue processing.
+This client uses HTTP API instead of Jules CLI to communicate with Jules.
 """
 
-import subprocess
+import json
 import time
+import uuid
 from typing import Any, Dict, List, Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
-from .utils import CommandExecutor
 
 logger = get_logger(__name__)
 
 
 class JulesClient(LLMClientBase):
-    """Jules client that manages session-based AI interactions."""
+    """Jules HTTP API client that manages session-based AI interactions."""
 
     def __init__(self, backend_name: Optional[str] = None) -> None:
-        """Initialize Jules client.
+        """Initialize Jules HTTP API client.
 
         Args:
             backend_name: Backend name to use for configuration lookup (optional).
         """
         self.backend_name = backend_name or "jules"
-        self.timeout = None  # No timeout - let Jules CLI run as needed
+        self.timeout = None  # No timeout - let HTTP requests run as needed
         self.active_sessions: Dict[str, str] = {}  # Track active sessions
+        self.api_key: Optional[str] = None
+        self.base_url = "https://jules.googleapis.com/v1alpha"
 
         # Load configuration for this backend
         config = get_llm_config()
         config_backend = config.get_backend_config(self.backend_name)
         self.options = (config_backend and config_backend.options) or []
         self.options_for_noedit = (config_backend and config_backend.options_for_noedit) or []
+        self.api_key = (config_backend and config_backend.api_key) or None
 
-        # Check if Jules CLI is available
-        try:
-            result = subprocess.run(["jules", "--version"], capture_output=True, text=True, timeout=10)
-            if result.returncode != 0:
-                raise RuntimeError("Jules CLI not available or not working")
-        except (
-            subprocess.TimeoutExpired,
-            subprocess.CalledProcessError,
-            FileNotFoundError,
-        ) as e:
-            raise RuntimeError(f"Jules CLI not available: {e}")
+        # Check API connectivity
+        if not self.api_key:
+            logger.warning("No API key configured for Jules. API calls may fail.")
+
+        # Create HTTP session with retry strategy
+        self.session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
+        # Set headers
+        self.session.headers.update({"Content-Type": "application/json", "User-Agent": "auto-coder/1.0"})
+        if self.api_key:
+            self.session.headers["Authorization"] = f"Bearer {self.api_key}"
 
     def start_session(self, prompt: str, is_noedit: bool = False) -> str:
         """Start a new Jules session with the given prompt.
@@ -58,39 +74,40 @@ class JulesClient(LLMClientBase):
             Session ID for the started session
         """
         try:
-            cmd = ["jules", "session", "start"]
-
-            # Add configured options from config
-            # Use options_for_noedit for no-edit operations if available
-            options_to_use = self.options_for_noedit if is_noedit and self.options_for_noedit else self.options
-            if options_to_use:
-                cmd.extend(options_to_use)
+            # Prepare the request
+            url = f"{self.base_url}/sessions"
+            payload = {
+                "prompt": prompt,
+            }
 
             logger.info("Starting Jules session")
-            logger.info(f"🤖 Running: jules session start [prompt]")
+            logger.info(f"🤖 POST {url}")
             logger.info("=" * 60)
 
-            result = CommandExecutor.run_command(
-                cmd,
-                input_text=prompt,
-                stream_output=True,
-            )
+            response = self.session.post(url, json=payload, timeout=self.timeout)
 
             logger.info("=" * 60)
 
-            # Parse session ID from output
-            # Expected format: "Session started: <session_id>"
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            output = stdout or stderr
+            # Check if request was successful
+            if response.status_code not in [200, 201]:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Failed to start Jules session: {error_msg}")
+                raise RuntimeError(f"Failed to start Jules session: {error_msg}")
 
-            # Try to extract session ID from the output
-            session_id = self._extract_session_id(output)
-
-            if not session_id:
-                # Fallback: generate a session ID based on timestamp
+            # Parse the response to get the session ID
+            try:
+                response_data = response.json()
+                # Extract the session ID from the response
+                # The exact field name depends on the API response format
+                session_id = response_data.get("sessionId") or response_data.get("session_id") or response_data.get("id")
+                if not session_id:
+                    # Fallback: generate a session ID based on timestamp
+                    session_id = f"session_{int(time.time())}"
+                    logger.warning(f"Could not extract session ID from response, using generated ID: {session_id}")
+            except json.JSONDecodeError:
+                # Fallback: generate a session ID
                 session_id = f"session_{int(time.time())}"
-                logger.warning(f"Could not extract session ID from output, using generated ID: {session_id}")
+                logger.warning(f"Could not parse response JSON, using generated ID: {session_id}")
 
             # Track the session
             self.active_sessions[session_id] = prompt
@@ -98,47 +115,12 @@ class JulesClient(LLMClientBase):
             logger.info(f"Started Jules session: {session_id}")
             return session_id
 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to start Jules session: {e}")
+            raise RuntimeError(f"Failed to start Jules session: {e}")
         except Exception as e:
             logger.error(f"Failed to start Jules session: {e}")
             raise RuntimeError(f"Failed to start Jules session: {e}")
-
-    def _extract_session_id(self, output: str) -> Optional[str]:
-        """Extract session ID from Jules CLI output.
-
-        Args:
-            output: The output from Jules CLI
-
-        Returns:
-            Session ID if found, None otherwise
-        """
-        # Handle None or empty output
-        if not output:
-            return None
-
-        # Try to find session ID in various formats
-        # Pattern 1: "Session started: <id>"
-        if "session started:" in output.lower():
-            parts = output.lower().split("session started:")
-            if len(parts) > 1:
-                session_id = parts[1].strip().split()[0].strip()
-                return session_id
-
-        # Pattern 2: "session_id: <id>"
-        if "session_id:" in output.lower():
-            parts = output.lower().split("session_id:")
-            if len(parts) > 1:
-                session_id = parts[1].strip().split()[0].strip()
-                return session_id
-
-        # Pattern 3: Extract any alphanumeric ID
-        import re
-
-        match = re.search(r"\b([a-zA-Z0-9_-]{8,})\b", output)
-        if match:
-            # Return the matched alphanumeric string
-            return match.group(1)
-
-        return None
 
     def send_message(self, session_id: str, message: str) -> str:
         """Send a message to an existing Jules session.
@@ -151,32 +133,40 @@ class JulesClient(LLMClientBase):
             Response from Jules
         """
         try:
-            cmd = ["jules", "session", "send", "--session", session_id]
-
-            # Add configured options from config
-            if self.options:
-                cmd.extend(self.options)
+            # Prepare the request
+            url = f"{self.base_url}/sessions/{session_id}:sendMessage"
+            payload = {
+                "message": message,
+            }
 
             logger.info(f"Sending message to Jules session: {session_id}")
+            logger.info(f"🤖 POST {url}")
+            logger.info("=" * 60)
 
-            result = CommandExecutor.run_command(
-                cmd,
-                input_text=message,
-                stream_output=True,
-            )
+            response = self.session.post(url, json=payload, timeout=self.timeout)
 
-            # Check if command succeeded
-            if result.returncode != 0:
-                error_msg = result.stderr or "Unknown error"
+            logger.info("=" * 60)
+
+            # Check if request was successful
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
                 logger.error(f"Failed to send message to Jules session {session_id}: {error_msg}")
                 raise RuntimeError(f"Failed to send message to Jules session {session_id}: {error_msg}")
 
-            stdout = (result.stdout or "").strip()
-            stderr = (result.stderr or "").strip()
-            response = stdout or stderr
+            # Parse the response
+            try:
+                response_data = response.json()
+                # Extract the response message
+                # The exact field name depends on the API response format
+                response_text = response_data.get("response") or response_data.get("message") or response_data.get("result") or str(response_data)
+                return response_text
+            except json.JSONDecodeError:
+                # If response is not JSON, return the raw text
+                return response.text
 
-            return response
-
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to send message to Jules session {session_id}: {e}")
+            raise RuntimeError(f"Failed to send message to Jules session {session_id}: {e}")
         except Exception as e:
             logger.error(f"Failed to send message to Jules session {session_id}: {e}")
             raise RuntimeError(f"Failed to send message to Jules session {session_id}: {e}")
@@ -191,13 +181,19 @@ class JulesClient(LLMClientBase):
             True if session was ended successfully, False otherwise
         """
         try:
-            cmd = ["jules", "session", "end", "--session", session_id]
+            # Prepare the request
+            url = f"{self.base_url}/sessions/{session_id}"
 
             logger.info(f"Ending Jules session: {session_id}")
+            logger.info(f"🤖 DELETE {url}")
+            logger.info("=" * 60)
 
-            result = CommandExecutor.run_command(cmd)
+            response = self.session.delete(url, timeout=self.timeout)
 
-            if result.returncode == 0:
+            logger.info("=" * 60)
+
+            # Check if request was successful
+            if response.status_code == 200:
                 # Remove from active sessions
                 if session_id in self.active_sessions:
                     del self.active_sessions[session_id]
@@ -205,15 +201,19 @@ class JulesClient(LLMClientBase):
                 logger.info(f"Ended Jules session: {session_id}")
                 return True
             else:
-                logger.error(f"Failed to end Jules session {session_id}: {result.stderr}")
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Failed to end Jules session {session_id}: {error_msg}")
                 return False
 
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to end Jules session {session_id}: {e}")
+            return False
         except Exception as e:
             logger.error(f"Failed to end Jules session {session_id}: {e}")
             return False
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:
-        """Run Jules CLI with the given prompt and return response.
+        """Run Jules HTTP API with the given prompt and return response.
 
         This method is kept for compatibility with LLMClientBase interface,
         but Jules uses sessions rather than single-run commands.
@@ -235,6 +235,11 @@ class JulesClient(LLMClientBase):
         finally:
             # End the session
             self.end_session(session_id)
+
+    def close(self) -> None:
+        """Close the HTTP session and clean up resources."""
+        if self.session:
+            self.session.close()
 
     def check_mcp_server_configured(self, server_name: str) -> bool:
         """Check if a specific MCP server is configured for Jules CLI.

@@ -2,47 +2,62 @@
 Tests for Jules client functionality.
 """
 
-import subprocess
-from unittest.mock import MagicMock, patch
+import json
+import uuid
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
+import requests
 
 from src.auto_coder.jules_client import JulesClient
-from src.auto_coder.utils import CommandResult
 
 
 class TestJulesClient:
     """Test cases for JulesClient class."""
 
-    @patch("subprocess.run")
-    def test_init_checks_cli(self, mock_run):
-        """JulesClient should check jules --version at init."""
-        mock_run.return_value.returncode = 0
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_init_initializes_session(self, mock_get_config):
+        """JulesClient should initialize HTTP session on creation."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
         client = JulesClient()
         assert client.backend_name == "jules"
         assert client.timeout is None
         assert len(client.active_sessions) == 0
+        assert client.session is not None
+        assert client.base_url == "https://jules.googleapis.com/v1alpha"
 
-    @patch("subprocess.run")
-    def test_init_with_backend_name(self, mock_run):
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_init_with_backend_name(self, mock_get_config):
         """JulesClient should use provided backend name."""
-        mock_run.return_value.returncode = 0
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
         client = JulesClient(backend_name="custom-jules")
         assert client.backend_name == "custom-jules"
 
-    @patch("subprocess.run")
     @patch("src.auto_coder.jules_client.get_llm_config")
-    def test_init_loads_config_and_options(self, mock_get_config, mock_run):
+    def test_init_loads_config_and_options(self, mock_get_config):
         """JulesClient should load configuration from config file."""
-        mock_run.return_value.returncode = 0
-
         # Mock config to provide options
-        from unittest.mock import Mock
-
         mock_config = Mock()
         mock_backend_config = Mock()
         mock_backend_config.options = ["--flag1", "value1", "--flag2"]
         mock_backend_config.options_for_noedit = ["--no-edit-flag"]
+        mock_backend_config.api_key = "test-api-key"
         mock_config.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config
 
@@ -52,20 +67,19 @@ class TestJulesClient:
         mock_config.get_backend_config.assert_called_once_with("jules")
         assert client.options == ["--flag1", "value1", "--flag2"]
         assert client.options_for_noedit == ["--no-edit-flag"]
+        assert client.api_key == "test-api-key"
+        assert "Authorization" in client.session.headers
+        assert client.session.headers["Authorization"] == "Bearer test-api-key"
 
-    @patch("subprocess.run")
     @patch("src.auto_coder.jules_client.get_llm_config")
-    def test_init_with_empty_config_options(self, mock_get_config, mock_run):
+    def test_init_with_empty_config_options(self, mock_get_config):
         """JulesClient should handle empty options from config."""
-        mock_run.return_value.returncode = 0
-
         # Mock config with no options
-        from unittest.mock import Mock
-
         mock_config = Mock()
         mock_backend_config = Mock()
         mock_backend_config.options = None
         mock_backend_config.options_for_noedit = None
+        mock_backend_config.api_key = None
         mock_config.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config
 
@@ -75,19 +89,15 @@ class TestJulesClient:
         assert client.options == []
         assert client.options_for_noedit == []
 
-    @patch("subprocess.run")
     @patch("src.auto_coder.jules_client.get_llm_config")
-    def test_init_with_backend_name_uses_correct_config(self, mock_get_config, mock_run):
+    def test_init_with_backend_name_uses_correct_config(self, mock_get_config):
         """JulesClient should use correct backend name for config lookup."""
-        mock_run.return_value.returncode = 0
-
         # Mock config
-        from unittest.mock import Mock
-
         mock_config = Mock()
         mock_backend_config = Mock()
         mock_backend_config.options = ["--custom"]
         mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
         mock_config.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config
 
@@ -97,189 +107,127 @@ class TestJulesClient:
         mock_config.get_backend_config.assert_called_once_with("custom-jules")
         assert client.options == ["--custom"]
 
-    @patch("subprocess.run")
-    def test_init_raises_error_when_jules_not_available(self, mock_run):
-        """JulesClient should raise RuntimeError when jules CLI is not available."""
-        mock_run.side_effect = FileNotFoundError("jules command not found")
-        with pytest.raises(RuntimeError, match="Jules CLI not available"):
-            JulesClient()
-
-    @patch("subprocess.run")
-    def test_init_raises_error_on_timeout(self, mock_run):
-        """JulesClient should raise RuntimeError on timeout."""
-        mock_run.side_effect = subprocess.TimeoutExpired("jules", 10)
-        with pytest.raises(RuntimeError, match="Jules CLI not available"):
-            JulesClient()
-
-    @patch("subprocess.run")
-    def test_init_raises_error_on_nonzero_return(self, mock_run):
-        """JulesClient should raise RuntimeError when jules --version returns non-zero."""
-        mock_run.return_value.returncode = 1
-        mock_run.return_value.stderr = "jules: command not found"
-        with pytest.raises(RuntimeError, match="Jules CLI not available"):
-            JulesClient()
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session(self, mock_run_command, mock_run):
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session(self, mock_post, mock_get_config):
         """Test starting a new Jules session."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "Session started: abc123\n", "", 0)
-
-        client = JulesClient()
-        session_id = client.start_session("Test prompt")
-
-        assert session_id == "abc123"
-        assert session_id in client.active_sessions
-        assert client.active_sessions[session_id] == "Test prompt"
-
-        # Verify correct command was called
-        mock_run_command.assert_called_once()
-        call_args = mock_run_command.call_args[0][0]
-        assert call_args == ["jules", "session", "start"]
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.get_llm_config")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session_with_options_from_config(self, mock_run_command, mock_get_config, mock_run):
-        """Test that options from config are added to start_session command."""
-        mock_run.return_value.returncode = 0
-
-        # Mock config to provide options
-        from unittest.mock import Mock
-
-        mock_config = Mock()
-        mock_backend_config = Mock()
-        mock_backend_config.options = ["--verbose", "--timeout", "30"]
-        mock_backend_config.options_for_noedit = []
-        mock_config.get_backend_config.return_value = mock_backend_config
-        mock_get_config.return_value = mock_config
-
-        mock_run_command.return_value = CommandResult(True, "Session started: abc123\n", "", 0)
-
-        client = JulesClient()
-        _ = client.start_session("Test prompt")
-
-        # Verify correct command was called with options
-        mock_run_command.assert_called_once()
-        call_args = mock_run_command.call_args[0][0]
-        assert call_args[0] == "jules"
-        assert call_args[1] == "session"
-        assert call_args[2] == "start"
-        assert "--verbose" in call_args
-        assert "--timeout" in call_args
-        assert "30" in call_args
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.get_llm_config")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session_without_options(self, mock_run_command, mock_get_config, mock_run):
-        """Test that session starts correctly when no options are configured."""
-        mock_run.return_value.returncode = 0
-
-        # Mock config with no options
-        from unittest.mock import Mock
-
+        # Mock config
         mock_config = Mock()
         mock_backend_config = Mock()
         mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
         mock_config.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config
 
-        mock_run_command.return_value = CommandResult(True, "Session started: abc123\n", "", 0)
+        # Mock the POST response
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"sessionId": "test-session-123"}
+        mock_post.return_value = mock_response
+
+        client = JulesClient()
+        session_id = client.start_session("Test prompt")
+
+        assert session_id == "test-session-123"
+        assert session_id in client.active_sessions
+        assert client.active_sessions[session_id] == "Test prompt"
+
+        # Verify correct API call was made
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions"
+        assert call_args[1]["json"]["prompt"] == "Test prompt"
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session_with_api_key(self, mock_post, mock_get_config):
+        """Test that start_session uses API key from config."""
+        # Mock config to provide API key
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = ["--verbose"]
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = "my-api-key"
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock the POST response
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"sessionId": "session-456"}
+        mock_post.return_value = mock_response
 
         client = JulesClient()
         _ = client.start_session("Test prompt")
 
-        # Verify correct command was called without extra options
-        mock_run_command.assert_called_once()
-        call_args = mock_run_command.call_args[0][0]
-        assert call_args == ["jules", "session", "start"]
+        # Verify API key is in headers
+        assert "Authorization" in client.session.headers
+        assert client.session.headers["Authorization"] == "Bearer my-api-key"
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session_with_session_started_format(self, mock_run_command, mock_run):
-        """Test starting session with 'Session started:' format."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "Session started: session-xyz-789\n", "", 0)
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session_handles_http_error(self, mock_post, mock_get_config):
+        """Test that start_session raises error on HTTP failure."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
 
-        client = JulesClient()
-        session_id = client.start_session("Test prompt")
-
-        assert session_id == "session-xyz-789"
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session_with_session_id_format(self, mock_run_command, mock_run):
-        """Test starting session with 'session_id:' format."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "session_id: my-session-123\n", "", 0)
-
-        client = JulesClient()
-        session_id = client.start_session("Test prompt")
-
-        assert session_id == "my-session-123"
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session_with_regex_alphanumeric(self, mock_run_command, mock_run):
-        """Test starting session when alphanumeric ID is extracted via regex."""
-        mock_run.return_value.returncode = 0
-        # Output without clear "session started" or "session_id:" markers
-        mock_run_command.return_value = CommandResult(True, "Output\nabc123def456\n", "", 0)
+        # Mock error response
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.text = "Bad Request"
+        mock_post.return_value = mock_response
 
         client = JulesClient()
-        session_id = client.start_session("Test prompt")
 
-        # Should extract alphanumeric ID via regex
-        assert session_id == "abc123def456"
+        with pytest.raises(RuntimeError, match="Failed to start Jules session"):
+            client.start_session("Test prompt")
 
-        # Fallback: if no pattern matches, should generate timestamp-based ID
-        # This test covers the case where regex matches
-        assert len(session_id) > 0
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session_handles_network_error(self, mock_post, mock_get_config):
+        """Test that start_session raises error on network failure."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session_fallback_to_generated_id(self, mock_run_command, mock_run):
-        """Test fallback to generated session ID when extraction fails."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "No session ID in output\n", "", 0)
-
-        client = JulesClient()
-        import time
-
-        before_time = int(time.time())
-        session_id = client.start_session("Test prompt")
-        after_time = int(time.time())
-
-        # Should generate timestamp-based ID
-        assert session_id.startswith("session_")
-        session_timestamp = int(session_id.split("_")[1])
-        assert before_time <= session_timestamp <= after_time
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_start_session_fallback_on_failure(self, mock_run_command, mock_run):
-        """Test that start_session falls back to generated ID when command fails."""
-        mock_run.return_value.returncode = 0
-        # Command fails but doesn't raise exception - just returns error
-        mock_run_command.return_value = CommandResult(False, "", "Command failed", 1)
+        # Mock network error
+        mock_post.side_effect = requests.exceptions.ConnectionError("Network error")
 
         client = JulesClient()
-        # Should not raise error, but fall back to generated session ID
-        session_id = client.start_session("Test prompt")
 
-        # Should have generated a timestamp-based session ID
-        assert session_id.startswith("session_")
-        assert session_id in client.active_sessions
+        with pytest.raises(RuntimeError, match="Failed to start Jules session"):
+            client.start_session("Test prompt")
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_send_message(self, mock_run_command, mock_run):
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_send_message(self, mock_post, mock_get_config):
         """Test sending a message to an existing session."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "Response from Jules\n", "", 0)
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock the POST response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"response": "Response from Jules"}
+        mock_post.return_value = mock_response
 
         client = JulesClient()
         # Manually add a session
@@ -289,55 +237,30 @@ class TestJulesClient:
 
         assert response == "Response from Jules"
 
-        # Verify correct command was called
-        mock_run_command.assert_called_once()
-        call_args = mock_run_command.call_args[0][0]
-        assert call_args == ["jules", "session", "send", "--session", "test-session"]
+        # Verify correct API call was made
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions/test-session:sendMessage"
+        assert call_args[1]["json"]["message"] == "New message"
 
-    @patch("subprocess.run")
     @patch("src.auto_coder.jules_client.get_llm_config")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_send_message_with_options_from_config(self, mock_run_command, mock_get_config, mock_run):
-        """Test that options from config are added to send_message command."""
-        mock_run.return_value.returncode = 0
-
-        # Mock config to provide options
-        from unittest.mock import Mock
-
+    @patch("requests.Session.post")
+    def test_send_message_handles_http_error(self, mock_post, mock_get_config):
+        """Test that send_message raises error on HTTP failure."""
+        # Mock config
         mock_config = Mock()
         mock_backend_config = Mock()
-        mock_backend_config.options = ["--debug", "--log-level", "info"]
+        mock_backend_config.options = []
         mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
         mock_config.get_backend_config.return_value = mock_backend_config
         mock_get_config.return_value = mock_config
 
-        mock_run_command.return_value = CommandResult(True, "Response from Jules\n", "", 0)
-
-        client = JulesClient()
-        client.active_sessions["test-session"] = "Previous prompt"
-
-        response = client.send_message("test-session", "New message")
-
-        assert response == "Response from Jules"
-
-        # Verify correct command was called with options
-        mock_run_command.assert_called_once()
-        call_args = mock_run_command.call_args[0][0]
-        assert call_args[0] == "jules"
-        assert call_args[1] == "session"
-        assert call_args[2] == "send"
-        assert call_args[3] == "--session"
-        assert call_args[4] == "test-session"
-        assert "--debug" in call_args
-        assert "--log-level" in call_args
-        assert "info" in call_args
-
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_send_message_raises_error_on_failure(self, mock_run_command, mock_run):
-        """Test that send_message raises error on command failure."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(False, "", "Command failed", 1)
+        # Mock error response
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal Server Error"
+        mock_post.return_value = mock_response
 
         client = JulesClient()
         client.active_sessions["test-session"] = "Prompt"
@@ -345,12 +268,45 @@ class TestJulesClient:
         with pytest.raises(RuntimeError, match="Failed to send message to Jules session"):
             client.send_message("test-session", "Message")
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_end_session_success(self, mock_run_command, mock_run):
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_send_message_handles_network_error(self, mock_post, mock_get_config):
+        """Test that send_message raises error on network failure."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock network error
+        mock_post.side_effect = requests.exceptions.Timeout("Timeout")
+
+        client = JulesClient()
+        client.active_sessions["test-session"] = "Prompt"
+
+        with pytest.raises(RuntimeError, match="Failed to send message to Jules session"):
+            client.send_message("test-session", "Message")
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.delete")
+    def test_end_session_success(self, mock_delete, mock_get_config):
         """Test ending a session successfully."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "", "", 0)
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock the DELETE response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_delete.return_value = mock_response
 
         client = JulesClient()
         client.active_sessions["test-session"] = "Prompt"
@@ -360,17 +316,29 @@ class TestJulesClient:
         assert result is True
         assert "test-session" not in client.active_sessions
 
-        # Verify correct command was called
-        mock_run_command.assert_called_once()
-        call_args = mock_run_command.call_args[0][0]
-        assert call_args == ["jules", "session", "end", "--session", "test-session"]
+        # Verify correct API call was made
+        mock_delete.assert_called_once()
+        call_args = mock_delete.call_args
+        assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions/test-session"
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_end_session_failure(self, mock_run_command, mock_run):
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.delete")
+    def test_end_session_failure(self, mock_delete, mock_get_config):
         """Test that end_session returns False on failure."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(False, "", "Command failed", 1)
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock error response
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.text = "Not Found"
+        mock_delete.return_value = mock_response
 
         client = JulesClient()
         client.active_sessions["test-session"] = "Prompt"
@@ -381,12 +349,23 @@ class TestJulesClient:
         # Session should still be tracked on failure
         assert "test-session" in client.active_sessions
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_end_session_removes_from_active_sessions_on_success(self, mock_run_command, mock_run):
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.delete")
+    def test_end_session_removes_from_active_sessions_on_success(self, mock_delete, mock_get_config):
         """Test that session is removed from active_sessions only on success."""
-        mock_run.return_value.returncode = 0
-        mock_run_command.return_value = CommandResult(True, "", "", 0)
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock successful response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_delete.return_value = mock_response
 
         client = JulesClient()
         client.active_sessions["session1"] = "Prompt1"
@@ -399,18 +378,60 @@ class TestJulesClient:
         assert "session1" not in client.active_sessions
         assert "session2" in client.active_sessions
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_run_llm_cli_single_run(self, mock_run_command, mock_run):
-        """Test _run_llm_cli starts session, sends message, and ends session."""
-        mock_run.return_value.returncode = 0
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.delete")
+    def test_end_session_handles_network_error(self, mock_delete, mock_get_config):
+        """Test that end_session handles network errors gracefully."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
 
-        # Mock start_session
-        mock_run_command.side_effect = [
-            CommandResult(True, "Session started: abc123\n", "", 0),  # start_session
-            CommandResult(True, "Response from Jules\n", "", 0),  # send_message
-            CommandResult(True, "", "", 0),  # end_session
+        # Mock network error
+        mock_delete.side_effect = requests.exceptions.ConnectionError("Network error")
+
+        client = JulesClient()
+        client.active_sessions["test-session"] = "Prompt"
+
+        result = client.end_session("test-session")
+
+        assert result is False
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    @patch("requests.Session.delete")
+    def test_run_llm_cli_single_run(self, mock_delete, mock_post, mock_get_config):
+        """Test _run_llm_cli starts session, sends message, and ends session."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock responses for start_session, send_message, end_session
+        mock_start_response = Mock()
+        mock_start_response.status_code = 201
+        mock_start_response.json.return_value = {"sessionId": "abc123"}
+
+        mock_send_response = Mock()
+        mock_send_response.status_code = 200
+        mock_send_response.json.return_value = {"response": "Response from Jules"}
+
+        mock_end_response = Mock()
+        mock_end_response.status_code = 200
+
+        mock_post.side_effect = [
+            mock_start_response,  # start_session
+            mock_send_response,  # send_message
         ]
+        mock_delete.return_value = mock_end_response  # end_session
 
         client = JulesClient()
         response = client._run_llm_cli("Test prompt")
@@ -418,21 +439,41 @@ class TestJulesClient:
         assert response == "Response from Jules"
         assert "abc123" not in client.active_sessions  # Session should be cleaned up
 
-        # Should have called run_command 3 times: start, send, end
-        assert mock_run_command.call_count == 3
+        # Should have called post 2 times: start, send, and delete 1 time
+        assert mock_post.call_count == 2
+        assert mock_delete.call_count == 1
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_run_llm_cli_ensures_session_cleanup_on_error(self, mock_run_command, mock_run):
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    @patch("requests.Session.delete")
+    def test_run_llm_cli_ensures_session_cleanup_on_error(self, mock_delete, mock_post, mock_get_config):
         """Test that _run_llm_cli cleans up session even when send_message fails."""
-        mock_run.return_value.returncode = 0
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
 
         # start_session succeeds, send_message fails, end_session should still be called
-        mock_run_command.side_effect = [
-            CommandResult(True, "Session started: abc123\n", "", 0),  # start_session
-            CommandResult(False, "", "Command failed", 1),  # send_message (fails)
-            CommandResult(True, "", "", 0),  # end_session (should still be called)
+        mock_start_response = Mock()
+        mock_start_response.status_code = 201
+        mock_start_response.json.return_value = {"sessionId": "abc123"}
+
+        mock_send_response = Mock()
+        mock_send_response.status_code = 500
+        mock_send_response.text = "Internal Server Error"
+
+        mock_end_response = Mock()
+        mock_end_response.status_code = 200
+
+        mock_post.side_effect = [
+            mock_start_response,  # start_session
+            mock_send_response,  # send_message (fails)
         ]
+        mock_delete.return_value = mock_end_response  # end_session
 
         client = JulesClient()
 
@@ -442,46 +483,60 @@ class TestJulesClient:
         # Session should be cleaned up despite the error
         assert "abc123" not in client.active_sessions
 
-        # Should have called run_command 3 times despite the error
-        assert mock_run_command.call_count == 3
+        # Should have called post 2 times (start and send), and delete 1 time
+        assert mock_post.call_count == 2
+        assert mock_delete.call_count == 1
 
-    @patch("subprocess.run")
-    @patch("src.auto_coder.jules_client.CommandExecutor.run_command")
-    def test_extract_session_id_from_output(self, mock_run_command, mock_run):
-        """Test _extract_session_id method with various formats."""
-        mock_run.return_value.returncode = 0
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_close(self, mock_get_config):
+        """Test that close() properly closes the HTTP session."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        client = JulesClient()
+        client.session.close = Mock()  # Mock the close method
+
+        client.close()
+
+        client.session.close.assert_called_once()
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_check_mcp_server_configured(self, mock_get_config):
+        """Test that Jules does not support MCP servers."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
 
         client = JulesClient()
 
-        # Test format 1: "Session started: <id>"
-        session_id = client._extract_session_id("Session started: abc123")
-        assert session_id == "abc123"
+        # Jules does not support MCP servers
+        assert client.check_mcp_server_configured("graphrag") is False
+        assert client.check_mcp_server_configured("mcp-pdb") is False
 
-        # Test format 2: "session_id: <id>"
-        session_id = client._extract_session_id("session_id: xyz789")
-        assert session_id == "xyz789"
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    def test_add_mcp_server_config(self, mock_get_config):
+        """Test that Jules does not support adding MCP server configuration."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
 
-        # Test format 3: case insensitive
-        session_id = client._extract_session_id("SESSION STARTED: MySession123")
-        assert session_id == "mysession123"
+        client = JulesClient()
 
-        # Test format 4: with dashes and underscores
-        session_id = client._extract_session_id("Session started: session-abc_123-def")
-        # The regex matches the full alphanumeric sequence with dashes/underscores
-        assert session_id == "session-abc_123-def"
-
-        # Test format 5: alphanumeric extraction via regex
-        session_id = client._extract_session_id("Some output abc123def456 xyz")
-        assert session_id == "abc123def456"
-
-        # Test format 6: no match
-        session_id = client._extract_session_id("No session ID here")
-        assert session_id is None
-
-        # Test format 7: empty string
-        session_id = client._extract_session_id("")
-        assert session_id is None
-
-        # Test format 8: None
-        session_id = client._extract_session_id(None)
-        assert session_id is None
+        # Jules does not support MCP server configuration
+        assert client.add_mcp_server_config("graphrag", "uv", []) is False
