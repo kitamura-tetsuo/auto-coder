@@ -6,7 +6,7 @@ import pytest
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.util.github_action import _check_github_actions_status
+from src.auto_coder.util.github_action import _check_github_actions_status, GitHubActionsStatusResult
 from src.auto_coder.utils import CommandResult
 
 
@@ -46,9 +46,20 @@ class TestPRChecksNoChecks:
             "head_branch": "test-branch",
             "head": {"ref": "test-branch"},
         }
-        result = _check_github_actions_status("kitamura-tetsuo/outliner", pr_data, config)
+        # Mock _check_github_actions_status_from_history to verify it's called
+        with patch("src.auto_coder.util.github_action._check_github_actions_status_from_history") as mock_history:
+            mock_history.return_value = GitHubActionsStatusResult(
+                success=True,
+                ids=[123],
+                in_progress=False,
+            )
+            
+            result = _check_github_actions_status("kitamura-tetsuo/outliner", pr_data, config)
 
-        # When there are no checks reported, should return in_progress to wait for checks to start
-        assert result.success is False
-        assert result.in_progress is True
-        assert len(result.ids) == 0
+            # Should call historical fallback
+            mock_history.assert_called_once()
+            
+            # Should return the result from history
+            assert result.success is True
+            assert result.in_progress is False
+            assert result.ids == [123]

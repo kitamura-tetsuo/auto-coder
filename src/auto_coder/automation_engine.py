@@ -453,17 +453,9 @@ class AutomationEngine:
             Processing result
         """
         # Check if Jules mode should be used based on configuration
-        from .llm_backend_config import get_jules_enabled_from_config, get_llm_config
+        from .llm_backend_config import is_jules_mode_enabled
 
-        # First check [backends.jules] in llm_config.toml
-        jules_config = get_llm_config().get_backend_config("jules")
-        jules_backend_enabled = jules_config.enabled if jules_config else False
-
-        # Also check [jules].enabled in config.toml
-        jules_config_enabled = get_jules_enabled_from_config()
-
-        # Both must be true for Jules mode to be enabled
-        jules_mode = jules_backend_enabled and jules_config_enabled
+        jules_mode = is_jules_mode_enabled()
 
         return self._process_single_candidate_unified(
             repo_name,
@@ -578,18 +570,12 @@ class AutomationEngine:
             Dictionary with processing results
         """
         # Check if Jules mode should be used based on configuration
-        from .llm_backend_config import get_jules_enabled_from_config, get_llm_config
-
-        jules_config = get_llm_config().get_backend_config("jules")
-        jules_backend_enabled = jules_config.enabled if jules_config else False
-
-        # Also check [jules].enabled in config.toml
-        jules_config_enabled = get_jules_enabled_from_config()
+        # Check if Jules mode should be used based on configuration
+        from .llm_backend_config import is_jules_mode_enabled
 
         # Both must be true for Jules mode to be enabled
-        # jules_mode parameter is requested state, jules_backend_enabled is from llm_config.toml,
-        # and jules_config_enabled is from config.toml
-        jules_mode = jules_mode and jules_backend_enabled and jules_config_enabled
+        # jules_mode parameter is requested state, and is_jules_mode_enabled checks config
+        jules_mode = jules_mode and is_jules_mode_enabled()
         from datetime import datetime
 
         with ProgressStage("Processing single PR/IS"):

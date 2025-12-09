@@ -694,3 +694,20 @@ def get_jules_enabled_from_config(config_path: Optional[str] = None) -> bool:
 
     # If no config.toml found or no [jules].enabled setting, return default (enabled)
     return True
+
+
+def is_jules_mode_enabled() -> bool:
+    """Check if Jules mode is enabled.
+
+    Jules mode is enabled if:
+    1. The 'jules' backend is enabled in llm_config.toml
+    2. The [jules].enabled flag is set to true in config.toml (default: true)
+    """
+    # Check [backends.jules] in llm_config.toml
+    jules_config = get_llm_config().get_backend_config("jules")
+    jules_backend_enabled = jules_config.enabled if jules_config else False
+
+    # Check [jules].enabled in config.toml
+    jules_config_enabled = get_jules_enabled_from_config()
+
+    return jules_backend_enabled and jules_config_enabled

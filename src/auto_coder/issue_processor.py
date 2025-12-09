@@ -400,7 +400,7 @@ def _process_issue_jules_mode(
 
         # Prepare the prompt for Jules
         action_prompt = render_prompt(
-            "issue.issue_action",
+            "issue.action",
             issue_number=issue_number,
             issue_title=issue_title,
             issue_body=issue_body,
@@ -409,7 +409,7 @@ def _process_issue_jules_mode(
         logger.info(f"Starting Jules session for issue #{issue_number}")
 
         # Start Jules session
-        session_id = jules_client.start_session(action_prompt)
+        session_id = jules_client.start_session(action_prompt, repo_name, config.MAIN_BRANCH)
 
         # Store session ID in cloud.csv
         cloud_manager = CloudManager(repo_name)
@@ -423,10 +423,18 @@ def _process_issue_jules_mode(
 
         # Comment on the issue with session ID
         try:
-            comment_body = f"I started a Jules session to work on this issue. Session ID: `{session_id}`\n\nPlease track progress in the Jules session."
+            comment_body = f"I started a Jules session to work on this issue. Session ID: {session_id}\n\nhttps://jules.google.com/session/{session_id}"
             github_client.add_comment_to_issue(repo_name, issue_number, comment_body)
             actions.append(f"Commented on issue #{issue_number} with Jules session ID")
             logger.info(f"Added comment with session ID to issue #{issue_number}")
+
+            # Add @auto-coder label
+            try:
+                github_client.add_labels(repo_name, issue_number, ["@auto-coder"])
+                logger.info(f"Added @auto-coder label to issue #{issue_number}")
+            except Exception as e:
+                logger.warning(f"Failed to add @auto-coder label to issue #{issue_number}: {e}")
+
         except Exception as e:
             logger.warning(f"Failed to add comment to issue #{issue_number}: {e}")
             actions.append(f"Warning: Could not comment on issue #{issue_number}")

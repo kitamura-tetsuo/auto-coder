@@ -15,6 +15,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .llm_backend_config import get_llm_config
+from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
@@ -61,13 +62,17 @@ class JulesClient(LLMClientBase):
         # Set headers
         self.session.headers.update({"Content-Type": "application/json", "User-Agent": "auto-coder/1.0"})
         if self.api_key:
-            self.session.headers["Authorization"] = f"Bearer {self.api_key}"
+            # Use X-Goog-Api-Key header instead of Authorization: Bearer
+            # This is required for Jules API when using API keys
+            self.session.headers["X-Goog-Api-Key"] = self.api_key
 
-    def start_session(self, prompt: str, is_noedit: bool = False) -> str:
+    def start_session(self, prompt: str, repo_name: str, base_branch: str, is_noedit: bool = False) -> str:
         """Start a new Jules session with the given prompt.
 
         Args:
             prompt: The prompt to send to Jules
+            repo_name: Repository name (e.g., 'owner/repo')
+            base_branch: Base branch name (e.g., 'main')
             is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
 
         Returns:
@@ -78,6 +83,12 @@ class JulesClient(LLMClientBase):
             url = f"{self.base_url}/sessions"
             payload = {
                 "prompt": prompt,
+                "sourceContext": {
+                    "source": f"sources/github/{repo_name}",
+                    "githubRepoContext": {
+                        "startingBranch": base_branch
+                    }
+                }
             }
 
             logger.info("Starting Jules session")
@@ -267,7 +278,13 @@ class JulesClient(LLMClientBase):
             Response from Jules
         """
         # Start a new session for this prompt
-        session_id = self.start_session(prompt, is_noedit)
+        # Note: This fallback method doesn't have access to repo context, so it might fail
+        # if the API strictly requires it. We'll use placeholders or try without it.
+        # For now, we'll try to extract repo info from prompt or use defaults if possible,
+        # but since this is a fallback, we might need to update the interface or accept failure.
+        # Ideally, _run_llm_cli shouldn't be used for Jules in this context.
+        logger.warning("_run_llm_cli called for JulesClient. This may fail due to missing repo context.")
+        session_id = self.start_session(prompt, "unknown/repo", "main", is_noedit)
 
         try:
             # Send the prompt and get response

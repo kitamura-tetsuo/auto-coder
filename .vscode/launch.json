@@ -60,7 +60,6 @@
             "cwd": "/workspaces/auto-coder",
             "args": [
                 "process-issues",
-                "--ignore-dependabot-prs",
                 "--no-check-labels",
                 // "--force-reindex",
                 "--disable-graphrag",
@@ -81,8 +80,9 @@
             "cwd": "/workspace",
             "args": [
                 "process-issues",
-                "--ignore-dependabot-prs",
                 "--disable-graphrag",
+                "--only",
+                "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",
             ],
             "python": "${command:python.interpreterPath}",

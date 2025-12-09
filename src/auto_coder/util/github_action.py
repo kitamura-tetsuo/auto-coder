@@ -272,12 +272,10 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             if "no checks reported" in stderr_lower:
                 logger.info(f"No checks reported yet for PR #{pr_number} - checks may not have started")
                 log_action(f"No checks reported yet for PR #{pr_number}", False, result.stderr)
-                # Return in_progress=True to indicate we should wait for checks to start
-                return GitHubActionsStatusResult(
-                    success=False,
-                    ids=[],
-                    in_progress=True,
-                )
+                
+                # Attempt historical fallback to see if previous commits have checks
+                logger.info(f"No checks reported for #{pr_number}, attempting historical fallback...")
+                return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
             # Only treat as error if there's no output and no known informational message
             log_action(f"Failed to get PR checks for #{pr_number}", False, result.stderr)
