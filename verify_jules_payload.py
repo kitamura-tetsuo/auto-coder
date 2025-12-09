@@ -57,6 +57,10 @@ def test_jules_client_payload():
             print(f"FAILURE: Incorrect startingBranch. Expected {base_branch}, got {source_context.get('githubRepoContext', {}).get('startingBranch')}")
             sys.exit(1)
             
+        if payload.get("automationMode") != "AUTO_CREATE_PR":
+            print(f"FAILURE: Incorrect automationMode. Expected AUTO_CREATE_PR, got {payload.get('automationMode')}")
+            sys.exit(1)
+
         print("SUCCESS: Payload constructed correctly.")
 
 if __name__ == "__main__":

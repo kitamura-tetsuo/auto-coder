@@ -83,6 +83,7 @@ class JulesClient(LLMClientBase):
             url = f"{self.base_url}/sessions"
             payload = {
                 "prompt": prompt,
+                "automationMode": "AUTO_CREATE_PR",
                 "sourceContext": {
                     "source": f"sources/github/{repo_name}",
                     "githubRepoContext": {

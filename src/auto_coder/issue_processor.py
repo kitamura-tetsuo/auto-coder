@@ -408,8 +408,37 @@ def _process_issue_jules_mode(
 
         logger.info(f"Starting Jules session for issue #{issue_number}")
 
+        # Determine base branch (default to main)
+        base_branch = config.MAIN_BRANCH
+
+        # Check for parent issue
+        parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
+        if parent_issue_details:
+            parent_issue_number = parent_issue_details["number"]
+            # Call hook to ensure parent issue is open
+            parent_is_open = ensure_parent_issue_open(github_client, repo_name, parent_issue_details, issue_number)
+
+            if parent_is_open:
+                # If parent issue exists and is OPEN, use parent issue branch as base
+                # Check if parent issue has attempts and use the appropriate parent branch
+                parent_attempt = get_current_attempt(repo_name, parent_issue_number)
+                if parent_attempt > 0:
+                    parent_branch = f"issue-{parent_issue_number}_attempt-{parent_attempt}"
+                else:
+                    parent_branch = f"issue-{parent_issue_number}"
+                
+                logger.info(f"Issue #{issue_number} has OPEN parent issue #{parent_issue_number}, using branch {parent_branch} as base for Jules session")
+                
+                # Check if parent issue branch exists
+                check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
+                if check_parent_branch.returncode == 0:
+                    base_branch = parent_branch
+                else:
+                    logger.warning(f"Parent branch {parent_branch} does not exist locally, but using it as base for Jules session anyway (assuming it exists on remote)")
+                    base_branch = parent_branch
+
         # Start Jules session
-        session_id = jules_client.start_session(action_prompt, repo_name, config.MAIN_BRANCH)
+        session_id = jules_client.start_session(action_prompt, repo_name, base_branch)
 
         # Store session ID in cloud.csv
         cloud_manager = CloudManager(repo_name)
