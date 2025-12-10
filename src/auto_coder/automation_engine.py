@@ -207,6 +207,48 @@ class AutomationEngine:
                             logger.info(f"Processing dependency-bot PR #{pr_number} - checks passed and mergeable")
                     # If both flags are False: Process all Dependabot PRs (try to fix failing)
 
+                # Check if PR is created by Jules and waiting for Jules update
+                if pr_data.get("author") == "jules":
+                    try:
+                        last_interaction_time = None
+                        last_interaction_type = None
+
+                        # Check reviews
+                        for review in pr.get_reviews():
+                            if review.user and review.user.login != "jules":
+                                if last_interaction_time is None or review.submitted_at > last_interaction_time:
+                                    last_interaction_time = review.submitted_at
+                                    last_interaction_type = review.state
+
+                        # Check comments
+                        for comment in pr.get_issue_comments():
+                            if comment.user and comment.user.login != "jules":
+                                if last_interaction_time is None or comment.created_at > last_interaction_time:
+                                    last_interaction_time = comment.created_at
+                                    last_interaction_type = "COMMENT"
+
+                        if last_interaction_time and last_interaction_type != "APPROVED":
+                            # Check for Jules commits after interaction
+                            commits = list(pr.get_commits())
+                            jules_responded = False
+                            if commits:
+                                for commit in reversed(commits):
+                                    # Check commit date
+                                    commit_date = commit.commit.author.date
+                                    if commit_date > last_interaction_time:
+                                        if commit.author and commit.author.login == "jules":
+                                            jules_responded = True
+                                            break
+                                    else:
+                                        break
+
+                            if not jules_responded:
+                                logger.info(f"Skipping PR #{pr_number} - Waiting for Jules to update (requested at {last_interaction_time})")
+                                continue
+
+                    except Exception as e:
+                        logger.warning(f"Failed to check Jules PR status for #{pr_number}: {e}")
+
                 # Count only PRs that we will actually consider as candidates
                 candidates_count += 1
 
@@ -422,7 +464,9 @@ class AutomationEngine:
                             candidate.data,
                             config,
                             self.github,
+                            label_context=should_process,
                         )
+
                     else:
                         # Regular issue processing
                         result.actions = self._take_issue_actions(repo_name, candidate.data)

@@ -19,7 +19,7 @@ from .git_commit import commit_and_push_changes
 from .git_info import get_commit_log, get_current_branch
 from .github_client import GitHubClient
 from .jules_client import JulesClient
-from .label_manager import LabelManager, LabelOperationError, resolve_pr_labels_with_priority
+from .label_manager import LabelManager, LabelManagerContext, LabelOperationError, resolve_pr_labels_with_priority
 from .logger_config import get_logger
 from .progress_footer import ProgressStage, newline_progress, set_progress_item
 from .prompt_loader import render_prompt
@@ -370,6 +370,7 @@ def _process_issue_jules_mode(
     issue_data: Dict[str, Any],
     config: AutomationConfig,
     github_client: GitHubClient,
+    label_context: Optional[LabelManagerContext] = None,
 ) -> List[str]:
     """Process an issue using Jules API for session-based AI interaction.
 
@@ -385,6 +386,7 @@ def _process_issue_jules_mode(
         issue_data: Issue data dictionary
         config: AutomationConfig instance
         github_client: GitHub client for API operations
+        label_context: Optional LabelManagerContext to keep label on success
 
     Returns:
         List of action strings describing what was done
@@ -497,6 +499,11 @@ def _process_issue_jules_mode(
         # This is the feedback loop - Jules processes the issue and creates a PR
         actions.append(f"Started Jules session '{session_id}' for issue #{issue_number}")
         logger.info(f"Jules session started successfully for issue #{issue_number}")
+        
+        # Keep the @auto-coder label if context was provided
+        if label_context:
+            label_context.keep_label()
+            logger.info(f"Keeping @auto-coder label for issue #{issue_number} (Jules session started)")
 
     except Exception as e:
         logger.error(f"Error processing issue #{issue_number} in Jules mode: {e}")

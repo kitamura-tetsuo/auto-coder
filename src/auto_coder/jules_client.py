@@ -144,11 +144,14 @@ class JulesClient(LLMClientBase):
         Returns:
             Response from Jules
         """
+        # Escape < / > to &lt; / &gt;
+        message = message.replace("<", "&lt;").replace(">", "&gt;")
+
         try:
             # Prepare the request
             url = f"{self.base_url}/sessions/{session_id}:sendMessage"
             payload = {
-                "message": message,
+                "prompt": message,
             }
 
             logger.info(f"Sending message to Jules session: {session_id}")

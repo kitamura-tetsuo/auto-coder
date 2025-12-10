@@ -1798,6 +1798,12 @@ def _extract_error_context(content: str, max_lines: int = 500) -> str:
         "eslint",  # Treat ESLint errors specially
         "##[error]",
         "##[warning]",
+        "error ts",
+        "build failed",
+        "module not found",
+        "syntaxerror",
+        "referenceerror",
+        "typeerror",
     ]
 
     # Collect error-related lines
@@ -1864,11 +1870,11 @@ def slice_relevant_error_window(text: str) -> str:
     """
     if not text:
         return text
-    lines = text.split("\n")
+    lines = [_clean_log_line(ln) for ln in text.split("\n")]
     # Group by priority from highest to lowest
     priority_groups = [
         ["Expected substring:", "Received string:", "expect(received)"],
-        ["Error:   ", ".spec.ts", "##[error]", "##[warning]"],
+        ["Error:   ", ".spec.ts", "##[error]", "##[warning]", "error ts", "build failed", "module not found", "syntaxerror", "referenceerror", "typeerror"],
         ["Command failed with exit code", "Process completed with exit code"],
         ["error was not a part of any test", "Notice:", "##[notice]", "notice"],
     ]
@@ -1908,7 +1914,8 @@ def _clean_log_line(line: str) -> str:
     line = ansi_escape.sub("", line)
 
     # Remove timestamp (example: 2025-10-27T03:26:24.5806020Z)
-    timestamp_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+")
+    # Also remove potential prefix like "test\tBuild client\t"
+    timestamp_pattern = re.compile(r"^.*?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s")
     line = timestamp_pattern.sub("", line)
 
     return line

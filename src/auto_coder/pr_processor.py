@@ -137,7 +137,11 @@ def _get_pr_author_login(pr_obj: Any) -> Optional[str]:
     """
     try:
         if isinstance(pr_obj, dict):
+            # Try 'author' field first (some custom dicts)
             login = pr_obj.get("author")
+            # If not found, try 'user' -> 'login' (GitHub API format)
+            if not login:
+                login = pr_obj.get("user", {}).get("login")
         else:
             user = getattr(pr_obj, "user", None)
             login = getattr(user, "login", None) if user is not None else None
@@ -157,6 +161,8 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
         if not login:
             return False
         login_lower = login.lower()
+        if "google-labs-jules[bot]" in login_lower:
+            return False
         if "dependabot" in login_lower or "renovate" in login_lower or login_lower.endswith("[bot]"):
             return True
     except Exception:
@@ -1085,21 +1091,65 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         logger.debug(f"Found session ID pattern 3 (GitHub PR URL): {session_id}")
         return session_id
 
-    # Pattern 4: Look for any alphanumeric string that looks like a session ID
-    # (this is a fallback and should be used carefully)
-    # Common session ID formats: starts with letter/number, 8-50 chars
-    general_pattern = r"\b([a-zA-Z0-9]{10,50})\b"
-    matches = re.findall(general_pattern, pr_body)
-    if matches:
-        # Return the first reasonable-looking session ID
-        for potential_id in matches:
-            # Skip common words that happen to be 10+ chars
-            if potential_id.lower() not in ["repository", "pull request", "github", "auto-coder"]:
-                logger.debug(f"Found session ID pattern 4: {potential_id}")
-                return potential_id
+    # Pattern 4: Look for Jules Task IDs (e.g., jules.google.com/task/12345 or "task 12345")
+    # This is treated as a session ID
+    task_url_pattern = r"jules\.google\.com/task/(\d+)"
+    match = re.search(task_url_pattern, pr_body)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 4 (Jules Task URL): {session_id}")
+        return session_id
+        
+    task_id_pattern = r"\btask\s+(\d+)\b"
+    match = re.search(task_id_pattern, pr_body, re.IGNORECASE)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 5 (Jules Task ID): {session_id}")
+        return session_id
+
+    # Pattern 6: Look for standalone session IDs starting with "session_"
+    # e.g., session_12345, session_abc-def
+    session_prefix_pattern = r"\b(session_[a-zA-Z0-9-_]+)\b"
+    match = re.search(session_prefix_pattern, pr_body)
+    if match:
+        session_id = match.group(1).strip()
+        logger.debug(f"Found session ID pattern 6 (session_ prefix): {session_id}")
+        return session_id
 
     logger.debug("No session ID found in PR body")
     return None
+
+
+def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, github_client: Any) -> Optional[int]:
+    """Find issue number by searching for session ID in issue comments."""
+    try:
+        logger.info(f"Searching for session ID '{session_id}' in open issue comments...")
+        repo = github_client.get_repository(repo_name)
+        # Get open issues
+        issues = repo.get_issues(state='open')
+        
+        for issue in issues:
+            # Skip Pull Requests (get_issues returns both)
+            if issue.pull_request is not None:
+                continue
+
+            # Check if session ID is in the issue body itself
+            if issue.body and session_id in issue.body:
+                 logger.info(f"Found session ID '{session_id}' in body of issue #{issue.number}")
+                 return issue.number
+
+            # Check comments
+            comments = issue.get_comments()
+            for comment in comments:
+                if comment.body and session_id in comment.body:
+                    logger.info(f"Found session ID '{session_id}' in comment of issue #{issue.number}")
+                    return issue.number
+        
+        logger.warning(f"Session ID '{session_id}' not found in any open issue comments")
+        return None
+    except Exception as e:
+        logger.error(f"Error searching for session ID in comments: {e}")
+        return None
 
 
 def _update_jules_pr_body(
@@ -1135,29 +1185,17 @@ def _update_jules_pr_body(
         separator = "\n\n" if pr_body and not pr_body.endswith("\n") else "\n"
         new_body = f"{pr_body}{separator}{close_statement}\n\nRelated issue: {issue_link}"
 
-        # Update PR body via GitHub CLI
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            [
-                "gh",
-                "pr",
-                "edit",
-                str(pr_number),
-                "--repo",
-                repo_name,
-                "--body",
-                new_body,
-            ],
-            repo=repo_name,
-            capture_output=True,
-        )
-
-        if result.success:  # type: ignore[attr-defined]
+        # Update PR body via GitHub Client (PyGithub)
+        try:
+            repo = github_client.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+            pr.edit(body=new_body)
+            
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
             log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
             return True
-        else:
-            logger.error(f"Failed to update PR #{pr_number} body: {result.stderr}")
+        except Exception as e:
+            logger.error(f"Failed to update PR #{pr_number} body: {e}")
             return False
 
     except Exception as e:
@@ -1174,8 +1212,19 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
     Returns:
         True if the PR is created by Jules, False otherwise
     """
-    pr_author = pr_data.get("user", {}).get("login", "")
-    return pr_author == "google-labs-jules"
+    # Check author first
+    pr_author = _get_pr_author_login(pr_data) or ""
+    if pr_author.startswith("google-labs-jules"):
+        return True
+    
+    # Fallback: Check if PR body contains a valid session ID
+    # This handles cases where the PR was created by a different user (e.g. manual creation)
+    # but is still associated with a Jules session
+    pr_body = pr_data.get("body", "") or ""
+    if _extract_session_id_from_pr_body(pr_body):
+        return True
+        
+    return False
 
 
 def _process_jules_pr(
@@ -1198,12 +1247,28 @@ def _process_jules_pr(
         pr_body = pr_data.get("body", "") or ""
         pr_author = pr_data.get("user", {}).get("login", "")
 
-        # Check if PR author is google-labs-jules
-        if pr_author != "google-labs-jules":
-            logger.debug(f"PR #{pr_number} author is not google-labs-jules ({pr_author}), skipping Jules processing")
+        # Check if this is a Jules PR using the robust detection logic
+        if not _is_jules_pr(pr_data):
+            logger.debug(f"PR #{pr_number} author is not google-labs-jules ({pr_author}) and no session ID found, skipping Jules processing")
             return True  # Not an error, just not a Jules PR
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
+
+        # Check if PR is a draft and mark as ready if so
+        if pr_data.get("draft"):
+            logger.info(f"Jules PR #{pr_number} is a draft, marking as ready for review")
+            gh_logger = get_gh_logger()
+            ready_result = gh_logger.execute_with_logging(
+                ["gh", "pr", "ready", str(pr_number), "--repo", repo_name],
+                repo=repo_name,
+                capture_output=True,
+            )
+            if ready_result.success:
+                logger.info(f"Successfully marked Jules PR #{pr_number} as ready for review")
+                # Update local data to reflect change
+                pr_data["draft"] = False
+            else:
+                logger.error(f"Failed to mark Jules PR #{pr_number} as ready: {ready_result.stderr}")
 
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
@@ -1219,6 +1284,10 @@ def _process_jules_pr(
         # Step 3: Use CloudManager to find the original issue number
         cloud_manager = CloudManager(repo_name)
         issue_number = cloud_manager.get_issue_by_session(session_id)
+
+        if not issue_number:
+            logger.warning(f"No issue found for session ID '{session_id}' in local DB. Searching comments...")
+            issue_number = _find_issue_by_session_id_in_comments(repo_name, session_id, github_client)
 
         if not issue_number:
             logger.warning(f"No issue found for session ID '{session_id}' in Jules PR #{pr_number}")
