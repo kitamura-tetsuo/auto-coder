@@ -6,7 +6,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from auto_coder.backend_manager import run_llm_prompt
+from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
 
 from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
@@ -90,6 +90,8 @@ def _trigger_fallback_for_conflict_failure(
         failure_reason: Reason for the failure
     """
     try:
+        cmd.run_command(["git", "merge", "--abort"])
+
         # Get PR body to extract linked issues
         gh_logger = get_gh_logger()
         pr_view_result = gh_logger.execute_with_logging(
@@ -242,7 +244,7 @@ def check_mergeability_with_llm(
         logger.info(f"Asking LLM to check mergeability for PR #{pr_data.get('number')}")
 
         # Call LLM to check mergeability
-        response = run_llm_prompt(prompt)
+        response = run_llm_noedit_prompt(prompt)
 
         # Parse the response
         if response and len(response.strip()) > 0:

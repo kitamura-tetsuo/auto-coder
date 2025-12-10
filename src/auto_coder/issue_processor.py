@@ -434,8 +434,32 @@ def _process_issue_jules_mode(
                 if check_parent_branch.returncode == 0:
                     base_branch = parent_branch
                 else:
-                    logger.warning(f"Parent branch {parent_branch} does not exist locally, but using it as base for Jules session anyway (assuming it exists on remote)")
-                    base_branch = parent_branch
+                    # Check if branch exists on remote
+                    check_remote = cmd.run_command(["git", "ls-remote", "--exit-code", "--heads", "origin", parent_branch])
+                    
+                    if check_remote.returncode == 0:
+                        # Exists on remote but not locally
+                        logger.info(f"Parent branch {parent_branch} exists on remote but not locally. Using it as base.")
+                        base_branch = parent_branch
+                    else:
+                        # Doesn't exist on remote either - create and push it
+                        logger.info(f"Parent branch {parent_branch} does not exist locally or on remote. Creating it from {config.MAIN_BRANCH}...")
+                        
+                        # Create branch locally (without checkout)
+                        create_result = cmd.run_command(["git", "branch", parent_branch, config.MAIN_BRANCH])
+                        if not create_result.success:
+                            logger.error(f"Failed to create parent branch {parent_branch}: {create_result.stderr}")
+                            # Still try to use it as base, though it will likely fail later if it doesn't exist
+                            base_branch = parent_branch 
+                        else:
+                            # Push to remote
+                            push_result = cmd.run_command(["git", "push", "-u", "origin", parent_branch])
+                            if not push_result.success:
+                                logger.warning(f"Failed to push parent branch {parent_branch}: {push_result.stderr}")
+                            else:
+                                logger.info(f"Successfully created and pushed parent branch {parent_branch}")
+                            
+                            base_branch = parent_branch
 
         # Start Jules session
         session_id = jules_client.start_session(action_prompt, repo_name, base_branch)

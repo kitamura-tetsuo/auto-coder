@@ -81,8 +81,8 @@
             "args": [
                 "process-issues",
                 "--disable-graphrag",
-                "--only",
-                "https://github.com/kitamura-tetsuo/outliner/pull/1154"
+                // "--only",
+                // "https://github.com/kitamura-tetsuo/outliner/pull/1154"
                 // "--force-reindex",
             ],
             "python": "${command:python.interpreterPath}",
