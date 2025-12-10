@@ -134,6 +134,50 @@ class JulesClient(LLMClientBase):
             logger.error(f"Failed to start Jules session: {e}")
             raise RuntimeError(f"Failed to start Jules session: {e}")
 
+    def list_sessions(self, page_size: int = 5) -> List[Dict[str, Any]]:
+        """List recent Jules sessions.
+
+        Args:
+            page_size: Number of sessions to return (default: 5)
+
+        Returns:
+            List of session dictionaries
+        """
+        try:
+            # Prepare the request
+            url = f"{self.base_url}/sessions"
+            params = {"pageSize": page_size}
+
+            logger.info(f"Listing Jules sessions (pageSize={page_size})")
+            logger.info(f"🤖 GET {url}")
+            logger.info("=" * 60)
+
+            response = self.session.get(url, params=params, timeout=self.timeout)
+
+            logger.info("=" * 60)
+
+            # Check if request was successful
+            if response.status_code != 200:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Failed to list Jules sessions: {error_msg}")
+                raise RuntimeError(f"Failed to list Jules sessions: {error_msg}")
+
+            # Parse the response
+            try:
+                response_data = response.json()
+                sessions = response_data.get("sessions", [])
+                return sessions
+            except json.JSONDecodeError:
+                logger.error("Failed to parse Jules sessions response as JSON")
+                return []
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to list Jules sessions: {e}")
+            raise RuntimeError(f"Failed to list Jules sessions: {e}")
+        except Exception as e:
+            logger.error(f"Failed to list Jules sessions: {e}")
+            raise RuntimeError(f"Failed to list Jules sessions: {e}")
+
     def send_message(self, session_id: str, message: str) -> str:
         """Send a message to an existing Jules session.
 
