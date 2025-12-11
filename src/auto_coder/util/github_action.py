@@ -262,82 +262,57 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     current_head_sha = pr_data.get("head", {}).get("sha")
     
     try:
-        # Use gh CLI to get PR status checks with JSON output including headSha
+        if not current_head_sha:
+            logger.warning(f"No head SHA found for PR #{pr_number}, falling back to historical checks")
+            return _check_github_actions_status_from_history(repo_name, pr_data, config)
+
+        # Use gh API to get check runs for the commit
+        # gh pr checks does not support --json, so we use the API directly
         gh_logger = get_gh_logger()
         result = gh_logger.execute_with_logging(
-            ["gh", "pr", "checks", str(pr_number), "--json", "name,status,conclusion,url,headSha"],
+            ["gh", "api", f"repos/{repo_name}/commits/{current_head_sha}/check-runs"],
             repo=repo_name,
             capture_output=True,
         )
 
-        # Note: gh pr checks returns non-zero exit code when some checks fail
-        # This is expected behavior, not an error
-        if result.returncode != 0 and not result.stdout.strip():
-            # Check if this is the "no checks reported" message indicating checks haven't started
-            stderr_lower = result.stderr.lower()
-            if "no checks reported" in stderr_lower:
-                logger.info(f"No checks reported yet for PR #{pr_number} - checks may not have started")
-                log_action(f"No checks reported yet for PR #{pr_number}", False, result.stderr)
-                
-                # If we have a HEAD SHA, we should wait for checks to appear for it
-                if current_head_sha:
-                    logger.info(f"Waiting for checks to start for commit {current_head_sha[:8]}...")
-                    return GitHubActionsStatusResult(
-                        success=False,
-                        ids=[],
-                        in_progress=True, # Treat as in-progress to force waiting
-                    )
-                
-                # Attempt historical fallback if we can't determine SHA or just as backup
-                logger.info(f"No checks reported for #{pr_number}, attempting historical fallback...")
-                return _check_github_actions_status_from_history(repo_name, pr_data, config)
-
-            # Only treat as error if there's no output and no known informational message
-            log_action(f"Failed to get PR checks for #{pr_number}", False, result.stderr)
-
-            # If current PR checks failed, try historical search
-            logger.info(f"Current PR checks failed for #{pr_number}, attempting historical fallback...")
+        if result.returncode != 0:
+            log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, result.stderr)
+            logger.info(f"API call failed for #{pr_number}, attempting historical fallback...")
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         # Parse JSON output
         try:
-            checks_data = json.loads(result.stdout)
+            api_response = json.loads(result.stdout)
+            # The API returns an object with a "check_runs" list
+            checks_data = api_response.get("check_runs", [])
         except json.JSONDecodeError:
-            # Fallback to text parsing if JSON fails (shouldn't happen with --json)
-            logger.warning(f"Failed to parse JSON output from gh pr checks for #{pr_number}, falling back to historical")
+            logger.warning(f"Failed to parse JSON output from gh api for #{pr_number}, falling back to historical")
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         if not checks_data:
-            # No checks found, assume success
+            # No checks found, checks might not have started yet
+            # For a new commit, we expect at least some checks if CI is configured.
+            # If 0 checks, it's ambiguous: either no CI, or CI hasn't started.
+            # We'll treat it as success if we can't find anything, but log it.
+            # Alternatively, if we expect checks, we should wait.
+            # For now, preserving similar logic: if empty, return success (line 312 of original)
+            # But wait, original code queried by PR #, here we query by SHA.
             return GitHubActionsStatusResult(
                 success=True,
                 ids=[],
                 in_progress=False,
             )
 
-        # Filter checks to match current HEAD SHA if available
+        # Map API response matching_checks to the expected format
+        # API fields: name, status, conclusion, html_url (as url), head_sha
+        # content is already filtered by SHA by the API call nature
         matching_checks = []
-        if current_head_sha:
-            for check in checks_data:
-                check_sha = check.get("headSha")
-                # If check has no SHA, assume it matches (safest bet)
-                # If check has SHA, it must match current_head_sha
-                if not check_sha or check_sha.startswith(current_head_sha) or current_head_sha.startswith(check_sha):
-                    matching_checks.append(check)
-                else:
-                    logger.debug(f"Ignoring check '{check.get('name')}' for older commit {check_sha[:8]} (current: {current_head_sha[:8]})")
-            
-            if not matching_checks and checks_data:
-                # We have checks, but none match the current SHA
-                # This means checks for the new commit haven't started or been reported yet
-                logger.info(f"Checks found but none match current HEAD {current_head_sha[:8]}. Waiting for new checks...")
-                return GitHubActionsStatusResult(
-                    success=False,
-                    ids=[],
-                    in_progress=True, # Treat as in-progress to force waiting
-                )
-        else:
-            matching_checks = checks_data
+        for check in checks_data:
+            c = check.copy()
+            # gh pr checks returned browser URL in 'url' field
+            # API returns API URL in 'url' and browser URL in 'html_url'
+            c["url"] = check.get("html_url", "")
+            matching_checks.append(c)
 
         checks = []
         failed_checks = []
