@@ -252,14 +252,20 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
 
 @progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> GitHubActionsStatusResult:
-    """Check GitHub Actions status for a PR."""
+    """Check GitHub Actions status for a PR.
+    
+    Verifies that the checks correspond to the current PR HEAD SHA.
+    If checks are for an older commit, returns in_progress=True to wait for new checks.
+    """
     pr_number = pr_data["number"]
-
+    # Get the current HEAD SHA of the PR
+    current_head_sha = pr_data.get("head", {}).get("sha")
+    
     try:
-        # Use gh CLI to get PR status checks (text output)
+        # Use gh CLI to get PR status checks with JSON output including headSha
         gh_logger = get_gh_logger()
         result = gh_logger.execute_with_logging(
-            ["gh", "pr", "checks", str(pr_number)],
+            ["gh", "pr", "checks", str(pr_number), "--json", "name,status,conclusion,url,headSha"],
             repo=repo_name,
             capture_output=True,
         )
@@ -273,7 +279,16 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 logger.info(f"No checks reported yet for PR #{pr_number} - checks may not have started")
                 log_action(f"No checks reported yet for PR #{pr_number}", False, result.stderr)
                 
-                # Attempt historical fallback to see if previous commits have checks
+                # If we have a HEAD SHA, we should wait for checks to appear for it
+                if current_head_sha:
+                    logger.info(f"Waiting for checks to start for commit {current_head_sha[:8]}...")
+                    return GitHubActionsStatusResult(
+                        success=False,
+                        ids=[],
+                        in_progress=True, # Treat as in-progress to force waiting
+                    )
+                
+                # Attempt historical fallback if we can't determine SHA or just as backup
                 logger.info(f"No checks reported for #{pr_number}, attempting historical fallback...")
                 return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
@@ -284,9 +299,15 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             logger.info(f"Current PR checks failed for #{pr_number}, attempting historical fallback...")
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
-        # Parse text output to extract check information
-        checks_output = result.stdout.strip()
-        if not checks_output:
+        # Parse JSON output
+        try:
+            checks_data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            # Fallback to text parsing if JSON fails (shouldn't happen with --json)
+            logger.warning(f"Failed to parse JSON output from gh pr checks for #{pr_number}, falling back to historical")
+            return _check_github_actions_status_from_history(repo_name, pr_data, config)
+
+        if not checks_data:
             # No checks found, assume success
             return GitHubActionsStatusResult(
                 success=True,
@@ -294,133 +315,89 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 in_progress=False,
             )
 
-        # Parse the text output
+        # Filter checks to match current HEAD SHA if available
+        matching_checks = []
+        if current_head_sha:
+            for check in checks_data:
+                check_sha = check.get("headSha")
+                # If check has no SHA, assume it matches (safest bet)
+                # If check has SHA, it must match current_head_sha
+                if not check_sha or check_sha.startswith(current_head_sha) or current_head_sha.startswith(check_sha):
+                    matching_checks.append(check)
+                else:
+                    logger.debug(f"Ignoring check '{check.get('name')}' for older commit {check_sha[:8]} (current: {current_head_sha[:8]})")
+            
+            if not matching_checks and checks_data:
+                # We have checks, but none match the current SHA
+                # This means checks for the new commit haven't started or been reported yet
+                logger.info(f"Checks found but none match current HEAD {current_head_sha[:8]}. Waiting for new checks...")
+                return GitHubActionsStatusResult(
+                    success=False,
+                    ids=[],
+                    in_progress=True, # Treat as in-progress to force waiting
+                )
+        else:
+            matching_checks = checks_data
+
         checks = []
         failed_checks = []
         all_passed = True
         has_in_progress = False
-
-        lines = checks_output.split("\n")
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            # Check if this is tab-separated format (newer gh CLI)
-            if "\t" in line:
-                # Format: name\tstatus\ttime\turl
-                parts = line.split("\t")
-                if len(parts) >= 2:
-                    name = parts[0].strip()
-                    status = parts[1].strip().lower()
-                    url = parts[3].strip() if len(parts) > 3 else ""
-
-                    if status in ["pass", "success"]:
-                        checks.append(
-                            {
-                                "name": name,
-                                "state": "completed",
-                                "conclusion": "success",
-                            }
-                        )
-                    elif status in ["fail", "failure", "error"]:
-                        all_passed = False
-                        check_info = {
-                            "name": name,
-                            "state": "completed",
-                            "conclusion": "failure",
-                        }
-                        checks.append(check_info)
-                        failed_checks.append({"name": name, "conclusion": "failure", "details_url": url})
-                    elif status in ["skipping", "skipped", "pending", "in_progress"]:
-                        # Check for in-progress status
-                        if status in ["pending", "in_progress"]:
-                            has_in_progress = True
-                            all_passed = False
-                        # Note: skipping/skipped checks don't affect all_passed
-                        check_info = {
-                            "name": name,
-                            "state": ("pending" if status in ["pending", "in_progress"] else "skipped"),
-                            "conclusion": status,
-                        }
-                        checks.append(check_info)
-                        if status in ["pending", "in_progress"]:
-                            failed_checks.append({"name": name, "conclusion": status, "details_url": url})
-                    else:
-                        # Handle any other status values
-                        if status not in [
-                            "pass",
-                            "success",
-                            "fail",
-                            "failure",
-                            "error",
-                            "skipping",
-                            "skipped",
-                            "pending",
-                            "in_progress",
-                        ]:
-                            # Unknown status - treat as potential failure
-                            all_passed = False
-                        check_info = {
-                            "name": name,
-                            "state": "completed",
-                            "conclusion": status,
-                        }
-                        checks.append(check_info)
-                        failed_checks.append({"name": name, "conclusion": status, "details_url": url})
-            else:
-                # Check format: "✓ check-name" or "✗ check-name" or "- check-name"
-                if line.startswith("✓"):
-                    # Successful check
-                    name = line[2:].strip()
-                    checks.append({"name": name, "state": "completed", "conclusion": "success"})
-                elif line.startswith("✗"):
-                    # Failed check
-                    name = line[2:].strip()
-                    all_passed = False
-                    check_info = {
-                        "name": name,
-                        "state": "completed",
-                        "conclusion": "failure",
-                    }
-                    checks.append(check_info)
-                    failed_checks.append({"name": name, "conclusion": "failure", "details_url": ""})
-                elif line.startswith("-") or line.startswith("○"):
-                    # Pending/in-progress check
-                    name = line[2:].strip() if line.startswith("-") else line[2:].strip()
-                    has_in_progress = True
-                    all_passed = False
-                    check_info = {
-                        "name": name,
-                        "state": "pending",
-                        "conclusion": "pending",
-                    }
-                    checks.append(check_info)
-                    failed_checks.append({"name": name, "conclusion": "pending", "details_url": ""})
-
-        # Extract run IDs from URLs if available
         run_ids = []
-        for check in failed_checks:
-            details_url = check.get("details_url", "")
-            if details_url and "/actions/runs/" in details_url:
-                # URL format: https://github.com/owner/repo/actions/runs/run_id/job/job_id
-                import re
 
-                match = re.search(r"/actions/runs/(\d+)", details_url)
+        for check in matching_checks:
+            name = check.get("name", "")
+            status = (check.get("status") or "").lower()
+            conclusion = (check.get("conclusion") or "").lower()
+            url = check.get("url", "")
+
+            # Extract run ID from URL
+            if url and "/actions/runs/" in url:
+                import re
+                match = re.search(r"/actions/runs/(\d+)", url)
                 if match:
                     run_ids.append(int(match.group(1)))
 
-        # Also check successful checks for run IDs
-        for check in checks:
-            details_url = check.get("details_url", "")
-            if details_url and "/actions/runs/" in details_url:
-                import re
+            if conclusion in ["success", "pass"]:
+                checks.append({
+                    "name": name,
+                    "state": "completed",
+                    "conclusion": "success"
+                })
+            elif conclusion in ["failure", "failed", "error", "timed_out", "cancelled"]:
+                all_passed = False
+                checks.append({
+                    "name": name,
+                    "state": "completed",
+                    "conclusion": "failure"
+                })
+                failed_checks.append({"name": name, "conclusion": "failure", "details_url": url})
+            elif status in ["in_progress", "queued", "pending", "waiting"]:
+                has_in_progress = True
+                all_passed = False
+                checks.append({
+                    "name": name,
+                    "state": "pending",
+                    "conclusion": "pending"
+                })
+                failed_checks.append({"name": name, "conclusion": "pending", "details_url": url})
+            elif conclusion in ["skipped", "neutral"]:
+                checks.append({
+                    "name": name,
+                    "state": "completed",
+                    "conclusion": conclusion
+                })
+            else:
+                # Unknown status
+                all_passed = False
+                checks.append({
+                    "name": name,
+                    "state": "completed",
+                    "conclusion": conclusion or status
+                })
+                failed_checks.append({"name": name, "conclusion": conclusion or status, "details_url": url})
 
-                match = re.search(r"/actions/runs/(\d+)", details_url)
-                if match:
-                    run_ids.append(int(match.group(1)))
-
-        # Remove duplicates and return
+        # Remove duplicates
         run_ids = list(set(run_ids))
 
         return GitHubActionsStatusResult(
