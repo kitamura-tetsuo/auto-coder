@@ -68,6 +68,12 @@ def process_pull_request(
 
         check_for_updates_and_restart()
 
+        # Check if we should skip this PR because it's waiting for Jules
+        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data):
+            logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
+            processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
+            return processed_pr
+
         # Process Jules PRs to detect session IDs and update PR body
         try:
             jules_success = _process_jules_pr(repo_name, pr_data, github_client)
@@ -78,6 +84,12 @@ def process_pull_request(
         except Exception as e:
             logger.error(f"Error in Jules PR processing for PR #{pr_number}: {e}")
             # Continue with normal processing even if Jules processing fails
+
+        # Check if we should skip this PR because it's waiting for Jules
+        if _should_skip_waiting_for_jules(github_client, repo_name, pr_data):
+            logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
+            processed_pr.actions_taken = ["Skipped - waiting for Jules to fix CI failures"]
+            return processed_pr
 
         # Extract PR information
         branch_name = pr_data.get("head", {}).get("ref")
@@ -169,6 +181,61 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
         # Best-effort detection only; never fail hard here
         return False
     return False
+
+
+def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: Dict[str, Any]) -> bool:
+    """Check if PR should be skipped because it's waiting for Jules to fix CI failures.
+
+    Returns True if:
+    1. The last comment on the PR is the specific "CI checks failed..." message from Auto-Coder.
+    2. There are no commits after that comment.
+    """
+    try:
+        pr_number = pr_data["number"]
+        
+        # Get comments
+        comments = github_client.get_pr_comments(repo_name, pr_number)
+        if not comments:
+            return False
+            
+        # Sort comments by date (newest last) just to be safe, though API usually returns them sorted
+        comments.sort(key=lambda x: x["created_at"])
+        
+        last_comment = comments[-1]
+        last_comment_body = last_comment.get("body", "")
+        
+        # Check if last comment is the specific message
+        target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
+        if target_message not in last_comment_body:
+            return False
+            
+        # Get last comment timestamp
+        last_comment_time = last_comment["created_at"]
+        
+        # Get commits
+        commits = github_client.get_pr_commits(repo_name, pr_number)
+        if not commits:
+            # If no commits found (unlikely for a PR), assume we shouldn't skip
+            return False
+            
+        # Sort commits by date (newest last)
+        commits.sort(key=lambda x: x["commit"]["committer"]["date"])
+        
+        last_commit = commits[-1]
+        last_commit_time = last_commit["commit"]["committer"]["date"]
+        
+        # Compare timestamps
+        # ISO format strings can be compared lexicographically if they are in the same timezone (usually UTC from GitHub)
+        if last_commit_time > last_comment_time:
+            logger.info(f"PR #{pr_number} has new commits after Jules wait message, processing...")
+            return False
+            
+        logger.info(f"PR #{pr_number} is waiting for Jules (last comment is wait message, no new commits)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error checking if PR #{pr_data.get('number')} should be skipped: {e}")
+        return False
 
 
 def _get_mergeable_state(

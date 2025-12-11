@@ -1252,7 +1252,7 @@ def get_github_actions_logs_from_url(url: str) -> str:
         except Exception:
             pass
 
-        return f"=== Job {job_name} ({job_id}) ===\nNo detailed logs available"
+        return f"=== Job {job_name} ({job_id}) ===\nNo detailed logs available\n\n{url}"
 
     except Exception as e:
         logger.error(f"Error fetching GitHub Actions logs from URL: {e}")
@@ -1633,7 +1633,9 @@ def _get_github_actions_logs(
             for check in failed_checks:
                 check_name = check.get("name", "Unknown")
                 conclusion = check.get("conclusion", "unknown")
-                logs.append(f"=== {check_name} ===\nStatus: {conclusion}\nNo detailed logs available")
+                details_url = check.get("details_url", "")
+                url_str = f"\n\n{details_url}" if details_url else ""
+                logs.append(f"=== {check_name} ===\nStatus: {conclusion}\nNo detailed logs available{url_str}")
 
     except Exception as e:
         logger.error(f"Error getting GitHub Actions logs: {e}")

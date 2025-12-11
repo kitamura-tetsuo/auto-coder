@@ -840,6 +840,62 @@ class GitHubClient:
             logger.error(f"Failed to add comment to PR #{pr_number}: {e}")
             raise
 
+    def get_pr_comments(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Get all comments for a pull request.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            pr_number: PR number to get comments for
+
+        Returns:
+            List of comments as dictionaries (containing body, created_at, user, etc.)
+        """
+        try:
+            repo = self.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+            comments = []
+            for comment in pr.get_issue_comments():
+                comments.append({
+                    "body": comment.body,
+                    "created_at": comment.created_at.isoformat(),
+                    "user": {"login": comment.user.login} if comment.user else None,
+                    "id": comment.id
+                })
+            return comments
+        except GithubException as e:
+            logger.error(f"Failed to get comments for PR #{pr_number}: {e}")
+            return []
+
+    def get_pr_commits(self, repo_name: str, pr_number: int) -> List[Dict[str, Any]]:
+        """Get all commits for a pull request.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            pr_number: PR number to get commits for
+
+        Returns:
+            List of commits as dictionaries
+        """
+        try:
+            repo = self.get_repository(repo_name)
+            pr = repo.get_pull(pr_number)
+            commits = []
+            for commit in pr.get_commits():
+                commits.append({
+                    "sha": commit.sha,
+                    "commit": {
+                        "message": commit.commit.message,
+                        "committer": {
+                            "date": commit.commit.committer.date.isoformat(),
+                            "name": commit.commit.committer.name
+                        }
+                    }
+                })
+            return commits
+        except GithubException as e:
+            logger.error(f"Failed to get commits for PR #{pr_number}: {e}")
+            return []
+
     def get_all_sub_issues(self, repo_name: str, issue_number: int) -> List[int]:
         """Get list of all sub-issues for a given issue using GitHub GraphQL API.
 
