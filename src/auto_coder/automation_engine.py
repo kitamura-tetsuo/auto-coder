@@ -22,6 +22,7 @@ from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
+from .pr_processor import _should_skip_waiting_for_jules
 from .pr_processor import process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
@@ -176,6 +177,11 @@ class AutomationEngine:
                 # Skip PRs with running CI processes
                 if checks.in_progress:
                     logger.debug(f"Skipping PR #{pr_number} - CI checks are in progress")
+                    continue
+
+                # Check if we should skip this PR because it's waiting for Jules
+                if _should_skip_waiting_for_jules(self.github, repo_name, pr_data):
+                    logger.info(f"Skipping PR #{pr_number} - waiting for Jules to fix CI failures")
                     continue
 
                 mergeable = pr_data.get("mergeable", True)
