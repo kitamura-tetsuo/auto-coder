@@ -218,3 +218,33 @@ def test_pytest_success_playwright_fail_should_detect_playwright(monkeypatch):
 
     path = extract_first_failed_test(stdout, stderr)
     assert path == expected_path
+
+
+def test_playwright_prioritize_failed_over_flaky(monkeypatch):
+    """
+    Ensure that when both 'failed' and 'flaky' tests are present in the summary,
+    the 'failed' test is prioritized.
+    """
+    stdout = textwrap.dedent(
+        """
+          1 failed
+            [project] › e2e/project/prj-delete-project-1129.spec.ts:7:5 › Project Deletion › should be able to delete a project 
+          2 flaky
+            [core] › e2e/core/slr-box-selection-copy-cancel-paste-timing-regression-9f2a1b3c.spec.ts:88:5 › ボックス選択のコピー・キャンセル・ペーストのタイミング回帰テスト › 矩形選択でコピー → Escでキャンセル → 再度矩形選択 → ペースト 
+            [new] › e2e/new/GRV-003-layout-persistence.spec.ts:46:5 › GRV-0002: Graph view layout persistence › layout persists after page reload 
+          1 skipped
+          2 did not run
+          357 passed (18.9m)
+          1 error was not a part of any test, see above for details
+        """
+    )
+    stderr = ""
+
+    failed_test = "e2e/project/prj-delete-project-1129.spec.ts"
+    flaky_test = "e2e/core/slr-box-selection-copy-cancel-paste-timing-regression-9f2a1b3c.spec.ts"
+    
+    # Mock existence for both so we test priority, not just existence
+    monkeypatch.setattr(os.path, "exists", lambda p: p in [failed_test, flaky_test])
+
+    path = extract_first_failed_test(stdout, stderr)
+    assert path == failed_test

@@ -47,6 +47,9 @@ def _detect_failed_test_library(text: str) -> Optional[str]:
         return "playwright"
     if re.search(r"\d+ failed.*playwright", text, re.IGNORECASE):
         return "playwright"
+    # Playwright list reporter summary patterns
+    if re.search(r"^\s*\d+\s+(?:failed|flaky)", text, re.MULTILINE):
+        return "playwright"
 
     # Vitest failure patterns
     # Patterns like "FAIL  |unit| src/tests/..."
@@ -117,31 +120,76 @@ def _collect_playwright_candidates(text: str) -> List[str]:
     found: List[str] = []
     lines = text.split("\n")
 
-    fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
-    fail_heading_re = re.compile(r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
+    # Regex to identify section headers like "  1 failed", "  2 flaky", etc.
+    section_header_re = re.compile(r"^\s*\d+\s+(failed|flaky|passed|skipped|did not run)")
+    
+    # Regex to extract spec files from lines
+    # Matches: [project] › path/to/file.spec.ts:7:5 › ...
+    # Also matches lines that just contain the spec path
+    spec_file_re = re.compile(r"([^\s:]+\.spec\.ts)")
+
+    current_section = None
+    failed_candidates: List[str] = []
+    flaky_candidates: List[str] = []
 
     for ln in lines:
-        m = fail_bullet_re.search(ln)
-        if m:
-            norm = _normalize_spec(m.group(1))
-            if norm not in found:
-                found.append(norm)
+        # Check for section header
+        m_header = section_header_re.search(ln)
+        if m_header:
+            current_section = m_header.group(1)
+            continue
 
-    for ln in lines:
-        m = fail_heading_re.search(ln)
-        if m:
-            norm = _normalize_spec(m.group(1))
-            if norm not in found:
-                found.append(norm)
+        # Extract spec files from the line
+        if current_section in ["failed", "flaky"]:
+            specs = spec_file_re.findall(ln)
+            for spec in specs:
+                norm = _normalize_spec(spec)
+                
+                if current_section == "failed":
+                    if norm not in failed_candidates:
+                        failed_candidates.append(norm)
+                elif current_section == "flaky":
+                    if norm not in flaky_candidates:
+                        flaky_candidates.append(norm)
 
-    # Fallback: Search for lines containing .spec.ts
-    if not found:
+    # Prioritize failed candidates, then flaky
+    # Filter out duplicates while preserving order
+    all_candidates = []
+    for c in failed_candidates:
+        if c not in all_candidates:
+            all_candidates.append(c)
+    for c in flaky_candidates:
+        if c not in all_candidates:
+            all_candidates.append(c)
+    
+    # Fallback: if nothing found in explicit sections, use the original regexes
+    if not all_candidates:
+        fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
+        fail_heading_re = re.compile(r"^[^\S\r\n]*\d+\)\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
+
+        for ln in lines:
+            m = fail_bullet_re.search(ln)
+            if m:
+                norm = _normalize_spec(m.group(1))
+                if norm not in all_candidates:
+                    all_candidates.append(norm)
+
+        for ln in lines:
+            m = fail_heading_re.search(ln)
+            if m:
+                norm = _normalize_spec(m.group(1))
+                if norm not in all_candidates:
+                    all_candidates.append(norm)
+
+    # Final Fallback: Search for lines containing .spec.ts (broad search)
+    # Only if absolutely nothing else was found
+    if not all_candidates:
         for spec_path in re.findall(r"([^\s:]+\.spec\.ts)", text):
             norm = _normalize_spec(spec_path)
-            if norm not in found:
-                found.append(norm)
-
-    return found
+            if norm not in all_candidates:
+                all_candidates.append(norm)
+                    
+    return all_candidates
 
 
 def _collect_vitest_candidates(text: str) -> List[str]:
