@@ -162,6 +162,7 @@ class GeminiClient(LLMClientBase):
             result = CommandExecutor.run_command(
                 cmd,
                 stream_output=True,
+                idle_timeout=300,
             )
 
             logger.info("=" * 60)

@@ -178,6 +178,7 @@ class CodexClient(LLMClientBase):
                 stream_output=True,
                 env=env if len(env) > len(os.environ) else None,
                 dot_format=True,
+                idle_timeout=300,
             )
 
             stdout = (result.stdout or "").strip()

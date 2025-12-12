@@ -283,6 +283,7 @@ class CommandExecutor:
         env: Optional[Dict[str, str]],
         on_stream: Optional[Callable[[str, str], None]] = None,
         dot_format: bool = False,
+        idle_timeout: Optional[int] = None,
     ) -> Tuple[int, str, str]:
         """Run a command while streaming stdout/stderr to the logger.
 
@@ -314,21 +315,37 @@ class CommandExecutor:
             readers.append(cls._spawn_reader(process.stderr, "stderr", output_queue))
 
         start = time.monotonic()
+        last_output_time = time.monotonic()
         dots_printed = 0
 
         try:
             while True:
+                now = time.monotonic()
                 if timeout is not None:
-                    elapsed = time.monotonic() - start
+                    elapsed = now - start
                     remaining = timeout - elapsed
                     if remaining <= 0:
                         process.kill()
                         raise subprocess.TimeoutExpired(cmd, timeout, "".join(stdout_lines), "".join(stderr_lines))
+                else:
+                    remaining = None
 
-                poll_interval = min(cls.STREAM_POLL_INTERVAL, remaining) if timeout is not None else cls.STREAM_POLL_INTERVAL
+                # Check idle timeout
+                if idle_timeout is not None:
+                    idle_time = now - last_output_time
+                    if idle_time > idle_timeout:
+                        process.kill()
+                        raise subprocess.TimeoutExpired(
+                            cmd, idle_timeout, "".join(stdout_lines), "".join(stderr_lines)
+                        )  # Using idle_timeout as timeout value for exception
+
+                poll_interval = cls.STREAM_POLL_INTERVAL
+                if remaining is not None:
+                    poll_interval = min(poll_interval, remaining)
 
                 try:
                     stream_name, chunk = output_queue.get(timeout=poll_interval)
+                    last_output_time = time.monotonic()  # Reset idle timer on output
                     if chunk is None:
                         streams_active.discard(stream_name)
                     else:
@@ -431,6 +448,7 @@ class CommandExecutor:
         env_overrides: Optional[Dict[str, str]] = None,
         on_stream: Optional[Callable[[str, str], None]] = None,
         dot_format: bool = False,
+        idle_timeout: Optional[int] = None,
     ) -> CommandResult:
         """Run a command with consistent error handling."""
         if timeout is None:
@@ -462,7 +480,9 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, effective_env, on_stream, dot_format)
+                return_code, stdout, stderr = cls._run_with_streaming(
+                    cmd, timeout, cwd, effective_env, on_stream, dot_format, idle_timeout=idle_timeout
+                )
             else:
                 result = subprocess.run(
                     cmd,
