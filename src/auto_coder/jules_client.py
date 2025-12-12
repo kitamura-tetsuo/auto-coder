@@ -66,7 +66,7 @@ class JulesClient(LLMClientBase):
             # This is required for Jules API when using API keys
             self.session.headers["X-Goog-Api-Key"] = self.api_key
 
-    def start_session(self, prompt: str, repo_name: str, base_branch: str, is_noedit: bool = False) -> str:
+    def start_session(self, prompt: str, repo_name: str, base_branch: str, is_noedit: bool = False, title: Optional[str] = None) -> str:
         """Start a new Jules session with the given prompt.
 
         Args:
@@ -74,6 +74,7 @@ class JulesClient(LLMClientBase):
             repo_name: Repository name (e.g., 'owner/repo')
             base_branch: Base branch name (e.g., 'main')
             is_noedit: Whether this is a no-edit operation (uses options_for_noedit)
+            title: Optional title for the session
 
         Returns:
             Session ID for the started session
@@ -91,6 +92,9 @@ class JulesClient(LLMClientBase):
                     }
                 }
             }
+
+            if title:
+                payload["title"] = title
 
             logger.info("Starting Jules session")
             logger.info(f"🤖 POST {url}")

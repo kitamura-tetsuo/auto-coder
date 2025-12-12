@@ -68,8 +68,8 @@ class TestJulesClient:
         assert client.options == ["--flag1", "value1", "--flag2"]
         assert client.options_for_noedit == ["--no-edit-flag"]
         assert client.api_key == "test-api-key"
-        assert "Authorization" in client.session.headers
-        assert client.session.headers["Authorization"] == "Bearer test-api-key"
+        assert "X-Goog-Api-Key" in client.session.headers
+        assert client.session.headers["X-Goog-Api-Key"] == "test-api-key"
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     def test_init_with_empty_config_options(self, mock_get_config):
@@ -127,7 +127,7 @@ class TestJulesClient:
         mock_post.return_value = mock_response
 
         client = JulesClient()
-        session_id = client.start_session("Test prompt")
+        session_id = client.start_session("Test prompt", "owner/repo", "main")
 
         assert session_id == "test-session-123"
         assert session_id in client.active_sessions
@@ -138,6 +138,38 @@ class TestJulesClient:
         call_args = mock_post.call_args
         assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions"
         assert call_args[1]["json"]["prompt"] == "Test prompt"
+        assert "title" not in call_args[1]["json"]
+
+    @patch("src.auto_coder.jules_client.get_llm_config")
+    @patch("requests.Session.post")
+    def test_start_session_with_title(self, mock_post, mock_get_config):
+        """Test starting a new Jules session with a title."""
+        # Mock config
+        mock_config = Mock()
+        mock_backend_config = Mock()
+        mock_backend_config.options = []
+        mock_backend_config.options_for_noedit = []
+        mock_backend_config.api_key = None
+        mock_config.get_backend_config.return_value = mock_backend_config
+        mock_get_config.return_value = mock_config
+
+        # Mock the POST response
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"sessionId": "test-session-title"}
+        mock_post.return_value = mock_response
+
+        client = JulesClient()
+        session_id = client.start_session("Test prompt", repo_name="owner/repo", base_branch="main", title="Test Session Title")
+
+        assert session_id == "test-session-title"
+
+        # Verify correct API call was made
+        mock_post.assert_called_once()
+        call_args = mock_post.call_args
+        assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions"
+        assert call_args[1]["json"]["prompt"] == "Test prompt"
+        assert call_args[1]["json"]["title"] == "Test Session Title"
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
@@ -159,11 +191,11 @@ class TestJulesClient:
         mock_post.return_value = mock_response
 
         client = JulesClient()
-        _ = client.start_session("Test prompt")
+        _ = client.start_session("Test prompt", "owner/repo", "main")
 
         # Verify API key is in headers
-        assert "Authorization" in client.session.headers
-        assert client.session.headers["Authorization"] == "Bearer my-api-key"
+        assert "X-Goog-Api-Key" in client.session.headers
+        assert client.session.headers["X-Goog-Api-Key"] == "my-api-key"
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
@@ -187,7 +219,7 @@ class TestJulesClient:
         client = JulesClient()
 
         with pytest.raises(RuntimeError, match="Failed to start Jules session"):
-            client.start_session("Test prompt")
+            client.start_session("Test prompt", "owner/repo", "main")
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
@@ -208,7 +240,7 @@ class TestJulesClient:
         client = JulesClient()
 
         with pytest.raises(RuntimeError, match="Failed to start Jules session"):
-            client.start_session("Test prompt")
+            client.start_session("Test prompt", "owner/repo", "main")
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
@@ -241,7 +273,7 @@ class TestJulesClient:
         mock_post.assert_called_once()
         call_args = mock_post.call_args
         assert call_args[0][0] == "https://jules.googleapis.com/v1alpha/sessions/test-session:sendMessage"
-        assert call_args[1]["json"]["message"] == "New message"
+        assert call_args[1]["json"]["prompt"] == "New message"
 
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")

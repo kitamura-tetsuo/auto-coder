@@ -464,7 +464,8 @@ def _process_issue_jules_mode(
                             base_branch = parent_branch
 
         # Start Jules session
-        session_id = jules_client.start_session(action_prompt, repo_name, base_branch)
+        session_title = f"{issue_title} (#{issue_number})"
+        session_id = jules_client.start_session(action_prompt, repo_name, base_branch, title=session_title)
 
         # Store session ID in cloud.csv
         cloud_manager = CloudManager(repo_name)

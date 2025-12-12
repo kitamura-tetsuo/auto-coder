@@ -312,3 +312,56 @@ class TestIssueProcessorWithCloudManager:
         assert cloud_manager3.get_session_id(issue_number=1) == "updated_session_1"
         assert cloud_manager3.get_issue_by_session("persistent_session_1") is None
         assert cloud_manager3.get_issue_by_session("updated_session_1") == 1
+
+
+class TestProcessIssueJulesMode:
+    """Test cases for _process_issue_jules_mode function."""
+
+    @patch("src.auto_coder.issue_processor.JulesClient")
+    @patch("src.auto_coder.issue_processor.CloudManager")
+    @patch("src.auto_coder.issue_processor.render_prompt")
+    @patch("src.auto_coder.issue_processor.ensure_parent_issue_open")
+    def test_process_issue_jules_mode_passes_title(
+        self,
+        mock_ensure_parent,
+        mock_render,
+        mock_cloud_manager_class,
+        mock_jules_client_class,
+    ):
+        """Test that _process_issue_jules_mode passes the issue title to start_session."""
+        from src.auto_coder.issue_processor import _process_issue_jules_mode
+
+        # Mock dependencies
+        mock_jules_client = Mock()
+        mock_jules_client.start_session.return_value = "session_123"
+        mock_jules_client_class.return_value = mock_jules_client
+
+        mock_cloud_manager = Mock()
+        mock_cloud_manager.add_session.return_value = True
+        mock_cloud_manager_class.return_value = mock_cloud_manager
+
+        mock_github_client = Mock()
+        mock_github_client.get_parent_issue_details.return_value = None
+
+        mock_config = Mock()
+        mock_config.MAIN_BRANCH = "main"
+
+        # Test data
+        issue_data = {
+            "number": 123,
+            "title": "Test Issue Title",
+            "body": "Test Body"
+        }
+
+        # Run function
+        _process_issue_jules_mode(
+            repo_name="owner/repo",
+            issue_data=issue_data,
+            config=mock_config,
+            github_client=mock_github_client
+        )
+
+        # Verify start_session was called with correct title
+        mock_jules_client.start_session.assert_called_once()
+        call_args = mock_jules_client.start_session.call_args
+        assert call_args[1]["title"] == "Test Issue Title (#123)"
