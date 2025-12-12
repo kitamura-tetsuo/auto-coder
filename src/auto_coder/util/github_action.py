@@ -1282,11 +1282,11 @@ def get_github_actions_logs_from_url(url: str) -> str:
                         # imp = _extract_important_errors({'success': False, 'output': '\n'.join(texts), 'errors': ''})
                         imp = "\n".join(texts)[:1000]  # Simplified for now
                         imp = slice_relevant_error_window(imp)
-                        return f"=== Job {job_name} ({job_id}) ===\n{imp}"
+                        return f"=== Job {job_name} ({job_id}) ===\n{url}\n{imp}"
         except Exception:
             pass
 
-        return f"=== Job {job_name} ({job_id}) ===\nNo detailed logs available\n\n{url}"
+        return f"=== Job {job_name} ({job_id}) ===\n{url}\nNo detailed logs available"
 
     except Exception as e:
         logger.error(f"Error fetching GitHub Actions logs from URL: {e}")
