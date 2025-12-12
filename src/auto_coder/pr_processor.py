@@ -767,12 +767,27 @@ def _handle_pr_merge(
 
         # Check if this is a Jules PR
         if _is_jules_pr(pr_data):
-            actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
-            # Send error logs to Jules and skip local fixing - let Jules handle it
-            jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
-            actions.extend(jules_feedback_actions)
-            actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
-            return actions
+            # Check if we should fallback to local llm_backend due to too many Jules failures
+            should_fallback = False
+            try:
+                # Count specific failure comments
+                comments = github_client.get_pr_comments(repo_name, pr_number)
+                target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
+                failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
+                
+                if failure_count > 10:
+                    logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
+                    should_fallback = True
+            except Exception as e:
+                logger.error(f"Error checking Jules failure count for PR #{pr_number}: {e}")
+            
+            if not should_fallback:
+                actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
+                # Send error logs to Jules and skip local fixing - let Jules handle it
+                jules_feedback_actions = _send_jules_error_feedback(repo_name, pr_data, failed_checks, config, github_client)
+                actions.extend(jules_feedback_actions)
+                actions.append(f"Jules will handle fixing PR #{pr_number}, skipping local fixes")
+                return actions
 
         # Step 5: Checkout PR branch for non-Jules PRs
         # Check if we are already on the PR branch before checkout
