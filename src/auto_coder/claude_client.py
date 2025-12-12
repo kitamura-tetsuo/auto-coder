@@ -264,7 +264,7 @@ class ClaudeClient(LLMClientBase):
                 usage_markers = ('{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",', "5-hour limit reached · resets")
 
             def run_cli(command: list[str]) -> tuple[Any, str, str, bool]:
-                display_cmd = " ".join(command[:3]) + "..." if len(command) > 3 else " ".join(command)
+                display_cmd = " ".join(command)
                 logger.info(f"🤖 Running: {display_cmd}")
                 logger.info("=" * 60)
                 result = CommandExecutor.run_command(
