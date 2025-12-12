@@ -11,7 +11,7 @@ import sys
 import tempfile
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
@@ -230,6 +230,19 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
             logger.info(f"PR #{pr_number} has new commits after Jules wait message, processing...")
             return False
             
+        # Check if it has been waiting for more than 1 hour
+        try:
+            # Parse GitHub timestamp (ISO 8601)
+            # Example: 2023-10-27T10:00:00Z
+            last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
+            current_time = datetime.now(timezone.utc)
+            
+            if current_time - last_comment_dt > timedelta(hours=1):
+                logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour. Switching to local processing.")
+                return False
+        except Exception as e:
+            logger.warning(f"Failed to parse timestamp or compare time for PR #{pr_number}: {e}")
+
         logger.info(f"PR #{pr_number} is waiting for Jules (last comment is wait message, no new commits)")
         return True
         
@@ -778,8 +791,20 @@ def _handle_pr_merge(
                 if failure_count > 10:
                     logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
                     should_fallback = True
+                else:
+                    # Check if the last failure comment was more than 1 hour ago
+                    last_failure_comment = next((c for c in reversed(comments) if target_message in c.get("body", "")), None)
+                    if last_failure_comment:
+                        last_comment_time = last_failure_comment["created_at"]
+                        last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
+                        current_time = datetime.now(timezone.utc)
+                        
+                        if current_time - last_comment_dt > timedelta(hours=1):
+                            logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour (last failure). Switching to local llm_backend.")
+                            should_fallback = True
+
             except Exception as e:
-                logger.error(f"Error checking Jules failure count for PR #{pr_number}: {e}")
+                logger.error(f"Error checking Jules failure count/time for PR #{pr_number}: {e}")
             
             if not should_fallback:
                 actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
