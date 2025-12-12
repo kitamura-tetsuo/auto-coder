@@ -23,6 +23,7 @@ from ..gh_logger import get_gh_logger
 from ..github_client import GitHubClient
 from ..logger_config import get_logger
 from ..utils import CommandExecutor, log_action
+from .github_cache import get_github_cache
 
 cmd = CommandExecutor()
 
@@ -266,6 +267,14 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             logger.warning(f"No head SHA found for PR #{pr_number}, falling back to historical checks")
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
+        # Check cache first
+        cache = get_github_cache()
+        cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            logger.info(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")
+            return cached_result
+
         # Use gh API to get check runs for the commit
         # gh pr checks does not support --json, so we use the API directly
         gh_logger = get_gh_logger()
@@ -297,11 +306,13 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             # Alternatively, if we expect checks, we should wait.
             # For now, preserving similar logic: if empty, return success (line 312 of original)
             # But wait, original code queried by PR #, here we query by SHA.
-            return GitHubActionsStatusResult(
+            result = GitHubActionsStatusResult(
                 success=True,
                 ids=[],
                 in_progress=False,
             )
+            cache.set(cache_key, result)
+            return result
 
         # Map API response matching_checks to the expected format
         # API fields: name, status, conclusion, html_url (as url), head_sha
@@ -375,11 +386,16 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         # Remove duplicates
         run_ids = list(set(run_ids))
 
-        return GitHubActionsStatusResult(
+        result = GitHubActionsStatusResult(
             success=all_passed,
             ids=run_ids,
             in_progress=has_in_progress,
         )
+        
+        # Cache the result
+        cache.set(cache_key, result)
+        
+        return result
 
     except Exception as e:
         logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
@@ -497,6 +513,19 @@ def _check_github_actions_status_from_history(
         assert head_branch
 
         logger.info(f"Checking historical GitHub Actions status for PR #{pr_number} on branch '{head_branch}'")
+
+        # Check cache first (using head_branch as part of key since we might not have exact SHA yet, 
+        # but ideally we should use SHA if possible. However, this function is a fallback when we might lack info.
+        # Let's use a composite key including head_branch.)
+        cache = get_github_cache()
+        # Note: Historical check is more expensive, so caching is valuable. 
+        # But since it depends on "latest" state, it might change. 
+        # However, we clear cache at end of loop, so it's safe for one iteration.
+        cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
+        cached_result = cache.get(cache_key)
+        if cached_result:
+            logger.info(f"Using cached historical GitHub Actions status for {repo_name} PR #{pr_number}")
+            return cached_result
 
         # 1. Get all PR commits/oid
         gh_logger = get_gh_logger()
@@ -655,11 +684,16 @@ def _check_github_actions_status_from_history(
             if run.get("databaseId"):
                 run_ids.append(int(run["databaseId"]))
 
-        return GitHubActionsStatusResult(
+        result = GitHubActionsStatusResult(
             success=final_success,
             ids=run_ids,
             in_progress=has_in_progress,
         )
+
+        # Cache the result
+        cache.set(cache_key, result)
+
+        return result
 
     except Exception as e:
         logger.error(f"Error during historical GitHub Actions status check: {e}")

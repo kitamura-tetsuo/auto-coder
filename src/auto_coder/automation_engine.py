@@ -28,6 +28,7 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
+from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
@@ -599,6 +600,10 @@ class AutomationEngine:
                 if batch_processed == 0:
                     logger.info("No candidates were processed in this batch, ending automation")
                     break
+
+                # Clear GitHub API cache after each batch
+                get_github_cache().clear()
+                logger.debug("Cleared GitHub API cache")
             # Save results report
             self._save_report(results, "automation_report", repo_name)
 
