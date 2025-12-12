@@ -5,6 +5,7 @@ Utility classes for Auto-Coder automation engine.
 import os
 import queue
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -366,10 +367,17 @@ class CommandExecutor:
                                 # Print dot one line above to avoid hiding ProgressStage footer
                                 if sys.stderr.isatty():
                                     # Use ANSI escape sequences for TTY
+                                    cols = shutil.get_terminal_size().columns
+                                    # Calculate position (1-based)
+                                    position = (dots_printed % cols) + 1
+                                    # Calculate cycle (0 for ., 1 for *)
+                                    cycle = (dots_printed // cols) % 2
+                                    char = "." if cycle == 0 else "*"
+
                                     sys.stderr.write("\033[s")  # Save cursor position
                                     sys.stderr.write("\033[1A")  # Move cursor up one line
-                                    sys.stderr.write(f"\033[{dots_printed + 1}G")  # Move to correct column
-                                    sys.stderr.write(".")  # Print dot
+                                    sys.stderr.write(f"\033[{position}G")  # Move to correct column
+                                    sys.stderr.write(char)  # Print char
                                     sys.stderr.write("\033[u")  # Restore cursor position
                                     dots_printed += 1
                                 else:
