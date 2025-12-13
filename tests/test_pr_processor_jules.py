@@ -117,7 +117,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_success(self):
         """Test successfully updating PR body."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
@@ -147,60 +146,74 @@ class TestUpdateJulesPrBody:
     @patch("auto_coder.pr_processor.get_gh_logger")
     def test_update_jules_pr_body_already_has_close(self, mock_gh_logger):
         """Test that PR body update is skipped if already has close reference."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR closes #456 and fixes the issue."
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # gh command should not be called if close reference already exists
-        mock_gh_logger.return_value.execute_with_logging.assert_not_called()
+        # edit should not be called
+        mock_pr.edit.assert_not_called()
 
     @patch("auto_coder.pr_processor.get_gh_logger")
     def test_update_jules_pr_body_already_has_closes(self, mock_gh_logger):
         """Test that PR body update is skipped if already has closes reference."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR closes #456 and fixes the issue."
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # gh command should not be called if closes reference already exists
-        mock_gh_logger.return_value.execute_with_logging.assert_not_called()
+        # edit should not be called
+        mock_pr.edit.assert_not_called()
 
     @patch("auto_coder.pr_processor.get_gh_logger")
     def test_update_jules_pr_body_case_insensitive_check(self, mock_gh_logger):
         """Test that close reference check is case insensitive."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR CLOSES #456 and fixes the issue."
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # gh command should not be called if close reference already exists (case insensitive)
-        mock_gh_logger.return_value.execute_with_logging.assert_not_called()
+        # edit should not be called
+        mock_pr.edit.assert_not_called()
 
     def test_update_jules_pr_body_failure(self):
         """Test failure when updating PR body."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
@@ -221,7 +234,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_empty_original(self):
         """Test updating PR body when original body is empty."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = ""
@@ -246,7 +258,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_with_newline_ending(self):
         """Test updating PR body when original body ends with newline."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content.\n"
