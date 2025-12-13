@@ -855,12 +855,7 @@ class GitHubClient:
             pr = repo.get_pull(pr_number)
             comments = []
             for comment in pr.get_issue_comments():
-                comments.append({
-                    "body": comment.body,
-                    "created_at": comment.created_at.isoformat(),
-                    "user": {"login": comment.user.login} if comment.user else None,
-                    "id": comment.id
-                })
+                comments.append({"body": comment.body, "created_at": comment.created_at.isoformat(), "user": {"login": comment.user.login} if comment.user else None, "id": comment.id})
             return comments
         except GithubException as e:
             logger.error(f"Failed to get comments for PR #{pr_number}: {e}")
@@ -881,16 +876,7 @@ class GitHubClient:
             pr = repo.get_pull(pr_number)
             commits = []
             for commit in pr.get_commits():
-                commits.append({
-                    "sha": commit.sha,
-                    "commit": {
-                        "message": commit.commit.message,
-                        "committer": {
-                            "date": commit.commit.committer.date.isoformat(),
-                            "name": commit.commit.committer.name
-                        }
-                    }
-                })
+                commits.append({"sha": commit.sha, "commit": {"message": commit.commit.message, "committer": {"date": commit.commit.committer.date.isoformat(), "name": commit.commit.committer.name}}})
             return commits
         except GithubException as e:
             logger.error(f"Failed to get commits for PR #{pr_number}: {e}")

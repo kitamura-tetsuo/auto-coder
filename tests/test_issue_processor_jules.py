@@ -347,19 +347,10 @@ class TestProcessIssueJulesMode:
         mock_config.MAIN_BRANCH = "main"
 
         # Test data
-        issue_data = {
-            "number": 123,
-            "title": "Test Issue Title",
-            "body": "Test Body"
-        }
+        issue_data = {"number": 123, "title": "Test Issue Title", "body": "Test Body"}
 
         # Run function
-        _process_issue_jules_mode(
-            repo_name="owner/repo",
-            issue_data=issue_data,
-            config=mock_config,
-            github_client=mock_github_client
-        )
+        _process_issue_jules_mode(repo_name="owner/repo", issue_data=issue_data, config=mock_config, github_client=mock_github_client)
 
         # Verify start_session was called with correct title
         mock_jules_client.start_session.assert_called_once()

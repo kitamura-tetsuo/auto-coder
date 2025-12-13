@@ -242,7 +242,7 @@ def test_playwright_prioritize_failed_over_flaky(monkeypatch):
 
     failed_test = "e2e/project/prj-delete-project-1129.spec.ts"
     flaky_test = "e2e/core/slr-box-selection-copy-cancel-paste-timing-regression-9f2a1b3c.spec.ts"
-    
+
     # Mock existence for both so we test priority, not just existence
     monkeypatch.setattr(os.path, "exists", lambda p: p in [failed_test, flaky_test])
 

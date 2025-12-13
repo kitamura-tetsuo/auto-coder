@@ -1,6 +1,7 @@
-
 import pytest
+
 from auto_coder.util.github_action import _extract_error_context
+
 
 def test_extract_error_context_with_build_error():
     """Verify that build errors are correctly extracted."""
@@ -26,6 +27,7 @@ def test_extract_error_context_with_build_error():
     assert "error TS2304" in result
     assert "Type 'string' is not assignable to type 'number'" in result
 
+
 def test_extract_error_context_with_module_not_found():
     """Verify that 'Module not found' errors are extracted."""
     log_content = ""
@@ -46,6 +48,7 @@ def test_extract_error_context_with_module_not_found():
 
     assert "Module not found" in result
     assert "Can't resolve './missing-component'" in result
+
 
 def test_extract_error_context_with_syntax_error():
     """Verify that SyntaxErrors are extracted."""

@@ -122,7 +122,7 @@ def _collect_playwright_candidates(text: str) -> List[str]:
 
     # Regex to identify section headers like "  1 failed", "  2 flaky", etc.
     section_header_re = re.compile(r"^\s*\d+\s+(failed|flaky|passed|skipped|did not run)")
-    
+
     # Regex to extract spec files from lines
     # Matches: [project] › path/to/file.spec.ts:7:5 › ...
     # Also matches lines that just contain the spec path
@@ -144,7 +144,7 @@ def _collect_playwright_candidates(text: str) -> List[str]:
             specs = spec_file_re.findall(ln)
             for spec in specs:
                 norm = _normalize_spec(spec)
-                
+
                 if current_section == "failed":
                     if norm not in failed_candidates:
                         failed_candidates.append(norm)
@@ -161,7 +161,7 @@ def _collect_playwright_candidates(text: str) -> List[str]:
     for c in flaky_candidates:
         if c not in all_candidates:
             all_candidates.append(c)
-    
+
     # Fallback: if nothing found in explicit sections, use the original regexes
     if not all_candidates:
         fail_bullet_re = re.compile(r"^[^\S\r\n]*[✘×xX]\s+\d+\s+\[[^\]]+\]\s+›\s+([^\s:]+\.spec\.ts):\d+:\d+")
@@ -188,7 +188,7 @@ def _collect_playwright_candidates(text: str) -> List[str]:
             norm = _normalize_spec(spec_path)
             if norm not in all_candidates:
                 all_candidates.append(norm)
-                    
+
     return all_candidates
 
 

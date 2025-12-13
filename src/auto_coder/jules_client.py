@@ -15,7 +15,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from .llm_backend_config import get_llm_config
-from .llm_backend_config import get_llm_config
 from .llm_client_base import LLMClientBase
 from .logger_config import get_logger
 
@@ -82,16 +81,7 @@ class JulesClient(LLMClientBase):
         try:
             # Prepare the request
             url = f"{self.base_url}/sessions"
-            payload = {
-                "prompt": prompt,
-                "automationMode": "AUTO_CREATE_PR",
-                "sourceContext": {
-                    "source": f"sources/github/{repo_name}",
-                    "githubRepoContext": {
-                        "startingBranch": base_branch
-                    }
-                }
-            }
+            payload = {"prompt": prompt, "automationMode": "AUTO_CREATE_PR", "sourceContext": {"source": f"sources/github/{repo_name}", "githubRepoContext": {"startingBranch": base_branch}}}
 
             if title:
                 payload["title"] = title

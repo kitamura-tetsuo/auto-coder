@@ -428,9 +428,9 @@ def _process_issue_jules_mode(
                     parent_branch = f"issue-{parent_issue_number}_attempt-{parent_attempt}"
                 else:
                     parent_branch = f"issue-{parent_issue_number}"
-                
+
                 logger.info(f"Issue #{issue_number} has OPEN parent issue #{parent_issue_number}, using branch {parent_branch} as base for Jules session")
-                
+
                 # Check if parent issue branch exists
                 check_parent_branch = cmd.run_command(["git", "rev-parse", "--verify", parent_branch])
                 if check_parent_branch.returncode == 0:
@@ -438,7 +438,7 @@ def _process_issue_jules_mode(
                 else:
                     # Check if branch exists on remote
                     check_remote = cmd.run_command(["git", "ls-remote", "--exit-code", "--heads", "origin", parent_branch])
-                    
+
                     if check_remote.returncode == 0:
                         # Exists on remote but not locally
                         logger.info(f"Parent branch {parent_branch} exists on remote but not locally. Using it as base.")
@@ -446,13 +446,13 @@ def _process_issue_jules_mode(
                     else:
                         # Doesn't exist on remote either - create and push it
                         logger.info(f"Parent branch {parent_branch} does not exist locally or on remote. Creating it from {config.MAIN_BRANCH}...")
-                        
+
                         # Create branch locally (without checkout)
                         create_result = cmd.run_command(["git", "branch", parent_branch, config.MAIN_BRANCH])
                         if not create_result.success:
                             logger.error(f"Failed to create parent branch {parent_branch}: {create_result.stderr}")
                             # Still try to use it as base, though it will likely fail later if it doesn't exist
-                            base_branch = parent_branch 
+                            base_branch = parent_branch
                         else:
                             # Push to remote
                             push_result = cmd.run_command(["git", "push", "-u", "origin", parent_branch])
@@ -460,7 +460,7 @@ def _process_issue_jules_mode(
                                 logger.warning(f"Failed to push parent branch {parent_branch}: {push_result.stderr}")
                             else:
                                 logger.info(f"Successfully created and pushed parent branch {parent_branch}")
-                            
+
                             base_branch = parent_branch
 
         # Start Jules session
@@ -500,7 +500,7 @@ def _process_issue_jules_mode(
         # This is the feedback loop - Jules processes the issue and creates a PR
         actions.append(f"Started Jules session '{session_id}' for issue #{issue_number}")
         logger.info(f"Jules session started successfully for issue #{issue_number}")
-        
+
         # Keep the @auto-coder label if context was provided
         if label_context:
             label_context.keep_label()

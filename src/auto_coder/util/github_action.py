@@ -254,14 +254,14 @@ def _check_commit_for_github_actions(commit_sha: str, cwd: Optional[str] = None,
 @progress_stage("Checking GitHub Actions")
 def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config: AutomationConfig) -> GitHubActionsStatusResult:
     """Check GitHub Actions status for a PR.
-    
+
     Verifies that the checks correspond to the current PR HEAD SHA.
     If checks are for an older commit, returns in_progress=True to wait for new checks.
     """
     pr_number = pr_data["number"]
     # Get the current HEAD SHA of the PR
     current_head_sha = pr_data.get("head", {}).get("sha")
-    
+
     try:
         if not current_head_sha:
             logger.warning(f"No head SHA found for PR #{pr_number}, falling back to historical checks")
@@ -340,47 +340,28 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             # Extract run ID from URL
             if url and "/actions/runs/" in url:
                 import re
+
                 match = re.search(r"/actions/runs/(\d+)", url)
                 if match:
                     run_ids.append(int(match.group(1)))
 
             if conclusion in ["success", "pass"]:
-                checks.append({
-                    "name": name,
-                    "state": "completed",
-                    "conclusion": "success"
-                })
+                checks.append({"name": name, "state": "completed", "conclusion": "success"})
             elif conclusion in ["failure", "failed", "error", "timed_out", "cancelled"]:
                 all_passed = False
-                checks.append({
-                    "name": name,
-                    "state": "completed",
-                    "conclusion": "failure"
-                })
+                checks.append({"name": name, "state": "completed", "conclusion": "failure"})
                 failed_checks.append({"name": name, "conclusion": "failure", "details_url": url})
             elif status in ["in_progress", "queued", "pending", "waiting"]:
                 has_in_progress = True
                 all_passed = False
-                checks.append({
-                    "name": name,
-                    "state": "pending",
-                    "conclusion": "pending"
-                })
+                checks.append({"name": name, "state": "pending", "conclusion": "pending"})
                 failed_checks.append({"name": name, "conclusion": "pending", "details_url": url})
             elif conclusion in ["skipped", "neutral"]:
-                checks.append({
-                    "name": name,
-                    "state": "completed",
-                    "conclusion": conclusion
-                })
+                checks.append({"name": name, "state": "completed", "conclusion": conclusion})
             else:
                 # Unknown status
                 all_passed = False
-                checks.append({
-                    "name": name,
-                    "state": "completed",
-                    "conclusion": conclusion or status
-                })
+                checks.append({"name": name, "state": "completed", "conclusion": conclusion or status})
                 failed_checks.append({"name": name, "conclusion": conclusion or status, "details_url": url})
 
         # Remove duplicates
@@ -391,10 +372,10 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             ids=run_ids,
             in_progress=has_in_progress,
         )
-        
+
         # Cache the result
         cache.set(cache_key, result)
-        
+
         return result
 
     except Exception as e:
@@ -514,12 +495,12 @@ def _check_github_actions_status_from_history(
 
         logger.info(f"Checking historical GitHub Actions status for PR #{pr_number} on branch '{head_branch}'")
 
-        # Check cache first (using head_branch as part of key since we might not have exact SHA yet, 
+        # Check cache first (using head_branch as part of key since we might not have exact SHA yet,
         # but ideally we should use SHA if possible. However, this function is a fallback when we might lack info.
         # Let's use a composite key including head_branch.)
         cache = get_github_cache()
-        # Note: Historical check is more expensive, so caching is valuable. 
-        # But since it depends on "latest" state, it might change. 
+        # Note: Historical check is more expensive, so caching is valuable.
+        # But since it depends on "latest" state, it might change.
         # However, we clear cache at end of loop, so it's safe for one iteration.
         cache_key = f"gh_actions_history:{repo_name}:{pr_number}:{head_branch}"
         cached_result = cache.get(cache_key)

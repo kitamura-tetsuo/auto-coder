@@ -6,7 +6,7 @@ import pytest
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.github_client import GitHubClient
-from src.auto_coder.util.github_action import _check_github_actions_status, GitHubActionsStatusResult
+from src.auto_coder.util.github_action import GitHubActionsStatusResult, _check_github_actions_status
 from src.auto_coder.utils import CommandResult
 
 
@@ -53,12 +53,12 @@ class TestPRChecksNoChecks:
                 ids=[123],
                 in_progress=False,
             )
-            
+
             result = _check_github_actions_status("kitamura-tetsuo/outliner", pr_data, config)
 
             # Should call historical fallback
             mock_history.assert_called_once()
-            
+
             # Should return the result from history
             assert result.success is True
             assert result.in_progress is False

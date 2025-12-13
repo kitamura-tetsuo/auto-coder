@@ -27,7 +27,7 @@ class TestGitHubCache(unittest.TestCase):
         """Test setting and getting values."""
         cache = get_github_cache()
         cache.set("key1", "value1")
-        
+
         self.assertEqual(cache.get("key1"), "value1")
         self.assertIsNone(cache.get("key2"))
 
@@ -36,7 +36,7 @@ class TestGitHubCache(unittest.TestCase):
         cache = get_github_cache()
         cache.set("key1", "value1")
         cache.clear()
-        
+
         self.assertIsNone(cache.get("key1"))
 
 

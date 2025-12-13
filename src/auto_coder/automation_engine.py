@@ -22,8 +22,7 @@ from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
 from .pr_processor import _get_pr_diff as _pr_get_diff
-from .pr_processor import _should_skip_waiting_for_jules
-from .pr_processor import process_pull_request
+from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult

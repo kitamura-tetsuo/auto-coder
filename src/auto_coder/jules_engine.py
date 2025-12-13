@@ -50,7 +50,7 @@ def check_and_resume_or_archive_sessions() -> None:
     try:
         jules_client = JulesClient()
         sessions = jules_client.list_sessions()
-        
+
         # Load retry state
         retry_state = _load_state()
         state_changed = False
@@ -91,7 +91,7 @@ def check_and_resume_or_archive_sessions() -> None:
             # Case 2: Completed session without PR -> Resume with retry logic
             elif state == "COMPLETED" and not pull_request:
                 retry_count = retry_state.get(session_id, 0)
-                
+
                 if retry_count < 2:
                     logger.info(f"Resuming completed Jules session (no PR) [Attempt {retry_count + 1}]: {session_id}")
                     try:
@@ -118,7 +118,7 @@ def check_and_resume_or_archive_sessions() -> None:
                 if session_id in retry_state:
                     del retry_state[session_id]
                     state_changed = True
-                    
+
                 try:
                     # Extract PR info
                     repo_name = None
@@ -141,7 +141,7 @@ def check_and_resume_or_archive_sessions() -> None:
                             if pull_idx > 2 and pull_idx + 1 < len(parts):
                                 repo_name = f"{parts[pull_idx-2]}/{parts[pull_idx-1]}"
                                 try:
-                                    pr_number = int(parts[pull_idx+1])
+                                    pr_number = int(parts[pull_idx + 1])
                                 except ValueError:
                                     pass
 

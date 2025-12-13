@@ -336,9 +336,7 @@ class CommandExecutor:
                     idle_time = now - last_output_time
                     if idle_time > idle_timeout:
                         process.kill()
-                        raise subprocess.TimeoutExpired(
-                            cmd, idle_timeout, "".join(stdout_lines), "".join(stderr_lines)
-                        )  # Using idle_timeout as timeout value for exception
+                        raise subprocess.TimeoutExpired(cmd, idle_timeout, "".join(stdout_lines), "".join(stderr_lines))  # Using idle_timeout as timeout value for exception
 
                 poll_interval = cls.STREAM_POLL_INTERVAL
                 if remaining is not None:
@@ -488,9 +486,7 @@ class CommandExecutor:
 
         try:
             if should_stream:
-                return_code, stdout, stderr = cls._run_with_streaming(
-                    cmd, timeout, cwd, effective_env, on_stream, dot_format, idle_timeout=idle_timeout
-                )
+                return_code, stdout, stderr = cls._run_with_streaming(cmd, timeout, cwd, effective_env, on_stream, dot_format, idle_timeout=idle_timeout)
             else:
                 result = subprocess.run(
                     cmd,

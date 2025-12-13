@@ -21,7 +21,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         """Test that _check_github_actions_status uses the cache."""
         repo_name = "owner/repo"
         pr_data = {"number": 123, "head": {"sha": "abc1234"}}
-        
+
         # Pre-populate cache
         cache = get_github_cache()
         cache_key = f"gh_actions_status:{repo_name}:123:abc1234"
@@ -33,7 +33,7 @@ class TestGitHubActionCaching(unittest.TestCase):
 
         # Verify result is from cache
         self.assertIs(result, expected_result)
-        
+
         # Verify API was NOT called (mock logger shouldn't be used)
         mock_get_gh_logger.assert_not_called()
 
@@ -42,7 +42,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         """Test that _check_github_actions_status populates the cache on miss."""
         repo_name = "owner/repo"
         pr_data = {"number": 124, "head": {"sha": "def5678"}}
-        
+
         # Mock API response
         mock_logger_instance = MagicMock()
         mock_get_gh_logger.return_value = mock_logger_instance
@@ -58,7 +58,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         cache = get_github_cache()
         cache_key = f"gh_actions_status:{repo_name}:124:def5678"
         cached_result = cache.get(cache_key)
-        
+
         self.assertIsNotNone(cached_result)
         self.assertEqual(cached_result.success, True)  # Empty checks = success in this logic
 
@@ -67,7 +67,7 @@ class TestGitHubActionCaching(unittest.TestCase):
         """Test that _check_github_actions_status_from_history uses the cache."""
         repo_name = "owner/repo"
         pr_data = {"number": 125, "head_branch": "feature-branch"}
-        
+
         # Pre-populate cache
         cache = get_github_cache()
         cache_key = f"gh_actions_history:{repo_name}:125:feature-branch"
@@ -79,7 +79,7 @@ class TestGitHubActionCaching(unittest.TestCase):
 
         # Verify result is from cache
         self.assertIs(result, expected_result)
-        
+
         # Verify API was NOT called
         mock_get_gh_logger.assert_not_called()
 

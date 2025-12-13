@@ -45,15 +45,15 @@ class TestHandlePrMergeJulesFallback:
         mock_mergeable.return_value = {"mergeable": True}
         mock_check_status.return_value = Mock(success=False)
         mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
-        
+
         # Mock Jules PR
         mock_is_jules.return_value = True
-        
+
         # Mock comments (less than 10 failures)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
         comments = [{"body": "Some comment"}, {"body": target_message}] * 5  # 5 failures
         github_client.get_pr_comments.return_value = comments
-        
+
         # Mock send feedback
         mock_send_feedback.return_value = ["Sent feedback to Jules"]
 
@@ -104,19 +104,19 @@ class TestHandlePrMergeJulesFallback:
         mock_mergeable.return_value = {"mergeable": True}
         mock_check_status.return_value = Mock(success=False)
         mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
-        
+
         # Mock Jules PR
         mock_is_jules.return_value = True
-        
+
         # Mock comments (more than 10 failures)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
         comments = [{"body": target_message}] * 11  # 11 failures
         github_client.get_pr_comments.return_value = comments
-        
+
         # Mock checkout success
         mock_checkout.return_value = True
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch") # Already on branch
-        
+        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
+
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
 
@@ -126,11 +126,11 @@ class TestHandlePrMergeJulesFallback:
         # Assert
         # Should NOT call send feedback
         mock_send_feedback.assert_not_called()
-        
+
         # Should proceed to checkout and fix
         mock_checkout.assert_called_once()
         mock_fix_issues.assert_called_once()
-        
+
         # Verify actions contain local fix info
         assert any("Fixed issues locally" in action for action in actions)
 
@@ -171,20 +171,20 @@ class TestHandlePrMergeJulesFallback:
         mock_mergeable.return_value = {"mergeable": True}
         mock_check_status.return_value = Mock(success=False)
         mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
-        
+
         # Mock Jules PR
         mock_is_jules.return_value = True
-        
+
         # Mock comments (1 failure, but 2 hours ago)
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
         two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
         comments = [{"body": target_message, "created_at": two_hours_ago}]
         github_client.get_pr_comments.return_value = comments
-        
+
         # Mock checkout success
         mock_checkout.return_value = True
-        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch") # Already on branch
-        
+        mock_cmd.run_command.return_value = Mock(success=True, stdout="feature-branch")  # Already on branch
+
         # Mock fix issues
         mock_fix_issues.return_value = ["Fixed issues locally"]
 
@@ -194,11 +194,11 @@ class TestHandlePrMergeJulesFallback:
         # Assert
         # Should NOT call send feedback
         mock_send_feedback.assert_not_called()
-        
+
         # Should proceed to checkout and fix
         mock_checkout.assert_called_once()
         mock_fix_issues.assert_called_once()
-        
+
         # Verify actions contain local fix info
         assert any("Fixed issues locally" in action for action in actions)
 
@@ -212,16 +212,16 @@ class TestShouldSkipWaitingForJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123}
         github_client = Mock()
-        
+
         # Mock comments
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-        
+
         # 2 hours ago
         two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-        
+
         comments = [{"body": target_message, "created_at": two_hours_ago}]
         github_client.get_pr_comments.return_value = comments
-        
+
         # Mock commits (older than comment)
         three_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
         commits = [{"commit": {"committer": {"date": three_hours_ago}}}]
@@ -239,16 +239,16 @@ class TestShouldSkipWaitingForJulesFallback:
         repo_name = "owner/repo"
         pr_data = {"number": 123}
         github_client = Mock()
-        
+
         # Mock comments
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-        
+
         # 30 minutes ago
         thirty_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
-        
+
         comments = [{"body": target_message, "created_at": thirty_mins_ago}]
         github_client.get_pr_comments.return_value = comments
-        
+
         # Mock commits (older than comment)
         one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         commits = [{"commit": {"committer": {"date": one_hour_ago}}}]

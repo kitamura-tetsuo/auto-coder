@@ -192,51 +192,51 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
     """
     try:
         pr_number = pr_data["number"]
-        
+
         # Get comments
         comments = github_client.get_pr_comments(repo_name, pr_number)
         if not comments:
             return False
-            
+
         # Sort comments by date (newest last) just to be safe, though API usually returns them sorted
         comments.sort(key=lambda x: x["created_at"])
-        
+
         last_comment = comments[-1]
         last_comment_body = last_comment.get("body", "")
-        
+
         # Check if last comment is the specific message
         target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
         if target_message not in last_comment_body:
             return False
-            
+
         # Get last comment timestamp
         last_comment_time = last_comment["created_at"]
-        
+
         # Get commits
         commits = github_client.get_pr_commits(repo_name, pr_number)
         if not commits:
             # If no commits found (unlikely for a PR), assume we shouldn't skip
             return False
-            
+
         # Sort commits by date (newest last)
         commits.sort(key=lambda x: x["commit"]["committer"]["date"])
-        
+
         last_commit = commits[-1]
         last_commit_time = last_commit["commit"]["committer"]["date"]
-        
+
         # Compare timestamps
         # ISO format strings can be compared lexicographically if they are in the same timezone (usually UTC from GitHub)
         if last_commit_time > last_comment_time:
             logger.info(f"PR #{pr_number} has new commits after Jules wait message, processing...")
             return False
-            
+
         # Check if it has been waiting for more than 1 hour
         try:
             # Parse GitHub timestamp (ISO 8601)
             # Example: 2023-10-27T10:00:00Z
             last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
             current_time = datetime.now(timezone.utc)
-            
+
             if current_time - last_comment_dt > timedelta(hours=1):
                 logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour. Switching to local processing.")
                 return False
@@ -245,7 +245,7 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
 
         logger.info(f"PR #{pr_number} is waiting for Jules (last comment is wait message, no new commits)")
         return True
-        
+
     except Exception as e:
         logger.error(f"Error checking if PR #{pr_data.get('number')} should be skipped: {e}")
         return False
@@ -778,8 +778,16 @@ def _handle_pr_merge(
         failed_checks = detailed_checks.failed_checks
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
+        # Check if we are already on the PR branch before checkout
+        # This is used to determine if we should skip GitHub Actions fixes (assuming resumption of work)
+        # And also to determine if we should skip Jules feedback loop and do local fixes
+        current_branch_res = cmd.run_command(["git", "branch", "--show-current"])
+        current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
+        pr_branch_name = pr_data.get("head", {}).get("ref", "")
+        already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
+
         # Check if this is a Jules PR
-        if _is_jules_pr(pr_data):
+        if _is_jules_pr(pr_data) and not already_on_pr_branch:
             # Check if we should fallback to local llm_backend due to too many Jules failures
             should_fallback = False
             try:
@@ -787,7 +795,7 @@ def _handle_pr_merge(
                 comments = github_client.get_pr_comments(repo_name, pr_number)
                 target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
                 failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
-                
+
                 if failure_count > 10:
                     logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
                     should_fallback = True
@@ -798,14 +806,14 @@ def _handle_pr_merge(
                         last_comment_time = last_failure_comment["created_at"]
                         last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
                         current_time = datetime.now(timezone.utc)
-                        
+
                         if current_time - last_comment_dt > timedelta(hours=1):
                             logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour (last failure). Switching to local llm_backend.")
                             should_fallback = True
 
             except Exception as e:
                 logger.error(f"Error checking Jules failure count/time for PR #{pr_number}: {e}")
-            
+
             if not should_fallback:
                 actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")
                 # Send error logs to Jules and skip local fixing - let Jules handle it
@@ -815,13 +823,6 @@ def _handle_pr_merge(
                 return actions
 
         # Step 5: Checkout PR branch for non-Jules PRs
-        # Check if we are already on the PR branch before checkout
-        # This is used to determine if we should skip GitHub Actions fixes (assuming resumption of work)
-        current_branch_res = cmd.run_command(["git", "branch", "--show-current"])
-        current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
-        pr_branch_name = pr_data.get("head", {}).get("ref", "")
-        already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
-
         checkout_result = _checkout_pr_branch(repo_name, pr_data, config)
         if not checkout_result:
             actions.append(f"Failed to checkout PR #{pr_number} branch")
@@ -1206,7 +1207,7 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
         session_id = match.group(1).strip()
         logger.debug(f"Found session ID pattern 4 (Jules Task URL): {session_id}")
         return session_id
-        
+
     task_id_pattern = r"\btask\s+(\d+)\b"
     match = re.search(task_id_pattern, pr_body, re.IGNORECASE)
     if match:
@@ -1233,8 +1234,8 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
         logger.info(f"Searching for session ID '{session_id}' in open issue comments...")
         repo = github_client.get_repository(repo_name)
         # Get open issues
-        issues = repo.get_issues(state='open')
-        
+        issues = repo.get_issues(state="open")
+
         for issue in issues:
             # Skip Pull Requests (get_issues returns both)
             if issue.pull_request is not None:
@@ -1242,8 +1243,8 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
 
             # Check if session ID is in the issue body itself
             if issue.body and session_id in issue.body:
-                 logger.info(f"Found session ID '{session_id}' in body of issue #{issue.number}")
-                 return issue.number
+                logger.info(f"Found session ID '{session_id}' in body of issue #{issue.number}")
+                return issue.number
 
             # Check comments
             comments = issue.get_comments()
@@ -1251,7 +1252,7 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
                 if comment.body and session_id in comment.body:
                     logger.info(f"Found session ID '{session_id}' in comment of issue #{issue.number}")
                     return issue.number
-        
+
         logger.warning(f"Session ID '{session_id}' not found in any open issue comments")
         return None
     except Exception as e:
@@ -1297,7 +1298,7 @@ def _update_jules_pr_body(
             repo = github_client.get_repository(repo_name)
             pr = repo.get_pull(pr_number)
             pr.edit(body=new_body)
-            
+
             logger.info(f"Updated PR #{pr_number} body to include reference to issue #{issue_number}")
             log_action(f"Updated PR #{pr_number} body with close #{issue_number} reference")
             return True
@@ -1323,14 +1324,14 @@ def _is_jules_pr(pr_data: Dict[str, Any]) -> bool:
     pr_author = _get_pr_author_login(pr_data) or ""
     if pr_author.startswith("google-labs-jules"):
         return True
-    
+
     # Fallback: Check if PR body contains a valid session ID
     # This handles cases where the PR was created by a different user (e.g. manual creation)
     # but is still associated with a Jules session
     pr_body = pr_data.get("body", "") or ""
     if _extract_session_id_from_pr_body(pr_body):
         return True
-        
+
     return False
 
 
