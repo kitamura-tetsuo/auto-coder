@@ -219,7 +219,7 @@ class AuggieClient(LLMClientBase):
                 usage_markers = self.usage_markers
             else:
                 # Default hardcoded usage markers
-                usage_markers = ("rate limit", "quota", "429")
+                usage_markers = ["rate limit", "quota", "429"]
 
             usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
 
