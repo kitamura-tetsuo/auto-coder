@@ -10,8 +10,8 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-import requests
-from requests.adapters import HTTPAdapter
+import requests  # type: ignore
+from requests.adapters import HTTPAdapter  # type: ignore
 from urllib3.util.retry import Retry
 
 from .llm_backend_config import get_llm_config

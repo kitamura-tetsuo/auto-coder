@@ -183,12 +183,12 @@ class GeminiClient(LLMClientBase):
                 usage_markers = self.usage_markers
             else:
                 # Default hardcoded usage markers
-                usage_markers = (
+                usage_markers = [
                     "rate limit",
                     "resource_exhausted",
                     "too many requests",
                     "[api error: you have exhausted your capacity on this model. your quota will reset after ",
-                )
+                ]
 
             usage_limit_detected = has_usage_marker_match(full_output, usage_markers)
 

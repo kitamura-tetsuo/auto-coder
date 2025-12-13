@@ -155,12 +155,12 @@ class CodexClient(LLMClientBase):
                 usage_markers = self.usage_markers
             else:
                 # Default hardcoded usage markers
-                usage_markers = (
+                usage_markers = [
                     "rate limit",
                     "usage limit",
                     "upgrade to pro",
                     "too many requests",
-                )
+                ]
 
             # Prepare environment variables for subprocess
             env = os.environ.copy()

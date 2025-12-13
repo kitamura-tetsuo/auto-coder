@@ -415,7 +415,7 @@ def _add_gemini_config(install_path: Path) -> bool:
 
         # GeminiClient requires API key, but we only need add_mcp_server_config
         # which uses CLI commands, so we can pass None
-        client = GeminiClient(api_key=None)
+        client = GeminiClient()
 
         # Use uv with --directory option to ensure correct working directory
         result = client.add_mcp_server_config("graphrag", "uv", ["--directory", str(install_path), "run", "main.py"])

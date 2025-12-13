@@ -33,7 +33,7 @@ except Exception as exc:  # pragma: no cover - defensive fallback for optional d
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError("sentence_transformers dependency is not available") from _missing_exc
 
-    stub_module.SentenceTransformer = _MissingSentenceTransformer
+    stub_module.SentenceTransformer = _MissingSentenceTransformer  # type: ignore
     sys.modules["sentence_transformers"] = stub_module
 
 __all__ = [
