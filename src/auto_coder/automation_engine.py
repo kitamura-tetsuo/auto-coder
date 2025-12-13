@@ -17,7 +17,7 @@ from .git_commit import git_push
 from .git_info import get_current_branch
 from .github_client import GitHubClient
 from .issue_processor import create_feature_issues
-from .jules_engine import check_and_resume_failed_sessions
+from .jules_engine import check_and_resume_or_archive_sessions
 from .label_manager import LabelManager
 from .logger_config import get_logger
 from .pr_processor import _create_pr_analysis_prompt as _engine_pr_prompt
@@ -552,7 +552,7 @@ class AutomationEngine:
 
             while True:
                 # Check and resume failed Jules sessions
-                check_and_resume_failed_sessions()
+                check_and_resume_or_archive_sessions()
 
                 # Get candidates
                 candidates = self._get_candidates(repo_name)
