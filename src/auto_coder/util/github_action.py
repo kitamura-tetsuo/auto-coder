@@ -433,7 +433,7 @@ def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int
             "-R",
             repo_name,
             "--json",
-            "jobs",
+            "jobs,pullRequests",
         ]
         jobs_res = gh_logger.execute_with_logging(
             command,
