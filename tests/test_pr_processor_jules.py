@@ -117,15 +117,16 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_success(self):
         """Test successfully updating PR body."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
         issue_number = 456
 
+        # Mock GitHub client components
         github_client = Mock()
         mock_repo = Mock()
         mock_pr = Mock()
+
         github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
 
@@ -136,76 +137,92 @@ class TestUpdateJulesPrBody:
         assert result is True
         github_client.get_repository.assert_called_once_with(repo_name)
         mock_repo.get_pull.assert_called_once_with(pr_number)
-        mock_pr.edit.assert_called_once()
 
-        # Verify the body contains the close statement and issue link
-        call_args = mock_pr.edit.call_args
-        new_body = call_args.kwargs.get("body")
-        assert "close #456" in new_body
-        assert "https://github.com/owner/repo/issues/456" in new_body
-        assert "Original PR body content." in new_body
+        expected_body = f"{pr_body}\n\nclose #{issue_number}\n\nRelated issue: https://github.com/{repo_name}/issues/{issue_number}"
+        mock_pr.edit.assert_called_once_with(body=expected_body)
 
     def test_update_jules_pr_body_already_has_close(self):
         """Test that PR body update is skipped if already has close reference."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR closes #456 and fixes the issue."
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # edit command should not be called if close reference already exists
-        github_client.get_repository.assert_not_called()
+        # edit should not be called
+        mock_pr.edit.assert_not_called()
 
     def test_update_jules_pr_body_already_has_closes(self):
         """Test that PR body update is skipped if already has closes reference."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR closes #456 and fixes the issue."
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # edit command should not be called if closes reference already exists
-        github_client.get_repository.assert_not_called()
+        # edit should not be called
+        mock_pr.edit.assert_not_called()
 
     def test_update_jules_pr_body_case_insensitive_check(self):
         """Test that close reference check is case insensitive."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR CLOSES #456 and fixes the issue."
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        # edit command should not be called if close reference already exists (case insensitive)
-        github_client.get_repository.assert_not_called()
+        # edit should not be called
+        mock_pr.edit.assert_not_called()
 
     def test_update_jules_pr_body_failure(self):
         """Test failure when updating PR body."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
         issue_number = 456
 
         github_client = Mock()
-        github_client.get_repository.side_effect = Exception("Error updating PR")
+        mock_repo = Mock()
+        mock_pr = Mock()
+
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+
+        # Simulate error
+        mock_pr.edit.side_effect = Exception("Error updating PR")
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
@@ -215,7 +232,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_empty_original(self):
         """Test updating PR body when original body is empty."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = ""
@@ -224,6 +240,7 @@ class TestUpdateJulesPrBody:
         github_client = Mock()
         mock_repo = Mock()
         mock_pr = Mock()
+
         github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
 
@@ -232,15 +249,12 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # Verify body is properly formatted even when original is empty
-        call_args = mock_pr.edit.call_args
-        new_body = call_args.kwargs.get("body")
-        assert "close #456" in new_body
-        assert "https://github.com/owner/repo/issues/456" in new_body
+
+        expected_body = f"\nclose #{issue_number}\n\nRelated issue: https://github.com/{repo_name}/issues/{issue_number}"
+        mock_pr.edit.assert_called_once_with(body=expected_body)
 
     def test_update_jules_pr_body_with_newline_ending(self):
         """Test updating PR body when original body ends with newline."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content.\n"
@@ -249,6 +263,7 @@ class TestUpdateJulesPrBody:
         github_client = Mock()
         mock_repo = Mock()
         mock_pr = Mock()
+
         github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
 
@@ -257,12 +272,9 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # Verify body is properly formatted
-        call_args = mock_pr.edit.call_args
-        new_body = call_args.kwargs.get("body")
-        assert "close #456" in new_body
-        assert "https://github.com/owner/repo/issues/456" in new_body
-        assert "Original PR body content.\n" in new_body
+
+        expected_body = f"{pr_body}\nclose #{issue_number}\n\nRelated issue: https://github.com/{repo_name}/issues/{issue_number}"
+        mock_pr.edit.assert_called_once_with(body=expected_body)
 
 
 class TestProcessJulesPr:
@@ -272,7 +284,7 @@ class TestProcessJulesPr:
         """Test that non-Jules PRs are skipped."""
         pr_data = {
             "number": 123,
-            "body": "Regular PR body",
+            "body": "No session info here",
             "user": {"login": "otheruser"},
         }
         github_client = Mock()
