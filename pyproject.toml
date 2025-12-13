@@ -232,4 +232,7 @@ dev = [
     "types-toml>=0.10.8.20240310",
     "types-pyyaml>=6.0.12.20250915",
     "pre-commit>=4.5.0",
+    "pylint>=4.0.4",
+    "types-setuptools>=80.9.0.20250822",
+    "pyright>=1.1.407",
 ]
