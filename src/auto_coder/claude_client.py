@@ -272,7 +272,7 @@ class ClaudeClient(LLMClientBase):
                     stream_output=True,
                     env=env if len(env) > len(os.environ) else None,
                     dot_format=True,
-                    idle_timeout=300,
+                    idle_timeout=1800,
                 )
                 logger.info("=" * 60)
                 stdout = (result.stdout or "").strip()

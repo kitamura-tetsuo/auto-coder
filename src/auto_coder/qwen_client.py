@@ -248,7 +248,7 @@ class QwenClient(LLMClientBase):
                 cmd,
                 stream_output=True,
                 env=env,
-                idle_timeout=300,
+                idle_timeout=1800,
             )
             logger.info("=" * 60)
 
