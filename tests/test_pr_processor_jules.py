@@ -115,42 +115,37 @@ class TestExtractSessionIdFromPrBody:
 class TestUpdateJulesPrBody:
     """Test cases for _update_jules_pr_body function."""
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_success(self, mock_gh_logger):
+    def test_update_jules_pr_body_success(self):
         """Test successfully updating PR body."""
         # Setup
-        mock_result = Mock(success=True, stdout="", stderr="")
-        mock_gh_logger.return_value.execute_with_logging.return_value = mock_result
-
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
         # Assert
         assert result is True
-        mock_gh_logger.return_value.execute_with_logging.assert_called_once()
-        call_args = mock_gh_logger.return_value.execute_with_logging.call_args[0][0]
-        assert call_args[0] == "gh"
-        assert call_args[1] == "pr"
-        assert call_args[2] == "edit"
-        assert call_args[3] == str(pr_number)
-        assert "--repo" in call_args
-        assert repo_name in call_args
-        assert "--body" in call_args
-        # Verify the body contains the close statement and issue link
-        body_idx = call_args.index("--body") + 1
-        body_content = call_args[body_idx]
-        assert "close #456" in body_content
-        assert "https://github.com/owner/repo/issues/456" in body_content
-        assert "Original PR body content." in body_content
+        github_client.get_repository.assert_called_once_with(repo_name)
+        mock_repo.get_pull.assert_called_once_with(pr_number)
+        mock_pr.edit.assert_called_once()
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_already_has_close(self, mock_gh_logger):
+        # Verify the body contains the close statement and issue link
+        call_args = mock_pr.edit.call_args
+        new_body = call_args.kwargs.get("body")
+        assert "close #456" in new_body
+        assert "https://github.com/owner/repo/issues/456" in new_body
+        assert "Original PR body content." in new_body
+
+    def test_update_jules_pr_body_already_has_close(self):
         """Test that PR body update is skipped if already has close reference."""
         # Setup
         repo_name = "owner/repo"
@@ -164,11 +159,10 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # gh command should not be called if close reference already exists
-        mock_gh_logger.return_value.execute_with_logging.assert_not_called()
+        # edit command should not be called if close reference already exists
+        github_client.get_repository.assert_not_called()
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_already_has_closes(self, mock_gh_logger):
+    def test_update_jules_pr_body_already_has_closes(self):
         """Test that PR body update is skipped if already has closes reference."""
         # Setup
         repo_name = "owner/repo"
@@ -182,11 +176,10 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # gh command should not be called if closes reference already exists
-        mock_gh_logger.return_value.execute_with_logging.assert_not_called()
+        # edit command should not be called if closes reference already exists
+        github_client.get_repository.assert_not_called()
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_case_insensitive_check(self, mock_gh_logger):
+    def test_update_jules_pr_body_case_insensitive_check(self):
         """Test that close reference check is case insensitive."""
         # Setup
         repo_name = "owner/repo"
@@ -200,21 +193,19 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # gh command should not be called if close reference already exists (case insensitive)
-        mock_gh_logger.return_value.execute_with_logging.assert_not_called()
+        # edit command should not be called if close reference already exists (case insensitive)
+        github_client.get_repository.assert_not_called()
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_failure(self, mock_gh_logger):
+    def test_update_jules_pr_body_failure(self):
         """Test failure when updating PR body."""
         # Setup
-        mock_result = Mock(success=False, stdout="", stderr="Error updating PR")
-        mock_gh_logger.return_value.execute_with_logging.return_value = mock_result
-
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
         issue_number = 456
+
         github_client = Mock()
+        github_client.get_repository.side_effect = Exception("Error updating PR")
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
@@ -222,18 +213,19 @@ class TestUpdateJulesPrBody:
         # Assert
         assert result is False
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_empty_original(self, mock_gh_logger):
+    def test_update_jules_pr_body_empty_original(self):
         """Test updating PR body when original body is empty."""
         # Setup
-        mock_result = Mock(success=True, stdout="", stderr="")
-        mock_gh_logger.return_value.execute_with_logging.return_value = mock_result
-
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = ""
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
@@ -241,24 +233,24 @@ class TestUpdateJulesPrBody:
         # Assert
         assert result is True
         # Verify body is properly formatted even when original is empty
-        call_args = mock_gh_logger.return_value.execute_with_logging.call_args[0][0]
-        body_idx = call_args.index("--body") + 1
-        body_content = call_args[body_idx]
-        assert "close #456" in body_content
-        assert "https://github.com/owner/repo/issues/456" in body_content
+        call_args = mock_pr.edit.call_args
+        new_body = call_args.kwargs.get("body")
+        assert "close #456" in new_body
+        assert "https://github.com/owner/repo/issues/456" in new_body
 
-    @patch("src.auto_coder.pr_processor.get_gh_logger")
-    def test_update_jules_pr_body_with_newline_ending(self, mock_gh_logger):
+    def test_update_jules_pr_body_with_newline_ending(self):
         """Test updating PR body when original body ends with newline."""
         # Setup
-        mock_result = Mock(success=True, stdout="", stderr="")
-        mock_gh_logger.return_value.execute_with_logging.return_value = mock_result
-
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content.\n"
         issue_number = 456
+
         github_client = Mock()
+        mock_repo = Mock()
+        mock_pr = Mock()
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
@@ -266,12 +258,11 @@ class TestUpdateJulesPrBody:
         # Assert
         assert result is True
         # Verify body is properly formatted
-        call_args = mock_gh_logger.return_value.execute_with_logging.call_args[0][0]
-        body_idx = call_args.index("--body") + 1
-        body_content = call_args[body_idx]
-        assert "close #456" in body_content
-        assert "https://github.com/owner/repo/issues/456" in body_content
-        assert "Original PR body content.\n" in body_content
+        call_args = mock_pr.edit.call_args
+        new_body = call_args.kwargs.get("body")
+        assert "close #456" in new_body
+        assert "https://github.com/owner/repo/issues/456" in new_body
+        assert "Original PR body content.\n" in new_body
 
 
 class TestProcessJulesPr:
@@ -281,7 +272,7 @@ class TestProcessJulesPr:
         """Test that non-Jules PRs are skipped."""
         pr_data = {
             "number": 123,
-            "body": "Session ID: abc123",
+            "body": "Regular PR body",
             "user": {"login": "otheruser"},
         }
         github_client = Mock()

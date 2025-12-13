@@ -263,6 +263,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
     current_head_sha = pr_data.get("head", {}).get("sha")
 
     try:
+        print(f"DEBUG: pr_data={pr_data}, head_sha={current_head_sha}")
         if not current_head_sha:
             logger.warning(f"No head SHA found for PR #{pr_number}, falling back to historical checks")
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
@@ -433,7 +434,7 @@ def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int
             "-R",
             repo_name,
             "--json",
-            "jobs",
+            "jobs,pullRequests",
         ]
         jobs_res = gh_logger.execute_with_logging(
             command,
