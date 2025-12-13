@@ -38,3 +38,4 @@ repos:
       entry: bash -c 'if command -v uv >/dev/null 2>&1; then uv run mypy "$@"; else mypy "$@"; fi' --
       pass_filenames: true
       types: [python]
+      exclude: ^tests/

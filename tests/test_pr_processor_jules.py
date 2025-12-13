@@ -117,7 +117,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_success(self):
         """Test successfully updating PR body."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
@@ -148,7 +147,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_already_has_close(self):
         """Test that PR body update is skipped if already has close reference."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR closes #456 and fixes the issue."
@@ -170,7 +168,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_already_has_closes(self):
         """Test that PR body update is skipped if already has closes reference."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR closes #456 and fixes the issue."
@@ -192,7 +189,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_case_insensitive_check(self):
         """Test that close reference check is case insensitive."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "This PR CLOSES #456 and fixes the issue."
@@ -214,7 +210,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_failure(self):
         """Test failure when updating PR body."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content."
@@ -237,7 +232,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_empty_original(self):
         """Test updating PR body when original body is empty."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = ""
@@ -263,7 +257,6 @@ class TestUpdateJulesPrBody:
 
     def test_update_jules_pr_body_with_newline_ending(self):
         """Test updating PR body when original body ends with newline."""
-        # Setup
         repo_name = "owner/repo"
         pr_number = 123
         pr_body = "Original PR body content.\n"

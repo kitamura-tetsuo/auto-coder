@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 from typing import Any, Dict, List, Optional
@@ -100,7 +101,7 @@ def _trigger_fallback_for_conflict_failure(
             capture_output=True,
         )
 
-        if not pr_view_result.success or not pr_view_result.stdout:
+        if pr_view_result.returncode != 0 or not pr_view_result.stdout:
             logger.debug(f"Failed to get PR #{pr_number} body, cannot extract linked issues")
             return
 
@@ -355,6 +356,91 @@ def resolve_merge_conflicts_with_llm(
     return actions
 
 
+def _extract_linked_issues(pr_body: str) -> List[int]:
+    """Extract linked issue numbers from PR body."""
+    if not pr_body:
+        return []
+
+    # GitHub's supported keywords for linking issues
+    keywords = r"(?:close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
+    # Pattern to match: keyword #123 or keyword owner/repo#123
+    pattern = rf"{keywords}\s+(?:[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)?#(\d+)"
+
+    matches = re.finditer(pattern, pr_body, re.IGNORECASE)
+    issue_numbers = [int(m.group(1)) for m in matches]
+    return list(set(issue_numbers))
+
+
+def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
+    """Extract Session ID from PR body."""
+    if not pr_body:
+        return None
+
+    # Pattern 1: Look for "Session ID:" or "Session:" followed by the session ID
+    session_pattern = r"(?:session\s*id:|session:)\s*(.+?)(?:\n|$)"
+    match = re.search(session_pattern, pr_body, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # Pattern 2: Look for URLs that might contain session IDs
+    url_session_pattern = r"(?:session(?:_id)?=)([a-zA-Z0-9-_]+)"
+    match = re.search(url_session_pattern, pr_body, re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+
+    # Pattern 3: Look for Jules task URLs
+    jules_task_pattern = r"https?://jules\.google\.com/task/(\d+)"
+    match = re.search(jules_task_pattern, pr_body)
+    if match:
+        return match.group(1).strip()
+
+    return None
+
+
+def _close_pr(repo_name: str, pr_number: int) -> None:
+    """Close a PR."""
+    try:
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            ["gh", "pr", "close", str(pr_number), "--repo", repo_name, "--comment", "Auto-Coder: Closing PR due to merge conflicts and potential degradation risk (no linked issue found)."],
+            repo=repo_name,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            logger.info(f"Closed PR #{pr_number}")
+        else:
+            logger.warning(f"Failed to close PR #{pr_number}: {result.stderr}")
+    except Exception as e:
+        logger.error(f"Error closing PR #{pr_number}: {e}")
+
+
+def _archive_jules_session(repo_name: str, pr_number: int, pr_body: str) -> None:
+    """Archive Jules session."""
+    try:
+        session_id = _extract_session_id_from_pr_body(pr_body)
+        if not session_id:
+            logger.warning(f"No session ID found in Jules PR #{pr_number} body for archiving")
+            return
+
+        # Archive the Jules session
+        try:
+            from .jules_client import JulesClient
+
+            jules_client = JulesClient()
+            success = jules_client.archive_session(session_id)
+
+            if success:
+                logger.info(f"Archived Jules session '{session_id}' for PR #{pr_number}")
+                log_action(f"Archived Jules session for PR #{pr_number}")
+            else:
+                logger.warning(f"Failed to archive Jules session '{session_id}' for PR #{pr_number}")
+        except Exception as e:
+            logger.warning(f"Error archiving Jules session for PR #{pr_number}: {e}")
+
+    except Exception as e:
+        logger.warning(f"Error processing Jules session archiving for PR #{pr_number}: {e}")
+
+
 def _perform_base_branch_merge_and_conflict_resolution(
     pr_number: int,
     base_branch: str,
@@ -460,6 +546,22 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
             if not safe_to_merge:
                 logger.info(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
+
+                # Check if PR is from Jules
+                pr_author_login = pr_data.get("author", {}).get("login", "")
+                is_jules_pr = "google-labs-jules" in pr_author_login
+
+                # Check for linked issues
+                pr_body = pr_data.get("body", "")
+                linked_issues = _extract_linked_issues(pr_body)
+
+                if is_jules_pr and not linked_issues:
+                    logger.info(f"PR #{pr_number} is a Jules PR with no linked issues and degrade risk. Closing PR and archiving session.")
+                    if repo_name:
+                        _close_pr(repo_name, pr_number)
+                        _archive_jules_session(repo_name, pr_number, pr_body)
+                    return False
+
                 # Trigger fallback and signal to proceed to fixing
                 _trigger_fallback_for_conflict_failure(
                     repo_name or "",
@@ -503,7 +605,7 @@ def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automatio
         # Get PR details to determine the target base branch
         gh_logger = get_gh_logger()
         pr_details_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName"],
+            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName,author,body"],
             repo=repo_name,
             capture_output=True,
         )

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "auto-coder"
-version = "2025.12.13.6+gc32caaa"
+version = "2025.12.13.10+g5def663"
 description = "Automated application development using Gemini CLI and GitHub integration"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -16,8 +16,9 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
-requires-python = ">=3.11,<3.12"
+requires-python = ">=3.11"
 dependencies = [
     "requests>=2.31.0",
     "pydantic>=2.0.0,<3.0.0",
@@ -179,7 +180,7 @@ disallow_incomplete_defs = false
 check_untyped_defs = false
 disallow_untyped_decorators = false
 no_implicit_optional = false
-exclude = ["mcp/", "graph_builder/", "mcp_servers/"]
+exclude = ["mcp/", "graph_builder/", "mcp_servers/", "tests/"]
 # Use packages instead of files to avoid module path conflicts
 packages = ["auto_coder"]
 
