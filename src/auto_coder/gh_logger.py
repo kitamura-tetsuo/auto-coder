@@ -14,7 +14,7 @@ import subprocess
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Union
+from typing import Any, Dict, Iterator, List, Optional, Protocol, Union, cast
 
 # Environment variable to disable logging
 GH_LOGGING_DISABLED = os.environ.get("GH_LOGGING_DISABLED", "").lower() in (
@@ -270,7 +270,7 @@ class GHCommandLogger:
         command: List[str],
         repo: Optional[str] = None,
         **kwargs: Any,
-    ) -> subprocess.CompletedProcess:
+    ) -> "GHCommandResult":
         """
         Execute a subprocess command and log it.
 
@@ -329,7 +329,14 @@ class GHCommandLogger:
         if not hasattr(result, "success"):
             result.success = result.returncode == 0  # type: ignore[attr-defined]
 
-        return result
+        return cast(GHCommandResult, result)
+
+
+class GHCommandResult(Protocol):
+    returncode: int
+    stdout: str
+    stderr: str
+    success: bool
 
 
 # Global logger instance

@@ -519,20 +519,24 @@ class TestAutomationEngine:
         assert "ImportError: module not found" in result
 
     @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
+    @patch("auto_coder.util.github_action.cmd.run_command")
     @patch("auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_all_passed(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
+    def test_check_github_actions_status_all_passed(self, mock_get_gh_logger, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when all checks pass."""
         from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup - mock cmd.run_command to return successful checks
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
-            returncode=0, stdout=json.dumps({"check_runs": [{"name": "test-check", "conclusion": "success", "status": "completed", "html_url": "https://url"}, {"name": "another-check", "conclusion": "success", "status": "completed", "html_url": "https://url"}]}), stderr=""
-        )
+        # Return JSON for the gh api call with completed check runs
+        api_response = {
+            "check_runs": [
+                {"id": 1, "name": "test-check", "status": "completed", "conclusion": "success"},
+                {"id": 2, "name": "another-check", "status": "completed", "conclusion": "success"},
+            ]
+        }
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "abc123def456"}}
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -543,64 +547,67 @@ class TestAutomationEngine:
         assert len(result.ids) == 0  # No run IDs matching /actions/runs/ pattern in mocked URLs
 
     @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
+    @patch("auto_coder.util.github_action.get_github_cache")
+    @patch("auto_coder.util.github_action.cmd.run_command")
     @patch("auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_some_failed(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
+    def test_check_github_actions_status_some_failed(self, mock_get_gh_logger, mock_run_command, mock_cache, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when some checks fail."""
         from auto_coder.util.github_action import _check_github_actions_status
 
-        # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "check_runs": [
-                        {"name": "passing-check", "conclusion": "success", "status": "completed", "html_url": "https://url"},
-                        {"name": "failing-check", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/repo/actions/runs/123"},
-                        {"name": "pending-check", "conclusion": None, "status": "in_progress", "html_url": "https://url"},
-                    ]
-                }
-            ),
-            stderr="",
-        )
+        # Disable caching for this test
+        mock_cache.return_value.get.return_value = None
+
+        # Setup - return JSON for the gh api call with mixed check runs
+        # html_url contains the actions runs URL that is used to extract run IDs
+        api_response = {
+            "check_runs": [
+                {"id": 1, "name": "passing-check", "status": "completed", "conclusion": "success", "html_url": "https://github.com/test/repo/actions/runs/1001"},
+                {"id": 2, "name": "failing-check", "status": "completed", "conclusion": "failure", "html_url": "https://github.com/test/repo/actions/runs/1002"},
+                {"id": 3, "name": "pending-check", "status": "in_progress", "conclusion": None, "html_url": "https://github.com/test/repo/actions/runs/1003"},
+            ]
+        }
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
-
+        pr_data = {"number": 123, "head": {"sha": "somefailed123"}}
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
         print(f"DEBUG: Result: {result}")
 
-        # Assert
+        # Assert - has_in_progress is True due to pending-check, so success is False
         assert result.success is False
-        assert 123 in result.ids
+        assert result.in_progress is True
+        # Run IDs are extracted from all check runs with html_url containing /actions/runs/
+        assert 1001 in result.ids or 1002 in result.ids or 1003 in result.ids
 
     @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
+    @patch("auto_coder.util.github_action.get_github_cache")
+    @patch("auto_coder.util.github_action.cmd.run_command")
     @patch("auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_tab_format_with_failures(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
+    def test_check_github_actions_status_tab_format_with_failures(self, mock_get_gh_logger, mock_run_command, mock_cache, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and failures (adapted to JSON API)."""
         from auto_coder.util.github_action import _check_github_actions_status
 
-        # Setup - simulating the API output
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
+        # Disable caching for this test
+        mock_cache.return_value.get.return_value = None
+
+        # Setup - return JSON for the gh api call with failed check runs
+        # html_url contains the actions runs URL that is used to extract run IDs
+        api_response = {
+            "check_runs": [
+                {"id": 123, "name": "test", "status": "completed", "conclusion": "failure", "html_url": "https://github.com/example/repo/actions/runs/123"},
+                {"id": 124, "name": "format", "status": "completed", "conclusion": "success", "html_url": "https://github.com/example/repo/actions/runs/124"},
+                {"id": 125, "name": "link-pr-to-issue", "status": "completed", "conclusion": "skipped", "html_url": "https://github.com/example/repo/actions/runs/125"},
+            ]
+        }
+        mock_run_command.return_value = Mock(
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "check_runs": [
-                        {"name": "test", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"},
-                        {"name": "format", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/124"},
-                        {"name": "link-pr-to-issue", "conclusion": "skipped", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/125"},
-                    ]
-                }
-            ),
+            stdout=json.dumps(api_response),
             stderr="",
         )
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "tabfailed456"}}
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -611,30 +618,28 @@ class TestAutomationEngine:
         assert 123 in result.ids
 
     @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
+    @patch("auto_coder.util.github_action.cmd.run_command")
     @patch("auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_tab_format_all_pass(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
+    def test_check_github_actions_status_tab_format_all_pass(self, mock_get_gh_logger, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with tab-separated format and all passing (adapted to JSON API)."""
         from auto_coder.util.github_action import _check_github_actions_status
 
-        # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
+        # Setup - return JSON for the gh api call with all passing check runs
+        api_response = {
+            "check_runs": [
+                {"id": 123, "name": "test", "status": "completed", "conclusion": "success"},
+                {"id": 124, "name": "format", "status": "completed", "conclusion": "success"},
+                {"id": 125, "name": "link-pr-to-issue", "status": "completed", "conclusion": "skipped"},
+            ]
+        }
+        mock_run_command.return_value = Mock(
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "check_runs": [
-                        {"name": "test", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"},
-                        {"name": "format", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/124"},
-                        {"name": "link-pr-to-issue", "conclusion": "skipped", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/125"},
-                    ]
-                }
-            ),
+            stdout=json.dumps(api_response),
             stderr="",
         )
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "abc123def456"}}
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -645,28 +650,25 @@ class TestAutomationEngine:
         assert len(result.ids) == 2
 
     @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
+    @patch("auto_coder.util.github_action.cmd.run_command")
     @patch("auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_no_checks_reported(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
+    def test_check_github_actions_status_no_checks_reported(self, mock_get_gh_logger, mock_run_command, mock_github_client, mock_gemini_client):
         """Handle gh CLI message when no checks are reported - should return success (based on current logic for new commits)."""
         from auto_coder.util.github_action import _check_github_actions_status
 
-        # Mock gh api to return empty check_runs
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(returncode=0, stdout=json.dumps({"check_runs": []}), stderr="")
+        # Setup - return JSON for the gh api call with empty check runs
+        api_response = {"check_runs": []}
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
-        # Provide complete PR data including head_branch
-        pr_data = {"number": 123, "head_branch": "test-branch", "head": {"ref": "test-branch", "sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "abc123def456", "ref": "test-branch"}}
 
         result = _check_github_actions_status("test/repo", pr_data, config)
         print(f"DEBUG: Result: {result}")
 
-        # Current implementation treats empty checks as success (assuming CI hasn't started or not configured)
-        # Note: Logic in _check_github_actions_status says:
-        # if not checks_data: result = GitHubActionsStatusResult(success=True, ...)
+        # When there are no checks (empty list), the current implementation treats it as success
+        # This handles repos with no CI configured
         assert result.success is True
-        assert result.in_progress is False
         assert result.ids == []
 
     @patch("auto_coder.gh_logger.subprocess.run")

@@ -198,19 +198,31 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
 
         # Resolve base reference preferring remote-tracking ref to avoid ambiguity
         origin_ref = f"refs/remotes/origin/{base_branch}"
-        base_check = cmd.run_command(["git", "rev-parse", "--verify", origin_ref], cwd=cwd)
+        base_check = cmd.run_command(
+            ["git", "rev-parse", "--verify", origin_ref],
+            cwd=cwd,
+            stream_output=False,
+        )
         if base_check.success:
             resolved_base = origin_ref
         else:
             # Try without remote prefix
-            base_check = cmd.run_command(["git", "rev-parse", "--verify", base_branch], cwd=cwd)
+            base_check = cmd.run_command(
+                ["git", "rev-parse", "--verify", base_branch],
+                cwd=cwd,
+                stream_output=False,
+            )
             if not base_check.success:
                 logger.warning(f"Base branch {base_branch} not found")
                 return ""
             resolved_base = base_branch
 
         # Get the common ancestor (merge base) between current branch and base branch
-        merge_base_result = cmd.run_command(["git", "merge-base", "HEAD", resolved_base], cwd=cwd)
+        merge_base_result = cmd.run_command(
+            ["git", "merge-base", "HEAD", resolved_base],
+            cwd=cwd,
+            stream_output=False,
+        )
 
         if not merge_base_result.success:
             logger.warning(f"Failed to find merge base with {resolved_base}: {merge_base_result.stderr}")
@@ -228,6 +240,7 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
                 "--pretty=format:%s",
             ],
             cwd=cwd,
+            stream_output=False,
         )
 
         if not log_result.success:

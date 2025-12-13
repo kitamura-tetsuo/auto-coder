@@ -79,7 +79,7 @@ class BackendSessionManager:
                     state_file_path,
                 )
                 return True
-            except (OSError, IOError, PermissionError, json.JSONEncodeError) as exc:  # pragma: no cover - defensive
+            except (OSError, IOError, PermissionError, TypeError) as exc:  # pragma: no cover - defensive
                 logger.error("Failed to save backend session state to %s: %s", self.get_state_file_path(), exc)
                 return False
 

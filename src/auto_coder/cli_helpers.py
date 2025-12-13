@@ -3,8 +3,9 @@
 import os
 import shlex
 import subprocess
+from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 import click
 import toml
@@ -473,41 +474,40 @@ def build_backend_manager(
     }
 
     # Build factory dictionary with support for aliases
-    selected_factories = {}
+    selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
         if backend_name in ["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
-                selected_factories[backend_name] = lambda bn=backend_name: _create_codex_client(bn)
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
             elif backend_name == "codex-mcp":
-                selected_factories[backend_name] = lambda bn=backend_name: _create_codex_mcp_client(bn)
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_mcp_client, backend_name))
             elif backend_name == "gemini":
-                selected_factories[backend_name] = lambda bn=backend_name: _create_gemini_client(bn)
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_gemini_client, backend_name))
             elif backend_name == "qwen":
-                selected_factories[backend_name] = lambda bn=backend_name: _create_qwen_client(bn)
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_qwen_client, backend_name))
             elif backend_name == "auggie":
-                selected_factories[backend_name] = lambda bn=backend_name: _create_auggie_client(bn)
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_auggie_client, backend_name))
             elif backend_name == "claude":
-                selected_factories[backend_name] = lambda bn=backend_name: _create_claude_client(bn)
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_client, backend_name))
         else:
-            # Check if it's an alias (custom backend name)
             backend_config = config.get_backend_config(backend_name)
-            if not backend_config:
+            if backend_config:
+                backend_type = backend_config.backend_type
+                if not backend_type:
+                    raise click.ClickException(f"Backend '{backend_name}' does not have a 'backend_type' specified in configuration")
+
+                # Check if the backend type has a factory
+                if backend_type not in backend_type_factories:
+                    raise click.ClickException(f"Backend type '{backend_type}' (for alias '{backend_name}') is not supported")
+
+                # Create factory for this alias
+                factory_func = backend_type_factories[backend_type]
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(factory_func, backend_name))
+            else:
+                # Fallback or error if config missing?
                 raise click.ClickException(f"Backend '{backend_name}' not found in configuration")
-
-            # Get the backend type from config
-            backend_type = backend_config.backend_type
-            if not backend_type:
-                raise click.ClickException(f"Backend '{backend_name}' does not have a 'backend_type' specified in configuration")
-
-            # Check if the backend type has a factory
-            if backend_type not in backend_type_factories:
-                raise click.ClickException(f"Backend type '{backend_type}' (for alias '{backend_name}') is not supported")
-
-            # Create factory for this alias
-            factory_func = backend_type_factories[backend_type]
-            selected_factories[backend_name] = lambda bn=backend_name, ff=factory_func: ff(bn)
 
     # Create default client
     if primary_backend not in selected_factories:
@@ -785,6 +785,7 @@ def create_failed_pr_backend_manager() -> Optional[BackendManager]:
 
     else:
         # Fallback to single backend config (legacy behavior)
+        assert failed_pr_config is not None
         backend_name = failed_pr_config.name
         selected_backends = [backend_name]
         primary_backend = backend_name

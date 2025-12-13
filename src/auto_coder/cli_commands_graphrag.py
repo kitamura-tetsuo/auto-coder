@@ -1,5 +1,7 @@
 """GraphRAG-related CLI commands."""
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -90,8 +92,6 @@ def run_graphrag_setup_mcp_programmatically(
 
                 # Verify installation
                 # Add common uv installation paths to PATH for this session
-                import os
-
                 uv_bin_paths = [
                     str(Path.home() / ".local" / "bin"),
                     str(Path.home() / ".cargo" / "bin"),
@@ -151,8 +151,6 @@ def run_graphrag_setup_mcp_programmatically(
                         return False
 
                     # Copy the bundled MCP server to install directory
-                    import shutil
-
                     shutil.copytree(
                         bundled_mcp,
                         install_path,
@@ -214,6 +212,10 @@ QDRANT_URL={qdrant_url}
         try:
             with open(env_path, "w", encoding="utf-8") as f:
                 f.write(env_content)
+
+            # Set permissions to 600 (read/write by owner only)
+            os.chmod(env_path, 0o600)
+
             if not silent:
                 logger.info(f"✅ Created .env file: {env_path}")
         except Exception as e:
@@ -287,8 +289,6 @@ exec "$UV_CMD" run main.py
             with open(run_script_path, "w", encoding="utf-8") as f:
                 f.write(run_script_content)
             # Make the script executable
-            import os
-
             os.chmod(run_script_path, 0o755)
             if not silent:
                 logger.info(f"✅ Created run_server.sh script: {run_script_path}")
@@ -415,7 +415,7 @@ def _add_gemini_config(install_path: Path) -> bool:
 
         # GeminiClient requires API key, but we only need add_mcp_server_config
         # which uses CLI commands, so we can pass None
-        client = GeminiClient(api_key=None)
+        client = GeminiClient()
 
         # Use uv with --directory option to ensure correct working directory
         result = client.add_mcp_server_config("graphrag", "uv", ["--directory", str(install_path), "run", "main.py"])
@@ -868,8 +868,6 @@ def graphrag_setup_mcp(
             return
 
         # Remove existing directory
-        import shutil
-
         try:
             shutil.rmtree(install_path)
             click.echo(f"Removed existing directory: {install_path}")

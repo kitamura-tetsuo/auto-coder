@@ -279,20 +279,20 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         # Use gh API to get check runs for the commit
         # gh pr checks does not support --json, so we use the API directly
         gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
+        check_runs_res = gh_logger.execute_with_logging(
             ["gh", "api", f"repos/{repo_name}/commits/{current_head_sha}/check-runs"],
             repo=repo_name,
             capture_output=True,
         )
 
-        if result.returncode != 0:
-            log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, result.stderr)
+        if check_runs_res.returncode != 0:
+            log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, check_runs_res.stderr)
             logger.info(f"API call failed for #{pr_number}, attempting historical fallback...")
             return _check_github_actions_status_from_history(repo_name, pr_data, config)
 
         # Parse JSON output
         try:
-            api_response = json.loads(result.stdout)
+            api_response = json.loads(check_runs_res.stdout or "")
             # The API returns an object with a "check_runs" list
             checks_data = api_response.get("check_runs", [])
         except json.JSONDecodeError:
@@ -307,13 +307,13 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             # Alternatively, if we expect checks, we should wait.
             # For now, preserving similar logic: if empty, return success (line 312 of original)
             # But wait, original code queried by PR #, here we query by SHA.
-            result = GitHubActionsStatusResult(
+            gh_status_result = GitHubActionsStatusResult(
                 success=True,
                 ids=[],
                 in_progress=False,
             )
-            cache.set(cache_key, result)
-            return result
+            cache.set(cache_key, gh_status_result)
+            return gh_status_result
 
         # Map API response matching_checks to the expected format
         # API fields: name, status, conclusion, html_url (as url), head_sha
@@ -368,16 +368,16 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         # Remove duplicates
         run_ids = list(set(run_ids))
 
-        result = GitHubActionsStatusResult(
+        gh_status_result = GitHubActionsStatusResult(
             success=all_passed,
             ids=run_ids,
             in_progress=has_in_progress,
         )
 
         # Cache the result
-        cache.set(cache_key, result)
+        cache.set(cache_key, gh_status_result)
 
-        return result
+        return gh_status_result
 
     except Exception as e:
         logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
@@ -421,8 +421,8 @@ def _filter_runs_for_pr(runs: List[Dict[str, Any]], branch_name: str) -> List[Di
 
 def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int], repo_name: str) -> List[Dict[str, Any]]:
     """Return jobs for a run within the specified repository. If pullRequests are available
-    and pr_number is given, only return jobs if the run references that PR number. Returns
-    empty list on failure.
+    in the command output and pr_number is given, only return jobs if the run references
+    that PR number. Returns empty list on failure.
     """
     try:
         gh_logger = get_gh_logger()
@@ -434,7 +434,7 @@ def _get_jobs_for_run_filtered_by_pr_number(run_id: int, pr_number: Optional[int
             "-R",
             repo_name,
             "--json",
-            "jobs,pullRequests",
+            "jobs",
         ]
         jobs_res = gh_logger.execute_with_logging(
             command,

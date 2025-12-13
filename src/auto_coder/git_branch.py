@@ -674,11 +674,12 @@ def git_checkout_branch(
         if origin_check.success:
             resolved_base_ref = origin_ref
         else:
-            local_check = cmd.run_command(["git", "rev-parse", "--verify", base_branch], cwd=cwd)
+            local_check = cmd.run_command(["git", "rev-parse", "--verify", str(base_branch)], cwd=cwd)
             resolved_base_ref = base_branch if local_check.success else base_branch
 
+        assert resolved_base_ref is not None
         logger.info(f"Creating new branch '{branch_name}' from '{resolved_base_ref}'")
-        checkout_cmd.extend(["-B", branch_name, resolved_base_ref])
+        checkout_cmd.extend(["-B", branch_name, str(resolved_base_ref)])  # type: ignore
     elif branch_exists_remotely and not branch_exists_locally_after_fetch:
         # Branch exists remotely but not locally, create a tracking branch
         logger.info(f"Creating tracking branch for remote branch '{branch_name}'")
