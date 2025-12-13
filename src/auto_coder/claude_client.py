@@ -36,6 +36,10 @@ class ClaudeClient(LLMClientBase):
         # If backend_name is provided, get config from that backend
         if backend_name:
             self.config_backend = config.get_backend_config(backend_name)
+            self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
+            self.api_key = self.config_backend and self.config_backend.api_key
+            self.base_url = self.config_backend and self.config_backend.base_url
+            self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
             self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
             if self.config_backend:
                 self.settings = self.config_backend.settings
