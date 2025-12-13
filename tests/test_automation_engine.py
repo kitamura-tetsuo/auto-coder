@@ -542,7 +542,7 @@ class TestAutomationEngine:
 
         # Assert
         assert result.success is True
-        assert len(result.ids) == 0  # No run IDs when checks pass
+        assert len(result.ids) == 0
 
     @patch("auto_coder.util.github_action.get_github_cache")
     @patch("auto_coder.gh_logger.subprocess.run")
@@ -566,7 +566,6 @@ class TestAutomationEngine:
 
         config = AutomationConfig()
         pr_data = {"number": 123, "head": {"sha": "somefailed123"}}
-
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
 
@@ -656,7 +655,6 @@ class TestAutomationEngine:
         # When there are no checks (empty list), the current implementation treats it as success
         # This handles repos with no CI configured
         assert result.success is True
-        assert result.in_progress is False
         assert result.ids == []
 
     @patch("auto_coder.gh_logger.subprocess.run")

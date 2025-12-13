@@ -101,7 +101,7 @@ def _trigger_fallback_for_conflict_failure(
             capture_output=True,
         )
 
-        if not pr_view_result.success or not pr_view_result.stdout:
+        if pr_view_result.returncode != 0 or not pr_view_result.stdout:
             logger.debug(f"Failed to get PR #{pr_number} body, cannot extract linked issues")
             return
 
@@ -406,7 +406,7 @@ def _close_pr(repo_name: str, pr_number: int) -> None:
             repo=repo_name,
             capture_output=True,
         )
-        if result.success:
+        if result.returncode == 0:
             logger.info(f"Closed PR #{pr_number}")
         else:
             logger.warning(f"Failed to close PR #{pr_number}: {result.stderr}")

@@ -154,7 +154,6 @@ class TestUpdateJulesPrBody:
         github_client = Mock()
         mock_repo = Mock()
         mock_pr = Mock()
-
         github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
 
@@ -163,7 +162,7 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # edit should not be called
+        # edit should not be called if close reference already exists
         mock_pr.edit.assert_not_called()
 
     @patch("auto_coder.pr_processor.get_gh_logger")
@@ -177,7 +176,6 @@ class TestUpdateJulesPrBody:
         github_client = Mock()
         mock_repo = Mock()
         mock_pr = Mock()
-
         github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
 
@@ -186,7 +184,7 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # edit should not be called
+        # edit should not be called if closes reference already exists
         mock_pr.edit.assert_not_called()
 
     @patch("auto_coder.pr_processor.get_gh_logger")
@@ -200,7 +198,6 @@ class TestUpdateJulesPrBody:
         github_client = Mock()
         mock_repo = Mock()
         mock_pr = Mock()
-
         github_client.get_repository.return_value = mock_repo
         mock_repo.get_pull.return_value = mock_pr
 
@@ -209,7 +206,7 @@ class TestUpdateJulesPrBody:
 
         # Assert
         assert result is True
-        # edit should not be called
+        # edit should not be called if close reference already exists (case insensitive)
         mock_pr.edit.assert_not_called()
 
     def test_update_jules_pr_body_failure(self):
