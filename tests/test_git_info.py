@@ -1,5 +1,6 @@
 "Tests for git_info module."
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -160,58 +161,73 @@ class TestGetCommitLog:
             assert mock_cmd.run_command.call_count == 3
 
 
-@patch("src.auto_coder.git_info.GIT_AVAILABLE", True)
-@patch("src.auto_coder.git_info.Repo")
 class TestIsGitRepository:
     """Tests for is_git_repository function."""
 
-    def test_is_git_repository_true(self, mock_repo):
+    def test_is_git_repository_true(self):
         """Test is_git_repository returns True when in a git repository."""
-        assert is_git_repository() is True
-        mock_repo.assert_called_once()
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout=".git\n", stderr="", returncode=0)
 
-    def test_is_git_repository_false(self, mock_repo):
+            assert is_git_repository() is True
+            mock_cmd.run_command.assert_called_once()
+            args, kwargs = mock_cmd.run_command.call_args
+            assert args[0] == ["git", "rev-parse", "--git-dir"]
+
+    def test_is_git_repository_false(self):
         """Test is_git_repository returns False when not in a git repository."""
-        from git import InvalidGitRepositoryError
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(success=False, stdout="", stderr="fatal: not a git repository", returncode=128)
 
-        mock_repo.side_effect = InvalidGitRepositoryError
-        assert is_git_repository() is False
+            assert is_git_repository() is False
 
-    def test_is_git_repository_with_path(self, mock_repo):
+    def test_is_git_repository_with_path(self):
         """Test is_git_repository with custom path."""
-        is_git_repository(path="/custom/path")
-        mock_repo.assert_called_once_with("/custom/path", search_parent_directories=True)
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor, patch("os.path.exists", return_value=True):
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout=".git\n", stderr="", returncode=0)
+
+            is_git_repository(path="/custom/path")
+            mock_cmd.run_command.assert_called_once_with(["git", "rev-parse", "--git-dir"], cwd="/custom/path")
 
 
-@patch("src.auto_coder.git_info.GIT_AVAILABLE", True)
-@patch("src.auto_coder.git_info.Repo")
 class TestGetCurrentRepoName:
     """Tests for get_current_repo_name function."""
 
-    def test_get_current_repo_name_success(self, mock_repo):
+    def test_get_current_repo_name_success(self):
         """Test successful retrieval of repository name."""
-        mock_remotes = MagicMock()
-        mock_origin = MagicMock()
-        mock_origin.url = "git@github.com:owner/repo.git"
-        mock_remotes.__contains__.return_value = True
-        mock_remotes.origin = mock_origin
-        mock_repo.return_value.remotes = mock_remotes
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(success=True, stdout="git@github.com:owner/repo.git\n", stderr="", returncode=0)
 
-        result = get_current_repo_name()
-        assert result == "owner/repo"
+            result = get_current_repo_name()
+            assert result == "owner/repo"
+            mock_cmd.run_command.assert_called_once()
+            args, kwargs = mock_cmd.run_command.call_args
+            assert args[0] == ["git", "config", "--get", "remote.origin.url"]
 
-    def test_get_current_repo_name_failure(self, mock_repo):
+    def test_get_current_repo_name_failure(self):
         """Test get_current_repo_name when git command fails."""
-        from git import InvalidGitRepositoryError
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(success=False, stdout="", stderr="error", returncode=1)
 
-        mock_repo.side_effect = InvalidGitRepositoryError
-        result = get_current_repo_name()
-        assert result is None
+            result = get_current_repo_name()
+            assert result is None
 
-    def test_get_current_repo_name_no_remote(self, mock_repo):
+    def test_get_current_repo_name_no_remote(self):
         """Test get_current_repo_name when no remote is configured."""
-        mock_remotes = MagicMock()
-        mock_remotes.__contains__.return_value = False
-        mock_repo.return_value.remotes = mock_remotes
-        result = get_current_repo_name()
-        assert result is None
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.return_value = CommandResult(success=False, stdout="", stderr="", returncode=1)
+
+            result = get_current_repo_name()
+            assert result is None
