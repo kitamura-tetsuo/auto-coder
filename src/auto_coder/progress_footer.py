@@ -55,31 +55,37 @@ class ProgressFooter:
         Returns:
             Formatted footer string
         """
+        # Icons and separators
+        icon_pr = "🔀"
+        icon_issue = "🎫"
+        icon_branch = "🌿"
+        sep_stage = " › "
+
         # Build the main item display with color based on item_type
         if item_type.upper() == "PR":
             # PR: cyan color
-            main_display = f"\033[96m[{item_type} #{item_number}"
+            main_display = f"\033[96m[{icon_pr} {item_type} #{item_number}"
         elif item_type.upper() == "ISSUE":
             # Issue: light purple/magenta
-            main_display = f"\033[95m[{item_type} #{item_number}"
+            main_display = f"\033[95m[{icon_issue} {item_type} #{item_number}"
         else:
             # Fallback: use cyan
             main_display = f"\033[96m[{item_type} #{item_number}"
 
         # Add branch name if available (in dark red)
         if self._branch_name:
-            main_display += f"\033[91m/{self._branch_name}\033[0m"
+            main_display += f"\033[91m {icon_branch} {self._branch_name}\033[0m"
 
         main_display += "]\033[0m"
 
         # Add related issues if available (without space before it)
         if self._related_issues:
             related_issues_str = ", ".join([f"#{issue}" for issue in self._related_issues])
-            main_display += f"\033[95m[Issue {related_issues_str}]\033[0m"
+            main_display += f"\033[95m[{icon_issue} Issue {related_issues_str}]\033[0m"
 
         # Add stages if available
         if self._stage_stack:
-            all_stages = " / ".join(self._stage_stack)
+            all_stages = sep_stage.join(self._stage_stack)
             return f"{main_display} \033[93m{all_stages}\033[0m"
         else:
             # No stages, just show main info
