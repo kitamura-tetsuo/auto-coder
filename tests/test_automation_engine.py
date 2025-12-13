@@ -606,8 +606,8 @@ class TestAutomationEngine:
         result = _check_github_actions_status("test/repo", pr_data, config)
 
         # Assert
-        assert result.success is False  # Should be False because 'test' failed
-        assert 123 in result.ids  # Run ID should be extracted from the failed check
+        assert result.success is False
+        assert 123 in result.ids
 
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_tab_format_all_pass(self, mock_run_command, mock_github_client, mock_gemini_client):
@@ -635,8 +635,8 @@ class TestAutomationEngine:
         result = _check_github_actions_status("test/repo", pr_data, config)
 
         # Assert
-        assert result.success is True  # Should be True because all required checks passed
-        assert len(result.ids) == 0  # No failed checks, so no run IDs needed
+        assert result.success is True
+        assert len(result.ids) == 0
 
     @patch("auto_coder.gh_logger.subprocess.run")
     def test_check_github_actions_status_no_checks_reported(self, mock_run_command, mock_github_client, mock_gemini_client):

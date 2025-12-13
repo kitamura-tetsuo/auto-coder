@@ -128,6 +128,12 @@ class TestUpdateJulesPrBody:
         github_client = Mock()
         github_client.get_repository.return_value = mock_repo
 
+        # Mock repo and pr objects
+        mock_repo = Mock()
+        mock_pr = Mock()
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
+
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
@@ -223,6 +229,8 @@ class TestUpdateJulesPrBody:
         github_client = Mock()
         github_client.get_repository.return_value = mock_repo
 
+        github_client.get_repository.side_effect = Exception("API Error")
+
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
 
@@ -241,6 +249,11 @@ class TestUpdateJulesPrBody:
         mock_repo.get_pull.return_value = mock_pr
         github_client = Mock()
         github_client.get_repository.return_value = mock_repo
+
+        mock_repo = Mock()
+        mock_pr = Mock()
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
@@ -265,6 +278,11 @@ class TestUpdateJulesPrBody:
         mock_repo.get_pull.return_value = mock_pr
         github_client = Mock()
         github_client.get_repository.return_value = mock_repo
+
+        mock_repo = Mock()
+        mock_pr = Mock()
+        github_client.get_repository.return_value = mock_repo
+        mock_repo.get_pull.return_value = mock_pr
 
         # Execute
         result = _update_jules_pr_body(repo_name, pr_number, pr_body, issue_number, github_client)
@@ -297,8 +315,6 @@ class TestProcessJulesPr:
 
         # Assert
         assert result is True  # Not an error, just not a Jules PR
-        # CloudManager should not be called
-        # gh command should not be called
 
     def test_process_jules_pr_no_session_id(self):
         """Test that PRs without session ID return False."""

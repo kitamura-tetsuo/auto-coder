@@ -9,15 +9,12 @@ import re
 from typing import Optional
 from urllib.parse import urlparse
 
-try:
-    from git import InvalidGitRepositoryError, Repo
-
-    GIT_AVAILABLE = True
-except ImportError:
-    GIT_AVAILABLE = False
-
 from .logger_config import get_logger
 from .utils import CommandExecutor
+
+# GitPython dependency removed in favor of direct git commands via CommandExecutor
+# This improves startup time and removes a heavy dependency
+
 
 # Re-export CommandExecutor for test compatibility
 __all__ = [
@@ -32,6 +29,19 @@ __all__ = [
 ]
 
 logger = get_logger(__name__)
+
+# Compile regex patterns at module level for performance
+GITHUB_URL_PATTERNS = [
+    re.compile(p)
+    for p in [
+        # HTTPS: https://github.com/owner/repo
+        r"https://github\.com/([^/]+)/([^/]+)",
+        # SSH: git@github.com:owner/repo
+        r"git@github\.com:([^/]+)/([^/]+)",
+        # SSH alternative: ssh://git@github.com/owner/repo
+        r"ssh://git@github\.com/([^/]+)/([^/]+)",
+    ]
+]
 
 
 def get_current_branch(cwd: Optional[str] = None) -> Optional[str]:
@@ -63,23 +73,25 @@ def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
     Returns:
         Repository name in format "owner/repo" or None if not found.
     """
-    if not GIT_AVAILABLE:
-        logger.warning("GitPython not available. Cannot auto-detect repository.")
+    # Use provided path or current directory
+    repo_path = path or os.getcwd()
+
+    if not os.path.exists(repo_path):
         return None
 
+    cmd = CommandExecutor()
+
     try:
-        # Use provided path or current directory
-        repo_path = path or os.getcwd()
+        # Try to get remote origin URL directly using git command
+        # This avoids the overhead of initializing a full Repo object with search_parent_directories
+        # and avoids dependency on gitpython
+        result = cmd.run_command(["git", "config", "--get", "remote.origin.url"], cwd=repo_path)
 
-        # Try to find git repository
-        repo = Repo(repo_path, search_parent_directories=True)
-
-        # Get remote origin URL
-        if "origin" not in repo.remotes:
-            logger.debug("No 'origin' remote found in repository")
+        if not result.success:
+            logger.debug(f"No 'origin' remote found in repository or not a git repository: {result.stderr}")
             return None
 
-        origin_url = repo.remotes.origin.url
+        origin_url = result.stdout.strip()
         logger.debug(f"Found origin URL: {origin_url}")
 
         # Parse GitHub repository name from URL
@@ -91,9 +103,6 @@ def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
             logger.debug(f"Could not parse GitHub repository from URL: {origin_url}")
             return None
 
-    except InvalidGitRepositoryError:
-        logger.debug(f"No git repository found in {repo_path}")
-        return None
     except Exception as e:
         logger.debug(f"Error detecting repository: {e}")
         return None
@@ -117,18 +126,9 @@ def parse_github_repo_from_url(url: str) -> Optional[str]:
     if url.endswith(".git"):
         url = url[:-4]
 
-    # Handle different URL formats
-    patterns = [
-        # HTTPS: https://github.com/owner/repo
-        r"https://github\.com/([^/]+)/([^/]+)",
-        # SSH: git@github.com:owner/repo
-        r"git@github\.com:([^/]+)/([^/]+)",
-        # SSH alternative: ssh://git@github.com/owner/repo
-        r"ssh://git@github\.com/([^/]+)/([^/]+)",
-    ]
-
-    for pattern in patterns:
-        match = re.match(pattern, url)
+    # Handle different URL formats using pre-compiled patterns
+    for pattern in GITHUB_URL_PATTERNS:
+        match = pattern.match(url)
         if match:
             owner, repo = match.groups()
             return f"{owner}/{repo}"
@@ -158,17 +158,15 @@ def is_git_repository(path: Optional[str] = None) -> bool:
     Returns:
         True if it's a Git repository, False otherwise.
     """
-    if not GIT_AVAILABLE:
+    repo_path = path or os.getcwd()
+
+    if not os.path.exists(repo_path):
         return False
 
-    try:
-        repo_path = path or os.getcwd()
-        Repo(repo_path, search_parent_directories=True)
-        return True
-    except InvalidGitRepositoryError:
-        return False
-    except Exception:
-        return False
+    cmd = CommandExecutor()
+    # check if inside a git repository
+    result = cmd.run_command(["git", "rev-parse", "--git-dir"], cwd=repo_path)
+    return result.success
 
 
 def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_commits: int = 50) -> str:
