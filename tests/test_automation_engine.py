@@ -527,14 +527,7 @@ class TestAutomationEngine:
         pr_data = {"number": 123, "head": {"sha": "abc1234"}}
 
         # Mock API response for check-runs
-        mock_run_command.return_value = Mock(
-            returncode=0,
-            stdout=json.dumps({"check_runs": [
-                {"name": "test-check", "conclusion": "success", "status": "completed"},
-                {"name": "another-check", "conclusion": "success", "status": "completed"}
-            ]}),
-            stderr=""
-        )
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps({"check_runs": [{"name": "test-check", "conclusion": "success", "status": "completed"}, {"name": "another-check", "conclusion": "success", "status": "completed"}]}), stderr="")
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -555,12 +548,16 @@ class TestAutomationEngine:
         # Mock API response with failed checks
         mock_run_command.return_value = Mock(
             returncode=0,
-            stdout=json.dumps({"check_runs": [
-                {"name": "passing-check", "conclusion": "success", "status": "completed"},
-                {"name": "failing-check", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"},
-                {"name": "pending-check", "conclusion": None, "status": "in_progress"}
-            ]}),
-            stderr=""
+            stdout=json.dumps(
+                {
+                    "check_runs": [
+                        {"name": "passing-check", "conclusion": "success", "status": "completed"},
+                        {"name": "failing-check", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"},
+                        {"name": "pending-check", "conclusion": None, "status": "in_progress"},
+                    ]
+                }
+            ),
+            stderr="",
         )
 
         # Execute
@@ -580,11 +577,7 @@ class TestAutomationEngine:
         pr_data = {"number": 123, "head": {"sha": "ghi9012"}}
 
         # Mock API response with empty check runs
-        mock_run_command.return_value = Mock(
-            returncode=0,
-            stdout=json.dumps({"check_runs": []}),
-            stderr=""
-        )
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps({"check_runs": []}), stderr="")
 
         result = _check_github_actions_status("test/repo", pr_data, config)
 
