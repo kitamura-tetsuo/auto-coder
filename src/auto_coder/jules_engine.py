@@ -86,7 +86,13 @@ def check_and_resume_or_archive_sessions() -> None:
             outputs = session.get("outputs", {})
             if isinstance(outputs, list):
                 try:
-                    outputs = dict(outputs)
+                    new_outputs = {}
+                    for item in outputs:
+                        if isinstance(item, dict):
+                            new_outputs.update(item)
+                        elif isinstance(item, (list, tuple)) and len(item) == 2:
+                            new_outputs[item[0]] = item[1]
+                    outputs = new_outputs
                 except Exception as e:
                     logger.warning(f"Failed to convert list outputs to dict: {outputs} - {e}")
                     outputs = {}
