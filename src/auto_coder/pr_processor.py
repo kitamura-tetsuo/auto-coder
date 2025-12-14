@@ -2,6 +2,7 @@
 PR processing functionality for Auto-Coder automation engine.
 """
 
+import asyncio
 import json
 import math
 import os
@@ -9,16 +10,17 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
-from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from auto_coder.cli_helpers import create_failed_pr_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
+from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
@@ -39,9 +41,6 @@ from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, CommandResult, log_action
 
-import asyncio
-import threading
-
 logger = get_logger(__name__)
 cmd = CommandExecutor()
 
@@ -59,14 +58,14 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
     3. Update commit status.
     4. Remove @auto-coder label.
     """
-    from auto_coder.util.github_action import _check_github_actions_status
     from auto_coder.label_manager import LabelManager
+    from auto_coder.util.github_action import _check_github_actions_status
 
     logger.info(f"Started async monitor for PR #{pr_number} (workflow: {workflow_id})")
-    
+
     github_client = GitHubClient.get_instance()
     config = AutomationConfig()
-    
+
     # Create a dummy PR data for _check_github_actions_status
     pr_data = {
         "number": pr_number,
@@ -77,16 +76,16 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
         # 1. Wait for workflow run to appear (max 5 minutes)
         run_found = False
         run_id = None
-        
+
         for _ in range(60):  # 60 * 5s = 5 minutes
             status_result = _check_github_actions_status(repo_name, pr_data, config)
             if status_result.ids:
                 run_found = True
-                run_id = status_result.ids[0] # Take the first one found
+                run_id = status_result.ids[0]  # Take the first one found
                 logger.info(f"Found workflow run {run_id} for PR #{pr_number}")
                 break
             await asyncio.sleep(5)
-            
+
         if not run_found:
             logger.error(f"Timeout waiting for workflow run to appear for PR #{pr_number}")
             # Remove label so it can be retried? Or leave it?
@@ -99,39 +98,32 @@ async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, 
         # 2. Wait for workflow run to complete (max 60 minutes)
         completed = False
         final_status = "failure"
-        
-        for _ in range(360): # 360 * 10s = 60 minutes
+
+        for _ in range(360):  # 360 * 10s = 60 minutes
             status_result = _check_github_actions_status(repo_name, pr_data, config)
-            
+
             if not status_result.in_progress:
                 completed = True
                 final_status = "success" if status_result.success else "failure"
                 logger.info(f"Workflow run {run_id} completed with status: {final_status}")
                 break
-            
+
             await asyncio.sleep(10)
-            
+
         if not completed:
             logger.error(f"Timeout waiting for workflow run {run_id} to complete for PR #{pr_number}")
-            final_status = "error" # Timeout treated as error
+            final_status = "error"  # Timeout treated as error
 
         # 3. Update commit status
         # Map our status to GitHub commit status state (pending, success, error, failure)
         # final_status is already success/failure/error
         commit_status_state = final_status
-        
+
         target_url = f"https://github.com/{repo_name}/actions/runs/{run_id}" if run_id else ""
         description = f"Workflow {workflow_id} {final_status}"
-        
+
         try:
-            github_client.create_commit_status(
-                repo_name=repo_name,
-                sha=head_sha,
-                state=commit_status_state,
-                target_url=target_url,
-                description=description,
-                context=f"auto-coder/{workflow_id}"
-            )
+            github_client.create_commit_status(repo_name=repo_name, sha=head_sha, state=commit_status_state, target_url=target_url, description=description, context=f"auto-coder/{workflow_id}")
         except Exception as e:
             logger.error(f"Failed to update commit status for PR #{pr_number}: {e}")
 
@@ -867,42 +859,38 @@ def _handle_pr_merge(
 
         # Step 3: Get detailed status for merge decision
         github_checks = _check_github_actions_status(repo_name, pr_data, config)
-        
+
         # Check if no actions have started for the latest commit
         if not github_checks.ids:
             # No checks found for the current head SHA
             logger.info(f"No GitHub Actions found for PR #{pr_number} (SHA: {pr_data.get('head', {}).get('sha')[:8]}). Triggering pr-tests.yml...")
-            
+
             # 1. Add @auto-coder label to prevent multiple executions
             # We use LabelManager to add the label
             with LabelManager(github_client, repo_name, pr_number, item_type="pr", config=config) as lm:
                 # Label added by entering context
-                
+
                 # 2. Trigger workflow_dispatch
                 from auto_coder.util.github_action import trigger_workflow_dispatch
-                
+
                 head_branch = pr_data.get("head", {}).get("ref")
                 workflow_id = "pr-tests.yml"
-                
+
                 triggered = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
-                
+
                 if triggered:
                     actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
-                    
+
                     # 3. Start async monitor
                     head_sha = pr_data.get("head", {}).get("sha")
-                    monitor_thread = threading.Thread(
-                        target=_run_async_monitor,
-                        args=(repo_name, pr_number, head_sha, workflow_id),
-                        daemon=True
-                    )
+                    monitor_thread = threading.Thread(target=_run_async_monitor, args=(repo_name, pr_number, head_sha, workflow_id), daemon=True)
                     monitor_thread.start()
-                    
+
                     actions.append(f"Started async monitor for {workflow_id}")
-                    
+
                     # Keep the label so async monitor can remove it later
                     lm.keep_label()
-                    
+
                     return actions
                 else:
                     actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number}")

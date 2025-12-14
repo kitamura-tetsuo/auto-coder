@@ -1,11 +1,14 @@
 import unittest
-from unittest.mock import MagicMock, patch, Mock
+from unittest.mock import MagicMock, Mock, patch
+
 import requests
+
 from src.auto_coder.jules_client import JulesClient
 from src.auto_coder.jules_engine import check_and_resume_or_archive_sessions
 
+
 class TestJulesPlanApproval(unittest.TestCase):
-    
+
     @patch("src.auto_coder.jules_client.get_llm_config")
     @patch("requests.Session.post")
     def test_approve_plan_success(self, mock_post, mock_get_config):
@@ -28,7 +31,7 @@ class TestJulesPlanApproval(unittest.TestCase):
         result = client.approve_plan("session-123")
 
         assert result is True
-        
+
         # Verify correct API call was made
         mock_post.assert_called_once()
         call_args = mock_post.call_args
@@ -77,7 +80,7 @@ class TestJulesPlanApproval(unittest.TestCase):
         # Verify
         mock_jules_client.approve_plan.assert_called_once_with("s1")
         # Should not save state as we didn't modify retry_state, but state_changed is True because we approved plan?
-        # Let's check the code. 
+        # Let's check the code.
         # In the implementation:
         # if jules_client.approve_plan(session_id):
         #     logger.info(f"Successfully approved plan for session {session_id}")

@@ -328,10 +328,21 @@ def process_issues(
 
     # Run automation
     gemini_config = config.get_backend_config("gemini")
-    if primary_backend == "gemini" and gemini_config and gemini_config.api_key:
-        automation_engine.run(repo_name)
-    else:
-        automation_engine.run(repo_name)
+
+    import time
+
+    from .llm_backend_config import get_process_issues_sleep_time_from_config
+
+    while True:
+        if primary_backend == "gemini" and gemini_config and gemini_config.api_key:
+            automation_engine.run(repo_name)
+        else:
+            automation_engine.run(repo_name)
+
+        # Sleep before next iteration
+        sleep_time = get_process_issues_sleep_time_from_config()
+        logger.info(f"Sleeping for {sleep_time} seconds...")
+        time.sleep(sleep_time)
 
     # Close MCP session if present
     try:

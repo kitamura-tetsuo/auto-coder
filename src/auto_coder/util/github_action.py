@@ -757,8 +757,6 @@ def get_detailed_checks_from_history(
                             "status": status,
                         }
 
-
-                        
                         all_checks.append(check_info)
 
                         # Track overall status
@@ -802,7 +800,7 @@ def get_detailed_checks_from_history(
                             "status": run_status,
                         }
                         all_checks.append(check_info)
-                        
+
                         if run_conclusion in ["failure", "failed", "error", "cancelled"]:
                             any_failed = True
                             all_failed_checks.append(check_info)
@@ -853,7 +851,7 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
     """
     try:
         logger.info(f"Triggering workflow '{workflow_id}' on '{ref}' for {repo_name}")
-        
+
         gh_logger = get_gh_logger()
         result = gh_logger.execute_with_logging(
             [
@@ -869,19 +867,17 @@ def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> boo
             repo=repo_name,
             capture_output=True,
         )
-        
+
         if result.returncode == 0:
             logger.info(f"Successfully triggered workflow '{workflow_id}'")
             return True
         else:
             logger.error(f"Failed to trigger workflow: {result.stderr}")
             return False
-            
+
     except Exception as e:
         logger.error(f"Error triggering workflow '{workflow_id}': {e}")
         return False
-
-
 
 
 def get_github_actions_logs_from_url(url: str) -> str:

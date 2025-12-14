@@ -6,9 +6,9 @@ import os
 import tempfile
 from unittest.mock import Mock, patch
 
+from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from src.auto_coder.pr_processor import _handle_pr_merge
-from src.auto_coder.automation_config import AutomationConfig
 
 
 def test_jules_fallback_enabled_via_config_toml():
@@ -131,7 +131,7 @@ def test_handle_pr_merge_jules_fallback_disabled_in_config(
     # Should call send feedback (Jules handles it) instead of falling back to local
     mock_send_feedback.assert_called_once()
     assert "Jules will handle fixing PR #123, skipping local fixes" in actions[-1]
-    
+
     # Should NOT proceed to checkout and fix
     mock_checkout.assert_not_called()
     mock_fix_issues.assert_not_called()
