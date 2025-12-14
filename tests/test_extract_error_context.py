@@ -124,7 +124,7 @@ def test_extract_error_context_with_long_log():
 
     # Middle 700 lines (no error)
     for i in range(700):
-        log_lines.append(f"2025-10-27T03:27:{i%60:02d}.0000000Z   Middle line {i}")
+        log_lines.append(f"2025-10-27T03:27:{i % 60:02d}.0000000Z   Middle line {i}")
 
     # Last 100 lines (no error)
     for i in range(100):
