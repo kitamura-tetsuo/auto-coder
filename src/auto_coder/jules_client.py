@@ -140,7 +140,7 @@ class JulesClient(LLMClientBase):
         try:
             # Prepare the request
             url = f"{self.base_url}/sessions"
-            
+
             # Note: The API does not support server-side filtering for 'state'.
             # We must fetch sessions and filter them client-side.
             base_params = {
@@ -148,17 +148,17 @@ class JulesClient(LLMClientBase):
             }
 
             logger.info(f"Listing Jules sessions (pageSize={page_size})")
-            
+
             all_sessions = []
             page_token = None
-            
+
             while True:
                 params = base_params.copy()
                 if page_token:
                     params["pageToken"] = page_token
-                
+
                 logger.info(f"🤖 GET {url} (pageToken={page_token if page_token else 'None'})")
-                
+
                 response = self.session.get(url, params=params, timeout=self.timeout)
 
                 # Check if request was successful
@@ -172,19 +172,19 @@ class JulesClient(LLMClientBase):
                     response_data = response.json()
                     sessions = response_data.get("sessions", [])
                     all_sessions.extend(sessions)
-                    
+
                     # Check for next page
                     page_token = response_data.get("nextPageToken")
                     if not page_token:
                         break
-                        
+
                 except json.JSONDecodeError:
                     logger.error("Failed to parse Jules sessions response as JSON")
                     break
-            
+
             # Filter out archived sessions client-side
             active_sessions = [s for s in all_sessions if s.get("state") != "ARCHIVED"]
-            
+
             logger.info(f"Total sessions retrieved: {len(all_sessions)}, Active: {len(active_sessions)}")
             logger.info("=" * 60)
             return active_sessions

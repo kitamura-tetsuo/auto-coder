@@ -1,7 +1,9 @@
+from unittest.mock import Mock, patch
 
 import pytest
-from unittest.mock import Mock, patch
+
 from src.auto_coder.jules_client import JulesClient
+
 
 class TestJulesClientPagination:
     """Test cases for JulesClient pagination and filtering."""
@@ -23,14 +25,8 @@ class TestJulesClientPagination:
         # Page 1
         mock_response_page1 = Mock()
         mock_response_page1.status_code = 200
-        mock_response_page1.json.return_value = {
-            "sessions": [
-                {"name": "session1", "state": "ACTIVE"},
-                {"name": "session_archived", "state": "ARCHIVED"}
-            ],
-            "nextPageToken": "token_page_2"
-        }
-        
+        mock_response_page1.json.return_value = {"sessions": [{"name": "session1", "state": "ACTIVE"}, {"name": "session_archived", "state": "ARCHIVED"}], "nextPageToken": "token_page_2"}
+
         # Page 2
         mock_response_page2 = Mock()
         mock_response_page2.status_code = 200
@@ -48,14 +44,14 @@ class TestJulesClientPagination:
         assert len(sessions) == 2
         assert sessions[0]["name"] == "session1"
         assert sessions[1]["name"] == "session2"
-        
+
         # Ensure archived session is NOT in the list
         names = [s["name"] for s in sessions]
         assert "session_archived" not in names
 
         # Verify API calls
         assert mock_get.call_count == 2
-        
+
         # Check first call args
         call_args1 = mock_get.call_args_list[0]
         assert call_args1[0][0] == "https://jules.googleapis.com/v1alpha/sessions"

@@ -822,3 +822,56 @@ def get_process_issues_sleep_time_from_config(config_path: Optional[str] = None)
                 continue
 
     return default_sleep_time
+
+
+def get_process_issues_empty_sleep_time_from_config(config_path: Optional[str] = None) -> int:
+    """Get process_issues empty sleep time from [process_issues].empty_sleep_time in config.toml.
+
+    Args:
+        config_path: Optional explicit path to config.toml file.
+
+    Returns:
+        Sleep time in seconds (default: 600)
+    """
+    import os
+
+    default_sleep_time = 600
+
+    # If explicit path provided, check only that file
+    if config_path:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    data = toml.load(f)
+
+                process_issues_config = data.get("process_issues", {})
+                if "empty_sleep_time" in process_issues_config:
+                    return int(process_issues_config["empty_sleep_time"])
+            except Exception as e:
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+
+        return default_sleep_time
+
+    # Try to find config.toml in standard locations
+    config_paths = [
+        os.path.join(os.getcwd(), ".auto-coder", "config.toml"),  # Local config
+        os.path.expanduser("~/.auto-coder/config.toml"),  # Home config
+    ]
+
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    data = toml.load(f)
+
+                process_issues_config = data.get("process_issues", {})
+                if "empty_sleep_time" in process_issues_config:
+                    return int(process_issues_config["empty_sleep_time"])
+
+            except Exception as e:
+                logger = get_logger(__name__)
+                logger.warning(f"Failed to read config.toml from {config_path}: {e}")
+                continue
+
+    return default_sleep_time

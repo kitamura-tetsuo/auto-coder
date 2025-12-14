@@ -1520,7 +1520,6 @@ def _process_jules_pr(
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
 
-
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)
         if not session_id:
