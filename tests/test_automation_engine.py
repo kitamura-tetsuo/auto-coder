@@ -518,21 +518,17 @@ class TestAutomationEngine:
         assert "FAILED: assertion error" in result
         assert "ImportError: module not found" in result
 
-    @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_all_passed(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
+    @patch("auto_coder.gh_logger.subprocess.run")
+    def test_check_github_actions_status_all_passed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when all checks pass."""
         from src.auto_coder.util.github_action import _check_github_actions_status
 
-        # Setup - mock cmd.run_command to return successful checks
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
-            returncode=0, stdout=json.dumps({"check_runs": [{"name": "test-check", "conclusion": "success", "status": "completed", "html_url": "https://url"}, {"name": "another-check", "conclusion": "success", "status": "completed", "html_url": "https://url"}]}), stderr=""
-        )
+        # Setup - mock cmd.run_command to return successful checks in JSON
+        api_response = {"check_runs": [{"name": "test-check", "conclusion": "success", "status": "completed"}, {"name": "another-check", "conclusion": "success", "status": "completed"}]}
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "sha123_pass"}}
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -541,31 +537,23 @@ class TestAutomationEngine:
         assert result.success is True
         assert len(result.ids) == 0
 
-    @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_some_failed(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
+    @patch("auto_coder.gh_logger.subprocess.run")
+    def test_check_github_actions_status_some_failed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when some checks fail."""
         from src.auto_coder.util.github_action import _check_github_actions_status
 
         # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "check_runs": [
-                        {"name": "passing-check", "conclusion": "success", "status": "completed", "html_url": "https://url"},
-                        {"name": "failing-check", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/repo/actions/runs/123"},
-                        {"name": "pending-check", "conclusion": None, "status": "in_progress", "html_url": "https://url"},
-                    ]
-                }
-            ),
-            stderr="",
-        )
+        api_response = {
+            "check_runs": [
+                {"name": "passing-check", "conclusion": "success", "status": "completed"},
+                {"name": "failing-check", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/owner/repo/actions/runs/123"},
+                {"name": "pending-check", "conclusion": None, "status": "in_progress"},
+            ]
+        }
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "sha123_fail"}}
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -574,31 +562,24 @@ class TestAutomationEngine:
         assert result.success is False
         assert 123 in result.ids
 
-    @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_tab_format_with_failures(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
-        """Test GitHub Actions status check with tab-separated format and failures (adapted to JSON API)."""
+    @patch("auto_coder.gh_logger.subprocess.run")
+    def test_check_github_actions_status_tab_format_with_failures(self, mock_run_command, mock_github_client, mock_gemini_client):
+        """Test GitHub Actions status check with failures (simulating JSON response)."""
         from src.auto_coder.util.github_action import _check_github_actions_status
 
-        # Setup - simulating the API output
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
+        # Setup - Updated to use JSON format as code now uses gh api
+        api_response = {
+            "check_runs": [{"name": "test", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"}, {"name": "format", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/124"}]
+        }
+
+        mock_run_command.return_value = Mock(
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "check_runs": [
-                        {"name": "test", "conclusion": "failure", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"},
-                        {"name": "format", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/124"},
-                        {"name": "link-pr-to-issue", "conclusion": "skipped", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/125"},
-                    ]
-                }
-            ),
+            stdout=json.dumps(api_response),
             stderr="",
         )
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "sha123_tab_fail"}}
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -607,31 +588,24 @@ class TestAutomationEngine:
         assert result.success is False
         assert 123 in result.ids
 
-    @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_tab_format_all_pass(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
-        """Test GitHub Actions status check with tab-separated format and all passing (adapted to JSON API)."""
+    @patch("auto_coder.gh_logger.subprocess.run")
+    def test_check_github_actions_status_tab_format_all_pass(self, mock_run_command, mock_github_client, mock_gemini_client):
+        """Test GitHub Actions status check all pass (simulating JSON response)."""
         from src.auto_coder.util.github_action import _check_github_actions_status
 
         # Setup
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(
+        api_response = {
+            "check_runs": [{"name": "test", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"}, {"name": "format", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/124"}]
+        }
+
+        mock_run_command.return_value = Mock(
             returncode=0,
-            stdout=json.dumps(
-                {
-                    "check_runs": [
-                        {"name": "test", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/123"},
-                        {"name": "format", "conclusion": "success", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/124"},
-                        {"name": "link-pr-to-issue", "conclusion": "skipped", "status": "completed", "html_url": "https://github.com/example/repo/actions/runs/125"},
-                    ]
-                }
-            ),
+            stdout=json.dumps(api_response),
             stderr="",
         )
 
         config = AutomationConfig()
-        pr_data = {"number": 123, "head": {"sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "sha123_tab_pass"}}
 
         # Execute
         result = _check_github_actions_status("test/repo", pr_data, config)
@@ -640,26 +614,22 @@ class TestAutomationEngine:
         assert result.success is True
         assert len(result.ids) == 0
 
-    @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
-    @patch("src.auto_coder.gh_logger.get_gh_logger")
-    def test_check_github_actions_status_no_checks_reported(self, mock_get_gh_logger, mock_github_client, mock_gemini_client):
-        """Handle gh CLI message when no checks are reported - should return success (based on current logic for new commits)."""
+    @patch("auto_coder.gh_logger.subprocess.run")
+    def test_check_github_actions_status_no_checks_reported(self, mock_run_command, mock_github_client, mock_gemini_client):
+        """Handle gh CLI message when no checks are reported."""
         from src.auto_coder.util.github_action import _check_github_actions_status
 
-        # Mock gh api to return empty check_runs
-        mock_logger = Mock()
-        mock_get_gh_logger.return_value = mock_logger
-        mock_logger.execute_with_logging.return_value = Mock(returncode=0, stdout=json.dumps({"check_runs": []}), stderr="")
+        # Mock gh api returning empty list of check_runs
+        api_response = {"check_runs": []}
+
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
-        # Provide complete PR data including head_branch
-        pr_data = {"number": 123, "head_branch": "test-branch", "head": {"ref": "test-branch", "sha": "test-sha"}}
+        pr_data = {"number": 123, "head": {"sha": "sha123_no_checks"}}
 
         result = _check_github_actions_status("test/repo", pr_data, config)
 
-        # Current implementation treats empty checks as success (assuming CI hasn't started or not configured)
-        # Note: Logic in _check_github_actions_status says:
-        # if not checks_data: result = GitHubActionsStatusResult(success=True, ...)
+        # When no checks found (empty list), currently treated as success in code if no fallback
         assert result.success is True
         assert result.in_progress is False
         assert result.ids == []
