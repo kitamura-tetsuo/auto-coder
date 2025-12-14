@@ -5,6 +5,7 @@ This module provides overprint functionality to display processing status
 in the terminal footer with PR/Issue number and processing stage.
 """
 
+import os
 import shutil
 import sys
 import threading
@@ -31,6 +32,8 @@ class ProgressFooter:
         self._stream = stream
         # Check if stream is a TTY (supports overprint)
         self._supports_overprint = stream.isatty()
+        # Check for NO_COLOR environment variable
+        self._no_color = bool(os.environ.get("NO_COLOR"))
         # Stack for nested stages
         self._stage_stack: list[str] = []
         # Store current item info for re-rendering
@@ -55,32 +58,46 @@ class ProgressFooter:
         Returns:
             Formatted footer string
         """
+        # Define colors
+        if self._no_color:
+            c_cyan = ""
+            c_magenta = ""
+            c_red = ""
+            c_yellow = ""
+            c_reset = ""
+        else:
+            c_cyan = "\033[96m"
+            c_magenta = "\033[95m"
+            c_red = "\033[91m"
+            c_yellow = "\033[93m"
+            c_reset = "\033[0m"
+
         # Build the main item display with color based on item_type
         if item_type.upper() == "PR":
             # PR: cyan color
-            main_display = f"\033[96m[{item_type} #{item_number}"
+            main_display = f"{c_cyan}[{item_type} #{item_number}"
         elif item_type.upper() == "ISSUE":
             # Issue: light purple/magenta
-            main_display = f"\033[95m[{item_type} #{item_number}"
+            main_display = f"{c_magenta}[{item_type} #{item_number}"
         else:
             # Fallback: use cyan
-            main_display = f"\033[96m[{item_type} #{item_number}"
+            main_display = f"{c_cyan}[{item_type} #{item_number}"
 
         # Add branch name if available (in dark red)
         if self._branch_name:
-            main_display += f"\033[91m/{self._branch_name}\033[0m"
+            main_display += f"{c_red}/{self._branch_name}{c_reset}"
 
-        main_display += "]\033[0m"
+        main_display += f"]{c_reset}"
 
         # Add related issues if available (without space before it)
         if self._related_issues:
             related_issues_str = ", ".join([f"#{issue}" for issue in self._related_issues])
-            main_display += f"\033[95m[Issue {related_issues_str}]\033[0m"
+            main_display += f"{c_magenta}[Issue {related_issues_str}]{c_reset}"
 
         # Add stages if available
         if self._stage_stack:
             all_stages = " / ".join(self._stage_stack)
-            return f"{main_display} \033[93m{all_stages}\033[0m"
+            return f"{main_display} {c_yellow}{all_stages}{c_reset}"
         else:
             # No stages, just show main info
             return main_display
