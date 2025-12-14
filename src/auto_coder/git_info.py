@@ -196,46 +196,13 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
         if current_branch == base_branch:
             return ""
 
-        # Resolve base reference preferring remote-tracking ref to avoid ambiguity
+        # Try getting log using remote-tracking branch first (optimistic approach)
         origin_ref = f"refs/remotes/origin/{base_branch}"
-        base_check = cmd.run_command(
-            ["git", "rev-parse", "--verify", origin_ref],
-            cwd=cwd,
-            stream_output=False,
-        )
-        if base_check.success:
-            resolved_base = origin_ref
-        else:
-            # Try without remote prefix
-            base_check = cmd.run_command(
-                ["git", "rev-parse", "--verify", base_branch],
-                cwd=cwd,
-                stream_output=False,
-            )
-            if not base_check.success:
-                logger.warning(f"Base branch {base_branch} not found")
-                return ""
-            resolved_base = base_branch
-
-        # Get the common ancestor (merge base) between current branch and base branch
-        merge_base_result = cmd.run_command(
-            ["git", "merge-base", "HEAD", resolved_base],
-            cwd=cwd,
-            stream_output=False,
-        )
-
-        if not merge_base_result.success:
-            logger.warning(f"Failed to find merge base with {resolved_base}: {merge_base_result.stderr}")
-            return ""
-
-        merge_base_commit = merge_base_result.stdout.strip()
-
-        # Get commit log since the merge base
         log_result = cmd.run_command(
             [
                 "git",
                 "log",
-                f"{merge_base_commit}..HEAD",
+                f"{origin_ref}..HEAD",
                 f"--max-count={max_commits}",
                 "--pretty=format:%s",
             ],
@@ -244,8 +211,22 @@ def get_commit_log(cwd: Optional[str] = None, base_branch: str = "main", max_com
         )
 
         if not log_result.success:
-            logger.warning(f"Failed to get commit log: {log_result.stderr}")
-            return ""
+            # Fallback to local base branch
+            log_result = cmd.run_command(
+                [
+                    "git",
+                    "log",
+                    f"{base_branch}..HEAD",
+                    f"--max-count={max_commits}",
+                    "--pretty=format:%s",
+                ],
+                cwd=cwd,
+                stream_output=False,
+            )
+
+            if not log_result.success:
+                logger.warning(f"Failed to get commit log (base: {base_branch}): {log_result.stderr}")
+                return ""
 
         commit_messages = log_result.stdout.strip()
         if not commit_messages:

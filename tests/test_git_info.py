@@ -120,8 +120,6 @@ class TestGetCommitLog:
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0),  # get_current_branch
-                CommandResult(success=True, stdout="abc123\n", stderr="", returncode=0),  # origin/main check
-                CommandResult(success=True, stdout="def456\n", stderr="", returncode=0),  # merge-base
                 CommandResult(
                     success=True,
                     stdout="Add new feature\nFix bug in parser\nInitial commit\n",
@@ -133,7 +131,9 @@ class TestGetCommitLog:
             result = get_commit_log(base_branch="main")
 
             assert result == "Add new feature\nFix bug in parser\nInitial commit"
-            assert mock_cmd.run_command.call_count == 4
+            assert mock_cmd.run_command.call_count == 2
+            # Verify the log command
+            mock_cmd.run_command.assert_called_with(["git", "log", "refs/remotes/origin/main..HEAD", "--max-count=50", "--pretty=format:%s"], cwd=None, stream_output=False)
 
     def test_get_commit_log_on_main_branch(self):
         """Test getting commit log when already on main branch."""
@@ -143,6 +143,27 @@ class TestGetCommitLog:
             assert result == ""
             mock_get_current_branch.assert_called_once()
 
+    def test_get_commit_log_fallback_to_local(self):
+        """Test getting commit log falls back to local branch if remote fails."""
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0),  # get_current_branch
+                CommandResult(success=False, stdout="", stderr="", returncode=128),  # git log remote fails
+                CommandResult(
+                    success=True,
+                    stdout="Local commit\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git log local succeeds
+            ]
+
+            result = get_commit_log(base_branch="main")
+
+            assert result == "Local commit"
+            assert mock_cmd.run_command.call_count == 3
+
     def test_get_commit_log_no_base_branch(self):
         """Test getting commit log when base branch doesn't exist."""
         with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
@@ -150,14 +171,73 @@ class TestGetCommitLog:
             mock_executor.return_value = mock_cmd
             mock_cmd.run_command.side_effect = [
                 CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0),  # get_current_branch
-                CommandResult(success=False, stdout="", stderr="", returncode=0),  # origin/main check fails
-                CommandResult(success=False, stdout="", stderr="", returncode=0),  # main check fails
+                CommandResult(success=False, stdout="", stderr="", returncode=128),  # git log remote fails
+                CommandResult(success=False, stdout="", stderr="", returncode=128),  # git log local fails
             ]
 
             result = get_commit_log(base_branch="nonexistent")
 
             assert result == ""
             assert mock_cmd.run_command.call_count == 3
+
+    def test_get_commit_log_no_commits(self):
+        """Test getting commit log when there are no new commits."""
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0),  # get_current_branch
+                CommandResult(success=True, stdout="", stderr="", returncode=0),  # git log (empty)
+            ]
+
+            result = get_commit_log(base_branch="main")
+
+            assert result == ""
+            assert mock_cmd.run_command.call_count == 2
+
+    def test_get_commit_log_with_cwd(self):
+        """Test getting commit log with custom working directory."""
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0),  # get_current_branch
+                CommandResult(
+                    success=True,
+                    stdout="Add new feature\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git log
+            ]
+
+            result = get_commit_log(base_branch="main", cwd="/custom/path")
+
+            assert result == "Add new feature"
+            # Check that cwd was passed to all calls
+            for call in mock_cmd.run_command.call_args_list:
+                assert call[1]["cwd"] == "/custom/path"
+
+    def test_get_commit_log_max_commits(self):
+        """Test getting commit log respects max_commits limit."""
+        with patch("src.auto_coder.git_info.CommandExecutor") as mock_executor:
+            mock_cmd = MagicMock()
+            mock_executor.return_value = mock_cmd
+            mock_cmd.run_command.side_effect = [
+                CommandResult(success=True, stdout="feature-branch\n", stderr="", returncode=0),  # get_current_branch
+                CommandResult(
+                    success=True,
+                    stdout="Commit 5\nCommit 4\nCommit 3\nCommit 2\nCommit 1\n",
+                    stderr="",
+                    returncode=0,
+                ),  # git log
+            ]
+
+            result = get_commit_log(base_branch="main", max_commits=5)
+
+            assert result == "Commit 5\nCommit 4\nCommit 3\nCommit 2\nCommit 1"
+            # Check that --max-count was passed
+            log_call = mock_cmd.run_command.call_args_list[1][0][0]
+            assert "--max-count=5" in log_call
 
 
 @patch("src.auto_coder.git_info.GIT_AVAILABLE", True)
