@@ -47,9 +47,13 @@ def test_progress_footer_no_color_empty_string():
     # if set to "0", get returns "0" -> bool("0") is True in Python!
 
     # Wait, strict NO_COLOR standard says "when present and not empty".
-    # https://no-color.org/ : "User-level configuration files and per-instance command-line arguments should override NO_COLOR. A blank string should be considered true?"
+    # https://no-color.org/ : "User-level configuration files and per-instance
+    # command-line arguments should override NO_COLOR. A blank string should be
+    # considered true?"
     # No: "NO_COLOR... to any string (not empty)..."
-    # "All command-line software which outputs text with ANSI color should check for the presence of a NO_COLOR environment variable that, when present (and not an empty string), prevents the addition of ANSI color."
+    # "All command-line software which outputs text with ANSI color should check
+    # for the presence of a NO_COLOR environment variable that, when present
+    # (and not an empty string), prevents the addition of ANSI color."
 
     # My implementation: bool(os.environ.get("NO_COLOR"))
     # os.environ.get("NO_COLOR") returns None if not present.
