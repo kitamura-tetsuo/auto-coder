@@ -2,8 +2,11 @@
 
 import os
 from unittest.mock import patch
+
 import pytest
+
 from auto_coder.progress_footer import ProgressFooter
+
 
 def test_progress_footer_no_color():
     """Test that NO_COLOR environment variable disables colors."""
@@ -33,6 +36,7 @@ def test_progress_footer_no_color():
         assert "\033[93m" not in formatted
         assert "Stage 1" in formatted
 
+
 def test_progress_footer_no_color_empty_string():
     """Test that NO_COLOR with empty string does NOT disable colors."""
     # NO_COLOR spec says "when set and not empty" (actually usually just presence,
@@ -59,6 +63,7 @@ def test_progress_footer_no_color_empty_string():
 
         formatted = footer._format_footer("PR", 123)
         assert "\033[96m" in formatted
+
 
 def test_progress_footer_color_enabled_by_default():
     """Test that colors are enabled when NO_COLOR is missing."""
