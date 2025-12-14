@@ -1520,21 +1520,6 @@ def _process_jules_pr(
 
         logger.info(f"Processing Jules PR #{pr_number} by {pr_author}")
 
-        # Check if PR is a draft and mark as ready if so
-        if pr_data.get("draft"):
-            logger.info(f"Jules PR #{pr_number} is a draft, marking as ready for review")
-            gh_logger = get_gh_logger()
-            ready_result = gh_logger.execute_with_logging(
-                ["gh", "pr", "ready", str(pr_number), "--repo", repo_name],
-                repo=repo_name,
-                capture_output=True,
-            )
-            if ready_result.success:
-                logger.info(f"Successfully marked Jules PR #{pr_number} as ready for review")
-                # Update local data to reflect change
-                pr_data["draft"] = False
-            else:
-                logger.error(f"Failed to mark Jules PR #{pr_number} as ready: {ready_result.stderr}")
 
         # Step 1: Extract Session ID from PR body
         session_id = _extract_session_id_from_pr_body(pr_body)

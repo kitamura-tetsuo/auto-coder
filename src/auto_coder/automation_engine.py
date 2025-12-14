@@ -141,7 +141,7 @@ class AutomationEngine:
         - Priority descending (7 -> 0)
         - Creation time ascending (oldest first)
         """
-        from .pr_processor import _extract_linked_issues_from_pr_body, _is_dependabot_pr
+        from .pr_processor import _extract_linked_issues_from_pr_body, _is_dependabot_pr, _is_jules_pr
         from .util.github_action import _check_github_actions_status, check_github_actions_and_exit_if_in_progress
 
         candidates: List[Candidate] = []
@@ -158,6 +158,23 @@ class AutomationEngine:
                 if not isinstance(pr_number, int):
                     logger.warning(f"Skipping PR missing/invalid number in data: {pr_data}")
                     continue
+
+                # Check if Jules PR is a draft and mark as ready if so
+                # This must be done BEFORE checking GitHub Actions status, as some actions only run on ready PRs
+                if _is_jules_pr(pr_data) and pr_data.get("draft"):
+                    logger.info(f"Jules PR #{pr_number} is a draft, marking as ready for review")
+                    gh_logger = get_gh_logger()
+                    ready_result = gh_logger.execute_with_logging(
+                        ["gh", "pr", "ready", str(pr_number), "--repo", repo_name],
+                        repo=repo_name,
+                        capture_output=True,
+                    )
+                    if ready_result.success:
+                        logger.info(f"Successfully marked Jules PR #{pr_number} as ready for review")
+                        # Update local data to reflect change
+                        pr_data["draft"] = False
+                    else:
+                        logger.error(f"Failed to mark Jules PR #{pr_number} as ready: {ready_result.stderr}")
 
                 # Skip if another instance is processing (@auto-coder label present) using LabelManager check
                 with LabelManager(
