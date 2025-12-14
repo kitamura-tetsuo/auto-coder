@@ -84,6 +84,13 @@ def check_and_resume_or_archive_sessions() -> None:
 
             state = session.get("state")
             outputs = session.get("outputs", {})
+            if isinstance(outputs, list):
+                try:
+                    outputs = dict(outputs)
+                except Exception as e:
+                    logger.warning(f"Failed to convert list outputs to dict: {outputs} - {e}")
+                    outputs = {}
+
             pull_request = outputs.get("pullRequest")
 
             # Case 1: Failed session -> Resume
