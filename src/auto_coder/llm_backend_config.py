@@ -96,6 +96,8 @@ class BackendConfig:
     settings: Optional[str] = None
     # Usage markers for tracking usage patterns
     usage_markers: List[str] = field(default_factory=list)
+    # Additional options for message generation (non-code-editing) operations
+    options_for_noedit: List[str] = field(default_factory=list)
     # Flags to track if options were explicitly set in configuration
     options_explicitly_set: bool = False
     options_for_noedit_explicitly_set: bool = False
@@ -412,7 +414,7 @@ class LLMBackendConfiguration:
             backend_for_noedit_default=backend_for_noedit_default,
             backend_for_failed_pr=backend_for_failed_pr,
             backend_for_failed_pr_order=backend_for_failed_pr_order,
-            config_file_path=config_path or "~/.auto-coder/llm_config.toml",
+            config_file_path=config_path,
         )
 
         return config

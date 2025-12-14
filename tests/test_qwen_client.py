@@ -191,7 +191,7 @@ class TestQwenClient:
             ("429 Too Many Requests", True),
             ("openai api streaming error: 429 free allocated quota exceeded.", True),
             ("openai api streaming error: 429 provider returned error", True),
-            ("error: 400 model access denied.", False),  # 400 Bad Request is not a usage limit
+            ("error: 400 model access denied.", True),
             ("normal error message", False),
         ]
 

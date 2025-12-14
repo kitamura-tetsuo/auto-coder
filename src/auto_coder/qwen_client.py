@@ -323,14 +323,17 @@ class QwenClient(LLMClientBase):
             usage_markers = self.usage_markers
         else:
             # Default hardcoded usage markers
-            usage_markers = [
+            usage_markers = (
                 "rate limit",
                 "quota",
                 "429",
-            ]
+                "too many requests",
+                "error: 400 model access denied.",
+                "openai api streaming error: 429 free allocated quota exceeded.",
+                "openai api streaming error: 429 provider returned error",
+            )
 
-        usage_limit_detected = has_usage_marker_match(message, usage_markers)
-        return usage_limit_detected
+        return has_usage_marker_match(message, usage_markers)
 
     # ----- Feature suggestion helpers (copy of GeminiClient behavior) -----
     def suggest_features(self, repo_context: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -2,7 +2,7 @@
 Auto-Coder: Automated application development using Gemini CLI and GitHub integration.
 """
 
-__version__ = "2025.12.13.12+g2403732"
+__version__ = "2025.12.13.6+gc32caaa"
 __author__ = "Auto-Coder Team"
 __description__ = "Automated application development using Gemini CLI and GitHub integration"
 
@@ -33,7 +33,7 @@ except Exception as exc:  # pragma: no cover - defensive fallback for optional d
         def __init__(self, *args, **kwargs) -> None:
             raise ImportError("sentence_transformers dependency is not available") from _missing_exc
 
-    stub_module.SentenceTransformer = _MissingSentenceTransformer  # type: ignore
+    stub_module.SentenceTransformer = _MissingSentenceTransformer
     sys.modules["sentence_transformers"] = stub_module
 
 __all__ = [

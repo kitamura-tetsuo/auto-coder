@@ -5,7 +5,7 @@ Issue processing functionality for Auto-Coder automation engine.
 import json
 import sys
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TypedDict, cast
+from typing import Any, Dict, List, Optional, TypedDict
 
 from auto_coder.util.github_action import _check_github_actions_status, check_and_handle_closed_state, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
@@ -55,26 +55,8 @@ def ensure_parent_issue_open(
         Adds an audit comment when reopening to track when and why the parent
         issue was reopened for child issue processing.
     """
-    parent_issue_number_raw = parent_issue_details.get("number")
-    parent_issue_number: Optional[int]
-    if isinstance(parent_issue_number_raw, int):
-        parent_issue_number = parent_issue_number_raw
-    elif isinstance(parent_issue_number_raw, str):
-        try:
-            parent_issue_number = int(parent_issue_number_raw)
-        except ValueError:
-            parent_issue_number = None
-    else:
-        parent_issue_number = None
+    parent_issue_number = parent_issue_details.get("number")
     parent_state = parent_issue_details.get("state", "UNKNOWN").upper()
-
-    if parent_issue_number is None:
-        logger.error(
-            "Parent issue number missing/invalid for issue #%s (raw=%r)",
-            issue_number,
-            parent_issue_number_raw,
-        )
-        return False
 
     if parent_state == "OPEN":
         logger.debug(
@@ -96,7 +78,6 @@ def ensure_parent_issue_open(
             audit_comment = f"Auto-Coder: Reopened this parent issue to process child issue #{issue_number}. Branch and base selection will use the parent context."
 
             # Call GitHub API to reopen the issue
-            assert parent_issue_number is not None
             github_client.reopen_issue(repo_name, parent_issue_number, audit_comment)
 
             logger.info(
@@ -561,42 +542,56 @@ def _create_pr_for_issue(
     issue_body = issue_data.get("body", "")
 
     try:
-        pr_title: Optional[str] = None
-        pr_body: Optional[str] = None
+        # Generate PR message using message backend if available
+        pr_title = None
+        pr_body = None
 
         try:
+            # Get commit log since branch creation for PR message context
             commit_log = get_commit_log(base_branch=base_branch)
+
             pr_message_prompt = render_prompt(
                 "pr.pr_message",
                 issue_number=issue_number,
                 issue_title=issue_title,
                 issue_body=issue_body[:500],
-                changes_summary=(llm_response or "")[:500],
+                changes_summary=llm_response[:500],
                 commit_log=commit_log or "(No commit history)",
             )
             pr_message_response = run_llm_noedit_prompt(pr_message_prompt)
-            if pr_message_response and pr_message_response.strip():
-                pr_message_json = parse_llm_output_as_json(pr_message_response)
-                if isinstance(pr_message_json, dict):
-                    parsed_title = str(pr_message_json.get("title", "")).strip()
-                    parsed_body = str(pr_message_json.get("body", "")).strip()
-                    pr_title = parsed_title or None
-                    pr_body = parsed_body or None
+
+            if pr_message_response and len(pr_message_response.strip()) > 0:
+                # Parse the JSON response using the standalone parser
+                # This handles conversation history and extracts the last message
+                try:
+                    pr_message_json = parse_llm_output_as_json(pr_message_response)
+                    pr_title = pr_message_json.get("title", "")
+                    pr_body = pr_message_json.get("body", "")
+                    logger.info(f"Generated PR message using message backend: {pr_title}")
+                except (json.JSONDecodeError, ValueError) as e:
+                    # Fallback to direct JSON parsing if backend parser fails
+                    logger.debug(f"Backend JSON parsing failed, trying direct parse: {e}")
+                    try:
+                        pr_message_json = json.loads(pr_message_response.strip())
+                        pr_title = pr_message_json.get("title", "")
+                        pr_body = pr_message_json.get("body", "")
+                        logger.info(f"Generated PR message using message backend: {pr_title}")
+                    except json.JSONDecodeError as json_error:
+                        # Fallback to old format parsing if not valid JSON
+                        logger.debug(f"Direct JSON parsing failed, using fallback: {json_error}")
+                        lines = pr_message_response.strip().split("\n")
+                        pr_title = lines[0].strip()
+                        if len(lines) > 2:
+                            pr_body = "\n".join(lines[2:]).strip()
+                        logger.info(f"Generated PR message using message backend (fallback): {pr_title}")
         except Exception as e:
             logger.warning(f"Failed to generate PR message using message backend: {e}")
 
+        # Fallback to default PR message if generation failed
         if not pr_title:
             pr_title = f"Fix issue #{issue_number}: {issue_title}"
-
         if not pr_body:
-            pr_body_parts: List[str] = [f"This PR addresses issue #{issue_number}."]
-            llm_summary = (llm_response or "").strip()
-            if llm_summary:
-                pr_body_parts.append(llm_summary[:1000])
-            if issue_body:
-                pr_body_parts.append("Issue context:")
-                pr_body_parts.append(issue_body[:200])
-            pr_body = "\n\n".join(pr_body_parts)
+            pr_body = f"This PR addresses issue #{issue_number}.\n\n{issue_body[:200]}"
 
         # Ensure PR body contains "Closes #<issue_number>" for automatic linking
         closes_keyword = f"Closes #{issue_number}"

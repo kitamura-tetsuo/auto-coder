@@ -36,7 +36,7 @@ from .prompt_loader import render_prompt
 from .test_log_utils import extract_first_failed_test
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
-from .utils import CommandExecutor, CommandResult, log_action
+from .utils import CommandExecutor, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -778,21 +778,13 @@ def _handle_pr_merge(
         failed_checks = detailed_checks.failed_checks
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
 
-        # Check if we are already on the PR branch before checkout.
-        #
-        # In WIP-resumption mode (CHECK_LABELS=False), assume we are already on the PR branch
-        # to avoid unnecessary git calls and to keep label-handling deterministic.
+        # Check if we are already on the PR branch before checkout
+        # This is used to determine if we should skip GitHub Actions fixes (assuming resumption of work)
+        # And also to determine if we should skip Jules feedback loop and do local fixes
+        current_branch_res = cmd.run_command(["git", "branch", "--show-current"])
+        current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
         pr_branch_name = pr_data.get("head", {}).get("ref", "")
-        if not config.CHECK_LABELS:
-            already_on_pr_branch = True
-        else:
-            current_branch_res = cmd.run_command(
-                ["git", "branch", "--show-current"],
-                timeout=10,
-                stream_output=False,
-            )
-            current_branch = current_branch_res.stdout.strip() if current_branch_res.success else ""
-            already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
+        already_on_pr_branch = (current_branch == pr_branch_name) and (current_branch != "")
 
         # Check if this is a Jules PR
         if _is_jules_pr(pr_data) and not already_on_pr_branch:
@@ -831,8 +823,8 @@ def _handle_pr_merge(
                 return actions
 
         # Step 5: Checkout PR branch for non-Jules PRs
-        checkout_ok: bool = _checkout_pr_branch(repo_name, pr_data, config)
-        if not checkout_ok:
+        checkout_result = _checkout_pr_branch(repo_name, pr_data, config)
+        if not checkout_result:
             actions.append(f"Failed to checkout PR #{pr_number} branch")
             return actions
 
@@ -870,15 +862,11 @@ def _handle_pr_merge(
 
                     # Checkout main branch after closing PR
                     main_branch = config.MAIN_BRANCH
-                    checkout_res = cmd.run_command(
-                        ["git", "checkout", main_branch],
-                        timeout=30,
-                        stream_output=False,
-                    )
-                    if checkout_res.success:
+                    checkout_result = cmd.run_command(["git", "checkout", main_branch])
+                    if checkout_result.success:
                         actions.append(f"Checked out {main_branch} branch")
                     else:
-                        logger.warning(f"Failed to checkout {main_branch} branch: {checkout_res.stderr}")
+                        logger.warning(f"Failed to checkout {main_branch} branch: {checkout_result.stderr}")
                         actions.append(f"Warning: Failed to checkout {main_branch} branch")
                 except Exception as e:
                     logger.error(f"Failed to close PR #{pr_number}: {e}")

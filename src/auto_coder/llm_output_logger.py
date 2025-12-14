@@ -185,7 +185,7 @@ class LLMOutputLogger:
             prompt_length: Length of prompt in characters (optional, can be auto-calculated)
             metadata: Additional metadata (optional)
         """
-        data: Dict[str, Any] = {
+        data = {
             "event_type": "llm_request",
             "backend": backend,
         }
@@ -226,7 +226,7 @@ class LLMOutputLogger:
             error: Error message if request failed (optional)
             metadata: Additional metadata (optional)
         """
-        data: Dict[str, Any] = {
+        data = {
             "event_type": "llm_response",
             "backend": backend,
             "status": status,
@@ -277,7 +277,7 @@ class LLMOutputLogger:
             error: Error message if request failed (optional)
             metadata: Additional metadata (optional)
         """
-        data: Dict[str, Any] = {
+        data = {
             "event_type": "llm_interaction",
             "backend": backend,
             "status": status,

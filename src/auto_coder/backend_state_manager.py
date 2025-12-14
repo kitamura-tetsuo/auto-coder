@@ -98,7 +98,7 @@ class BackendStateManager:
                 logger.debug(f"Saved backend state: backend={current_backend}, " f"timestamp={timestamp}, file={state_file_path}")
                 return True
 
-            except (OSError, IOError, PermissionError, TypeError) as e:
+            except (OSError, IOError, PermissionError, json.JSONEncodeError) as e:
                 logger.error(f"Failed to save backend state to {self.get_state_file_path()}: {e}")
                 return False
 

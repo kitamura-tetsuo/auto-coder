@@ -415,12 +415,6 @@ class BackendManager(LLMBackendManagerBase):
         if not saved_backend or not last_switch_timestamp:
             return
 
-        if not isinstance(saved_backend, str):
-            return
-
-        if not isinstance(last_switch_timestamp, float):
-            return
-
         # Ignore unknown backends to avoid index errors
         try:
             saved_backend_index = self._all_backends.index(saved_backend)

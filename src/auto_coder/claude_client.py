@@ -36,15 +36,13 @@ class ClaudeClient(LLMClientBase):
         # If backend_name is provided, get config from that backend
         if backend_name:
             self.config_backend = config.get_backend_config(backend_name)
+            # Use backend config, fall back to default "sonnet"
             self.model_name = (self.config_backend and self.config_backend.model) or "sonnet"
             self.api_key = self.config_backend and self.config_backend.api_key
             self.base_url = self.config_backend and self.config_backend.base_url
             self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
             self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
-            if self.config_backend:
-                self.settings = self.config_backend.settings
-            else:
-                self.settings = None
+            self.settings = self.config_backend and self.config_backend.settings
             # Store usage_markers from config
             self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
@@ -59,10 +57,7 @@ class ClaudeClient(LLMClientBase):
             self.base_url = self.config_backend and self.config_backend.base_url
             self.openai_api_key = self.config_backend and self.config_backend.openai_api_key
             self.openai_base_url = self.config_backend and self.config_backend.openai_base_url
-            if self.config_backend:
-                self.settings = self.config_backend.settings
-            else:
-                self.settings = None
+            self.settings = self.config_backend and self.config_backend.settings
             # Store usage_markers from config
             self.usage_markers = (self.config_backend and self.config_backend.usage_markers) or []
             # Store options from config
@@ -215,7 +210,7 @@ class ClaudeClient(LLMClientBase):
             logger.info(f"self.settings: {self.settings}")
             # Check if settings is a valid string (not a MagicMock)
             is_settings_valid = isinstance(self.settings, str) and self.settings.strip()
-            if is_settings_valid and not has_settings and self.settings:
+            if is_settings_valid and not has_settings:
                 try:
                     base_cmd.extend(["--settings", self.settings])
                 except (TypeError, AttributeError):
@@ -266,7 +261,7 @@ class ClaudeClient(LLMClientBase):
                 usage_markers = self.usage_markers
             else:
                 # Default hardcoded usage markers
-                usage_markers = ['{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",', "5-hour limit reached · resets"]
+                usage_markers = ('{\\"type\\":\\"error\\",\\"error\\":{\\"type\\":\\"rate_limit_error\\",', "5-hour limit reached · resets")
 
             def run_cli(command: list[str]) -> tuple[Any, str, str, bool]:
                 display_cmd = " ".join(command)
