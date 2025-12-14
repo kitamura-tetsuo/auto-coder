@@ -24,7 +24,10 @@ class TestJulesClientPagination:
         mock_response_page1 = Mock()
         mock_response_page1.status_code = 200
         mock_response_page1.json.return_value = {
-            "sessions": [{"name": "session1", "state": "ACTIVE"}],
+            "sessions": [
+                {"name": "session1", "state": "ACTIVE"},
+                {"name": "session_archived", "state": "ARCHIVED"}
+            ],
             "nextPageToken": "token_page_2"
         }
         
@@ -41,10 +44,14 @@ class TestJulesClientPagination:
         client = JulesClient()
         sessions = client.list_sessions(page_size=10)
 
-        # Verify results
+        # Verify results - should filter out ARCHIVED session
         assert len(sessions) == 2
         assert sessions[0]["name"] == "session1"
         assert sessions[1]["name"] == "session2"
+        
+        # Ensure archived session is NOT in the list
+        names = [s["name"] for s in sessions]
+        assert "session_archived" not in names
 
         # Verify API calls
         assert mock_get.call_count == 2
@@ -53,12 +60,13 @@ class TestJulesClientPagination:
         call_args1 = mock_get.call_args_list[0]
         assert call_args1[0][0] == "https://jules.googleapis.com/v1alpha/sessions"
         assert call_args1[1]["params"]["pageSize"] == 10
-        assert call_args1[1]["params"]["filter"] == "state != 'ARCHIVED'"
+        # Ensure filter param is NOT present
+        assert "filter" not in call_args1[1]["params"]
         assert "pageToken" not in call_args1[1]["params"]
 
         # Check second call args
         call_args2 = mock_get.call_args_list[1]
         assert call_args2[0][0] == "https://jules.googleapis.com/v1alpha/sessions"
         assert call_args2[1]["params"]["pageSize"] == 10
-        assert call_args2[1]["params"]["filter"] == "state != 'ARCHIVED'"
+        assert "filter" not in call_args2[1]["params"]
         assert call_args2[1]["params"]["pageToken"] == "token_page_2"
