@@ -1599,8 +1599,6 @@ class TestValidateBranchName:
         assert "issue-123" in error_msg
 
 
-
-
 class TestGetAllBranches:
     """Tests for get_all_branches function."""
 
