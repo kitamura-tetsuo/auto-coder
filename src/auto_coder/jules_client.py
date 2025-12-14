@@ -128,11 +128,11 @@ class JulesClient(LLMClientBase):
             logger.error(f"Failed to start Jules session: {e}")
             raise RuntimeError(f"Failed to start Jules session: {e}")
 
-    def list_sessions(self, page_size: int = 5) -> List[Dict[str, Any]]:
+    def list_sessions(self, page_size: int = 20) -> List[Dict[str, Any]]:
         """List recent Jules sessions.
 
         Args:
-            page_size: Number of sessions to return (default: 5)
+            page_size: Number of sessions to return per page (default: 20)
 
         Returns:
             List of session dictionaries
@@ -140,30 +140,50 @@ class JulesClient(LLMClientBase):
         try:
             # Prepare the request
             url = f"{self.base_url}/sessions"
-            params = {"pageSize": page_size}
+            # Filter out archived sessions
+            base_params = {
+                "pageSize": page_size,
+                "filter": "state != 'ARCHIVED'"
+            }
 
-            logger.info(f"Listing Jules sessions (pageSize={page_size})")
-            logger.info(f"🤖 GET {url}")
+            logger.info(f"Listing Jules sessions (pageSize={page_size}, filter='state != ARCHIVED')")
+            
+            all_sessions = []
+            page_token = None
+            
+            while True:
+                params = base_params.copy()
+                if page_token:
+                    params["pageToken"] = page_token
+                
+                logger.info(f"🤖 GET {url} (pageToken={page_token if page_token else 'None'})")
+                
+                response = self.session.get(url, params=params, timeout=self.timeout)
+
+                # Check if request was successful
+                if response.status_code != 200:
+                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                    logger.error(f"Failed to list Jules sessions: {error_msg}")
+                    raise RuntimeError(f"Failed to list Jules sessions: {error_msg}")
+
+                # Parse the response
+                try:
+                    response_data = response.json()
+                    sessions = response_data.get("sessions", [])
+                    all_sessions.extend(sessions)
+                    
+                    # Check for next page
+                    page_token = response_data.get("nextPageToken")
+                    if not page_token:
+                        break
+                        
+                except json.JSONDecodeError:
+                    logger.error("Failed to parse Jules sessions response as JSON")
+                    break
+            
+            logger.info(f"Total sessions retrieved: {len(all_sessions)}")
             logger.info("=" * 60)
-
-            response = self.session.get(url, params=params, timeout=self.timeout)
-
-            logger.info("=" * 60)
-
-            # Check if request was successful
-            if response.status_code != 200:
-                error_msg = f"HTTP {response.status_code}: {response.text}"
-                logger.error(f"Failed to list Jules sessions: {error_msg}")
-                raise RuntimeError(f"Failed to list Jules sessions: {error_msg}")
-
-            # Parse the response
-            try:
-                response_data = response.json()
-                sessions = response_data.get("sessions", [])
-                return sessions
-            except json.JSONDecodeError:
-                logger.error("Failed to parse Jules sessions response as JSON")
-                return []
+            return all_sessions
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to list Jules sessions: {e}")
