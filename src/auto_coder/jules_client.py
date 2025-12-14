@@ -299,11 +299,46 @@ class JulesClient(LLMClientBase):
                 logger.error(f"Failed to archive Jules session {session_id}: {error_msg}")
                 return False
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to archive Jules session {session_id}: {e}")
             return False
         except Exception as e:
             logger.error(f"Failed to archive Jules session {session_id}: {e}")
+            return False
+
+    def approve_plan(self, session_id: str) -> bool:
+        """Approve a plan for a Jules session.
+
+        Args:
+            session_id: The session ID to approve the plan for
+
+        Returns:
+            True if plan was approved successfully, False otherwise
+        """
+        try:
+            # Prepare the request
+            url = f"{self.base_url}/sessions/{session_id}:approvePlan"
+
+            logger.info(f"Approving plan for Jules session: {session_id}")
+            logger.info(f"🤖 POST {url}")
+            logger.info("=" * 60)
+
+            response = self.session.post(url, json={}, timeout=self.timeout)
+
+            logger.info("=" * 60)
+
+            # Check if request was successful
+            if response.status_code == 200:
+                logger.info(f"Approved plan for Jules session: {session_id}")
+                return True
+            else:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logger.error(f"Failed to approve plan for Jules session {session_id}: {error_msg}")
+                return False
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to approve plan for Jules session {session_id}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to approve plan for Jules session {session_id}: {e}")
             return False
 
     def _run_llm_cli(self, prompt: str, is_noedit: bool = False) -> str:

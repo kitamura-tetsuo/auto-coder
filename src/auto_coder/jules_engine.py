@@ -64,6 +64,17 @@ def check_and_resume_or_archive_sessions() -> None:
             github_client = None
 
         for session in sessions:
+            if isinstance(session, list):
+                try:
+                    session = dict(session)
+                except Exception as e:
+                    logger.warning(f"Failed to convert list session to dict: {session} - {e}")
+                    continue
+
+            if not isinstance(session, dict):
+                logger.warning(f"Skipping invalid session object (expected dict, got {type(session)}): {session}")
+                continue
+
             session_id = session.get("name", "").split("/")[-1]
             if not session_id:
                 session_id = session.get("id")
@@ -87,7 +98,20 @@ def check_and_resume_or_archive_sessions() -> None:
                         state_changed = True
                 except Exception as e:
                     logger.error(f"Failed to resume session {session_id}: {e}")
+                except Exception as e:
+                    logger.error(f"Failed to resume session {session_id}: {e}")
 
+            # Case 4: Awaiting Plan Approval -> Approve Plan
+            elif state == "AWAITING_PLAN_APPROVAL":
+                logger.info(f"Approving plan for Jules session: {session_id}")
+                try:
+                    if jules_client.approve_plan(session_id):
+                        logger.info(f"Successfully approved plan for session {session_id}")
+                        state_changed = True
+                    else:
+                        logger.error(f"Failed to approve plan for session {session_id}")
+                except Exception as e:
+                    logger.error(f"Failed to approve plan for session {session_id}: {e}")
             # Case 2: Completed session without PR -> Resume with retry logic
             elif state == "COMPLETED" and not pull_request:
                 retry_count = retry_state.get(session_id, 0)

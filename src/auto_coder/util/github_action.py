@@ -757,6 +757,8 @@ def get_detailed_checks_from_history(
                             "status": status,
                         }
 
+
+                        
                         all_checks.append(check_info)
 
                         # Track overall status
@@ -799,27 +801,23 @@ def get_detailed_checks_from_history(
                             "job_id": None,
                             "status": run_status,
                         }
-
                         all_checks.append(check_info)
-
-                        if run_conclusion in [
-                            "failure",
-                            "failed",
-                            "error",
-                            "cancelled",
-                        ]:
+                        
+                        if run_conclusion in ["failure", "failed", "error", "cancelled"]:
                             any_failed = True
                             all_failed_checks.append(check_info)
                         elif run_status in ["in_progress", "queued", "pending"]:
                             has_in_progress = True
-                    except json.JSONDecodeError:
-                        pass
 
-        # Determine final success status - must be ALL checks passed
-        all_passed = all(check.get("conclusion") in ["success", "skipped", ""] for check in all_checks)
-        final_success = all_passed and not has_in_progress
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Failed to parse run JSON for run {run_id}: {e}")
 
-        logger.info(f"Detailed checks loaded: " f"total_checks={len(all_checks)}, failed_checks={len(all_failed_checks)}, " f"success={final_success}, has_in_progress={has_in_progress}")
+        # Determine overall success
+        # Success if no failures and no in-progress checks (and we found checks)
+        # If no checks found at all, it's technically "success" in terms of "no failures",
+        # but usually we want to know if checks passed.
+        # However, keeping consistent with status_result.success:
+        final_success = not any_failed and not has_in_progress
 
         return DetailedChecksResult(
             success=final_success,
@@ -831,7 +829,7 @@ def get_detailed_checks_from_history(
         )
 
     except Exception as e:
-        logger.error(f"Error during detailed checks loading: {e}")
+        logger.error(f"Error getting detailed checks from history: {e}")
         return DetailedChecksResult(
             success=False,
             total_checks=0,
@@ -840,6 +838,50 @@ def get_detailed_checks_from_history(
             has_in_progress=False,
             run_ids=[],
         )
+
+
+def trigger_workflow_dispatch(repo_name: str, workflow_id: str, ref: str) -> bool:
+    """Trigger a GitHub Actions workflow via workflow_dispatch.
+
+    Args:
+        repo_name: Repository name in format 'owner/repo'
+        workflow_id: Workflow ID or filename (e.g., 'pr-tests.yml')
+        ref: Git reference (branch or tag) to run the workflow on
+
+    Returns:
+        True if triggered successfully, False otherwise
+    """
+    try:
+        logger.info(f"Triggering workflow '{workflow_id}' on '{ref}' for {repo_name}")
+        
+        gh_logger = get_gh_logger()
+        result = gh_logger.execute_with_logging(
+            [
+                "gh",
+                "workflow",
+                "run",
+                workflow_id,
+                "--ref",
+                ref,
+                "--repo",
+                repo_name,
+            ],
+            repo=repo_name,
+            capture_output=True,
+        )
+        
+        if result.returncode == 0:
+            logger.info(f"Successfully triggered workflow '{workflow_id}'")
+            return True
+        else:
+            logger.error(f"Failed to trigger workflow: {result.stderr}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error triggering workflow '{workflow_id}': {e}")
+        return False
+
+
 
 
 def get_github_actions_logs_from_url(url: str) -> str:

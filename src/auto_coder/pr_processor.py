@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
+from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from auto_coder.cli_helpers import create_failed_pr_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
@@ -38,8 +39,118 @@ from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, CommandResult, log_action
 
+import asyncio
+import threading
+
 logger = get_logger(__name__)
 cmd = CommandExecutor()
+
+
+def _run_async_monitor(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
+    """Run the async monitor in a separate thread."""
+    asyncio.run(monitor_workflow_async(repo_name, pr_number, head_sha, workflow_id))
+
+
+async def monitor_workflow_async(repo_name: str, pr_number: int, head_sha: str, workflow_id: str) -> None:
+    """Monitor a triggered workflow asynchronously until completion.
+
+    1. Wait for workflow run to appear.
+    2. Wait for workflow run to complete.
+    3. Update commit status.
+    4. Remove @auto-coder label.
+    """
+    from auto_coder.util.github_action import _check_github_actions_status
+    from auto_coder.label_manager import LabelManager
+
+    logger.info(f"Started async monitor for PR #{pr_number} (workflow: {workflow_id})")
+    
+    github_client = GitHubClient.get_instance()
+    config = AutomationConfig()
+    
+    # Create a dummy PR data for _check_github_actions_status
+    pr_data = {
+        "number": pr_number,
+        "head": {"sha": head_sha},
+    }
+
+    try:
+        # 1. Wait for workflow run to appear (max 5 minutes)
+        run_found = False
+        run_id = None
+        
+        for _ in range(60):  # 60 * 5s = 5 minutes
+            status_result = _check_github_actions_status(repo_name, pr_data, config)
+            if status_result.ids:
+                run_found = True
+                run_id = status_result.ids[0] # Take the first one found
+                logger.info(f"Found workflow run {run_id} for PR #{pr_number}")
+                break
+            await asyncio.sleep(5)
+            
+        if not run_found:
+            logger.error(f"Timeout waiting for workflow run to appear for PR #{pr_number}")
+            # Remove label so it can be retried? Or leave it?
+            # User said: "workflow_dispatchでActionを起動前から、 Action完了まで、PRに対して @auto-coder ラベルを付加して多重実行を防止してください。"
+            # If it fails to start, we should probably remove the label so it can be retried or handled manually.
+            with LabelManager(github_client, repo_name, pr_number, item_type="pr", skip_label_add=True) as lm:
+                lm.remove_label()
+            return
+
+        # 2. Wait for workflow run to complete (max 60 minutes)
+        completed = False
+        final_status = "failure"
+        
+        for _ in range(360): # 360 * 10s = 60 minutes
+            status_result = _check_github_actions_status(repo_name, pr_data, config)
+            
+            if not status_result.in_progress:
+                completed = True
+                final_status = "success" if status_result.success else "failure"
+                logger.info(f"Workflow run {run_id} completed with status: {final_status}")
+                break
+            
+            await asyncio.sleep(10)
+            
+        if not completed:
+            logger.error(f"Timeout waiting for workflow run {run_id} to complete for PR #{pr_number}")
+            final_status = "error" # Timeout treated as error
+
+        # 3. Update commit status
+        # Map our status to GitHub commit status state (pending, success, error, failure)
+        # final_status is already success/failure/error
+        commit_status_state = final_status
+        
+        target_url = f"https://github.com/{repo_name}/actions/runs/{run_id}" if run_id else ""
+        description = f"Workflow {workflow_id} {final_status}"
+        
+        try:
+            github_client.create_commit_status(
+                repo_name=repo_name,
+                sha=head_sha,
+                state=commit_status_state,
+                target_url=target_url,
+                description=description,
+                context=f"auto-coder/{workflow_id}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to update commit status for PR #{pr_number}: {e}")
+
+        # 4. Remove @auto-coder label
+        try:
+            with LabelManager(github_client, repo_name, pr_number, item_type="pr", skip_label_add=True) as lm:
+                lm.remove_label()
+            logger.info(f"Removed @auto-coder label from PR #{pr_number}")
+        except Exception as e:
+            logger.error(f"Failed to remove label from PR #{pr_number}: {e}")
+
+    except Exception as e:
+        logger.error(f"Error in async monitor for PR #{pr_number}: {e}")
+        # Ensure label is removed on error to avoid sticking
+        try:
+            with LabelManager(github_client, repo_name, pr_number, item_type="pr", skip_label_add=True) as lm:
+                lm.remove_label()
+        except Exception:
+            pass
 
 
 def process_pull_request(
@@ -756,6 +867,47 @@ def _handle_pr_merge(
 
         # Step 3: Get detailed status for merge decision
         github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        
+        # Check if no actions have started for the latest commit
+        if not github_checks.ids:
+            # No checks found for the current head SHA
+            logger.info(f"No GitHub Actions found for PR #{pr_number} (SHA: {pr_data.get('head', {}).get('sha')[:8]}). Triggering pr-tests.yml...")
+            
+            # 1. Add @auto-coder label to prevent multiple executions
+            # We use LabelManager to add the label
+            with LabelManager(github_client, repo_name, pr_number, item_type="pr", config=config) as lm:
+                # Label added by entering context
+                
+                # 2. Trigger workflow_dispatch
+                from auto_coder.util.github_action import trigger_workflow_dispatch
+                
+                head_branch = pr_data.get("head", {}).get("ref")
+                workflow_id = "pr-tests.yml"
+                
+                triggered = trigger_workflow_dispatch(repo_name, workflow_id, head_branch)
+                
+                if triggered:
+                    actions.append(f"Triggered {workflow_id} for PR #{pr_number}")
+                    
+                    # 3. Start async monitor
+                    head_sha = pr_data.get("head", {}).get("sha")
+                    monitor_thread = threading.Thread(
+                        target=_run_async_monitor,
+                        args=(repo_name, pr_number, head_sha, workflow_id),
+                        daemon=True
+                    )
+                    monitor_thread.start()
+                    
+                    actions.append(f"Started async monitor for {workflow_id}")
+                    
+                    # Keep the label so async monitor can remove it later
+                    lm.keep_label()
+                    
+                    return actions
+                else:
+                    actions.append(f"Failed to trigger {workflow_id} for PR #{pr_number}")
+                    # Label will be removed by LabelManager exit
+
         detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
 
         # Step 4: If GitHub Actions passed, merge directly
@@ -797,30 +949,36 @@ def _handle_pr_merge(
         # Check if this is a Jules PR
         if _is_jules_pr(pr_data) and not already_on_pr_branch:
             # Check if we should fallback to local llm_backend due to too many Jules failures
+            # First check if fallback is enabled in config
+            fallback_enabled = get_jules_fallback_enabled_from_config()
             should_fallback = False
-            try:
-                # Count specific failure comments
-                comments = github_client.get_pr_comments(repo_name, pr_number)
-                target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
-                failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
 
-                if failure_count > 10:
-                    logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
-                    should_fallback = True
-                else:
-                    # Check if the last failure comment was more than 1 hour ago
-                    last_failure_comment = next((c for c in reversed(comments) if target_message in c.get("body", "")), None)
-                    if last_failure_comment:
-                        last_comment_time = last_failure_comment["created_at"]
-                        last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
-                        current_time = datetime.now(timezone.utc)
+            if not fallback_enabled:
+                logger.info(f"Jules fallback to local is disabled in config. Skipping fallback checks for PR #{pr_number}.")
+            else:
+                try:
+                    # Count specific failure comments
+                    comments = github_client.get_pr_comments(repo_name, pr_number)
+                    target_message = "🤖 Auto-Coder: CI checks failed. I've sent the error logs to the Jules session and requested a fix. Please wait for the updates."
+                    failure_count = sum(1 for c in comments if target_message in c.get("body", ""))
 
-                        if current_time - last_comment_dt > timedelta(hours=1):
-                            logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour (last failure). Switching to local llm_backend.")
-                            should_fallback = True
+                    if failure_count > 10:
+                        logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
+                        should_fallback = True
+                    else:
+                        # Check if the last failure comment was more than 1 hour ago
+                        last_failure_comment = next((c for c in reversed(comments) if target_message in c.get("body", "")), None)
+                        if last_failure_comment:
+                            last_comment_time = last_failure_comment["created_at"]
+                            last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
+                            current_time = datetime.now(timezone.utc)
 
-            except Exception as e:
-                logger.error(f"Error checking Jules failure count/time for PR #{pr_number}: {e}")
+                            if current_time - last_comment_dt > timedelta(hours=1):
+                                logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour (last failure). Switching to local llm_backend.")
+                                should_fallback = True
+
+                except Exception as e:
+                    logger.error(f"Error checking Jules failure count/time for PR #{pr_number}: {e}")
 
             if not should_fallback:
                 actions.append(f"PR #{pr_number} is a Jules-created PR, sending error logs to Jules session")

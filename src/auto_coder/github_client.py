@@ -798,6 +798,40 @@ class GitHubClient:
 
         except GithubException as e:
             logger.error(f"Failed to reopen issue #{issue_number}: {e}")
+
+    def create_commit_status(
+        self,
+        repo_name: str,
+        sha: str,
+        state: str,
+        target_url: str = "",
+        description: str = "",
+        context: str = "default",
+    ) -> None:
+        """Create a commit status.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            sha: Commit SHA
+            state: Status state (pending, success, error, failure)
+            target_url: URL to link to
+            description: Description of the status
+            context: Context label for the status
+        """
+        try:
+            repo = self.get_repository(repo_name)
+            commit = repo.get_commit(sha)
+            commit.create_status(
+                state=state,
+                target_url=target_url,
+                description=description,
+                context=context,
+            )
+            logger.info(f"Created commit status '{state}' for {sha[:8]} (context: {context})")
+
+        except GithubException as e:
+            logger.error(f"Failed to create commit status for {sha[:8]}: {e}")
+            raise
             raise
 
     def close_pr(self, repo_name: str, pr_number: int, comment: Optional[str] = None) -> None:
