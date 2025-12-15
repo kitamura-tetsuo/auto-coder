@@ -1,7 +1,5 @@
-"""
-Utilities for setting up and managing log directories and structures.
-"""
-import os
+"""Utilities for setting up and managing log directories and structures."""
+
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,9 +10,8 @@ from .git_info import get_current_repo_name
 
 @dataclass
 class LogEntry:
-    """
-    Represents a single test log entry.
-    """
+    """Represents a single test log entry."""
+
     timestamp: float
     test_file: str
     stdout: str
@@ -36,7 +33,7 @@ def get_sanitized_repo_name() -> Optional[str]:
     """
     repo_name = get_current_repo_name()
     if repo_name:
-        return re.sub(r'[^a-zA-Z0-9_\-]', '_', repo_name)
+        return re.sub(r"[^a-zA-Z0-9_\-]", "_", repo_name)
     return None
 
 
@@ -44,11 +41,12 @@ def setup_test_log_dir() -> Optional[Path]:
     """
     Set up the test log directory.
 
-    Creates `~/.auto-coder/<repo_name>/test_log/` and `~/.auto-coder/<repo_name>/test_log/raw`
-    directories.
+    Creates `~/.auto-coder/<repo_name>/test_log/` and
+    `~/.auto-coder/<repo_name>/test_log/raw` directories.
 
     Returns:
-        The path to the `raw` directory, or None if the repo name cannot be determined.
+        The path to the `raw` directory, or None if the repo name
+        cannot be determined.
     """
     repo_name = get_sanitized_repo_name()
     if not repo_name:
