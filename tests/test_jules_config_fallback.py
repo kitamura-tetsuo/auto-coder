@@ -4,11 +4,12 @@ Unit tests for Jules fallback configuration via [jules].enabled_fallback_to_loca
 
 import os
 import tempfile
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
 from src.auto_coder.pr_processor import _handle_pr_merge
+from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 def test_jules_fallback_enabled_via_config_toml():
@@ -76,6 +77,7 @@ enabled = true
         assert get_jules_fallback_enabled_from_config(config_path) is True
 
 
+@patch("src.auto_coder.pr_processor.cmd")
 @patch("src.auto_coder.pr_processor._is_jules_pr")
 @patch("src.auto_coder.pr_processor._send_jules_error_feedback")
 @patch("src.auto_coder.pr_processor._check_github_actions_status")
@@ -99,19 +101,21 @@ def test_handle_pr_merge_jules_fallback_disabled_in_config(
     mock_check_status,
     mock_send_feedback,
     mock_is_jules,
+    mock_cmd,
 ):
     """Test that fallback logic is skipped when disabled in config."""
     # Setup
     repo_name = "owner/repo"
-    pr_data = {"number": 123, "title": "Test PR"}
+    pr_data = {"number": 123, "title": "Test PR", "head": {"ref": "some-branch"}}
     config = AutomationConfig()
     github_client = Mock()
+    mock_cmd.run_command.return_value = Mock(success=True, stdout="main")
 
     # Mock checks failure
     mock_check_in_progress.return_value = True
     mock_mergeable.return_value = {"mergeable": True}
-    mock_check_status.return_value = Mock(success=False, error=None)
-    mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
+    mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
+    mock_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, failed_checks=[{"name": "test"}])
 
     # Mock Jules PR
     mock_is_jules.return_value = True
