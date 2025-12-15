@@ -14,6 +14,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 import click
 
+from .lock_manager import LockManager
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -193,6 +194,10 @@ def restart_with_startup_options(
     if os.environ.get(_CAPTURE_RESTART_ENV):  # pragma: no cover - path exercised via SystemExit in tests
         _capture_restart_event(command, restart_env)
         return
+
+    logger.info("Releasing lock before process restart...")
+    lock_manager = LockManager()
+    lock_manager.release_lock()
 
     logger.info("Restarting process after auto-update: %s", " ".join(command))
     os.execvpe(command[0], list(command), restart_env)
