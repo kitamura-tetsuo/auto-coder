@@ -14,6 +14,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 import click
 
+from .lock_manager import LockManager
 from .logger_config import get_logger
 
 logger = get_logger(__name__)
@@ -195,6 +196,16 @@ def restart_with_startup_options(
         return
 
     logger.info("Restarting process after auto-update: %s", " ".join(command))
+
+    # Release the lock before restarting
+    try:
+        lock_manager = LockManager()
+        if lock_manager.is_locked():
+            lock_manager.release_lock()
+            logger.info("Lock file released before restarting.")
+    except Exception as e:
+        logger.warning(f"Failed to release lock before restarting: {e}")
+
     os.execvpe(command[0], list(command), restart_env)
 
 

@@ -26,6 +26,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
+from .update_manager import check_for_updates_and_restart
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
@@ -580,6 +581,9 @@ class AutomationEngine:
             total_processed = 0
 
             while True:
+                # Check for updates and restart if necessary
+                check_for_updates_and_restart()
+
                 # Check and resume failed Jules sessions
                 check_and_resume_or_archive_sessions()
 
