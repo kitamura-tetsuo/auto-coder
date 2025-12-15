@@ -1,9 +1,9 @@
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-import tempfile
-import os
 
 from auto_coder.local_test_log_collector import (
     collect_and_save_logs,
