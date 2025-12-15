@@ -58,46 +58,54 @@ class ProgressFooter:
         Returns:
             Formatted footer string
         """
-        # Define colors
+        # Define colors and symbols
         if self._no_color:
             c_cyan = ""
             c_magenta = ""
             c_red = ""
             c_yellow = ""
             c_reset = ""
+            sym_pr = "PR"
+            sym_issue = "Issue"
+            sym_sep = " / "
+            sym_branch = "/"
         else:
             c_cyan = "\033[96m"
             c_magenta = "\033[95m"
             c_red = "\033[91m"
             c_yellow = "\033[93m"
             c_reset = "\033[0m"
+            sym_pr = "🔀 PR"
+            sym_issue = "🐛 Issue"
+            sym_sep = " › "
+            sym_branch = " 🌿 "
 
         # Build the main item display with color based on item_type
         if item_type.upper() == "PR":
             # PR: cyan color
-            main_display = f"{c_cyan}[{item_type} #{item_number}"
+            main_display = f"{c_cyan}[{sym_pr} #{item_number}"
         elif item_type.upper() == "ISSUE":
             # Issue: light purple/magenta
-            main_display = f"{c_magenta}[{item_type} #{item_number}"
+            main_display = f"{c_magenta}[{sym_issue} #{item_number}"
         else:
             # Fallback: use cyan
             main_display = f"{c_cyan}[{item_type} #{item_number}"
 
         # Add branch name if available (in dark red)
         if self._branch_name:
-            main_display += f"{c_red}/{self._branch_name}{c_reset}"
+            main_display += f"{c_red}{sym_branch}{self._branch_name}{c_reset}"
 
         main_display += f"]{c_reset}"
 
         # Add related issues if available (without space before it)
         if self._related_issues:
             related_issues_str = ", ".join([f"#{issue}" for issue in self._related_issues])
-            main_display += f"{c_magenta}[Issue {related_issues_str}]{c_reset}"
+            main_display += f"{c_magenta}[{sym_issue} {related_issues_str}]{c_reset}"
 
         # Add stages if available
         if self._stage_stack:
-            all_stages = " / ".join(self._stage_stack)
-            return f"{main_display} {c_yellow}{all_stages}{c_reset}"
+            all_stages = sym_sep.join(self._stage_stack)
+            return f"{main_display}{sym_sep}{c_yellow}{all_stages}{c_reset}"
         else:
             # No stages, just show main info
             return main_display
