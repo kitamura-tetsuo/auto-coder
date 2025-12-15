@@ -286,18 +286,19 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         )
 
         if check_runs_res.returncode != 0:
-            log_action(f"Failed to get check runs for {current_head_sha[:8]}", False, check_runs_res.stderr)
-            logger.info(f"API call failed for #{pr_number}, attempting historical fallback...")
-            return _check_github_actions_status_from_history(repo_name, pr_data, config)
+            error_message = f"Failed to get check runs for {current_head_sha[:8]}: {check_runs_res.stderr}"
+            log_action(error_message, False, check_runs_res.stderr)
+            return GitHubActionsStatusResult(success=False, error=error_message)
 
         # Parse JSON output
         try:
             api_response = json.loads(check_runs_res.stdout or "")
             # The API returns an object with a "check_runs" list
             checks_data = api_response.get("check_runs", [])
-        except json.JSONDecodeError:
-            logger.warning(f"Failed to parse JSON output from gh api for #{pr_number}, falling back to historical")
-            return _check_github_actions_status_from_history(repo_name, pr_data, config)
+        except json.JSONDecodeError as e:
+            error_message = f"Failed to parse JSON for {current_head_sha[:8]}: {e}"
+            logger.warning(error_message)
+            return GitHubActionsStatusResult(success=False, error=error_message)
 
         if not checks_data:
             # No checks found, checks might not have started yet
@@ -382,10 +383,9 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
         return gh_status_result
 
     except Exception as e:
-        logger.error(f"Error checking GitHub Actions for PR #{pr_number}: {e}")
-        # Try historical search on exception
-        logger.info(f"Exception during PR checks for #{pr_number}, attempting historical fallback...")
-        return _check_github_actions_status_from_history(repo_name, pr_data, config)
+        error_message = f"Error checking GitHub Actions for PR #{pr_number}: {e}"
+        logger.error(error_message)
+        return GitHubActionsStatusResult(success=False, error=error_message)
 
 
 # --- Common helpers for historical GitHub Actions processing ---
@@ -521,12 +521,13 @@ def _check_github_actions_status_from_history(
         )
 
         if not pr_view_result.success or not pr_view_result.stdout.strip():  # type: ignore[attr-defined]
-            logger.warning(f"Failed to get PR #{pr_number} commits")
+            error_message = f"Failed to get PR #{pr_number} commits: {pr_view_result.stderr}"
+            logger.warning(error_message)
             return GitHubActionsStatusResult(
                 success=False,
                 ids=[],
                 in_progress=False,
-                error=f"Failed to get PR #{pr_number} commits",
+                error=error_message,
             )
 
         try:
@@ -583,12 +584,13 @@ def _check_github_actions_status_from_history(
         )
 
         if not run_list_result.success or not run_list_result.stdout.strip():  # type: ignore[attr-defined]
-            logger.warning(f"Failed to get runs for branch {head_branch}")
+            error_message = f"Failed to get runs for branch {head_branch}: {run_list_result.stderr}"
+            logger.warning(error_message)
             return GitHubActionsStatusResult(
                 success=False,
                 ids=[],
                 in_progress=False,
-                error=f"Failed to get runs for branch {head_branch}",
+                error=error_message,
             )
 
         try:
