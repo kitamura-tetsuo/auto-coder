@@ -3413,7 +3413,6 @@ class TestCheckAndHandleClosedBranch:
         # In the fixed version, has_label is not called (check_labels=False is respected)
         assert "issues_processed" in result
 
-
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_skips_dependabot_pr_if_processed_recently(
@@ -3431,7 +3430,7 @@ class TestCheckAndHandleClosedBranch:
 
         # Create a timestamp file indicating a recent Dependabot PR processing
         timestamp_file = tmpdir.join("dependabot_timestamp.txt")
-        with patch('src.auto_coder.util.dependabot_timestamp.TIMESTAMP_FILE', str(timestamp_file)):
+        with patch("src.auto_coder.util.dependabot_timestamp.TIMESTAMP_FILE", str(timestamp_file)):
             set_dependabot_pr_processed_time()
 
             # Mock GitHub client to return a Dependabot PR
