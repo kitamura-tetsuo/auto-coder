@@ -49,7 +49,7 @@ class TestPRProcessorLocalOverride:
         mock_run_command.return_value = MagicMock(success=True, stdout=f"{pr_branch}\n")
 
         # Mock failed checks
-        mock_check_status.return_value = MagicMock(success=False)
+        mock_check_status.return_value = MagicMock(success=False, error=None)
         mock_get_detailed_checks.return_value = MagicMock(success=False, failed_checks=["test_check"])
 
         # Mock checkout success
