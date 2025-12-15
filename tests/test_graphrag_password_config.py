@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from src.auto_coder.cli_helpers import initialize_graphrag
 
+
 class TestGraphRAGPasswordConfig(unittest.TestCase):
     # Patch where it is defined, because it is imported locally inside the function
     @patch("src.auto_coder.cli_commands_graphrag.run_graphrag_setup_mcp_programmatically")
