@@ -7,6 +7,9 @@ import pytest
 
 from auto_coder.automation_config import AutomationConfig
 from auto_coder.automation_engine import AutomationEngine
+from auto_coder.util.dependabot_timestamp import (
+    set_dependabot_pr_processed_time,
+)
 from auto_coder.util.github_action import GitHubActionsStatusResult
 from auto_coder.utils import CommandExecutor
 
@@ -1356,7 +1359,7 @@ class TestGetCandidates:
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         def get_issue_details_side_effect(issue):
             return {
@@ -1369,6 +1372,22 @@ class TestGetCandidates:
             }
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
+        mock_github_client.get_pr_comments.return_value = []
+        mock_github_client.get_pr_commits.return_value = []
         mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
 
         # Mock GitHub Actions checks
@@ -1467,7 +1486,7 @@ class TestGetCandidates:
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -1564,7 +1583,7 @@ class TestGetCandidates:
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -1617,8 +1636,8 @@ class TestGetCandidates:
 
         # Two dependency-bot PRs: one green/mergeable, one not ready.
         mock_github_client.get_open_pull_requests.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
-            Mock(number=2, created_at="2024-01-02T00:00:00Z"),
+            {"number": 1, "created_at": "2024-01-01T00:00:00Z"},
+            {"number": 2, "created_at": "2024-01-02T00:00:00Z"},
         ]
         mock_github_client.get_open_issues.return_value = []
 
@@ -1632,6 +1651,7 @@ class TestGetCandidates:
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
                 "author": "dependabot[bot]",
+                "user": {"login": "dependabot[bot]"},
             },
             2: {
                 "number": 2,
@@ -1642,11 +1662,12 @@ class TestGetCandidates:
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
                 "author": "dependabot[bot]",
+                "user": {"login": "dependabot[bot]"},
             },
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -1688,8 +1709,8 @@ class TestGetCandidates:
         engine = AutomationEngine(mock_github_client, config=config)
 
         mock_github_client.get_open_pull_requests.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
-            Mock(number=2, created_at="2024-01-02T00:00:00Z"),
+            {"number": 1, "created_at": "2024-01-01T00:00:00Z"},
+            {"number": 2, "created_at": "2024-01-02T00:00:00Z"},
         ]
         mock_github_client.get_open_issues.return_value = []
 
@@ -1703,6 +1724,7 @@ class TestGetCandidates:
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
                 "author": "renovate[bot]",
+                "user": {"login": "renovate[bot]"},
             },
             2: {
                 "number": 2,
@@ -1713,11 +1735,12 @@ class TestGetCandidates:
                 "mergeable": False,
                 "created_at": "2024-01-02T00:00:00Z",
                 "author": "renovate[bot]",
+                "user": {"login": "renovate[bot]"},
             },
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -1793,7 +1816,7 @@ class TestGetCandidates:
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -1838,7 +1861,7 @@ class TestGetCandidates:
 
         # Single passing/mergeable dependency-bot PR
         mock_github_client.get_open_pull_requests.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+            {"number": 1, "created_at": "2024-01-01T00:00:00Z"},
         ]
         mock_github_client.get_open_issues.return_value = []
 
@@ -1852,11 +1875,12 @@ class TestGetCandidates:
                 "mergeable": True,
                 "created_at": "2024-01-01T00:00:00Z",
                 "author": "dependabot[bot]",
+                "user": {"login": "dependabot[bot]"},
             },
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -1895,7 +1919,7 @@ class TestGetCandidates:
 
         # Single failing/non-mergeable dependency-bot PR
         mock_github_client.get_open_pull_requests.return_value = [
-            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+            {"number": 1, "created_at": "2024-01-01T00:00:00Z"},
         ]
         mock_github_client.get_open_issues.return_value = []
 
@@ -1909,11 +1933,12 @@ class TestGetCandidates:
                 "mergeable": False,
                 "created_at": "2024-01-01T00:00:00Z",
                 "author": "dependabot[bot]",
+                "user": {"login": "dependabot[bot]"},
             },
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -1969,7 +1994,7 @@ class TestGetCandidates:
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -2048,7 +2073,7 @@ class TestGetCandidates:
         }
 
         def get_pr_details_side_effect(pr):
-            return pr_data[pr.number]
+            return pr_data[pr["number"]]
 
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
 
@@ -3387,3 +3412,47 @@ class TestCheckAndHandleClosedBranch:
         # In the buggy version, has_label would be called (default check_labels=True)
         # In the fixed version, has_label is not called (check_labels=False is respected)
         assert "issues_processed" in result
+
+
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_skips_dependabot_pr_if_processed_recently(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+        tmpdir,
+    ):
+        """Test that _get_candidates skips Dependabot PRs if one was processed recently."""
+        # Setup
+        engine = AutomationEngine(mock_github_client)
+
+        # Create a timestamp file indicating a recent Dependabot PR processing
+        timestamp_file = tmpdir.join("dependabot_timestamp.txt")
+        with patch('src.auto_coder.util.dependabot_timestamp.TIMESTAMP_FILE', str(timestamp_file)):
+            set_dependabot_pr_processed_time()
+
+            # Mock GitHub client to return a Dependabot PR
+            mock_github_client.get_open_pull_requests.return_value = [
+                Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+            ]
+            mock_github_client.get_open_issues.return_value = []
+            mock_github_client.get_pr_details.return_value = {
+                "number": 1,
+                "title": "Dependabot PR",
+                "body": "",
+                "head": {"ref": "dependabot-pr-1"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-01T00:00:00Z",
+                "author": "dependabot[bot]",
+            }
+            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
+
+            # Execute
+            candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+            # Assert
+            assert len(candidates) == 0
