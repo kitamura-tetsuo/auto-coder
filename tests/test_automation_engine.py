@@ -3472,9 +3472,7 @@ class TestDependabotProcessingFrequency:
         engine = AutomationEngine(mock_github_client)
         mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
         mock_github_client.get_open_issues.return_value = []
-        mock_github_client.get_pr_details.return_value = {
-            "number": 1, "title": "Dependabot PR", "author": "dependabot[bot]", "head": {"ref": "dp1"}
-        }
+        mock_github_client.get_pr_details.return_value = {"number": 1, "title": "Dependabot PR", "author": "dependabot[bot]", "head": {"ref": "dp1"}}
 
         candidates = engine._get_candidates(test_repo_name)
         assert len(candidates) == 0
@@ -3500,9 +3498,7 @@ class TestDependabotProcessingFrequency:
         engine = AutomationEngine(mock_github_client)
         mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
         mock_github_client.get_open_issues.return_value = []
-        mock_github_client.get_pr_details.return_value = {
-            "number": 1, "title": "Dependabot PR", "author": "dependabot[bot]", "head": {"ref": "dp1"}
-        }
+        mock_github_client.get_pr_details.return_value = {"number": 1, "title": "Dependabot PR", "author": "dependabot[bot]", "head": {"ref": "dp1"}}
 
         candidates = engine._get_candidates(test_repo_name)
         assert len(candidates) == 1
