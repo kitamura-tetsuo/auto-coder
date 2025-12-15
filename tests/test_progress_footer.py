@@ -367,7 +367,7 @@ def test_progress_footer_nested_stages():
     output = mock_stream.getvalue()
     assert "First pass" in output
     assert "Checking status" in output
-    assert "/" in output  # Should have separator
+    assert " › " in output  # Should have separator
 
     # Push third stage
     footer.push_stage("Running LLM")
@@ -421,7 +421,7 @@ def test_progress_stage_context_manager():
                 output = mock_stream.getvalue()
                 assert "First pass" in output
                 assert "Checking status" in output
-                assert "/" in output
+                assert " › " in output
 
                 # Nested stage
                 with ProgressStage("Running LLM"):
@@ -528,7 +528,7 @@ def test_progress_footer_branch_name_color():
     assert "\033[91m" in formatted
     assert "feature-branch" in formatted
     # Should have the color code before the branch name
-    assert "91m/feature-branch" in formatted
+    assert "91m 🌿 feature-branch" in formatted
 
 
 def test_progress_footer_case_insensitive_item_type():
@@ -559,7 +559,7 @@ def test_progress_footer_related_issues_color():
     formatted = footer._format_footer("PR", 123)
 
     # Related issues should be in purple
-    assert "\033[95m[Issue #100, #200, #300]\033[0m" in formatted
+    assert "\033[95m[🐛 Issue #100, #200, #300]\033[0m" in formatted
 
 
 def test_progress_footer_stages_color():
@@ -570,7 +570,7 @@ def test_progress_footer_stages_color():
 
     # Stages should be in yellow
     assert "\033[93m" in formatted
-    assert "Running tests / Analyzing" in formatted
+    assert "Running tests › Analyzing" in formatted
 
 
 if __name__ == "__main__":
