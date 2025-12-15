@@ -43,7 +43,7 @@ class TestHandlePrMergeJulesFallback:
         # Mock checks failure
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = Mock(success=False)
+        mock_check_status.return_value = Mock(success=False, error=None)
         mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
 
         # Mock Jules PR
@@ -102,7 +102,7 @@ class TestHandlePrMergeJulesFallback:
         # Mock checks failure
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = Mock(success=False)
+        mock_check_status.return_value = Mock(success=False, error=None)
         mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
 
         # Mock Jules PR
@@ -169,7 +169,7 @@ class TestHandlePrMergeJulesFallback:
         # Mock checks failure
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = Mock(success=False)
+        mock_check_status.return_value = Mock(success=False, error=None)
         mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
 
         # Mock Jules PR
