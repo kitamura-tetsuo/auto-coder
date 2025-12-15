@@ -1,7 +1,9 @@
-import pytest
 from unittest.mock import MagicMock, patch
-from src.auto_coder.util.github_action import _check_github_actions_status, GitHubActionsStatusResult
+
+import pytest
+
 from src.auto_coder.pr_processor import _handle_pr_merge
+from src.auto_coder.util.github_action import GitHubActionsStatusResult, _check_github_actions_status
 from src.auto_coder.utils import CommandResult
 
 
