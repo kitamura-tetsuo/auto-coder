@@ -254,7 +254,10 @@ class TestAutomationEngine:
         mock_github_client.get_pr_details.return_value = pr_data
 
         # Track the git commands that are called
-        with patch.object(engine.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_subprocess:
+        with (
+            patch.object(engine.cmd, "run_command") as mock_run_command,
+            patch("auto_coder.gh_logger.subprocess.run") as mock_subprocess,
+        ):
             # Execute
             result = engine._resolve_pr_merge_conflicts("test/repo", 456)
 
@@ -266,7 +269,11 @@ class TestAutomationEngine:
         assert ["git", "clean", "-fd"] in calls
         assert ["git", "merge", "--abort"] in calls
         assert ["git", "fetch", "origin", "develop"] in calls  # Fetch base branch
-        assert ["git", "merge", "refs/remotes/origin/develop"] in calls  # Merge base branch
+        assert [
+            "git",
+            "merge",
+            "refs/remotes/origin/develop",
+        ] in calls  # Merge base branch
         assert ["git", "push"] in calls
         # Check that the gh pr checkout command was called
         subprocess_calls = [call[0][0] for call in mock_subprocess.call_args_list]
@@ -529,8 +536,18 @@ class TestAutomationEngine:
         # Return JSON for the gh api call with completed check runs
         api_response = {
             "check_runs": [
-                {"id": 1, "name": "test-check", "status": "completed", "conclusion": "success"},
-                {"id": 2, "name": "another-check", "status": "completed", "conclusion": "success"},
+                {
+                    "id": 1,
+                    "name": "test-check",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 2,
+                    "name": "another-check",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
             ]
         }
         mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
@@ -558,9 +575,27 @@ class TestAutomationEngine:
         # html_url contains the actions runs URL that is used to extract run IDs
         api_response = {
             "check_runs": [
-                {"id": 1, "name": "passing-check", "status": "completed", "conclusion": "success", "html_url": "https://github.com/test/repo/actions/runs/1001"},
-                {"id": 2, "name": "failing-check", "status": "completed", "conclusion": "failure", "html_url": "https://github.com/test/repo/actions/runs/1002"},
-                {"id": 3, "name": "pending-check", "status": "in_progress", "conclusion": None, "html_url": "https://github.com/test/repo/actions/runs/1003"},
+                {
+                    "id": 1,
+                    "name": "passing-check",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/test/repo/actions/runs/1001",
+                },
+                {
+                    "id": 2,
+                    "name": "failing-check",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "html_url": "https://github.com/test/repo/actions/runs/1002",
+                },
+                {
+                    "id": 3,
+                    "name": "pending-check",
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "html_url": "https://github.com/test/repo/actions/runs/1003",
+                },
             ]
         }
         mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
@@ -589,9 +624,27 @@ class TestAutomationEngine:
         # html_url contains the actions runs URL that is used to extract run IDs
         api_response = {
             "check_runs": [
-                {"id": 123, "name": "test", "status": "completed", "conclusion": "failure", "html_url": "https://github.com/example/repo/actions/runs/123"},
-                {"id": 124, "name": "format", "status": "completed", "conclusion": "success", "html_url": "https://github.com/example/repo/actions/runs/124"},
-                {"id": 125, "name": "link-pr-to-issue", "status": "completed", "conclusion": "skipped", "html_url": "https://github.com/example/repo/actions/runs/125"},
+                {
+                    "id": 123,
+                    "name": "test",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "html_url": "https://github.com/example/repo/actions/runs/123",
+                },
+                {
+                    "id": 124,
+                    "name": "format",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "html_url": "https://github.com/example/repo/actions/runs/124",
+                },
+                {
+                    "id": 125,
+                    "name": "link-pr-to-issue",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                    "html_url": "https://github.com/example/repo/actions/runs/125",
+                },
             ]
         }
         mock_run_command.return_value = Mock(
@@ -618,9 +671,24 @@ class TestAutomationEngine:
         # Setup - return JSON for the gh api call with all passing check runs
         api_response = {
             "check_runs": [
-                {"id": 123, "name": "test", "status": "completed", "conclusion": "success"},
-                {"id": 124, "name": "format", "status": "completed", "conclusion": "success"},
-                {"id": 125, "name": "link-pr-to-issue", "status": "completed", "conclusion": "skipped"},
+                {
+                    "id": 123,
+                    "name": "test",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 124,
+                    "name": "format",
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 125,
+                    "name": "link-pr-to-issue",
+                    "status": "completed",
+                    "conclusion": "skipped",
+                },
             ]
         }
         mock_run_command.return_value = Mock(
@@ -885,7 +953,10 @@ class TestAutomationEngineExtended:
                 {"success": False, "output": "Test failed", "errors": "Error"},
                 {"success": True, "output": "All tests passed", "errors": ""},
             ]
-            mock_local_fix.return_value = (["Applied local test fix"], "LLM response: Fixed test issues")
+            mock_local_fix.return_value = (
+                ["Applied local test fix"],
+                "LLM response: Fixed test issues",
+            )
 
             # Execute
             from auto_coder.pr_processor import _fix_pr_issues_with_testing
@@ -916,7 +987,10 @@ class TestAutomationEngineExtended:
 
         # We need to mock cmd.run_command (for git commands) and gh_logger (for gh commands)
         # Use patch.object to mock the method on the cmd instance
-        with patch.object(pr_processor.cmd, "run_command") as mock_run_command, patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
+        with (
+            patch.object(pr_processor.cmd, "run_command") as mock_run_command,
+            patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess,
+        ):
             # Mock cmd.run_command for git reset and clean
             # It returns a CommandResult with success attribute
             git_results = [
@@ -2112,7 +2186,7 @@ class TestGetCandidates:
         # Mock label check via LabelManager: skip PR #1 and Issue #11 as already labeled
         with patch("auto_coder.automation_engine.LabelManager") as mock_label_mgr:
             # LabelManager returns True if should process, False if should skip
-            mock_label_mgr.return_value.__enter__.side_effect = lambda: False if mock_label_mgr.call_args[0][2] in (1, 11) else True
+            mock_label_mgr.return_value.__enter__.side_effect = lambda: (False if mock_label_mgr.call_args[0][2] in (1, 11) else True)
 
             # Execute
             candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2770,7 +2844,11 @@ class TestElderSiblingDependencyLogic:
                 return []
             # Return all open sub-issues for parent
             elif issue_num == 1:
-                return [100, 101, 102]  # Sub-issues 100, 101, 102 (100 is elder sibling)
+                return [
+                    100,
+                    101,
+                    102,
+                ]  # Sub-issues 100, 101, 102 (100 is elder sibling)
             return []
 
         mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
@@ -2843,6 +2921,60 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].type == "issue"
         assert candidates[0].data["number"] == 1
 
+    def test_get_candidates_filters_by_creation_time(self, mock_github_client, test_repo_name):
+        """Test that _get_candidates filters issues based on creation time."""
+        # Setup
+        engine = AutomationEngine(mock_github_client)
+        now = datetime.now(timezone.utc)
+        recent_time_str = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        old_time_str = (now - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        # Mock issues
+        mock_issues = [
+            Mock(
+                number=1,
+                created_at=recent_time_str,
+                **{
+                    "as_dict.return_value": {
+                        "number": 1,
+                        "title": "Recent Issue",
+                        "created_at": recent_time_str,
+                        "labels": [],
+                    }
+                },
+            ),
+            Mock(
+                number=2,
+                created_at=old_time_str,
+                **{
+                    "as_dict.return_value": {
+                        "number": 2,
+                        "title": "Older Issue",
+                        "created_at": old_time_str,
+                        "labels": [],
+                    }
+                },
+            ),
+        ]
+        mock_github_client.get_open_issues.return_value = mock_issues
+
+        # Mock the get_issue_details to return the dictionary directly
+        def get_issue_details_side_effect(issue):
+            return issue.as_dict()
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_open_sub_issues.return_value = []
+
+        # Execute
+        candidates = engine._get_candidates(repo_name=test_repo_name)
+
+        # Assert
+        assert len(candidates) == 1
+        assert candidates[0].data["number"] == 2
+        assert candidates[0].data["title"] == "Older Issue"
+
 
 class TestUrgentLabelPropagation:
     """Test cases for urgent label propagation in PR creation."""
@@ -2866,7 +2998,11 @@ class TestUrgentLabelPropagation:
 
         # Mock gh pr create to return PR URL
         gh_results = [
-            Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0),  # gh pr create
+            Mock(
+                success=True,
+                stdout="https://github.com/test/repo/pull/456",
+                returncode=0,
+            ),  # gh pr create
             Mock(success=True, stdout="", stderr="", returncode=0),  # gh pr edit
         ]
 
@@ -2934,7 +3070,11 @@ class TestUrgentLabelPropagation:
         # Mock gh pr create to return PR URL
         def side_effect(cmd, **kwargs):
             if cmd[0] == "gh":
-                return Mock(success=True, stdout="https://github.com/test/repo/pull/456", returncode=0)
+                return Mock(
+                    success=True,
+                    stdout="https://github.com/test/repo/pull/456",
+                    returncode=0,
+                )
             # For any other commands, return success
             return Mock(success=True, stdout="", stderr="", returncode=0)
 
