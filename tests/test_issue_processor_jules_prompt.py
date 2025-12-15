@@ -1,6 +1,7 @@
 """
 Tests for the Jules prompt argument passing in the issue processor.
 """
+
 import unittest
 from unittest.mock import MagicMock, patch
 
