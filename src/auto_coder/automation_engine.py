@@ -148,12 +148,12 @@ class AutomationEngine:
         candidates: List[Candidate] = []
         candidates_count = 0
 
-        last_run = get_last_dependabot_run()
-        is_in_cooldown = last_run and (datetime.now(timezone.utc) - last_run) < timedelta(minutes=5)
-        if is_in_cooldown:
-            logger.info("Dependabot processing is in a cooldown period.")
-
         try:
+            # Check if Dependabot PRs are in a cooldown period.
+            # This check is performed once before iterating through PRs for efficiency.
+            last_run = get_last_dependabot_run()
+            is_in_cooldown = last_run and (datetime.now(timezone.utc) - last_run) < timedelta(minutes=5)
+
             dependabot_pr_processed_this_run = False
             # Collect PR candidates
             prs = self.github.get_open_pull_requests(repo_name)
