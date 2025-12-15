@@ -514,7 +514,7 @@ def _check_github_actions_status_from_history(
         # 1. Get all PR commits/oid
         gh_logger = get_gh_logger()
         pr_view_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "commits"],
+            ["gh", "pr", "view", str(pr_number), "--json", "commits{oid}"],
             repo=repo_name,
             timeout=60,
             capture_output=True,
