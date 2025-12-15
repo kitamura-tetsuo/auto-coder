@@ -1,6 +1,7 @@
 import os
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 from src.auto_coder.cli_helpers import initialize_graphrag
 
 
