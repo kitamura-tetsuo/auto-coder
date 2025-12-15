@@ -3415,3 +3415,92 @@ class TestCheckAndHandleClosedBranch:
         # In the buggy version, has_label would be called (default check_labels=True)
         # In the fixed version, has_label is not called (check_labels=False is respected)
         assert "issues_processed" in result
+
+
+class TestDependabotProcessingFrequency:
+    """Test cases for Dependabot processing frequency logic."""
+
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    def test_only_one_dependabot_pr_per_run(
+        self,
+        mock_check_actions,
+        mock_set_last_run,
+        mock_get_last_run,
+        mock_github_client,
+        test_repo_name,
+    ):
+        """Verify that only one Dependabot PR is processed per run."""
+        mock_get_last_run.return_value = None
+        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+
+        engine = AutomationEngine(mock_github_client)
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1),
+            Mock(number=2),
+        ]
+        mock_github_client.get_open_issues.return_value = []
+        pr_data = {
+            1: {"number": 1, "title": "Dependabot PR 1", "author": "dependabot[bot]", "head": {"ref": "dp1"}},
+            2: {"number": 2, "title": "Dependabot PR 2", "author": "dependabot[bot]", "head": {"ref": "dp2"}},
+        }
+        mock_github_client.get_pr_details.side_effect = lambda pr: pr_data[pr.number]
+
+        candidates = engine._get_candidates(test_repo_name)
+        assert len(candidates) == 1
+        assert candidates[0].data["number"] == 1
+        mock_set_last_run.assert_called_once()
+
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    def test_dependabot_pr_cooldown(
+        self,
+        mock_check_actions,
+        mock_set_last_run,
+        mock_get_last_run,
+        mock_github_client,
+        test_repo_name,
+    ):
+        """Verify that Dependabot PRs are skipped during the cooldown period."""
+        from datetime import datetime, timedelta, timezone
+
+        mock_get_last_run.return_value = datetime.now(timezone.utc) - timedelta(minutes=4)
+        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+
+        engine = AutomationEngine(mock_github_client)
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_pr_details.return_value = {"number": 1, "title": "Dependabot PR", "author": "dependabot[bot]", "head": {"ref": "dp1"}}
+
+        candidates = engine._get_candidates(test_repo_name)
+        assert len(candidates) == 0
+        mock_set_last_run.assert_not_called()
+
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    def test_dependabot_pr_after_cooldown(
+        self,
+        mock_check_actions,
+        mock_set_last_run,
+        mock_get_last_run,
+        mock_github_client,
+        test_repo_name,
+    ):
+        """Verify that Dependabot PRs are processed after the cooldown period."""
+        from datetime import datetime, timedelta, timezone
+
+        mock_get_last_run.return_value = datetime.now(timezone.utc) - timedelta(minutes=6)
+        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+
+        engine = AutomationEngine(mock_github_client)
+        mock_github_client.get_open_pull_requests.return_value = [Mock(number=1)]
+        mock_github_client.get_open_issues.return_value = []
+        mock_github_client.get_pr_details.return_value = {"number": 1, "title": "Dependabot PR", "author": "dependabot[bot]", "head": {"ref": "dp1"}}
+
+        candidates = engine._get_candidates(test_repo_name)
+        assert len(candidates) == 1
+        assert candidates[0].data["number"] == 1
+        mock_set_last_run.assert_called_once()
