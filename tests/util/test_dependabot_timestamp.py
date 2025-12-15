@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import patch
 
-from auto_coder.util.dependabot_timestamp import get_last_dependabot_run, set_last_dependabot_run, get_timestamp_path
+from auto_coder.util.dependabot_timestamp import get_last_dependabot_run, get_timestamp_path, set_last_dependabot_run
 
 
 def test_dependabot_timestamp():

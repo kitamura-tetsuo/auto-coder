@@ -455,6 +455,7 @@ class TestIsDependabotPR:
     def test_dependabot_pr_with_recent_run(self, mock_set_last_dependabot_run, mock_get_last_dependabot_run):
         """Test that a Dependabot PR is skipped if there is a recent run."""
         from datetime import datetime, timedelta, timezone
+
         from src.auto_coder.pr_processor import _is_dependabot_pr
 
         mock_get_last_dependabot_run.return_value = datetime.now(timezone.utc) - timedelta(minutes=1)
