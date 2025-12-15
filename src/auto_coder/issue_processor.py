@@ -420,11 +420,17 @@ def _process_issue_jules_mode(
         jules_client = JulesClient()
 
         # Prepare the prompt for Jules
+        issue_labels_list = [label.get("name", "") for label in issue_data.get("labels", [])]
         action_prompt = render_prompt(
             "issue.action",
+            repo_name=repo_name,
             issue_number=issue_number,
             issue_title=issue_title,
             issue_body=issue_body,
+            issue_labels=", ".join(issue_labels_list),
+            issue_state=issue_data.get("state", "open"),
+            issue_author=issue_data.get("user", {}).get("login", "unknown"),
+            commit_log=get_commit_log(base_branch=config.MAIN_BRANCH) or "(No commit history)",
         )
 
         logger.info(f"Starting Jules session for issue #{issue_number}")
