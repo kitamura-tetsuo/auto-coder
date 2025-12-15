@@ -3,7 +3,7 @@
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from .git_info import get_current_repo_name
 
@@ -18,6 +18,7 @@ class LogEntry:
     stderr: str
     exit_code: int
     success: bool
+    raw_log_files: List[str]
 
     def to_dict(self) -> dict:
         """Converts the LogEntry to a dictionary."""

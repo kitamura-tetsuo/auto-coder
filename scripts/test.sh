@@ -246,72 +246,11 @@ echo "[OK] All code quality checks passed!"
 echo ""
 
 
-# Check if a specific test file is provided as an argument
+# Delegate test execution to the Python script
 if [ $# -ge 1 ]; then
-    SPECIFIC_TEST_FILE=$1
-    shift  # Remove first argument
-    if [ -f "$SPECIFIC_TEST_FILE" ]; then
-        echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
-        # Don't generate HTML coverage report for single test files (faster)
-        $RUN pytest -n auto $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE" "$@"
-        exit $?
-    else
-        echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
-        exit 1
-    fi
-fi
-
-# Run all tests first to see which ones fail
-echo "Running all tests..."
-TEST_OUTPUT_FILE=$(mktemp)
-
-# Don't exit on errors - we want to capture the exit code
-set +e
-
-$RUN pytest -n auto $PYTEST_ALL_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
-EXIT_CODE=${PIPESTATUS[0]}
-
-# Re-enable exit on errors
-set -e
-
-echo "Test run completed with exit code: $EXIT_CODE"
-
-if [ $EXIT_CODE -ne 0 ]; then
-    echo "Some tests failed. Analyzing failures..."
-
-    # Extract the first failed test file
-    # Pytest output format: FAILED path/to/test_file.py::test_name - error message
-    # Try multiple patterns to extract the test file path
-    FIRST_FAILED_TEST=$(grep "^FAILED" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/^FAILED\s+([^:]+)::.*/\1/')
-
-    # If we didn't find a FAILED line with the first pattern, try another
-    if [ -z "$FIRST_FAILED_TEST" ]; then
-        FIRST_FAILED_TEST=$(grep -E "::(test_|Test)" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/^.*\s+([^:]+)::.*/\1/')
-    fi
-
-    # If we still didn't find it, try to extract from any line containing /tests/ and .py
-    if [ -z "$FIRST_FAILED_TEST" ]; then
-        FIRST_FAILED_TEST=$(grep "/tests/" "$TEST_OUTPUT_FILE" | head -1 | grep -E "::(test_|Test)" | sed -E 's/^.*\s+([^:]+\.py)::.*/\1/')
-    fi
-
-    # If we found a failed test, run only that test
-    if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
-        echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        $RUN pytest -n auto $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
-        RESULT=$?
-        rm "$TEST_OUTPUT_FILE"
-        exit $RESULT
-    else
-        echo "Could not identify the first failed test file or file does not exist."
-        # Output the last 50 lines of the test output for debugging
-        echo ""
-        echo "Last 50 lines of test output:"
-        tail -50 "$TEST_OUTPUT_FILE"
-        rm "$TEST_OUTPUT_FILE"
-        exit $EXIT_CODE
-    fi
+    $RUN python src/auto_coder/local_test_log_collector.py "$1"
 else
-    echo "All tests passed!"
-    rm "$TEST_OUTPUT_FILE"
-    exit 0
+    $RUN python src/auto_coder/local_test_log_collector.py
 fi
+
+exit $?
