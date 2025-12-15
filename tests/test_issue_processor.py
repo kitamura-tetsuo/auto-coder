@@ -1114,3 +1114,69 @@ class TestKeepLabelOnPRCreation:
 
         # Verify keep_label was NOT called (no PR creation for PR items)
         assert len(keep_label_called) == 0, "keep_label should not be called for PR items (head_branch set)"
+
+
+def test_process_issue_jules_mode_passes_all_arguments_to_render_prompt():
+    """
+    Verify that _process_issue_jules_mode passes all expected arguments
+    to render_prompt.
+    """
+    from src.auto_coder.issue_processor import _process_issue_jules_mode
+
+    repo_name = "test/repo"
+    issue_number = 42
+    issue_data = {
+        "number": issue_number,
+        "title": "Test Issue Title",
+        "body": "Test Issue Body",
+        "labels": [{"name": "bug"}, {"name": "urgent"}],
+        "state": "open",
+        "user": {"login": "test-user"},
+    }
+    config = AutomationConfig()
+    github_client = MagicMock()
+
+    # Mock parent issue details
+    parent_issue_details = {
+        "number": 24,
+        "title": "Parent Issue Title",
+        "body": "Parent Issue Body",
+        "state": "OPEN",
+    }
+    github_client.get_parent_issue_details.return_value = parent_issue_details
+    github_client.get_parent_issue_body.return_value = "Parent Issue Body Content"
+
+    # Mock other necessary calls
+    with (
+        patch("src.auto_coder.issue_processor.JulesClient"),
+        patch("src.auto_coder.issue_processor.CloudManager"),
+        patch(
+            "src.auto_coder.issue_processor.get_commit_log",
+            return_value="commit log message",
+        ),
+        patch("src.auto_coder.issue_processor.render_prompt") as mock_render_prompt,
+        patch("src.auto_coder.issue_processor.ensure_parent_issue_open", return_value=True),
+        patch("src.auto_coder.issue_processor.cmd") as mock_cmd,
+    ):
+        mock_cmd.run_command.return_value = _cmd_result(success=True)  # for branch checks
+
+        _process_issue_jules_mode(repo_name, issue_data, config, github_client)
+
+        # Assert render_prompt was called with all the expected arguments
+        mock_render_prompt.assert_called_once()
+        call_kwargs = mock_render_prompt.call_args.kwargs
+
+        # Arguments from the issue description
+        assert call_kwargs.get("repo_name") == repo_name
+        assert call_kwargs.get("issue_labels") == "bug, urgent"
+        assert call_kwargs.get("issue_state") == issue_data["state"]
+        assert call_kwargs.get("issue_author") == "test-user"
+        assert call_kwargs.get("parent_issue_number") == parent_issue_details["number"]
+        assert call_kwargs.get("parent_issue_title") == parent_issue_details["title"]
+        assert call_kwargs.get("parent_issue_body") == "Parent Issue Body Content"
+        assert call_kwargs.get("commit_log") == "commit log message"
+
+        # Also check existing arguments
+        assert call_kwargs.get("issue_number") == issue_number
+        assert call_kwargs.get("issue_title") == issue_data["title"]
+        assert call_kwargs.get("issue_body") == issue_data["body"]
