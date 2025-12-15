@@ -18,6 +18,7 @@ from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, 
 from auto_coder.cli_helpers import create_failed_pr_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
+from auto_coder.util.dependabot_timestamp import get_last_dependabot_run, set_last_dependabot_run
 from auto_coder.util.github_action import DetailedChecksResult, _check_github_actions_status, _get_github_actions_logs, check_github_actions_and_exit_if_in_progress, get_detailed_checks_from_history
 
 from .attempt_manager import get_current_attempt, increment_attempt
@@ -176,6 +177,11 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
         if "google-labs-jules[bot]" in login_lower:
             return False
         if "dependabot" in login_lower or "renovate" in login_lower or login_lower.endswith("[bot]"):
+            last_run = get_last_dependabot_run()
+            if last_run and (datetime.now(timezone.utc) - last_run) < timedelta(minutes=5):
+                logger.info("Skipping Dependabot PR because one was processed recently.")
+                return False
+            set_last_dependabot_run()
             return True
     except Exception:
         # Best-effort detection only; never fail hard here

@@ -434,3 +434,40 @@ class TestKeepLabelOnPRMerge:
 
         # Verify keep_label was NOT called
         assert len(keep_label_called) == 0, "keep_label should not be called when no merge occurs"
+
+
+class TestIsDependabotPR:
+    """Test cases for _is_dependabot_pr function."""
+
+    @patch("src.auto_coder.pr_processor.get_last_dependabot_run")
+    @patch("src.auto_coder.pr_processor.set_last_dependabot_run")
+    def test_dependabot_pr_with_no_recent_run(self, mock_set_last_dependabot_run, mock_get_last_dependabot_run):
+        """Test that a Dependabot PR is processed if there is no recent run."""
+        from src.auto_coder.pr_processor import _is_dependabot_pr
+
+        mock_get_last_dependabot_run.return_value = None
+        pr_data = {"user": {"login": "dependabot[bot]"}}
+        assert _is_dependabot_pr(pr_data) is True
+        mock_set_last_dependabot_run.assert_called_once()
+
+    @patch("src.auto_coder.pr_processor.get_last_dependabot_run")
+    @patch("src.auto_coder.pr_processor.set_last_dependabot_run")
+    def test_dependabot_pr_with_recent_run(self, mock_set_last_dependabot_run, mock_get_last_dependabot_run):
+        """Test that a Dependabot PR is skipped if there is a recent run."""
+        from datetime import datetime, timedelta, timezone
+        from src.auto_coder.pr_processor import _is_dependabot_pr
+
+        mock_get_last_dependabot_run.return_value = datetime.now(timezone.utc) - timedelta(minutes=1)
+        pr_data = {"user": {"login": "dependabot[bot]"}}
+        assert _is_dependabot_pr(pr_data) is False
+        mock_set_last_dependabot_run.assert_not_called()
+
+    @patch("src.auto_coder.pr_processor.get_last_dependabot_run")
+    @patch("src.auto_coder.pr_processor.set_last_dependabot_run")
+    def test_non_dependabot_pr(self, mock_set_last_dependabot_run, mock_get_last_dependabot_run):
+        """Test that a non-Dependabot PR is not processed."""
+        from src.auto_coder.pr_processor import _is_dependabot_pr
+
+        pr_data = {"user": {"login": "test-user"}}
+        assert _is_dependabot_pr(pr_data) is False
+        mock_set_last_dependabot_run.assert_not_called()
