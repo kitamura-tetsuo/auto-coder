@@ -57,7 +57,7 @@ def test_history_handles_missing_pullRequests_field_gracefully():
     call_count = {"list": 0}
 
     def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd:
+        if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd[-1]:
             # Handle gh pr view command for commits
             return _cmd_result(
                 True,
@@ -134,7 +134,7 @@ def test_history_handles_empty_pullRequests_list_gracefully():
     call_count = {"list": 0}
 
     def side_effect(cmd, **kwargs):
-        if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd:
+        if cmd[:3] == ["gh", "pr", "view"] and "commits" in cmd[-1]:
             # Handle gh pr view command for commits
             return _cmd_result(
                 True,
