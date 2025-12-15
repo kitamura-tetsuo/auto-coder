@@ -9,13 +9,6 @@ import re
 from typing import Optional
 from urllib.parse import urlparse
 
-try:
-    from git import InvalidGitRepositoryError, Repo
-
-    GIT_AVAILABLE = True
-except ImportError:
-    GIT_AVAILABLE = False
-
 from .logger_config import get_logger
 from .utils import CommandExecutor
 
@@ -63,23 +56,24 @@ def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
     Returns:
         Repository name in format "owner/repo" or None if not found.
     """
-    if not GIT_AVAILABLE:
-        logger.warning("GitPython not available. Cannot auto-detect repository.")
-        return None
-
     try:
         # Use provided path or current directory
         repo_path = path or os.getcwd()
-
-        # Try to find git repository
-        repo = Repo(repo_path, search_parent_directories=True)
+        cmd = CommandExecutor()
 
         # Get remote origin URL
-        if "origin" not in repo.remotes:
-            logger.debug("No 'origin' remote found in repository")
+        # git remote get-url origin
+        result = cmd.run_command(
+            ["git", "remote", "get-url", "origin"], cwd=repo_path, stream_output=False
+        )
+
+        if not result.success:
+            logger.debug(
+                f"No 'origin' remote found or not a git repository in {repo_path}: {result.stderr}"
+            )
             return None
 
-        origin_url = repo.remotes.origin.url
+        origin_url = result.stdout.strip()
         logger.debug(f"Found origin URL: {origin_url}")
 
         # Parse GitHub repository name from URL
@@ -91,9 +85,6 @@ def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
             logger.debug(f"Could not parse GitHub repository from URL: {origin_url}")
             return None
 
-    except InvalidGitRepositoryError:
-        logger.debug(f"No git repository found in {repo_path}")
-        return None
     except Exception as e:
         logger.debug(f"Error detecting repository: {e}")
         return None
@@ -158,15 +149,14 @@ def is_git_repository(path: Optional[str] = None) -> bool:
     Returns:
         True if it's a Git repository, False otherwise.
     """
-    if not GIT_AVAILABLE:
-        return False
-
     try:
         repo_path = path or os.getcwd()
-        Repo(repo_path, search_parent_directories=True)
-        return True
-    except InvalidGitRepositoryError:
-        return False
+        cmd = CommandExecutor()
+        # Check if we are inside a git work tree
+        result = cmd.run_command(
+            ["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_path, stream_output=False
+        )
+        return result.success and result.stdout.strip() == "true"
     except Exception:
         return False
 
