@@ -35,16 +35,6 @@ echo "Environment configuration:"
 echo "  CI environment: ${IS_CI}"
 echo "  Container: ${IN_CONTAINER}"
 echo ""
-# -----------------------------------------------------------------------------
-# Pytest verbosity flags
-# -----------------------------------------------------------------------------
-if [ "$IS_CI" -eq 1 ]; then
-    PYTEST_ALL_FLAGS="-vv"
-    PYTEST_SINGLE_FLAGS="-vv"
-else
-    PYTEST_ALL_FLAGS="-q"
-    PYTEST_SINGLE_FLAGS="-v"
-fi
 
 # -----------------------------------------------------------------------------
 # Dependency checking
@@ -165,11 +155,15 @@ if [ "$USE_UV" -eq 1 ] && [ "${GITHUB_ACTIONS:-}" != "true" ] && [ "${CI:-}" != 
 fi
 
 RUN=""
+PYTHON_RUNNER="python3"
 if [ "$USE_UV" -eq 1 ]; then
   RUN="uv run"
+  PYTHON_RUNNER="uv run python"
 else
-  printf "[WARN] uv is not installed. Falling back to system Python's pytest.\n"
-  printf "       Ensure Python 3.11 is active and dependencies are installed.\n" >&2
+  printf "[WARN] uv is not installed. Falling back to system Python's pytest.
+"
+  printf "       Ensure Python 3.11 is active and dependencies are installed.
+" >&2
 fi
 
 # -----------------------------------------------------------------------------
@@ -192,126 +186,40 @@ echo "Running code quality checks..."
 echo "[CHECK] Running black..."
 if [ "$IS_CI" -eq 0 ]; then
   echo "  [LOCAL] Running black in auto-fix mode..."
-  if [ "$USE_UV" -eq 1 ]; then
-    uv run black src/ tests/
-  else
-    black src/ tests/
-  fi
+  $RUN black src/ tests/
 else
   echo "  [CI] Running black in check mode..."
-  if [ "$USE_UV" -eq 1 ]; then
-    uv run black --check src/ tests/
-  else
-    black --check src/ tests/
-  fi
+  $RUN black --check src/ tests/
 fi
 
 # Run isort (auto-fix in local, check only in CI)
 echo "[CHECK] Running isort..."
 if [ "$IS_CI" -eq 0 ]; then
   echo "  [LOCAL] Running isort in auto-fix mode..."
-  if [ "$USE_UV" -eq 1 ]; then
-    uv run isort src/ tests/
-  else
-    isort src/ tests/
-  fi
+  $RUN isort src/ tests/
 else
   echo "  [CI] Running isort in check mode..."
-  if [ "$USE_UV" -eq 1 ]; then
-    uv run isort --check-only src/ tests/
-  else
-    isort --check-only src/ tests/
-  fi
+  $RUN isort --check-only src/ tests/
 fi
 
 # Run flake8
 echo "[CHECK] Running flake8..."
-if [ "$USE_UV" -eq 1 ]; then
-  uv run flake8 src/ tests/
-else
-  flake8 src/ tests/
-fi
+$RUN flake8 src/ tests/
 
 # Run mypy
 echo "[CHECK] Running mypy..."
-if [ "$USE_UV" -eq 1 ]; then
-  # Run mypy from root directory with proper module resolution
-  uv run mypy -c "import sys; sys.path.insert(0, 'src'); import auto_coder" || true
-else
-  # Run mypy from root directory with proper module resolution
-  mypy -c "import sys; sys.path.insert(0, 'src'); import auto_coder" || true
-fi
+# Run mypy from root directory with proper module resolution
+$RUN mypy -c "import sys; sys.path.insert(0, 'src'); import auto_coder" || true
 
 echo "[OK] All code quality checks passed!"
 echo ""
 
-
-# Check if a specific test file is provided as an argument
-if [ $# -ge 1 ]; then
-    SPECIFIC_TEST_FILE=$1
-    shift  # Remove first argument
-    if [ -f "$SPECIFIC_TEST_FILE" ]; then
-        echo "Running only the specified test file: $SPECIFIC_TEST_FILE"
-        # Don't generate HTML coverage report for single test files (faster)
-        $RUN pytest -n auto $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$SPECIFIC_TEST_FILE" "$@"
-        exit $?
-    else
-        echo "Specified test file does not exist: $SPECIFIC_TEST_FILE"
-        exit 1
-    fi
-fi
-
-# Run all tests first to see which ones fail
-echo "Running all tests..."
-TEST_OUTPUT_FILE=$(mktemp)
-
-# Don't exit on errors - we want to capture the exit code
-set +e
-
-$RUN pytest -n auto $PYTEST_ALL_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=html --cov-report=term-missing | tee "$TEST_OUTPUT_FILE"
-EXIT_CODE=${PIPESTATUS[0]}
-
-# Re-enable exit on errors
-set -e
+# -----------------------------------------------------------------------------
+# Test execution via log collector
+# -----------------------------------------------------------------------------
+echo "Running tests via local_test_log_collector.py..."
+$PYTHON_RUNNER src/auto_coder/local_test_log_collector.py "$@"
+EXIT_CODE=$?
 
 echo "Test run completed with exit code: $EXIT_CODE"
-
-if [ $EXIT_CODE -ne 0 ]; then
-    echo "Some tests failed. Analyzing failures..."
-
-    # Extract the first failed test file
-    # Pytest output format: FAILED path/to/test_file.py::test_name - error message
-    # Try multiple patterns to extract the test file path
-    FIRST_FAILED_TEST=$(grep "^FAILED" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/^FAILED\s+([^:]+)::.*/\1/')
-
-    # If we didn't find a FAILED line with the first pattern, try another
-    if [ -z "$FIRST_FAILED_TEST" ]; then
-        FIRST_FAILED_TEST=$(grep -E "::(test_|Test)" "$TEST_OUTPUT_FILE" | head -1 | sed -E 's/^.*\s+([^:]+)::.*/\1/')
-    fi
-
-    # If we still didn't find it, try to extract from any line containing /tests/ and .py
-    if [ -z "$FIRST_FAILED_TEST" ]; then
-        FIRST_FAILED_TEST=$(grep "/tests/" "$TEST_OUTPUT_FILE" | head -1 | grep -E "::(test_|Test)" | sed -E 's/^.*\s+([^:]+\.py)::.*/\1/')
-    fi
-
-    # If we found a failed test, run only that test
-    if [ ! -z "$FIRST_FAILED_TEST" ] && [ -f "$FIRST_FAILED_TEST" ]; then
-        echo "Running only the first failed test: $FIRST_FAILED_TEST"
-        $RUN pytest -n auto $PYTEST_SINGLE_FLAGS --tb=short --timeout=60 --cov=src/auto_coder --cov-report=term-missing "$FIRST_FAILED_TEST"
-        RESULT=$?
-        rm "$TEST_OUTPUT_FILE"
-        exit $RESULT
-    else
-        echo "Could not identify the first failed test file or file does not exist."
-        # Output the last 50 lines of the test output for debugging
-        echo ""
-        echo "Last 50 lines of test output:"
-        tail -50 "$TEST_OUTPUT_FILE"
-        rm "$TEST_OUTPUT_FILE"
-        exit $EXIT_CODE
-    fi
-else
-    echo "All tests passed!"
-    rm "$TEST_OUTPUT_FILE"
-    exit 0
-fi
+exit $EXIT_CODE
