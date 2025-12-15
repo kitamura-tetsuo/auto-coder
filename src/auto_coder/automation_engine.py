@@ -4,7 +4,7 @@ Main automation engine for Auto-Coder.
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
@@ -339,6 +339,25 @@ class AutomationEngine:
                 for issue in issues:
                     issue_data = self.github.get_issue_details(issue)
                     labels = issue_data.get("labels", []) or []
+
+                    # Filter out issues created within the last 10 minutes
+                    created_at_str = issue_data.get("created_at")
+                    if created_at_str:
+                        # Parse the timestamp string
+                        # Example: "2024-07-15T12:34:56Z"
+                        created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+
+                        # Ensure it's timezone-aware (UTC)
+                        if created_at.tzinfo is None:
+                            created_at = created_at.replace(tzinfo=timezone.utc)
+
+                        # Get current time in UTC
+                        now_utc = datetime.now(timezone.utc)
+
+                        # If created within the last 10 minutes, skip
+                        if now_utc - created_at < timedelta(minutes=10):
+                            logger.debug(f"Skipping issue #{issue_data.get('number')} - created less than 10 minutes ago")
+                            continue
 
                     # Skip if has sub-issues or linked PR
                     number = issue_data.get("number")
