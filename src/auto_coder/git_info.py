@@ -63,14 +63,10 @@ def get_current_repo_name(path: Optional[str] = None) -> Optional[str]:
 
         # Get remote origin URL
         # git remote get-url origin
-        result = cmd.run_command(
-            ["git", "remote", "get-url", "origin"], cwd=repo_path, stream_output=False
-        )
+        result = cmd.run_command(["git", "remote", "get-url", "origin"], cwd=repo_path, stream_output=False)
 
         if not result.success:
-            logger.debug(
-                f"No 'origin' remote found or not a git repository in {repo_path}: {result.stderr}"
-            )
+            logger.debug(f"No 'origin' remote found or not a git repository in {repo_path}: {result.stderr}")
             return None
 
         origin_url = result.stdout.strip()
@@ -153,9 +149,7 @@ def is_git_repository(path: Optional[str] = None) -> bool:
         repo_path = path or os.getcwd()
         cmd = CommandExecutor()
         # Check if we are inside a git work tree
-        result = cmd.run_command(
-            ["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_path, stream_output=False
-        )
+        result = cmd.run_command(["git", "rev-parse", "--is-inside-work-tree"], cwd=repo_path, stream_output=False)
         return result.success and result.stdout.strip() == "true"
     except Exception:
         return False
