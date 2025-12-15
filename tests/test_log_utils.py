@@ -48,6 +48,7 @@ class TestLogUtils(unittest.TestCase):
             stderr="",
             exit_code=0,
             success=True,
+            raw_log_files=[],
         )
         expected_dict = {
             "timestamp": 1620000000.0,
@@ -56,6 +57,7 @@ class TestLogUtils(unittest.TestCase):
             "stderr": "",
             "exit_code": 0,
             "success": True,
+            "raw_log_files": [],
         }
         self.assertEqual(log_entry.to_dict(), expected_dict)
 

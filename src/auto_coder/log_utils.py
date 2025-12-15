@@ -25,6 +25,22 @@ class LogEntry:
         return asdict(self)
 
 
+@dataclass
+class GitHubActionsLogEntry:
+    """Represents a single GitHub Actions log entry."""
+
+    timestamp: float
+    action_title: str
+    run_id: int
+    job_id: int
+    logs: str
+    success: bool
+
+    def to_dict(self) -> dict:
+        """Converts the GitHubActionsLogEntry to a dictionary."""
+        return asdict(self)
+
+
 def get_sanitized_repo_name() -> Optional[str]:
     """
     Get the sanitized repository name.
