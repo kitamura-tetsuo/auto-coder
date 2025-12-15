@@ -21,10 +21,8 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
-    @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_backend_switching_on_attempt_2(
         self,
-        mock_check_updates,
         mock_commit,
         mock_get_default_manager,
         mock_create_failed_manager,
@@ -87,10 +85,8 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
-    @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_no_backend_switching_on_attempt_1(
         self,
-        mock_check_updates,
         mock_commit,
         mock_get_default_manager,
         mock_create_failed_manager,
@@ -141,10 +137,8 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
-    @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_backend_switching_on_multiple_attempts(
         self,
-        mock_check_updates,
         mock_commit,
         mock_get_default_manager,
         mock_create_failed_manager,
@@ -207,10 +201,8 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
-    @patch("src.auto_coder.pr_processor.check_for_updates_and_restart")
     def test_backend_switching_with_finite_attempts_limit(
         self,
-        mock_check_updates,
         mock_commit,
         mock_get_default_manager,
         mock_create_failed_manager,
