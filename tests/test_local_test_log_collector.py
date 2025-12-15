@@ -17,9 +17,7 @@ from auto_coder.local_test_log_collector import (
 
 @pytest.fixture
 def mock_repo_name():
-    with patch(
-        "auto_coder.local_test_log_collector.get_sanitized_repo_name"
-    ) as mock:
+    with patch("auto_coder.local_test_log_collector.get_sanitized_repo_name") as mock:
         mock.return_value = "test_owner_test_repo"
         yield mock
 
@@ -32,17 +30,13 @@ def temp_log_dir(tmp_path):
 
 def test_get_log_dir_creates_directory(temp_log_dir, mock_repo_name):
     log_dir = get_log_dir()
-    expected_dir = (
-        temp_log_dir / ".auto-coder" / "test_owner_test_repo" / "test_log"
-    )
+    expected_dir = temp_log_dir / ".auto-coder" / "test_owner_test_repo" / "test_log"
     assert log_dir == expected_dir
 
 
 def test_get_raw_log_dir_creates_directory(temp_log_dir, mock_repo_name):
     raw_log_dir = get_raw_log_dir()
-    expected_dir = (
-        temp_log_dir / ".auto-coder" / "test_owner_test_repo" / "test_log" / "raw"
-    )
+    expected_dir = temp_log_dir / ".auto-coder" / "test_owner_test_repo" / "test_log" / "raw"
     assert raw_log_dir == expected_dir
     assert expected_dir.exists()
 
@@ -71,9 +65,7 @@ def test_collect_and_save_logs(mock_run_tests, temp_log_dir, mock_repo_name, mon
     log_file = json_files[0]
 
     # Verify naming convention
-    assert re.match(
-        r"\d{8}_\d{6}_local_tests_test_file\.py\.json", log_file.name
-    )
+    assert re.match(r"\d{8}_\d{6}_local_tests_test_file\.py\.json", log_file.name)
 
     with open(log_file, "r") as f:
         log_data = json.load(f)
@@ -92,9 +84,7 @@ def test_collect_and_save_logs(mock_run_tests, temp_log_dir, mock_repo_name, mon
 
 @patch("subprocess.run")
 def test_run_tests_command_construction(mock_subprocess_run):
-    mock_subprocess_run.return_value = MagicMock(
-        stdout="", stderr="", returncode=0
-    )
+    mock_subprocess_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
 
     # Test with a specific file in a non-CI environment
     with patch.dict(os.environ, {"CI": "false", "GITHUB_ACTIONS": "false"}):
@@ -117,7 +107,6 @@ def test_run_tests_command_construction(mock_subprocess_run):
             assert command[2:] == expected_command
         else:
             assert command == expected_command
-
 
     # Test with a specific file in a CI environment
     with patch.dict(os.environ, {"CI": "true"}):
