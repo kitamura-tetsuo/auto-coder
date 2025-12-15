@@ -28,6 +28,7 @@ from .gh_logger import get_gh_logger
 from .git_branch import branch_context, git_commit_with_retry
 from .git_commit import commit_and_push_changes, git_push, save_commit_failure_history
 from .git_info import get_commit_log
+from .github_actions_log_collector import collect_and_save_github_actions_logs
 from .label_manager import LabelManager, LabelOperationError
 from .logger_config import get_logger
 from .progress_decorators import progress_stage
@@ -777,6 +778,20 @@ def _handle_pr_merge(
         # Step 4: GitHub Actions failed - handle Jules PR feedback loop
         failed_checks = detailed_checks.failed_checks
         actions.append(f"GitHub Actions checks failed for PR #{pr_number}: {len(failed_checks)} failed")
+
+        # Collect and save logs for failed GitHub Actions runs
+        commit_sha = pr_data.get("head", {}).get("sha")
+        if commit_sha and failed_checks:
+            processed_run_ids = set()
+            for check in failed_checks:
+                if "run_id" in check and check["run_id"] not in processed_run_ids:
+                    run_id_to_log = check["run_id"]
+                    processed_run_ids.add(run_id_to_log)
+                    try:
+                        logger.info(f"Collecting logs for failed GitHub Actions run {run_id_to_log}")
+                        collect_and_save_github_actions_logs(run_id_to_log)
+                    except Exception as e:
+                        logger.error(f"Failed to collect GitHub Actions logs for run {run_id_to_log}: {e}")
 
         # Check if we are already on the PR branch before checkout.
         #

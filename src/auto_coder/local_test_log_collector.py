@@ -63,7 +63,8 @@ def save_log(log_entry: LogEntry):
     log_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file_name = f"{timestamp}_local_{log_entry.test_file or 'all'}.json"
+    test_file_sanitized = (log_entry.test_file or "all").replace("/", "_")
+    log_file_name = f"{timestamp}_local_{test_file_sanitized}.json"
     log_file_path = log_dir / log_file_name
 
     with open(log_file_path, "w") as f:
