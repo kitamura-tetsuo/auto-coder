@@ -1,11 +1,13 @@
 """
 Tests for the Dependabot timestamp manager.
 """
+
 import os
 from datetime import datetime, timezone
 from unittest.mock import patch
 
 from auto_coder.util.dependabot_timestamp import get_last_dependabot_run, set_last_dependabot_run, get_timestamp_path
+
 
 def test_dependabot_timestamp():
     """Tests the Dependabot timestamp manager."""
