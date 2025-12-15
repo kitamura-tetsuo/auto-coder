@@ -51,7 +51,7 @@ wheels = [
 
 [[package]]
 name = "auto-coder"
-version = "2025.12.15+g01d7bc1"
+version = "2025.12.15.1+g68c241f"
 source = { editable = "." }
 dependencies = [
     { name = "build" },
