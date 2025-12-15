@@ -72,14 +72,10 @@ class TestAutomationEngine:
     # Note: Dependabot filtering tests and PR processing tests moved to test_pr_processor.py
 
     @patch("auto_coder.automation_engine.get_current_branch")
-    def test_merge_pr_with_conflict_resolution_success(
-        self, mock_get_current_branch, mock_github_client, mock_gemini_client
-    ):
+    def test_merge_pr_with_conflict_resolution_success(self, mock_get_current_branch, mock_github_client, mock_gemini_client):
         """Test that the engine correctly handles PR processing."""
         # Setup
-        mock_get_current_branch.return_value = (
-            "main"  # Return main branch to avoid closed branch check
-        )
+        mock_get_current_branch.return_value = "main"  # Return main branch to avoid closed branch check
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
@@ -102,14 +98,10 @@ class TestAutomationEngine:
 
         # Mock successful processing - simulate that the PR was processed without errors
         with (
-            patch(
-                "auto_coder.util.github_action._check_github_actions_status"
-            ) as mock_check_actions,
+            patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
             patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
-            mock_check_actions.return_value = GitHubActionsStatusResult(
-                success=True, ids=[]
-            )
+            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
             mock_take_actions.return_value = ["Merged PR successfully", "Applied fixes"]
 
             # Execute
@@ -118,21 +110,15 @@ class TestAutomationEngine:
             # Assert
             assert result["repository"] == "test/repo"
             assert len(result["prs_processed"]) == 1
-            assert (
-                "Merged PR successfully" in result["prs_processed"][0]["actions_taken"]
-            )
+            assert "Merged PR successfully" in result["prs_processed"][0]["actions_taken"]
             assert len(result["errors"]) == 0
             mock_take_actions.assert_called_once()
 
     @patch("auto_coder.automation_engine.get_current_branch")
-    def test_merge_pr_with_conflict_resolution_failure(
-        self, mock_get_current_branch, mock_github_client, mock_gemini_client
-    ):
+    def test_merge_pr_with_conflict_resolution_failure(self, mock_get_current_branch, mock_github_client, mock_gemini_client):
         """Test that the engine correctly handles PR processing failure."""
         # Setup
-        mock_get_current_branch.return_value = (
-            "main"  # Return main branch to avoid closed branch check
-        )
+        mock_get_current_branch.return_value = "main"  # Return main branch to avoid closed branch check
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
@@ -155,14 +141,10 @@ class TestAutomationEngine:
 
         # Mock failed processing
         with (
-            patch(
-                "auto_coder.util.github_action._check_github_actions_status"
-            ) as mock_check_actions,
+            patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
             patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
-            mock_check_actions.return_value = GitHubActionsStatusResult(
-                success=True, ids=[]
-            )
+            mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
             mock_take_actions.side_effect = Exception("Processing failed")
 
             # Execute
@@ -176,14 +158,10 @@ class TestAutomationEngine:
             mock_take_actions.assert_called_once()
 
     @patch("auto_coder.automation_engine.get_current_branch")
-    def test_resolve_pr_merge_conflicts_git_cleanup(
-        self, mock_get_current_branch, mock_github_client, mock_gemini_client
-    ):
+    def test_resolve_pr_merge_conflicts_git_cleanup(self, mock_get_current_branch, mock_github_client, mock_gemini_client):
         """Test that PR processing handles conflicts correctly."""
         # Setup - this test verifies that process_single handles PR with conflicts
-        mock_get_current_branch.return_value = (
-            "main"  # Return main branch to avoid closed branch check
-        )
+        mock_get_current_branch.return_value = "main"  # Return main branch to avoid closed branch check
         config = AutomationConfig()
         engine = AutomationEngine(mock_github_client, config=config)
 
@@ -206,14 +184,10 @@ class TestAutomationEngine:
 
         # Mock that GitHub Actions are failing due to conflicts
         with (
-            patch(
-                "auto_coder.util.github_action._check_github_actions_status"
-            ) as mock_check_actions,
+            patch("auto_coder.util.github_action._check_github_actions_status") as mock_check_actions,
             patch("auto_coder.pr_processor._take_pr_actions") as mock_take_actions,
         ):
-            mock_check_actions.return_value = GitHubActionsStatusResult(
-                success=False, ids=[123]
-            )
+            mock_check_actions.return_value = GitHubActionsStatusResult(success=False, ids=[123])
             mock_take_actions.return_value = ["Resolved merge conflicts successfully"]
 
             # Execute
@@ -222,10 +196,7 @@ class TestAutomationEngine:
             # Assert
             assert result["repository"] == "test/repo"
             assert len(result["prs_processed"]) == 1
-            assert (
-                "Resolved merge conflicts successfully"
-                in result["prs_processed"][0]["actions_taken"]
-            )
+            assert "Resolved merge conflicts successfully" in result["prs_processed"][0]["actions_taken"]
             assert len(result["errors"]) == 0
             # Note: _check_github_actions_status may or may not be called depending on the code path
             mock_take_actions.assert_called_once()
@@ -245,9 +216,7 @@ class TestAutomationEngine:
         }
 
         # Mock the underlying function to return expected results
-        with patch(
-            "auto_coder.issue_processor._apply_issue_actions_directly"
-        ) as mock_apply:
+        with patch("auto_coder.issue_processor._apply_issue_actions_directly") as mock_apply:
             mock_apply.return_value = [
                 "Gemini CLI analyzed and took action on issue: Analyzed the issue and added implementation...",
                 "Added analysis comment to issue #123",
@@ -265,9 +234,7 @@ class TestAutomationEngine:
 
     # Note: test_take_pr_actions_success removed - _take_pr_actions is now in pr_processor.py
 
-    def test_resolve_pr_merge_conflicts_uses_base_branch(
-        self, mock_github_client, mock_gemini_client
-    ):
+    def test_resolve_pr_merge_conflicts_uses_base_branch(self, mock_github_client, mock_gemini_client):
         """When PR base branch is not 'main', conflict resolution should fetch/merge that base branch."""
         # Setup
         config = AutomationConfig()
@@ -313,9 +280,7 @@ class TestAutomationEngine:
         assert ["gh", "pr", "checkout", "456"] in subprocess_calls
 
     @patch("subprocess.run")
-    def test_update_with_base_branch_uses_provided_base_branch(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_update_with_base_branch_uses_provided_base_branch(self, mock_run, mock_github_client, mock_gemini_client):
         """_update_with_base_branch should use pr_data.base_branch when provided (even if not main)."""
         # Setup mocks for git operations: fetch, rev-list (2 commits behind), merge, push
         mock_run.side_effect = [
@@ -333,14 +298,10 @@ class TestAutomationEngine:
 
         # Assert
         assert any("2 commits behind develop" in a for a in result)
-        assert any(
-            "Successfully merged develop branch into PR #999" in a for a in result
-        )
+        assert any("Successfully merged develop branch into PR #999" in a for a in result)
         assert any("Pushed updated branch" in a for a in result)
 
-    def test_get_repository_context_success(
-        self, mock_github_client, mock_gemini_client
-    ):
+    def test_get_repository_context_success(self, mock_github_client, mock_gemini_client):
         """Test successful repository context retrieval."""
         # Setup
         mock_repo = Mock()
@@ -368,9 +329,7 @@ class TestAutomationEngine:
         assert result["stars"] == 100
         assert result["forks"] == 20
 
-    def test_format_feature_issue_body(
-        self, mock_github_client, mock_gemini_client, sample_feature_suggestion
-    ):
+    def test_format_feature_issue_body(self, mock_github_client, mock_gemini_client, sample_feature_suggestion):
         """Test feature issue body formatting."""
         # Setup
         engine = AutomationEngine(mock_github_client)
@@ -417,9 +376,7 @@ class TestAutomationEngine:
         # Assert
         mock_makedirs.assert_called_once_with("reports", exist_ok=True)
         mock_open.assert_called_once()
-        mock_json_dump.assert_called_once_with(
-            test_data, mock_file, indent=2, ensure_ascii=False
-        )
+        mock_json_dump.assert_called_once_with(test_data, mock_file, indent=2, ensure_ascii=False)
 
     @patch("builtins.open")
     @patch("json.dump")
@@ -450,21 +407,15 @@ class TestAutomationEngine:
         # Assert
         mock_makedirs.assert_called_once_with(expected_dir, exist_ok=True)
         mock_open.assert_called_once()
-        mock_json_dump.assert_called_once_with(
-            test_data, mock_file, indent=2, ensure_ascii=False
-        )
+        mock_json_dump.assert_called_once_with(test_data, mock_file, indent=2, ensure_ascii=False)
 
-    def test_should_auto_merge_pr_low_risk_bugfix(
-        self, mock_github_client, mock_gemini_client
-    ):
+    def test_should_auto_merge_pr_low_risk_bugfix(self, mock_github_client, mock_gemini_client):
         """Test PR should be auto-merged for low-risk bugfix."""
         # Setup
         analysis = {
             "risk_level": "low",
             "category": "bugfix",
-            "recommendations": [
-                {"action": "This PR looks good and can be merged safely"}
-            ],
+            "recommendations": [{"action": "This PR looks good and can be merged safely"}],
         }
         pr_data = {"mergeable": True, "draft": False}
 
@@ -476,9 +427,7 @@ class TestAutomationEngine:
         # Assert
         assert result is True
 
-    def test_should_auto_merge_pr_high_risk(
-        self, mock_github_client, mock_gemini_client
-    ):
+    def test_should_auto_merge_pr_high_risk(self, mock_github_client, mock_gemini_client):
         """Test PR should not be auto-merged for high-risk changes."""
         # Setup
         analysis = {
@@ -516,9 +465,7 @@ class TestAutomationEngine:
 
     @patch("subprocess.run")
     @patch("os.path.exists")
-    def test_run_pr_tests_success(
-        self, mock_exists, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_run_pr_tests_success(self, mock_exists, mock_run, mock_github_client, mock_gemini_client):
         """Test successful PR test execution."""
         # Setup
         mock_exists.return_value = True
@@ -543,15 +490,11 @@ class TestAutomationEngine:
 
     @patch("subprocess.run")
     @patch("os.path.exists")
-    def test_run_pr_tests_failure(
-        self, mock_exists, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_run_pr_tests_failure(self, mock_exists, mock_run, mock_github_client, mock_gemini_client):
         """Test PR test execution failure."""
         # Setup
         mock_exists.return_value = True
-        mock_run.return_value = Mock(
-            returncode=1, stdout="", stderr="Test failed: assertion error"
-        )
+        mock_run.return_value = Mock(returncode=1, stdout="", stderr="Test failed: assertion error")
 
         engine = AutomationEngine(mock_github_client)
         pr_data = {"number": 123}
@@ -569,9 +512,7 @@ class TestAutomationEngine:
         # Setup
         test_result = {
             "success": False,
-            "output": (
-                "Running tests...\nERROR: Test failed\nSome other output\nFAILED: assertion error\nMore output"
-            ),
+            "output": ("Running tests...\nERROR: Test failed\nSome other output\nFAILED: assertion error\nMore output"),
             "errors": "ImportError: module not found",
         }
 
@@ -587,9 +528,7 @@ class TestAutomationEngine:
 
     @pytest.mark.skip(reason="Mocking issues with conftest.py fixtures")
     @patch("auto_coder.gh_logger.subprocess.run")
-    def test_check_github_actions_status_all_passed(
-        self, mock_run_command, mock_github_client, mock_gemini_client
-    ):
+    def test_check_github_actions_status_all_passed(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when all checks pass."""
         from auto_coder.util.github_action import _check_github_actions_status
 
@@ -611,9 +550,7 @@ class TestAutomationEngine:
                 },
             ]
         }
-        mock_run_command.return_value = Mock(
-            returncode=0, stdout=json.dumps(api_response), stderr=""
-        )
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
         pr_data = {"number": 123, "head": {"sha": "abc123def456"}}
@@ -627,9 +564,7 @@ class TestAutomationEngine:
 
     @patch("auto_coder.util.github_action.get_github_cache")
     @patch("auto_coder.gh_logger.subprocess.run")
-    def test_check_github_actions_status_some_failed(
-        self, mock_run_command, mock_cache, mock_github_client, mock_gemini_client
-    ):
+    def test_check_github_actions_status_some_failed(self, mock_run_command, mock_cache, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check when some checks fail."""
         from auto_coder.util.github_action import _check_github_actions_status
 
@@ -663,9 +598,7 @@ class TestAutomationEngine:
                 },
             ]
         }
-        mock_run_command.return_value = Mock(
-            returncode=0, stdout=json.dumps(api_response), stderr=""
-        )
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
         pr_data = {"number": 123, "head": {"sha": "somefailed123"}}
@@ -680,9 +613,7 @@ class TestAutomationEngine:
 
     @patch("auto_coder.util.github_action.get_github_cache")
     @patch("auto_coder.gh_logger.subprocess.run")
-    def test_check_github_actions_status_tab_format_with_failures(
-        self, mock_run_command, mock_cache, mock_github_client, mock_gemini_client
-    ):
+    def test_check_github_actions_status_tab_format_with_failures(self, mock_run_command, mock_cache, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with JSON API response and failures."""
         from auto_coder.util.github_action import _check_github_actions_status
 
@@ -733,9 +664,7 @@ class TestAutomationEngine:
         assert 123 in result.ids  # Run ID should be extracted from the failed check
 
     @patch("auto_coder.gh_logger.subprocess.run")
-    def test_check_github_actions_status_tab_format_all_pass(
-        self, mock_run_command, mock_github_client, mock_gemini_client
-    ):
+    def test_check_github_actions_status_tab_format_all_pass(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Test GitHub Actions status check with JSON API response and all passing."""
         from auto_coder.util.github_action import _check_github_actions_status
 
@@ -775,23 +704,17 @@ class TestAutomationEngine:
         result = _check_github_actions_status("test/repo", pr_data, config)
 
         # Assert
-        assert (
-            result.success is True
-        )  # Should be True because all required checks passed
+        assert result.success is True  # Should be True because all required checks passed
         assert len(result.ids) == 0  # No failed checks, so no run IDs needed
 
     @patch("auto_coder.gh_logger.subprocess.run")
-    def test_check_github_actions_status_no_checks_reported(
-        self, mock_run_command, mock_github_client, mock_gemini_client
-    ):
+    def test_check_github_actions_status_no_checks_reported(self, mock_run_command, mock_github_client, mock_gemini_client):
         """Handle empty check runs - when no checks are reported, should return success=True (CI may not be configured)."""
         from auto_coder.util.github_action import _check_github_actions_status
 
         # Setup - return JSON for the gh api call with empty check runs
         api_response = {"check_runs": []}
-        mock_run_command.return_value = Mock(
-            returncode=0, stdout=json.dumps(api_response), stderr=""
-        )
+        mock_run_command.return_value = Mock(returncode=0, stdout=json.dumps(api_response), stderr="")
 
         config = AutomationConfig()
         pr_data = {"number": 123, "head": {"sha": "abc123def456", "ref": "test-branch"}}
@@ -804,23 +727,17 @@ class TestAutomationEngine:
         assert result.ids == []
 
     @patch("auto_coder.gh_logger.subprocess.run")
-    def test_checkout_pr_branch_success(
-        self, mock_gh_subprocess, mock_github_client, mock_gemini_client
-    ):
+    def test_checkout_pr_branch_success(self, mock_gh_subprocess, mock_github_client, mock_gemini_client):
         """Test successful PR branch checkout without force clean (default behavior)."""
         # Setup
-        mock_gh_subprocess.return_value = Mock(
-            success=True, stdout="Switched to branch", stderr="", returncode=0
-        )
+        mock_gh_subprocess.return_value = Mock(success=True, stdout="Switched to branch", stderr="", returncode=0)
 
         from auto_coder import pr_processor
 
         pr_data = {"number": 123}
 
         # Execute
-        result = pr_processor._checkout_pr_branch(
-            "test/repo", pr_data, AutomationConfig()
-        )
+        result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
 
         # Assert
         assert result is True
@@ -830,14 +747,10 @@ class TestAutomationEngine:
         calls = [call[0][0] for call in mock_gh_subprocess.call_args_list]
         assert calls[0] == ["gh", "pr", "checkout", "123"]
 
-    @pytest.mark.skip(
-        reason="Timeout in loguru writer thread - requires further investigation"
-    )
+    @pytest.mark.skip(reason="Timeout in loguru writer thread - requires further investigation")
     @patch.dict("os.environ", {"GH_LOGGING_DISABLED": "1"})
     @patch("auto_coder.pr_processor.subprocess.run")
-    def test_checkout_pr_branch_failure(
-        self, mock_subprocess_run, mock_github_client, mock_gemini_client
-    ):
+    def test_checkout_pr_branch_failure(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Test PR branch checkout failure."""
         # Setup
         from auto_coder import pr_processor
@@ -845,14 +758,10 @@ class TestAutomationEngine:
         pr_data = {"number": 123}
 
         # Mock gh pr checkout to fail
-        mock_subprocess_run.return_value = Mock(
-            success=False, stdout="", stderr="Branch not found", returncode=1
-        )
+        mock_subprocess_run.return_value = Mock(success=False, stdout="", stderr="Branch not found", returncode=1)
 
         # Execute
-        result = pr_processor._checkout_pr_branch(
-            "test/repo", pr_data, AutomationConfig()
-        )
+        result = pr_processor._checkout_pr_branch("test/repo", pr_data, AutomationConfig())
 
         # Assert
         assert result is False
@@ -871,9 +780,7 @@ class TestAutomationEngine:
             "title": "Fix GitHub Actions",
             "body": "This PR fixes the CI issues",
         }
-        github_logs = (
-            "Error: Test failed\nFailed to install dependencies\nBuild process failed"
-        )
+        github_logs = "Error: Test failed\nFailed to install dependencies\nBuild process failed"
         fix_actions = ["Fixed configuration", "Updated dependencies"]
 
         # Execute
@@ -887,9 +794,7 @@ class TestAutomationEngine:
         assert "Updated dependencies" in result
 
     @patch("subprocess.run")
-    def test_update_with_base_branch_up_to_date(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_update_with_base_branch_up_to_date(self, mock_run, mock_github_client, mock_gemini_client):
         """Test updating PR branch when already up to date."""
         # Setup
         mock_run.side_effect = [
@@ -908,9 +813,7 @@ class TestAutomationEngine:
         assert "up to date with main branch" in result[0]
 
     @patch("subprocess.run")
-    def test_update_with_base_branch_merge_success(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_update_with_base_branch_merge_success(self, mock_run, mock_github_client, mock_gemini_client):
         """Test successful base branch merge."""
         # Setup
         mock_run.side_effect = [
@@ -982,14 +885,10 @@ class TestAutomationEngineExtended:
 
     # Note: test_take_pr_actions_skips_analysis_when_flag_set removed - _take_pr_actions is now in pr_processor.py
 
-    @pytest.mark.skip(
-        reason="Timeout in loguru writer thread - requires further investigation"
-    )
+    @pytest.mark.skip(reason="Timeout in loguru writer thread - requires further investigation")
     @patch.dict("os.environ", {"GH_LOGGING_DISABLED": "1"})
     @patch("auto_coder.pr_processor.subprocess.run")
-    def test_fix_pr_issues_with_testing_success(
-        self, mock_subprocess_run, mock_github_client, mock_gemini_client
-    ):
+    def test_fix_pr_issues_with_testing_success(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with successful local tests."""
         # Setup
         config = AutomationConfig()
@@ -1004,9 +903,7 @@ class TestAutomationEngineExtended:
             patch.object(pr_processor, "_apply_github_actions_fix") as mock_github_fix,
             patch.object(pr_processor, "run_local_tests") as mock_test,
         ):
-            mock_subprocess_run.return_value = Mock(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_subprocess_run.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
             mock_github_fix.return_value = ["Applied GitHub Actions fix"]
             mock_test.return_value = {
                 "success": True,
@@ -1030,14 +927,10 @@ class TestAutomationEngineExtended:
             mock_github_fix.assert_called_once()
             mock_test.assert_called_once()
 
-    @pytest.mark.skip(
-        reason="Timeout in loguru writer thread - requires further investigation"
-    )
+    @pytest.mark.skip(reason="Timeout in loguru writer thread - requires further investigation")
     @patch.dict("os.environ", {"GH_LOGGING_DISABLED": "1"})
     @patch("auto_coder.pr_processor.subprocess.run")
-    def test_fix_pr_issues_with_testing_retry(
-        self, mock_subprocess_run, mock_github_client, mock_gemini_client
-    ):
+    def test_fix_pr_issues_with_testing_retry(self, mock_subprocess_run, mock_github_client, mock_gemini_client):
         """Test integrated PR issue fixing with retry logic."""
         # Setup
         config = AutomationConfig()
@@ -1053,9 +946,7 @@ class TestAutomationEngineExtended:
             patch.object(pr_processor, "run_local_tests") as mock_test,
             patch.object(pr_processor, "_apply_local_test_fix") as mock_local_fix,
         ):
-            mock_subprocess_run.return_value = Mock(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_subprocess_run.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
             mock_github_fix.return_value = ["Applied GitHub Actions fix"]
             # First test fails, second test passes
             mock_test.side_effect = [
@@ -1084,9 +975,7 @@ class TestAutomationEngineExtended:
             assert mock_test.call_count == 2
             mock_local_fix.assert_called_once()
 
-    def test_checkout_pr_branch_force_cleanup(
-        self, mock_github_client, mock_gemini_client
-    ):
+    def test_checkout_pr_branch_force_cleanup(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout with force cleanup enabled."""
         # Setup
         from auto_coder import pr_processor
@@ -1105,18 +994,14 @@ class TestAutomationEngineExtended:
             # Mock cmd.run_command for git reset and clean
             # It returns a CommandResult with success attribute
             git_results = [
-                Mock(
-                    success=True, stdout="", stderr="", returncode=0
-                ),  # git reset --hard HEAD
+                Mock(success=True, stdout="", stderr="", returncode=0),  # git reset --hard HEAD
                 Mock(success=True, stdout="", stderr="", returncode=0),  # git clean -fd
             ]
             mock_run_command.side_effect = git_results
 
             # Mock gh_logger for gh pr checkout
             # It returns a result with success attribute
-            mock_gh_subprocess.return_value = Mock(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_gh_subprocess.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
             # Execute
             result = pr_processor._checkout_pr_branch("test/repo", pr_data, config)
@@ -1133,9 +1018,7 @@ class TestAutomationEngineExtended:
             gh_calls = [call[0][0] for call in mock_gh_subprocess.call_args_list]
             assert ["gh", "pr", "checkout", "123"] in gh_calls
 
-    def test_checkout_pr_branch_without_force_clean(
-        self, mock_github_client, mock_gemini_client
-    ):
+    def test_checkout_pr_branch_without_force_clean(self, mock_github_client, mock_gemini_client):
         """Test PR branch checkout without force clean (default behavior)."""
         # Setup
         from auto_coder import pr_processor
@@ -1147,9 +1030,7 @@ class TestAutomationEngineExtended:
 
         # Mock gh pr checkout to succeed (no git reset/clean calls)
         with patch("auto_coder.gh_logger.subprocess.run") as mock_gh_subprocess:
-            mock_gh_subprocess.return_value = Mock(
-                success=True, stdout="", stderr="", returncode=0
-            )
+            mock_gh_subprocess.return_value = Mock(success=True, stdout="", stderr="", returncode=0)
 
             # Execute
             result = pr_processor._checkout_pr_branch("test/repo", pr_data, config)
@@ -1162,9 +1043,7 @@ class TestAutomationEngineExtended:
             assert ["gh", "pr", "checkout", "123"] in calls
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_with_successful_runs(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_with_successful_runs(self, mock_run, mock_github_client, mock_gemini_client):
         """Test parsing commit history with commits that have successful GitHub Actions runs."""
         # Setup
         # First call: git log --oneline
@@ -1211,9 +1090,7 @@ class TestAutomationEngineExtended:
         assert result[2]["actions_url"] == "https://github.com/test/repo/actions/runs/3"
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_with_failed_runs(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_with_failed_runs(self, mock_run, mock_github_client, mock_gemini_client):
         """Test parsing commit history with commits that have failed GitHub Actions runs."""
         # Setup
         git_log_output = "def5678 Fix test failure\nghi9012 Refactor code"
@@ -1241,21 +1118,15 @@ class TestAutomationEngineExtended:
         assert result[0]["commit_hash"] == "def5678"
         assert result[0]["message"] == "Fix test failure"
         assert result[0]["actions_status"] == "failure"
-        assert (
-            result[0]["actions_url"] == "https://github.com/test/repo/actions/runs/10"
-        )
+        assert result[0]["actions_url"] == "https://github.com/test/repo/actions/runs/10"
 
         assert result[1]["commit_hash"] == "ghi9012"
         assert result[1]["message"] == "Refactor code"
         assert result[1]["actions_status"] == "failed"
-        assert (
-            result[1]["actions_url"] == "https://github.com/test/repo/actions/runs/11"
-        )
+        assert result[1]["actions_url"] == "https://github.com/test/repo/actions/runs/11"
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_skips_no_runs(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_skips_no_runs(self, mock_run, mock_github_client, mock_gemini_client):
         """Test that commits without GitHub Actions runs are skipped."""
         # Setup
         git_log_output = "jkl3456 Update README\nmno7890 Fix typo"
@@ -1274,17 +1145,13 @@ class TestAutomationEngineExtended:
         assert len(result) == 0  # No commits should be returned
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_skips_in_progress(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_skips_in_progress(self, mock_run, mock_github_client, mock_gemini_client):
         """Test that commits with queued/in-progress Actions runs are skipped."""
         # Setup
         git_log_output = "pqr1234 Initial commit"
         mock_run.side_effect = [
             Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
-            Mock(
-                returncode=0, stdout="test\tin_progress\t1m\t", stderr=""
-            ),  # commit 1 - in progress
+            Mock(returncode=0, stdout="test\tin_progress\t1m\t", stderr=""),  # commit 1 - in progress
         ]
 
         engine = AutomationEngine(mock_github_client)
@@ -1296,9 +1163,7 @@ class TestAutomationEngineExtended:
         assert len(result) == 0  # Should skip in-progress runs
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_custom_depth(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_custom_depth(self, mock_run, mock_github_client, mock_gemini_client):
         """Test parsing commit history with custom search depth."""
         # Setup
         git_log_output = "stu1234 Commit 1\nvwx5678 Commit 2\nyza9012 Commit 3"
@@ -1337,14 +1202,10 @@ class TestAutomationEngineExtended:
         )
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_mixed_results(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_mixed_results(self, mock_run, mock_github_client, mock_gemini_client):
         """Test parsing commit history with a mix of commits: some with runs, some without."""
         # Setup
-        git_log_output = (
-            "bcd1234 Fix critical bug\n efg5678 Update CHANGELOG\n hij9012 Add feature"
-        )
+        git_log_output = "bcd1234 Fix critical bug\n efg5678 Update CHANGELOG\n hij9012 Add feature"
         mock_run.side_effect = [
             Mock(returncode=0, stdout=git_log_output, stderr=""),  # git log
             Mock(
@@ -1373,9 +1234,7 @@ class TestAutomationEngineExtended:
         assert result[1]["actions_status"] == "success"
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_empty_log(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_empty_log(self, mock_run, mock_github_client, mock_gemini_client):
         """Test parsing commit history when git log returns empty."""
         # Setup
         mock_run.side_effect = [
@@ -1391,15 +1250,11 @@ class TestAutomationEngineExtended:
         assert len(result) == 0
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_git_error(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_git_error(self, mock_run, mock_github_client, mock_gemini_client):
         """Test handling git log errors."""
         # Setup
         mock_run.side_effect = [
-            Mock(
-                returncode=1, stdout="", stderr="fatal: not a git repository"
-            ),  # git log fails
+            Mock(returncode=1, stdout="", stderr="fatal: not a git repository"),  # git log fails
         ]
 
         engine = AutomationEngine(mock_github_client)
@@ -1411,16 +1266,12 @@ class TestAutomationEngineExtended:
         assert len(result) == 0  # Should return empty list on error
 
     @patch("subprocess.run")
-    def test_parse_commit_history_with_actions_timeout(
-        self, mock_run, mock_github_client, mock_gemini_client
-    ):
+    def test_parse_commit_history_with_actions_timeout(self, mock_run, mock_github_client, mock_gemini_client):
         """Test handling timeout during commit history parsing."""
         # Setup
         import subprocess
 
-        mock_run.side_effect = subprocess.TimeoutExpired(
-            ["git", "log", "--oneline", "-10"], 30
-        )
+        mock_run.side_effect = subprocess.TimeoutExpired(["git", "log", "--oneline", "-10"], 30)
 
         engine = AutomationEngine(mock_github_client)
 
@@ -1452,9 +1303,7 @@ class TestGetCandidates:
         mock_github_client.get_open_pull_requests.return_value = []
         mock_github_client.get_open_issues.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
-            Mock(
-                number=2, created_at="2024-01-02T00:00:00Z"
-            ),  # Urgent issue - should be first
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Urgent issue - should be first
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),
         ]
 
@@ -1525,24 +1374,14 @@ class TestGetCandidates:
 
         # Mock GitHub client to return various PRs and issues
         mock_github_client.get_open_pull_requests.return_value = [
-            Mock(
-                number=1, created_at="2024-01-01T00:00:00Z"
-            ),  # PR needs fix (priority 1)
-            Mock(
-                number=2, created_at="2024-01-02T00:00:00Z"
-            ),  # PR ready for merge (priority 2)
-            Mock(
-                number=3, created_at="2024-01-03T00:00:00Z"
-            ),  # Urgent unmergeable PR (priority 4)
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),  # PR needs fix (priority 1)
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # PR ready for merge (priority 2)
+            Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Urgent unmergeable PR (priority 4)
         ]
 
         mock_github_client.get_open_issues.return_value = [
-            Mock(
-                number=10, created_at="2024-01-05T00:00:00Z"
-            ),  # Regular issue (priority 0)
-            Mock(
-                number=11, created_at="2024-01-06T00:00:00Z"
-            ),  # Urgent issue (priority 3)
+            Mock(number=10, created_at="2024-01-05T00:00:00Z"),  # Regular issue (priority 0)
+            Mock(number=11, created_at="2024-01-06T00:00:00Z"),  # Urgent issue (priority 3)
         ]
 
         # Mock PR details
@@ -1628,9 +1467,7 @@ class TestGetCandidates:
         assert candidates[2].data["number"] == 2  # PR ready for merge
 
         assert candidates[3].priority == 1
-        assert (
-            candidates[3].data["number"] == 1
-        )  # PR needing fix (failing checks but mergeable)
+        assert candidates[3].data["number"] == 1  # PR needing fix (failing checks but mergeable)
 
         assert candidates[4].priority == 0
         assert candidates[4].data["number"] == 10  # Regular issue
@@ -1652,9 +1489,7 @@ class TestGetCandidates:
         # Mock GitHub client to return PRs with different mergeability and check states
         mock_github_client.get_open_pull_requests.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),  # Older unmergeable PR
-            Mock(
-                number=2, created_at="2024-01-02T00:00:00Z"
-            ),  # Failing checks but mergeable PR
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Failing checks but mergeable PR
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Younger unmergeable PR
         ]
 
@@ -1743,9 +1578,7 @@ class TestGetCandidates:
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),  # Urgent unmergeable PR
             Mock(number=2, created_at="2024-01-02T00:00:00Z"),  # Urgent mergeable PR
             Mock(number=3, created_at="2024-01-03T00:00:00Z"),  # Regular unmergeable PR
-            Mock(
-                number=4, created_at="2024-01-04T00:00:00Z"
-            ),  # Regular mergeable PR with passing checks
+            Mock(number=4, created_at="2024-01-04T00:00:00Z"),  # Regular mergeable PR with passing checks
         ]
 
         mock_github_client.get_open_issues.return_value = []
@@ -1825,9 +1658,7 @@ class TestGetCandidates:
         assert candidates[2].data["number"] == 3  # Regular unmergeable PR
 
         assert candidates[3].priority == 2
-        assert (
-            candidates[3].data["number"] == 4
-        )  # Regular mergeable PR with passing checks
+        assert candidates[3].data["number"] == 4  # Regular mergeable PR with passing checks
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -1881,13 +1712,9 @@ class TestGetCandidates:
 
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(
-                    success=True, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(
-                    success=False, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
             return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
         mock_check_actions.side_effect = check_actions_side_effect
@@ -1956,13 +1783,9 @@ class TestGetCandidates:
 
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(
-                    success=True, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(
-                    success=False, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
             return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
         mock_check_actions.side_effect = check_actions_side_effect
@@ -2036,13 +1859,9 @@ class TestGetCandidates:
 
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(
-                    success=True, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(
-                    success=False, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
             return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
         mock_check_actions.side_effect = check_actions_side_effect
@@ -2244,9 +2063,7 @@ class TestGetCandidates:
         """When IGNORE_DEPENDABOT_PRS is True, all Dependabot PRs are skipped (including ready ones)."""
         config = AutomationConfig()
         config.IGNORE_DEPENDABOT_PRS = True
-        config.AUTO_MERGE_DEPENDABOT_PRS = (
-            True  # This should be ignored when IGNORE_DEPENDABOT_PRS is True
-        )
+        config.AUTO_MERGE_DEPENDABOT_PRS = True  # This should be ignored when IGNORE_DEPENDABOT_PRS is True
         engine = AutomationEngine(mock_github_client, config=config)
 
         # Three dependency-bot PRs: one green/mergeable, one failing, one unmergeable
@@ -2297,17 +2114,11 @@ class TestGetCandidates:
 
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             if pr_details["number"] == 1:
-                return GitHubActionsStatusResult(
-                    success=True, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
             if pr_details["number"] == 2:
-                return GitHubActionsStatusResult(
-                    success=False, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
             if pr_details["number"] == 3:
-                return GitHubActionsStatusResult(
-                    success=True, ids=[], in_progress=False
-                )
+                return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
             return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
         mock_check_actions.side_effect = check_actions_side_effect
@@ -2367,9 +2178,7 @@ class TestGetCandidates:
             }
 
         mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_check_actions.return_value = GitHubActionsStatusResult(
-            success=True, ids=[]
-        )
+        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
         mock_extract_issues.return_value = []
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
@@ -2377,9 +2186,7 @@ class TestGetCandidates:
         # Mock label check via LabelManager: skip PR #1 and Issue #11 as already labeled
         with patch("auto_coder.automation_engine.LabelManager") as mock_label_mgr:
             # LabelManager returns True if should process, False if should skip
-            mock_label_mgr.return_value.__enter__.side_effect = lambda: (
-                False if mock_label_mgr.call_args[0][2] in (1, 11) else True
-            )
+            mock_label_mgr.return_value.__enter__.side_effect = lambda: (False if mock_label_mgr.call_args[0][2] in (1, 11) else True)
 
             # Execute
             candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2425,12 +2232,8 @@ class TestGetCandidates:
             }
 
         mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
-        mock_github_client.get_open_sub_issues.side_effect = lambda repo, num: (
-            [1] if num == 11 else []
-        )
-        mock_github_client.has_linked_pr.side_effect = lambda repo, num: (
-            True if num == 12 else False
-        )
+        mock_github_client.get_open_sub_issues.side_effect = lambda repo, num: ([1] if num == 11 else [])
+        mock_github_client.has_linked_pr.side_effect = lambda repo, num: (True if num == 12 else False)
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2470,9 +2273,7 @@ class TestGetCandidates:
             "created_at": "2024-01-01T00:00:00Z",
         }
 
-        mock_check_actions.return_value = GitHubActionsStatusResult(
-            success=True, ids=[]
-        )
+        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
         mock_extract_issues.return_value = [10, 20]  # Extracted from PR body
         mock_github_client.get_open_sub_issues.return_value = []
         mock_github_client.has_linked_pr.return_value = False
@@ -2505,18 +2306,10 @@ class TestGetCandidates:
 
         mock_github_client.get_open_pull_requests.return_value = []
         mock_github_client.get_open_issues.return_value = [
-            Mock(
-                number=10, created_at="2024-01-01T00:00:00Z"
-            ),  # Eldest sibling - should be included
-            Mock(
-                number=11, created_at="2024-01-02T00:00:00Z"
-            ),  # Has elder sibling (10) - should be skipped
-            Mock(
-                number=12, created_at="2024-01-03T00:00:00Z"
-            ),  # Has elder siblings (10, 11) - should be skipped
-            Mock(
-                number=13, created_at="2024-01-04T00:00:00Z"
-            ),  # No parent - should be included
+            Mock(number=10, created_at="2024-01-01T00:00:00Z"),  # Eldest sibling - should be included
+            Mock(number=11, created_at="2024-01-02T00:00:00Z"),  # Has elder sibling (10) - should be skipped
+            Mock(number=12, created_at="2024-01-03T00:00:00Z"),  # Has elder siblings (10, 11) - should be skipped
+            Mock(number=13, created_at="2024-01-04T00:00:00Z"),  # No parent - should be included
         ]
 
         def get_issue_details_side_effect(issue):
@@ -2550,9 +2343,7 @@ class TestGetCandidates:
                 return [10, 11, 12]  # All three are open
             return []
 
-        mock_github_client.get_open_sub_issues.side_effect = (
-            get_open_sub_issues_side_effect
-        )
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2563,9 +2354,7 @@ class TestGetCandidates:
         assert 10 in candidate_numbers  # Eldest sibling - should be included
         assert 13 in candidate_numbers  # No parent - should be included
         assert 11 not in candidate_numbers  # Has elder sibling #10 - should be skipped
-        assert (
-            12 not in candidate_numbers
-        )  # Has elder siblings #10, #11 - should be skipped
+        assert 12 not in candidate_numbers  # Has elder siblings #10, #11 - should be skipped
 
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
@@ -2605,9 +2394,7 @@ class TestGetCandidates:
 
         # Mock get_open_sub_issues to return only open sub-issues
         # For this test, only #11 and #12 are open (elder sibling #10 is closed)
-        mock_github_client.get_open_sub_issues.side_effect = lambda repo, parent_num: (
-            [11, 12] if parent_num == 100 else []
-        )
+        mock_github_client.get_open_sub_issues.side_effect = lambda repo, parent_num: ([11, 12] if parent_num == 100 else [])
 
         # Execute
         candidates = engine._get_candidates(test_repo_name, max_items=10)
@@ -2703,9 +2490,7 @@ class TestElderSiblingDependencyLogic:
                 return [20]  # Parent has sub-issue 20
             return []
 
-        mock_github_client.get_open_sub_issues.side_effect = (
-            get_open_sub_issues_side_effect
-        )
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_parent_issue.return_value = 1  # Has parent
 
@@ -2756,9 +2541,7 @@ class TestElderSiblingDependencyLogic:
                 return [30]  # Parent has only sub-issue 30
             return []
 
-        mock_github_client.get_open_sub_issues.side_effect = (
-            get_open_sub_issues_side_effect
-        )
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
         mock_github_client.has_linked_pr.return_value = False
         mock_github_client.get_parent_issue.return_value = 2  # Has parent
 
@@ -2785,9 +2568,7 @@ class TestElderSiblingDependencyLogic:
 
         mock_github_client.get_open_pull_requests.return_value = []
         mock_github_client.get_open_issues.return_value = [
-            Mock(
-                number=25, created_at="2024-01-01T00:00:00Z"
-            ),  # This has elder sibling
+            Mock(number=25, created_at="2024-01-01T00:00:00Z"),  # This has elder sibling
             Mock(number=10, created_at="2024-01-02T00:00:00Z"),  # Elder sibling
         ]
 
@@ -2812,9 +2593,7 @@ class TestElderSiblingDependencyLogic:
                 return [10, 25]
             return []
 
-        mock_github_client.get_open_sub_issues.side_effect = (
-            get_open_sub_issues_side_effect
-        )
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
         mock_github_client.has_linked_pr.return_value = False
 
         def get_parent_issue_side_effect(repo, issue_num):
@@ -2896,9 +2675,7 @@ class TestElderSiblingDependencyLogic:
                 return [10]
             return []
 
-        mock_github_client.get_open_sub_issues.side_effect = (
-            get_open_sub_issues_side_effect
-        )
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
         mock_github_client.has_linked_pr.return_value = False
 
         # Execute
@@ -2969,9 +2746,7 @@ class TestElderSiblingDependencyLogic:
                 return [10, 15, 20]
             return []
 
-        mock_github_client.get_open_sub_issues.side_effect = (
-            get_open_sub_issues_side_effect
-        )
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
         mock_github_client.has_linked_pr.return_value = False
 
         # Execute
@@ -3038,18 +2813,10 @@ class TestElderSiblingDependencyLogic:
 
         mock_github_client.get_open_pull_requests.return_value = []
         mock_github_client.get_open_issues.return_value = [
-            Mock(
-                number=50, created_at="2024-01-01T00:00:00Z"
-            ),  # No parent, should be included
-            Mock(
-                number=101, created_at="2024-01-02T00:00:00Z"
-            ),  # Has parent #1, elder sibling #100 open, should be excluded
-            Mock(
-                number=102, created_at="2024-01-03T00:00:00Z"
-            ),  # Has parent #1, elder sibling #100 open, should be excluded
-            Mock(
-                number=200, created_at="2024-01-04T00:00:00Z"
-            ),  # No parent, should be included
+            Mock(number=50, created_at="2024-01-01T00:00:00Z"),  # No parent, should be included
+            Mock(number=101, created_at="2024-01-02T00:00:00Z"),  # Has parent #1, elder sibling #100 open, should be excluded
+            Mock(number=102, created_at="2024-01-03T00:00:00Z"),  # Has parent #1, elder sibling #100 open, should be excluded
+            Mock(number=200, created_at="2024-01-04T00:00:00Z"),  # No parent, should be included
         ]
 
         def get_issue_details_side_effect(issue):
@@ -3084,9 +2851,7 @@ class TestElderSiblingDependencyLogic:
                 ]  # Sub-issues 100, 101, 102 (100 is elder sibling)
             return []
 
-        mock_github_client.get_open_sub_issues.side_effect = (
-            get_open_sub_issues_side_effect
-        )
+        mock_github_client.get_open_sub_issues.side_effect = get_open_sub_issues_side_effect
         mock_github_client.has_linked_pr.return_value = False
 
         # Execute
@@ -3156,9 +2921,7 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].type == "issue"
         assert candidates[0].data["number"] == 1
 
-    def test_get_candidates_filters_by_creation_time(
-        self, mock_github_client, test_repo_name
-    ):
+    def test_get_candidates_filters_by_creation_time(self, mock_github_client, test_repo_name):
         """Test that _get_candidates filters issues based on creation time."""
         # Setup
         engine = AutomationEngine(mock_github_client)
@@ -3218,9 +2981,7 @@ class TestUrgentLabelPropagation:
 
     @patch("auto_coder.gh_logger.subprocess.run")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_propagates_urgent_label(
-        self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client
-    ):
+    def test_create_pr_for_issue_propagates_urgent_label(self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that urgent label is propagated from issue to PR."""
         # Setup
         from auto_coder.issue_processor import _create_pr_for_issue
@@ -3287,15 +3048,11 @@ class TestUrgentLabelPropagation:
         assert str(456) in add_label_call  # PR number
 
         # Verify GitHub client was called to add labels
-        mock_github_client.add_labels.assert_called_once_with(
-            "test/repo", 456, ["urgent"], item_type="pr"
-        )
+        mock_github_client.add_labels.assert_called_once_with("test/repo", 456, ["urgent"], item_type="pr")
 
     @patch("auto_coder.gh_logger.subprocess.run")
     @patch("auto_coder.git_info.get_current_branch")
-    def test_create_pr_for_issue_without_urgent_label(
-        self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client
-    ):
+    def test_create_pr_for_issue_without_urgent_label(self, mock_get_current_branch, mock_cmd, mock_github_client, mock_gemini_client):
         """Test that no urgent label is propagated when issue doesn't have it."""
         # Setup
         from auto_coder.issue_processor import _create_pr_for_issue
@@ -3380,9 +3137,7 @@ class TestCheckAndHandleClosedBranch:
         mock_github_client.get_issue_details.return_value = {"state": "closed"}
 
         # Mock check_and_handle_closed_state to return True (indicating should exit)
-        with patch(
-            "auto_coder.automation_engine.check_and_handle_closed_state"
-        ) as mock_check_closed:
+        with patch("auto_coder.automation_engine.check_and_handle_closed_state") as mock_check_closed:
             mock_check_closed.return_value = True
 
             # Mock branch_context to prevent actual git operations
@@ -3428,9 +3183,7 @@ class TestCheckAndHandleClosedBranch:
         mock_github_client.get_pr_details.return_value = {"state": "closed"}
 
         # Mock check_and_handle_closed_state to return True (indicating should exit)
-        with patch(
-            "auto_coder.automation_engine.check_and_handle_closed_state"
-        ) as mock_check_closed:
+        with patch("auto_coder.automation_engine.check_and_handle_closed_state") as mock_check_closed:
             mock_check_closed.return_value = True
 
             # Mock branch_context to prevent actual git operations
