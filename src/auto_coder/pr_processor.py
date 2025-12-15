@@ -35,7 +35,6 @@ from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
 from .test_log_utils import extract_first_failed_test
 from .test_result import TestResult
-from .update_manager import check_for_updates_and_restart
 from .utils import CommandExecutor, CommandResult, log_action
 
 logger = get_logger(__name__)
@@ -65,8 +64,6 @@ def process_pull_request(
                 logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
                 processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
                 return processed_pr
-
-        check_for_updates_and_restart()
 
         # Check if we should skip this PR because it's waiting for Jules
         if _should_skip_waiting_for_jules(github_client, repo_name, pr_data):
@@ -2007,12 +2004,6 @@ def _fix_pr_issues_with_testing(
         attempt = 0
         while True:
             with ProgressStage(f"attempt: {attempt}"):
-                try:
-                    check_for_updates_and_restart()
-                except SystemExit:
-                    raise
-                except Exception:
-                    logger.warning("Auto-update check failed during PR fix loop", exc_info=True)
                 attempt += 1
 
                 # Backend switching logic: switch to fallback after 2 attempts
