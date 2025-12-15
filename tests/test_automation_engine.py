@@ -2843,6 +2843,56 @@ class TestElderSiblingDependencyLogic:
         assert candidates[0].type == "issue"
         assert candidates[0].data["number"] == 1
 
+    def test_get_candidates_filters_by_creation_time(self, mock_github_client, test_repo_name):
+        """Test that _get_candidates filters issues based on creation time."""
+        # Setup
+        engine = AutomationEngine(mock_github_client)
+        now = datetime.now(timezone.utc)
+        recent_time_str = (now - timedelta(minutes=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        old_time_str = (now - timedelta(minutes=15)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        # Mock issues
+        mock_issues = [
+            Mock(
+                number=1,
+                created_at=recent_time_str,
+                **{"as_dict.return_value": {
+                    "number": 1,
+                    "title": "Recent Issue",
+                    "created_at": recent_time_str,
+                    "labels": []
+                }}
+            ),
+            Mock(
+                number=2,
+                created_at=old_time_str,
+                **{"as_dict.return_value": {
+                    "number": 2,
+                    "title": "Older Issue",
+                    "created_at": old_time_str,
+                    "labels": []
+                }}
+            ),
+        ]
+        mock_github_client.get_open_issues.return_value = mock_issues
+
+        # Mock the get_issue_details to return the dictionary directly
+        def get_issue_details_side_effect(issue):
+            return issue.as_dict()
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        mock_github_client.get_open_sub_issues.return_value = []
+
+        # Execute
+        candidates = engine._get_candidates(repo_name=test_repo_name)
+
+        # Assert
+        assert len(candidates) == 1
+        assert candidates[0].data["number"] == 2
+        assert candidates[0].data["title"] == "Older Issue"
+
 
 class TestUrgentLabelPropagation:
     """Test cases for urgent label propagation in PR creation."""
