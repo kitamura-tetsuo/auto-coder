@@ -1147,18 +1147,17 @@ def test_process_issue_jules_mode_passes_all_arguments_to_render_prompt():
     github_client.get_parent_issue_body.return_value = "Parent Issue Body Content"
 
     # Mock other necessary calls
-    with patch("src.auto_coder.issue_processor.JulesClient"), patch(
-        "src.auto_coder.issue_processor.CloudManager"
-    ), patch(
-        "src.auto_coder.issue_processor.get_commit_log",
-        return_value="commit log message",
-    ), patch(
-        "src.auto_coder.issue_processor.render_prompt"
-    ) as mock_render_prompt, patch(
-        "src.auto_coder.issue_processor.ensure_parent_issue_open", return_value=True
-    ), patch(
-        "src.auto_coder.issue_processor.cmd"
-    ) as mock_cmd:
+    with (
+        patch("src.auto_coder.issue_processor.JulesClient"),
+        patch("src.auto_coder.issue_processor.CloudManager"),
+        patch(
+            "src.auto_coder.issue_processor.get_commit_log",
+            return_value="commit log message",
+        ),
+        patch("src.auto_coder.issue_processor.render_prompt") as mock_render_prompt,
+        patch("src.auto_coder.issue_processor.ensure_parent_issue_open", return_value=True),
+        patch("src.auto_coder.issue_processor.cmd") as mock_cmd,
+    ):
         mock_cmd.run_command.return_value = _cmd_result(success=True)  # for branch checks
 
         _process_issue_jules_mode(repo_name, issue_data, config, github_client)
