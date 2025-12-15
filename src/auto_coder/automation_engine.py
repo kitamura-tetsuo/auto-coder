@@ -4,7 +4,7 @@ Main automation engine for Auto-Coder.
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union, cast
 
 from . import fix_to_pass_tests_runner as fix_to_pass_tests_runner_module
@@ -26,6 +26,7 @@ from .pr_processor import _should_skip_waiting_for_jules, process_pull_request
 from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
+from .util.dependabot_timestamp import get_last_dependabot_run, set_last_dependabot_run
 from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
@@ -147,7 +148,13 @@ class AutomationEngine:
         candidates: List[Candidate] = []
         candidates_count = 0
 
+        last_run = get_last_dependabot_run()
+        is_in_cooldown = last_run and (datetime.now(timezone.utc) - last_run) < timedelta(minutes=5)
+        if is_in_cooldown:
+            logger.info("Dependabot processing is in a cooldown period.")
+
         try:
+            dependabot_pr_processed_this_run = False
             # Collect PR candidates
             prs = self.github.get_open_pull_requests(repo_name)
             for pr in prs:
@@ -189,6 +196,12 @@ class AutomationEngine:
                 # Handle dependency-bot PRs based on configuration
                 is_dependency_bot = _is_dependabot_pr(pr_data)
                 if is_dependency_bot:
+                    if is_in_cooldown:
+                        logger.info(f"Skipping Dependabot PR #{pr_number} due to cooldown period.")
+                        continue
+                    if dependabot_pr_processed_this_run:
+                        logger.info(f"Skipping Dependabot PR #{pr_number} as one has already been processed in this run.")
+                        continue
                     # Get author information for logging
                     author = pr_data.get("author", "unknown")
                     logger.debug(f"PR #{pr_number}: Detected as dependency-bot PR (author: {author})")
@@ -285,6 +298,10 @@ class AutomationEngine:
                     pr_priority = 1  # Fix-required but mergeable PRs
                 else:
                     pr_priority = 2  # Mergeable with successful checks (auto-merge candidate)
+
+                if is_dependency_bot:
+                    set_last_dependabot_run()
+                    dependabot_pr_processed_this_run = True
 
                 candidates.append(
                     Candidate(

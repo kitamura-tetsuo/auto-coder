@@ -1585,12 +1585,16 @@ class TestGetCandidates:
         assert candidates[3].priority == 2
         assert candidates[3].data["number"] == 4  # Regular mergeable PR with passing checks
 
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_includes_green_dependency_bot_pr_when_ignored(
         self,
         mock_extract_issues,
         mock_check_actions,
+        mock_set_last_dependabot_run,
+        mock_get_last_dependabot_run,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1599,6 +1603,7 @@ class TestGetCandidates:
         config = AutomationConfig()
         config.IGNORE_DEPENDABOT_PRS = True
         engine = AutomationEngine(mock_github_client, config=config)
+        mock_get_last_dependabot_run.return_value = None
 
         # Two dependency-bot PRs: one green/mergeable, one not ready.
         mock_github_client.get_open_pull_requests.return_value = [
@@ -1656,12 +1661,98 @@ class TestGetCandidates:
         # When IGNORE_DEPENDABOT_PRS is True, ALL Dependabot PRs should be skipped
         assert [c.data["number"] for c in candidates] == []
 
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
+    def test_get_candidates_rate_limits_dependabot_prs(
+        self,
+        mock_extract_issues,
+        mock_check_actions,
+        mock_set_last_dependabot_run,
+        mock_get_last_dependabot_run,
+        mock_github_client,
+        mock_gemini_client,
+        test_repo_name,
+    ):
+        """Test that Dependabot PRs are rate-limited."""
+        from datetime import datetime, timedelta, timezone
+
+        config = AutomationConfig()
+        engine = AutomationEngine(mock_github_client, config=config)
+
+        mock_github_client.get_open_pull_requests.return_value = [
+            Mock(number=1, created_at="2024-01-01T00:00:00Z"),
+            Mock(number=2, created_at="2024-01-02T00:00:00Z"),
+        ]
+        mock_github_client.get_open_issues.return_value = []
+
+        pr_data = {
+            1: {
+                "number": 1,
+                "title": "Dependabot PR 1",
+                "body": "",
+                "head": {"ref": "bot-pr-1"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-01T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+            2: {
+                "number": 2,
+                "title": "Dependabot PR 2",
+                "body": "",
+                "head": {"ref": "bot-pr-2"},
+                "labels": [],
+                "mergeable": True,
+                "created_at": "2024-01-02T00:00:00Z",
+                "author": "dependabot[bot]",
+            },
+        }
+
+        def get_pr_details_side_effect(pr):
+            return pr_data[pr.number]
+
+        mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
+        mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
+        mock_extract_issues.return_value = []
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+        with patch("auto_coder.automation_engine.LabelManager") as mock_label_mgr:
+            mock_label_mgr.return_value.__enter__.return_value = True
+
+        # First run, no recent run
+        mock_get_last_dependabot_run.return_value = None
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+        assert [c.data["number"] for c in candidates] == [1]
+        assert mock_set_last_dependabot_run.call_count == 1
+
+        # Second run, recent run
+        mock_get_last_dependabot_run.return_value = datetime.now(timezone.utc) - timedelta(minutes=1)
+        # Reset the call count to 0 to properly test the second run
+        mock_set_last_dependabot_run.call_count = 0
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+        assert [c.data["number"] for c in candidates] == []
+        assert mock_set_last_dependabot_run.call_count == 0
+
+        # Third run, after cooldown
+        mock_get_last_dependabot_run.return_value = datetime.now(timezone.utc) - timedelta(minutes=6)
+        # Reset the call count to 0 to properly test the third run
+        mock_set_last_dependabot_run.call_count = 0
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+        assert [c.data["number"] for c in candidates] == [1]
+        assert mock_set_last_dependabot_run.call_count == 1
+
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_treats_dependency_bot_prs_like_normal_when_ignore_disabled(
         self,
         mock_extract_issues,
         mock_check_actions,
+        mock_set_last_dependabot_run,
+        mock_get_last_dependabot_run,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1671,6 +1762,7 @@ class TestGetCandidates:
         config.IGNORE_DEPENDABOT_PRS = False
         config.AUTO_MERGE_DEPENDABOT_PRS = False
         engine = AutomationEngine(mock_github_client, config=config)
+        mock_get_last_dependabot_run.return_value = None
 
         mock_github_client.get_open_pull_requests.return_value = [
             Mock(number=1, created_at="2024-01-01T00:00:00Z"),
@@ -1725,18 +1817,21 @@ class TestGetCandidates:
         candidates = engine._get_candidates(test_repo_name, max_items=10)
 
         numbers = [c.data["number"] for c in candidates]
-        assert numbers == [1, 2]
+        assert numbers == [1]
 
         priorities = {c.data["number"]: c.priority for c in candidates}
-        assert priorities[1] == 2  # Mergeable with successful checks
-        assert priorities[2] == 2  # Unmergeable (needs conflict resolution)
+        assert priorities[1] == 2
 
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_auto_merge_dependabot_prs_only_green(
         self,
         mock_extract_issues,
         mock_check_actions,
+        mock_set_last_dependabot_run,
+        mock_get_last_dependabot_run,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1746,6 +1841,7 @@ class TestGetCandidates:
         config.IGNORE_DEPENDABOT_PRS = False
         config.AUTO_MERGE_DEPENDABOT_PRS = True
         engine = AutomationEngine(mock_github_client, config=config)
+        mock_get_last_dependabot_run.return_value = None
 
         # Two dependency-bot PRs: one green/mergeable, one not ready.
         mock_github_client.get_open_pull_requests.return_value = [
@@ -1975,12 +2071,16 @@ class TestGetCandidates:
         assert [c.data["number"] for c in candidates] == [1]
         assert candidates[0].priority == 2  # Unmergeable PR gets priority 2
 
+    @patch("auto_coder.automation_engine.get_last_dependabot_run")
+    @patch("auto_coder.automation_engine.set_last_dependabot_run")
     @patch("auto_coder.util.github_action._check_github_actions_status")
     @patch("auto_coder.pr_processor._extract_linked_issues_from_pr_body")
     def test_get_candidates_ignore_dependabot_prs_skips_all(
         self,
         mock_extract_issues,
         mock_check_actions,
+        mock_set_last_dependabot_run,
+        mock_get_last_dependabot_run,
         mock_github_client,
         mock_gemini_client,
         test_repo_name,
@@ -1990,6 +2090,7 @@ class TestGetCandidates:
         config.IGNORE_DEPENDABOT_PRS = True
         config.AUTO_MERGE_DEPENDABOT_PRS = True  # This should be ignored when IGNORE_DEPENDABOT_PRS is True
         engine = AutomationEngine(mock_github_client, config=config)
+        mock_get_last_dependabot_run.return_value = None
 
         # Three dependency-bot PRs: one green/mergeable, one failing, one unmergeable
         mock_github_client.get_open_pull_requests.return_value = [
