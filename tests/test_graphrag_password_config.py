@@ -6,6 +6,8 @@ from src.auto_coder.cli_helpers import initialize_graphrag
 
 
 class TestGraphRAGPasswordConfig(unittest.TestCase):
+    """Test configuration of Neo4j password for GraphRAG integration."""
+
     # Patch where it is defined, because it is imported locally inside the function
     @patch("src.auto_coder.cli_commands_graphrag.run_graphrag_setup_mcp_programmatically")
     @patch("pathlib.Path.exists")
