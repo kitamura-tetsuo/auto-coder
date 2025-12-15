@@ -17,7 +17,7 @@ def run_graphrag_setup_mcp_programmatically(
     install_dir: Optional[str] = None,
     neo4j_uri: str = "bolt://localhost:7687",
     neo4j_user: str = "neo4j",
-    neo4j_password: str = "password",
+    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "password"),
     qdrant_url: str = "http://localhost:6333",
     skip_clone: bool = False,
     silent: bool = False,
@@ -821,8 +821,9 @@ def graphrag_cleanup(
 )
 @click.option(
     "--neo4j-password",
-    default="password",
-    help="Neo4j password (default: password)",
+    default=lambda: os.environ.get("NEO4J_PASSWORD", "password"),
+    show_default="env: NEO4J_PASSWORD or 'password'",
+    help="Neo4j password",
 )
 @click.option(
     "--qdrant-url",

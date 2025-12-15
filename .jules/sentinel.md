@@ -1,11 +1,4 @@
-# Sentinel's Security Journal
-
-## 2025-12-13 - Insecure File Permissions on Generated Secrets
-**Vulnerability:** The `graphrag setup-mcp` command generated a `.env` file containing sensitive credentials (Neo4j password) with default file permissions (typically 0644), making it readable by other users on the system.
-**Learning:** Python's `open()` creates files with default permissions based on the system `umask`. When writing sensitive data, explicit permission handling is required.
-**Prevention:** Always set file permissions to `0o600` (owner read/write only) immediately after creating files containing secrets, or use `os.open` with `O_CREAT` and `mode=0o600`.
-
-## 2025-12-14 - Accidental Commit of Local Configuration
-**Vulnerability:** A local configuration file `src/auto_coder/~/.claude/settings.json` containing a live JWT token was accidentally committed to the repository. The unusual path incorporating `~` suggests a mistake in command execution or file tracking.
-**Learning:** Files and directories with names starting with `~` are not automatically expanded by Git or some tools, leading to literal paths that mimic home directories being committed.
-**Prevention:** Ensure `.gitignore` includes patterns for local configuration directories like `.claude/`, `.env`, etc., and verify file lists before committing.
+## 2025-02-18 - Hardcoded Neo4j Credentials
+**Vulnerability:** The GraphRAG integration used a hardcoded "password" for Neo4j in `docker-compose.graphrag.yml`, `cli_helpers.py`, and `cli_commands_graphrag.py`. This credential was also written to a local `.env` file for the MCP server.
+**Learning:** Default credentials in development tools can be dangerous if the tool is deployed or used in shared environments. Hardcoding them in multiple places makes it difficult for users to secure their setup.
+**Prevention:** Use environment variables for sensitive credentials with sensible defaults (if necessary for dev experience), but always allow overrides. Use `${VAR:-default}` in docker-compose and `os.getenv` in Python.
