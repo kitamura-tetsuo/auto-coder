@@ -756,6 +756,10 @@ def _handle_pr_merge(
 
         # Step 3: Get detailed status for merge decision
         github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        if github_checks.error:
+            logger.error(f"Error checking GitHub Actions status for PR #{pr_number}: {github_checks.error}")
+            actions.append(f"Could not determine CI status due to an error: {github_checks.error}")
+            return actions
         detailed_checks = get_detailed_checks_from_history(github_checks, repo_name)
 
         # Step 4: If GitHub Actions passed, merge directly

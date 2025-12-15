@@ -9,7 +9,8 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
-from src.auto_coder.pr_processor import _fix_pr_issues_with_testing
+from src.auto_coder.pr_processor import _fix_pr_issues_with_testing, _handle_pr_merge
+from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 class TestPRProcessorBackendSwitching:
@@ -434,3 +435,39 @@ class TestKeepLabelOnPRMerge:
 
         # Verify keep_label was NOT called
         assert len(keep_label_called) == 0, "keep_label should not be called when no merge occurs"
+
+
+class TestHandlePRMerge:
+    """Test cases for _handle_pr_merge function."""
+
+    @patch("src.auto_coder.pr_processor.check_github_actions_and_exit_if_in_progress")
+    @patch("src.auto_coder.pr_processor._get_mergeable_state")
+    @patch("src.auto_coder.pr_processor._check_github_actions_status")
+    def test_handle_pr_merge_with_ci_check_error(
+        self,
+        mock_check_status,
+        mock_get_mergeable_state,
+        mock_check_in_progress,
+    ):
+        """Test that _handle_pr_merge handles CI check errors gracefully."""
+        # Setup
+        repo_name = "test/repo"
+        pr_data = {"number": 123}
+        config = AutomationConfig()
+        analysis = {}
+        github_client = Mock()
+
+        # Mock the return values of the patched functions
+        mock_check_in_progress.return_value = True  # Should continue processing
+        mock_get_mergeable_state.return_value = {"mergeable": True, "merge_state_status": "CLEAN"}
+        mock_check_status.return_value = GitHubActionsStatusResult(
+            success=False,
+            error="API rate limit exceeded",
+        )
+
+        # Execute
+        actions = _handle_pr_merge(github_client, repo_name, pr_data, config, analysis)
+
+        # Assert
+        assert len(actions) == 1
+        assert "Could not determine CI status due to an error: API rate limit exceeded" in actions[0]
