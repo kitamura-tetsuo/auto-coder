@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 import pytest
@@ -2796,6 +2797,64 @@ class TestElderSiblingDependencyLogic:
         # Issues #101 and #102 should both be blocked by elder sibling #100
         candidate_numbers = sorted([c.data["number"] for c in candidates])
         assert sorted(candidate_numbers) == [50, 200]
+
+    @patch("auto_coder.util.github_action._check_github_actions_status")
+    def test_get_candidates_filters_issues_created_within_last_10_minutes(
+        self,
+        mock_check_actions,
+        mock_github_client,
+        test_repo_name,
+    ):
+        """Test that issues created within the last 10 minutes are filtered out."""
+        # Setup
+        engine = AutomationEngine(mock_github_client)
+
+        # Mock current time
+        now = datetime.now(timezone.utc)
+
+        # Mock GitHub client to return two issues:
+        # - One created 5 minutes ago (should be filtered)
+        # - One created 15 minutes ago (should be included)
+        mock_github_client.get_open_pull_requests.return_value = []
+        mock_github_client.get_open_issues.return_value = [
+            Mock(number=1, created_at=(now - timedelta(minutes=5)).isoformat()),
+            Mock(number=2, created_at=(now - timedelta(minutes=15)).isoformat()),
+        ]
+
+        # Mock issue details
+        issue_data = {
+            1: {
+                "number": 1,
+                "title": "Recent issue",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+            2: {
+                "number": 2,
+                "title": "Older issue",
+                "body": "",
+                "labels": [],
+                "state": "open",
+                "created_at": (now - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            },
+        }
+
+        def get_issue_details_side_effect(issue):
+            return issue_data[issue.number]
+
+        mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+        mock_github_client.get_open_sub_issues.return_value = []
+        mock_github_client.has_linked_pr.return_value = False
+
+        # Execute
+        candidates = engine._get_candidates(test_repo_name, max_items=10)
+
+        # Assert - Only the older issue should be in the candidates list
+        assert len(candidates) == 1
+        assert candidates[0].type == "issue"
+        assert candidates[0].data["number"] == 2
 
 
 class TestUrgentLabelPropagation:
