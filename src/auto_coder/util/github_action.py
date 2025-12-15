@@ -46,6 +46,7 @@ class GitHubActionsStatusResult:
     success: bool = True
     ids: List[int] = field(default_factory=list)
     in_progress: bool = False
+    error: Optional[str] = None
 
 
 @dataclass
@@ -310,6 +311,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
                 success=True,
                 ids=[],
                 in_progress=False,
+                error=None,
             )
             cache.set(cache_key, gh_status_result)
             return gh_status_result
@@ -371,6 +373,7 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             success=all_passed,
             ids=run_ids,
             in_progress=has_in_progress,
+            error=None,
         )
 
         # Cache the result
@@ -523,6 +526,7 @@ def _check_github_actions_status_from_history(
                 success=False,
                 ids=[],
                 in_progress=False,
+                error=f"Failed to get PR #{pr_number} commits",
             )
 
         try:
@@ -534,6 +538,7 @@ def _check_github_actions_status_from_history(
                     success=True,
                     ids=[],
                     in_progress=False,
+                    error=None,
                 )
 
             # Get all commit SHAs
@@ -544,6 +549,7 @@ def _check_github_actions_status_from_history(
                     success=True,
                     ids=[],
                     in_progress=False,
+                    error=None,
                 )
 
             logger.info(f"Found {len(commit_shas)} commits in PR, latest: {commit_shas[-1][:8]}")
@@ -554,6 +560,7 @@ def _check_github_actions_status_from_history(
                 success=False,
                 ids=[],
                 in_progress=False,
+                error=f"Failed to parse PR view JSON: {e}",
             )
 
         # 2. Get GitHub Actions runs for the head branch
@@ -581,6 +588,7 @@ def _check_github_actions_status_from_history(
                 success=False,
                 ids=[],
                 in_progress=False,
+                error=f"Failed to get runs for branch {head_branch}",
             )
 
         try:
@@ -591,6 +599,7 @@ def _check_github_actions_status_from_history(
                 success=False,
                 ids=[],
                 in_progress=False,
+                error=f"Failed to parse run list JSON: {e}",
             )
 
         # 3. Find runs with matching headSha for any of the PR commits
@@ -616,6 +625,7 @@ def _check_github_actions_status_from_history(
                     success=False,
                     ids=[],
                     in_progress=True,
+                    error=f"No workflow runs found on branch {head_branch}",
                 )
             # If there are runs but none match, the PR may be old/stale
             # In this case, assume success (legacy behavior)
@@ -623,6 +633,7 @@ def _check_github_actions_status_from_history(
                 success=True,
                 ids=[],
                 in_progress=False,
+                error=None,
             )
 
         # 4. Find the latest commit that has matching runs
@@ -669,6 +680,7 @@ def _check_github_actions_status_from_history(
             success=final_success,
             ids=run_ids,
             in_progress=has_in_progress,
+            error=None,
         )
 
         # Cache the result
@@ -682,6 +694,7 @@ def _check_github_actions_status_from_history(
             success=False,
             ids=[],
             in_progress=False,
+            error=f"Error during historical GitHub Actions status check: {e}",
         )
 
 

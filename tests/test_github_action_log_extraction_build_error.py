@@ -8,7 +8,7 @@ def test_extract_error_context_with_build_error():
     log_content = ""
     # Add filler lines to simulate a long log where the error might be missed if not prioritized
     for i in range(600):
-        log_content += f"2025-10-27T03:26:{i%60:02d}.0000000Z   Filler line {i}\n"
+        log_content += f"2025-10-27T03:26:{i % 60:02d}.0000000Z   Filler line {i}\n"
 
     log_content += """
 2025-10-27T03:25:50.0000000Z > my-app@0.0.0 build
@@ -33,7 +33,7 @@ def test_extract_error_context_with_module_not_found():
     log_content = ""
     # Add filler lines
     for i in range(600):
-        log_content += f"2025-10-27T03:26:{i%60:02d}.0000000Z   Filler line {i}\n"
+        log_content += f"2025-10-27T03:26:{i % 60:02d}.0000000Z   Filler line {i}\n"
 
     log_content += """
 2025-10-27T03:25:50.0000000Z [vite] connecting...
@@ -55,7 +55,7 @@ def test_extract_error_context_with_syntax_error():
     log_content = ""
     # Add filler lines
     for i in range(600):
-        log_content += f"2025-10-27T03:26:{i%60:02d}.0000000Z   Filler line {i}\n"
+        log_content += f"2025-10-27T03:26:{i % 60:02d}.0000000Z   Filler line {i}\n"
 
     log_content += """
 2025-10-27T03:25:50.0000000Z /app/src/index.js:10
