@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
 from src.auto_coder.automation_config import AutomationConfig
 from src.auto_coder.pr_processor import _handle_pr_merge, _should_skip_waiting_for_jules
+from src.auto_coder.util.github_action import GitHubActionsStatusResult
 
 
 class TestHandlePrMergeJulesFallback:
@@ -43,8 +44,8 @@ class TestHandlePrMergeJulesFallback:
         # Mock checks failure
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = Mock(success=False)
-        mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
+        mock_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, failed_checks=[{"name": "test"}])
 
         # Mock Jules PR
         mock_is_jules.return_value = True
@@ -102,8 +103,8 @@ class TestHandlePrMergeJulesFallback:
         # Mock checks failure
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = Mock(success=False)
-        mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
+        mock_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, failed_checks=[{"name": "test"}])
 
         # Mock Jules PR
         mock_is_jules.return_value = True
@@ -169,8 +170,8 @@ class TestHandlePrMergeJulesFallback:
         # Mock checks failure
         mock_check_in_progress.return_value = True
         mock_mergeable.return_value = {"mergeable": True}
-        mock_check_status.return_value = Mock(success=False)
-        mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
+        mock_check_status.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, error=None, ids=[1])
+        mock_detailed_checks.return_value = MagicMock(spec=GitHubActionsStatusResult, success=False, failed_checks=[{"name": "test"}])
 
         # Mock Jules PR
         mock_is_jules.return_value = True

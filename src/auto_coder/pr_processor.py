@@ -856,6 +856,10 @@ def _handle_pr_merge(
 
         # Step 3: Get detailed status for merge decision
         github_checks = _check_github_actions_status(repo_name, pr_data, config)
+        if github_checks.error:
+            actions.append(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
+            logger.error(f"Could not determine CI status for PR #{pr_number}: {github_checks.error}")
+            return actions
 
         # Check if no actions have started for the latest commit
         if not github_checks.ids:
