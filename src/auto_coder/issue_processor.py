@@ -418,13 +418,29 @@ def _process_issue_jules_mode(
     try:
         # Initialize Jules client
         jules_client = JulesClient()
+        # Get commit log for the prompt
+        commit_log = get_commit_log()
+
+        # Check for parent issue
+        parent_issue_details = github_client.get_parent_issue_details(repo_name, issue_number)
+        parent_issue_body = ""
+        if parent_issue_details:
+            parent_issue_body = github_client.get_parent_issue_body(repo_name, issue_number)
 
         # Prepare the prompt for Jules
         action_prompt = render_prompt(
             "issue.action",
+            repo_name=repo_name,
             issue_number=issue_number,
             issue_title=issue_title,
             issue_body=issue_body,
+            issue_labels=", ".join([label.get("name") for label in issue_data.get("labels", [])]),
+            issue_state=issue_data.get("state"),
+            issue_author=issue_data.get("user", {}).get("login"),
+            parent_issue_number=parent_issue_details.get("number") if parent_issue_details else None,
+            parent_issue_title=parent_issue_details.get("title") if parent_issue_details else None,
+            parent_issue_body=parent_issue_body,
+            commit_log=commit_log,
         )
 
         logger.info(f"Starting Jules session for issue #{issue_number}")
