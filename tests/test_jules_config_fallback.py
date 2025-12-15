@@ -110,7 +110,7 @@ def test_handle_pr_merge_jules_fallback_disabled_in_config(
     # Mock checks failure
     mock_check_in_progress.return_value = True
     mock_mergeable.return_value = {"mergeable": True}
-    mock_check_status.return_value = Mock(success=False)
+    mock_check_status.return_value = Mock(success=False, error=None)
     mock_detailed_checks.return_value = Mock(success=False, failed_checks=[{"name": "test"}])
 
     # Mock Jules PR
