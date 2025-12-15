@@ -333,15 +333,15 @@ def _should_skip_waiting_for_jules(github_client: Any, repo_name: str, pr_data: 
             logger.info(f"PR #{pr_number} has new commits after Jules wait message, processing...")
             return False
 
-        # Check if it has been waiting for more than 1 hour
+        # Check if it has been waiting for more than 2 hour
         try:
             # Parse GitHub timestamp (ISO 8601)
             # Example: 2023-10-27T10:00:00Z
             last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
             current_time = datetime.now(timezone.utc)
 
-            if current_time - last_comment_dt > timedelta(hours=1):
-                logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour. Switching to local processing.")
+            if current_time - last_comment_dt > timedelta(hours=2):
+                logger.info(f"PR #{pr_number} has been waiting for Jules for > 2 hour. Switching to local processing.")
                 return False
         except Exception as e:
             logger.warning(f"Failed to parse timestamp or compare time for PR #{pr_number}: {e}")
