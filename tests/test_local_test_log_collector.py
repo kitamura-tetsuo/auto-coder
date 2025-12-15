@@ -31,8 +31,7 @@ class TestLocalTestLogCollector(unittest.TestCase):
             source_log_file.write_text("raw log data")
 
             # Patch Path.home and os.getcwd to point inside our temp directory
-            with patch("pathlib.Path.home", return_value=tmpdir_path), \
-                 patch("os.getcwd", return_value=str(tmpdir_path)):
+            with patch("pathlib.Path.home", return_value=tmpdir_path), patch("os.getcwd", return_value=str(tmpdir_path)):
 
                 collect_and_save_logs("tests/test_file.py")
 
