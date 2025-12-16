@@ -61,6 +61,77 @@ class DetailedChecksResult:
     run_ids: List[int] = field(default_factory=list)
 
 
+def preload_github_actions_cache(repo_name: str, limit: int = 100) -> None:
+    """Preload GitHub Actions status cache for recent commits.
+
+    This fetches recent workflow runs in batch and populates the cache
+    to avoid N+1 API calls when checking status for multiple PRs.
+    """
+    try:
+        logger.info(f"Preloading GitHub Actions cache for {repo_name}")
+        gh_logger = get_gh_logger()
+        run_list_result = gh_logger.execute_with_logging(
+            [
+                "gh",
+                "run",
+                "list",
+                "-R",
+                repo_name,
+                "--limit",
+                str(limit),
+                "--json",
+                "databaseId,headSha,status,conclusion",
+            ],
+            repo=repo_name,
+            capture_output=True,
+        )
+
+        if run_list_result.returncode != 0 or not run_list_result.stdout.strip():
+            return
+
+        try:
+            runs = json.loads(run_list_result.stdout)
+        except json.JSONDecodeError:
+            return
+
+        # Group runs by headSha
+        runs_by_sha: Dict[str, List[Dict[str, Any]]] = {}
+        for run in runs:
+            sha = run.get("headSha")
+            if sha:
+                if sha not in runs_by_sha:
+                    runs_by_sha[sha] = []
+                runs_by_sha[sha].append(run)
+
+        cache = get_github_cache()
+        count = 0
+
+        for sha, sha_runs in runs_by_sha.items():
+            # Determine status
+            has_in_progress = any(
+                r.get("status", "").lower() in ["in_progress", "queued", "pending", "waiting"] for r in sha_runs
+            )
+            any_failed = any(
+                r.get("conclusion", "").lower() in ["failure", "failed", "error", "timed_out", "cancelled"]
+                for r in sha_runs
+            )
+            success = not any_failed and not has_in_progress
+
+            ids = [int(r.get("databaseId")) for r in sha_runs if r.get("databaseId")]
+
+            result = GitHubActionsStatusResult(success=success, ids=ids, in_progress=has_in_progress)
+
+            # Cache key matches _check_github_actions_status format
+            cache_key = f"gh_actions_status:{repo_name}:{sha}"
+            cache.set(cache_key, result)
+            count += 1
+
+        logger.info(f"Preloaded GitHub Actions status for {count} commits")
+
+    except Exception as e:
+        logger.warning(f"Failed to preload GitHub Actions cache: {e}")
+
+
 def parse_git_commit_history_for_actions(
     max_depth: int = 10,
     cwd: Optional[str] = None,
@@ -271,7 +342,8 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
 
         # Check cache first
         cache = get_github_cache()
-        cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{current_head_sha}"
+        # Key depends only on SHA, not PR number, to allow sharing and preloading
+        cache_key = f"gh_actions_status:{repo_name}:{current_head_sha}"
         cached_result = cache.get(cache_key)
         if cached_result:
             logger.info(f"Using cached GitHub Actions status for {repo_name} PR #{pr_number} ({current_head_sha[:8]})")

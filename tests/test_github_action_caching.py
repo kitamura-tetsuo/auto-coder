@@ -24,7 +24,7 @@ class TestGitHubActionCaching(unittest.TestCase):
 
         # Pre-populate cache
         cache = get_github_cache()
-        cache_key = f"gh_actions_status:{repo_name}:123:abc1234"
+        cache_key = f"gh_actions_status:{repo_name}:abc1234"
         expected_result = MagicMock()
         cache.set(cache_key, expected_result)
 
@@ -56,7 +56,7 @@ class TestGitHubActionCaching(unittest.TestCase):
 
         # Verify cache is populated
         cache = get_github_cache()
-        cache_key = f"gh_actions_status:{repo_name}:124:def5678"
+        cache_key = f"gh_actions_status:{repo_name}:def5678"
         cached_result = cache.get(cache_key)
 
         self.assertIsNotNone(cached_result)

@@ -27,7 +27,11 @@ from .progress_footer import ProgressStage
 from .prompt_loader import render_prompt
 from .test_result import TestResult
 from .update_manager import check_for_updates_and_restart
-from .util.github_action import check_and_handle_closed_state, get_github_actions_logs_from_url
+from .util.github_action import (
+    check_and_handle_closed_state,
+    get_github_actions_logs_from_url,
+    preload_github_actions_cache,
+)
 from .util.github_cache import get_github_cache
 from .utils import CommandExecutor, log_action
 
@@ -151,6 +155,11 @@ class AutomationEngine:
         try:
             # Collect PR candidates
             prs = self.github.get_open_pull_requests(repo_name)
+
+            # Preload GitHub Actions status for all PRs in batch to prevent N+1 API calls
+            if prs:
+                preload_github_actions_cache(repo_name)
+
             for pr in prs:
                 pr_data = self.github.get_pr_details(pr)
                 labels = pr_data.get("labels", []) or []
