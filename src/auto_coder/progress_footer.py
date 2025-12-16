@@ -39,6 +39,8 @@ class ProgressFooter:
         # Store current item info for re-rendering
         self._current_item_type: Optional[str] = None
         self._current_item_number: Optional[int] = None
+        # Store custom message
+        self._custom_message: Optional[str] = None
         # Store related issues and branch name
         self._related_issues: list[int] = []
         self._branch_name: Optional[str] = None
@@ -152,6 +154,23 @@ class ProgressFooter:
             self._current_item_number = item_number
             self._related_issues = related_issues or []
             self._branch_name = branch_name
+            self._custom_message = None  # Clear custom message when setting item
+            self._is_active = True
+            self._render_footer()
+
+        # Print footer at the bottom
+        self.print_footer()
+
+    def set_message(self, message: str) -> None:
+        """
+        Set a custom message to display in the footer.
+        Overrides any current item display.
+
+        Args:
+            message: The message to display
+        """
+        with self._lock:
+            self._custom_message = message
             self._is_active = True
             self._render_footer()
 
@@ -160,7 +179,14 @@ class ProgressFooter:
 
     def _render_footer(self) -> None:
         """Render the footer from current state (must be called with lock held)."""
-        if self._current_item_type and self._current_item_number:
+        if self._custom_message:
+            if self._no_color:
+                self._current_footer = f"[{self._custom_message}]"
+            else:
+                c_cyan = "\033[96m"
+                c_reset = "\033[0m"
+                self._current_footer = f"{c_cyan}[💤 {self._custom_message}]{c_reset}"
+        elif self._current_item_type and self._current_item_number:
             self._current_footer = self._format_footer(self._current_item_type, self._current_item_number)
         else:
             self._current_footer = None
@@ -238,6 +264,7 @@ class ProgressFooter:
             self._stage_stack.clear()
             self._current_item_type = None
             self._current_item_number = None
+            self._custom_message = None
             self._related_issues = []
             self._branch_name = None
 
@@ -287,6 +314,17 @@ def setup_progress_footer_logging() -> None:
     footer = get_progress_footer()
     # Re-setup logger with progress footer sink
     setup_logger(progress_footer=footer)
+
+
+def set_progress_message(message: str) -> None:
+    """
+    Set a custom message in the global progress footer.
+
+    Args:
+        message: The message to display
+    """
+    footer = get_progress_footer()
+    footer.set_message(message)
 
 
 def set_progress_item(

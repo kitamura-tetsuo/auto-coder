@@ -14,7 +14,7 @@ from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
 from .llm_backend_config import get_llm_config
 from .logger_config import get_logger, setup_logger
-from .progress_footer import setup_progress_footer_logging
+from .progress_footer import clear_progress, set_progress_message, setup_progress_footer_logging
 from .utils import VERBOSE_ENV_FLAG
 
 logger = get_logger(__name__)
@@ -350,7 +350,21 @@ def process_issues(
             sleep_time = get_process_issues_sleep_time_from_config()
             logger.info(f"Processed {issues_count} issues and {prs_count} PRs. Sleeping for {sleep_time} seconds...")
 
-        time.sleep(sleep_time)
+        # Display countdown in progress footer
+        sleep_time_int = int(sleep_time)
+        if sleep_time_int > 0:
+            for i in range(sleep_time_int, 0, -1):
+                set_progress_message(f"Next check in {i}s")
+                time.sleep(1)
+            # Sleep for any remaining fractional seconds
+            remaining = sleep_time - sleep_time_int
+            if remaining > 0:
+                time.sleep(remaining)
+        else:
+            # If sleep time is small (e.g. < 1s), just sleep
+            time.sleep(sleep_time)
+
+        clear_progress()
 
     # Close MCP session if present
     try:
