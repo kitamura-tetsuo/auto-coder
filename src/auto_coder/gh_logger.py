@@ -9,6 +9,7 @@ repository, and hostname.
 import csv
 import json
 import os
+import re
 import socket
 import subprocess
 from contextlib import contextmanager
@@ -36,6 +37,13 @@ CSV_FIELDS = [
     "args",
     "repo",
     "hostname",
+]
+
+# Patterns for sensitive data redaction
+REDACTION_PATTERNS = [
+    r"gh[pousr]_[a-zA-Z0-9]+",  # GitHub tokens
+    r"github_pat_[a-zA-Z0-9_]+",  # GitHub PATs
+    r"AIza[0-9A-Za-z-_]{35}",  # Google API keys
 ]
 
 
@@ -99,8 +107,6 @@ class GHCommandLogger:
         Returns:
             Compressed JSON string if valid JSON, otherwise original string
         """
-        import re
-
         # First, try to parse the entire string as JSON
         try:
             parsed = json.loads(text)
@@ -126,6 +132,21 @@ class GHCommandLogger:
         # If all else fails, return original string unchanged
         return text
 
+    def _redact_string(self, text: str) -> str:
+        """
+        Redact sensitive information from a string.
+
+        Args:
+            text: String to redact
+
+        Returns:
+            Redacted string
+        """
+        redacted = text
+        for pattern in REDACTION_PATTERNS:
+            redacted = re.sub(pattern, "[REDACTED]", redacted)
+        return redacted
+
     def _format_csv_row(
         self,
         caller_file: str,
@@ -147,12 +168,19 @@ class GHCommandLogger:
         Returns:
             Dictionary with CSV field names as keys
         """
+        formatted_args = []
+        if args:
+            for arg in args:
+                compressed = self._compress_json_string(arg)
+                redacted = self._redact_string(compressed)
+                formatted_args.append(redacted)
+
         return {
             "timestamp": datetime.now().isoformat(),
             "caller_file": caller_file,
             "caller_line": str(caller_line),
             "command": command,
-            "args": " ".join(self._compress_json_string(arg) for arg in args) if args else "",
+            "args": " ".join(formatted_args),
             "repo": repo or "",
             "hostname": self._hostname,
         }
