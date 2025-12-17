@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
+from .progress_footer import get_progress_footer
 from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
@@ -342,6 +343,13 @@ class CommandExecutor:
                 poll_interval = cls.STREAM_POLL_INTERVAL
                 if remaining is not None:
                     poll_interval = min(poll_interval, remaining)
+
+                # Tick the progress footer spinner
+                try:
+                    get_progress_footer().tick()
+                except Exception:
+                    # Don't let footer errors crash the command execution
+                    pass
 
                 try:
                     stream_name, chunk = output_queue.get(timeout=poll_interval)
