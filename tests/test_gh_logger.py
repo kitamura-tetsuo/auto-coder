@@ -417,3 +417,45 @@ class TestGHCommandLogger:
 
             # Verify all args are joined with spaces
             assert 'api graphql -f query={"test":1}' == row["args"]
+
+    def test_log_command_redacts_sensitive_info(self, _use_custom_subprocess_mock):
+        """Test that sensitive information (tokens) is redacted from logs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_dir = Path(tmpdir)
+            logger = GHCommandLogger(log_dir=test_dir)
+
+            # Test data
+            gh_token = "ghp_SECRET1234567890abcdefghijklmnop"
+            gemini_key = "AIzaSyD_SECRET_KEY_1234567890abcdefghijk"
+
+            # Log command with sensitive args
+            logger.log_command(
+                command_list=["gh", "secret", "set", "MY_SECRET", "-b", gh_token],
+                caller_file="/test/file.py",
+                caller_line=1,
+            )
+
+            # Log another command with Gemini key
+            logger.log_command(
+                command_list=["gemini", "config", "set", "api_key", gemini_key],
+                caller_file="/test/file.py",
+                caller_line=2,
+            )
+
+            # Check log file
+            log_file = logger._get_log_file_path()
+            assert log_file.exists()
+
+            with open(log_file, "r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+
+                assert len(rows) == 2
+
+                # Check GitHub token redaction
+                assert "[REDACTED]" in rows[0]["args"]
+                assert gh_token not in rows[0]["args"]
+
+                # Check Gemini key redaction
+                assert "[REDACTED]" in rows[1]["args"]
+                assert gemini_key not in rows[1]["args"]
