@@ -22,6 +22,7 @@ REQUIRED_OPTIONS_BY_BACKEND = {
     "qwen": ["-y"],
     "jules": [],  # Session-based, no required flags
     "codex-mcp": [],  # MCP-based, options flexible
+    "aider": [],  # Aider-based, options flexible
 }
 
 
@@ -72,6 +73,9 @@ class BackendConfig:
     # For OpenAI-compatible backends
     openai_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
+    # For OpenRouter-compatible backends
+    openrouter_api_key: Optional[str] = None
+    openrouter_base_url: Optional[str] = None
     # For custom configurations
     extra_args: Dict[str, str] = field(default_factory=dict)
     # List of provider names available for this backend
@@ -197,7 +201,7 @@ class LLMBackendConfiguration:
         """Initialize default backends if none are configured."""
         if not self.backends:
             # Add default configurations for known backends
-            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
+            default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
             for backend_name in default_backends:
                 self.backends[backend_name] = BackendConfig(name=backend_name)
 
@@ -269,6 +273,8 @@ class LLMBackendConfiguration:
                 max_retries=config_data.get("max_retries"),
                 openai_api_key=config_data.get("openai_api_key"),
                 openai_base_url=config_data.get("openai_base_url"),
+                openrouter_api_key=config_data.get("openrouter_api_key"),
+                openrouter_base_url=config_data.get("openrouter_base_url"),
                 extra_args=config_data.get("extra_args", {}),
                 providers=config_data.get("providers", []),
                 usage_limit_retry_count=config_data.get("usage_limit_retry_count", 0),
@@ -299,7 +305,7 @@ class LLMBackendConfiguration:
         def is_potential_backend_config(d: dict) -> bool:
             # Heuristic: if it has specific backend keys, it's likely a config
             # We check for keys that are commonly used in backend definitions
-            common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_noedit", "options_for_resume"}
+            common_keys = {"backend_type", "model", "api_key", "base_url", "openai_api_key", "openai_base_url", "openrouter_api_key", "openrouter_base_url", "providers", "model_provider", "always_switch_after_execution", "settings", "options", "options_for_noedit", "options_for_resume"}
             # Also check if 'enabled' is present, but it's very common so we combine it
             # with the fact that we are looking for backends.
             # If a dict has 'enabled' and is in the top-level (or nested from top-level),
@@ -350,7 +356,7 @@ class LLMBackendConfiguration:
 
         # Add default backends if they are not already in the configuration
         # This ensures that backends like 'jules' are available even if not explicitly defined in the file
-        default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp"]
+        default_backends = ["codex", "gemini", "qwen", "auggie", "claude", "jules", "codex-mcp", "aider"]
         for backend_name in default_backends:
             if backend_name not in backends:
                 backends[backend_name] = BackendConfig(name=backend_name)
@@ -439,6 +445,8 @@ class LLMBackendConfiguration:
                 "max_retries": config.max_retries,
                 "openai_api_key": config.openai_api_key,
                 "openai_base_url": config.openai_base_url,
+                "openrouter_api_key": config.openrouter_api_key,
+                "openrouter_base_url": config.openrouter_base_url,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -470,6 +478,8 @@ class LLMBackendConfiguration:
                 "max_retries": config.max_retries,
                 "openai_api_key": config.openai_api_key,
                 "openai_base_url": config.openai_base_url,
+                "openrouter_api_key": config.openrouter_api_key,
+                "openrouter_base_url": config.openrouter_base_url,
                 "extra_args": config.extra_args,
                 "providers": config.providers,
                 "usage_limit_retry_count": config.usage_limit_retry_count,
@@ -580,7 +590,7 @@ class LLMBackendConfiguration:
             return config.model
 
         # Default models for known backends
-        default_models = {"gemini": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "jules": "jules", "codex-mcp": "codex-mcp"}
+        default_models = {"gemini": "gemini-2.5-pro", "qwen": "qwen3-coder-plus", "auggie": "GPT-5", "claude": "sonnet", "codex": "codex", "jules": "jules", "codex-mcp": "codex-mcp", "aider": "aider"}
         return default_models.get(backend_name)
 
     def apply_env_overrides(self) -> None:

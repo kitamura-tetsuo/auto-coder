@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, cast
 import click
 import toml
 
+from .aider_client import AiderClient
 from .auggie_client import AuggieClient
 from .automation_config import AutomationConfig
 from .backend_manager import BackendManager
@@ -257,6 +258,11 @@ def check_claude_cli_or_fail() -> None:
     check_cli_tool(tool_name="claude", install_url="https://claude.ai/download", version_flag="--version")
 
 
+def check_aider_cli_or_fail() -> None:
+    """Check if aider CLI is available and working."""
+    check_cli_tool(tool_name="aider", install_url="pip install aider-chat", version_flag="--version")
+
+
 def check_cli_tool(
     tool_name: str,
     install_url: str,
@@ -338,6 +344,8 @@ def build_models_map() -> Dict[str, str]:
     models["auggie"] = config.get_model_for_backend("auggie") or "GPT-5"
     # claude
     models["claude"] = config.get_model_for_backend("claude") or "sonnet"
+    # aider
+    models["aider"] = config.get_model_for_backend("aider") or "aider"
     return models
 
 
@@ -382,6 +390,8 @@ def check_backend_prerequisites(backends: list[str]) -> None:
             check_auggie_cli_or_fail()
         elif backend_name == "claude":
             check_claude_cli_or_fail()
+        elif backend_name == "aider":
+            check_aider_cli_or_fail()
         else:
             # Check if it's a custom backend with backend_type
             backend_config = config.get_backend_config(backend_name)
@@ -424,6 +434,9 @@ def build_backend_manager(
     def _cm() -> str:
         return models.get("claude", "sonnet")
 
+    def _aiderm() -> str:
+        return models.get("aider", "aider")
+
     # Create factory functions that support both direct backend names and aliases
     def _create_qwen_client(backend_name: str):
         """Create a QwenClient with options from config."""
@@ -463,6 +476,18 @@ def build_backend_manager(
         """Create a CodexMCPClient."""
         return CodexMCPClient(backend_name=backend_name, enable_graphrag=enable_graphrag)
 
+    def _create_aider_client(backend_name: str):
+        """Create an AiderClient."""
+        backend_config = config.get_backend_config(backend_name)
+        return AiderClient(
+            backend_name=backend_name,
+            api_key=backend_config.api_key if backend_config else None,
+            base_url=backend_config.base_url if backend_config else None,
+            openai_api_key=backend_config.openai_api_key if backend_config else None,
+            openai_base_url=backend_config.openai_base_url if backend_config else None,
+            use_noedit_options=use_noedit_options,
+        )
+
     # Mapping of backend types to factory functions
     backend_type_factories = {
         "qwen": _create_qwen_client,
@@ -471,13 +496,14 @@ def build_backend_manager(
         "auggie": _create_auggie_client,
         "codex": _create_codex_client,
         "codex-mcp": _create_codex_mcp_client,
+        "aider": _create_aider_client,
     }
 
     # Build factory dictionary with support for aliases
     selected_factories: Dict[str, Callable[[], Any]] = {}
     for backend_name in selected_backends:
         # Check if it's a direct match first
-        if backend_name in ["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude"]:
+        if backend_name in ["codex", "codex-mcp", "gemini", "qwen", "auggie", "claude", "aider"]:
             # Use the appropriate factory based on backend name
             if backend_name == "codex":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_codex_client, backend_name))
@@ -491,6 +517,8 @@ def build_backend_manager(
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_auggie_client, backend_name))
             elif backend_name == "claude":
                 selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_claude_client, backend_name))
+            elif backend_name == "aider":
+                selected_factories[backend_name] = cast(Callable[[], Any], partial(_create_aider_client, backend_name))
         else:
             backend_config = config.get_backend_config(backend_name)
             if backend_config:

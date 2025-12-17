@@ -51,8 +51,59 @@ def collect_and_run():
     command_str = " ".join(command)
     print(f"Executing command: {command_str}")
 
+    stdout_lines = []
+    stderr_lines = []
+    return_code = 0
+
     try:
-        process = subprocess.run(command, capture_output=True, text=True, check=False)  # Do not raise exception on non-zero exit codes
+        # Pass environment variable to suppress duplicate logging from conftest.py
+        env = os.environ.copy()
+        env["AUTO_CODER_LOG_COLLECTOR_ACTIVE"] = "1"
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # Line buffered
+            universal_newlines=True,
+            env=env,
+        )
+
+        # Stream output in real-time
+        # Note: This simple loop might deadlock if one pipe fills up while we read the other.
+        # Ideally, we should use selectors or threads, but for simple test output,
+        # we can try to read line by line or use a simpler approach.
+        # However, to be robust, let's use a simpler approach:
+        # Popen.communicate() waits, so we can't stream with it.
+        # We will use select or threads if needed, but for now let's use a simple valid approach:
+        # Just run the command and stream to stdout/stderr normally if we could,
+        # BUT we need to CAPTURE it too.
+
+        # Correct approach for streaming AND capturing:
+        # We can use a thread to read pipes, or use p.stdout.readline() in a loop.
+        # Since we have two pipes, threads are safer.
+
+        import threading
+
+        def reader(pipe, output_list, out_stream):
+            with pipe:
+                for line in pipe:
+                    out_stream.write(line)
+                    out_stream.flush()  # Ensure it appears immediately
+                    output_list.append(line)
+
+        t_out = threading.Thread(target=reader, args=(process.stdout, stdout_lines, sys.stdout))
+        t_err = threading.Thread(target=reader, args=(process.stderr, stderr_lines, sys.stderr))
+
+        t_out.start()
+        t_err.start()
+
+        return_code = process.wait()
+
+        t_out.join()
+        t_err.join()
+
     except FileNotFoundError:
         print(f"Error: Command not found. Is pytest installed? Command: '{command_str}'", file=sys.stderr)
         sys.exit(1)
@@ -60,11 +111,8 @@ def collect_and_run():
         print(f"An unexpected error occurred: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Print stdout and stderr to the console
-    if process.stdout:
-        print(process.stdout, file=sys.stdout)
-    if process.stderr:
-        print(process.stderr, file=sys.stderr)
+    full_stdout = "".join(stdout_lines)
+    full_stderr = "".join(stderr_lines)
 
     # Handle raw logs
     raw_log_file_path = None
@@ -86,9 +134,9 @@ def collect_and_run():
         source="local",
         repo=repo_name,
         command=command_str,
-        exit_code=process.returncode,
-        stdout=process.stdout,
-        stderr=process.stderr,
+        exit_code=return_code,
+        stdout=full_stdout,
+        stderr=full_stderr,
         file=raw_log_file_path,
         meta={
             "os": platform.system(),
@@ -102,7 +150,7 @@ def collect_and_run():
     except Exception as e:
         print(f"Error saving test log: {e}", file=sys.stderr)
 
-    sys.exit(process.returncode)
+    sys.exit(return_code)
 
 
 if __name__ == "__main__":

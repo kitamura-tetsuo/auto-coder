@@ -3,6 +3,9 @@
         {
             "name": "workspace",
             "path": ".."
+        },
+        {
+            "path": "../../../.auto-coder"
         }
     ],
     "settings": {
