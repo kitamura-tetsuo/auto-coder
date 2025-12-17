@@ -9,6 +9,7 @@ This state is saved to a JSON file for persistence across application restarts.
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Dict
@@ -90,6 +91,10 @@ class BackendStateManager:
                 # Write state to temporary file first for atomic operation
                 temp_file_path = state_file_path.with_suffix(".tmp")
                 with open(temp_file_path, "w") as f:
+                    try:
+                        os.chmod(temp_file_path, 0o600)
+                    except OSError:
+                        pass  # Ignore permission errors on systems that don't support it
                     json.dump(state_data, f, indent=2)
 
                 # Atomically replace the old file with the new one
