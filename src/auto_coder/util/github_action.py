@@ -1944,6 +1944,101 @@ def _clean_log_line(line: str) -> str:
     return line
 
 
+def preload_github_actions_status(repo_name: str, prs: List[Dict[str, Any]]) -> None:
+    """
+    Preload GitHub Actions status for multiple PRs to avoid N+1 API calls.
+    Fetches recent workflow runs and populates the GitHub cache.
+    """
+    if not prs:
+        return
+
+    # Collect head SHAs to look for
+    sha_to_pr = {}
+    for pr in prs:
+        sha = pr.get("head", {}).get("sha")
+        number = pr.get("number")
+        if sha and number:
+            sha_to_pr[sha] = number
+
+    if not sha_to_pr:
+        return
+
+    try:
+        gh_logger = get_gh_logger()
+        # Fetch recent runs
+        # Limit 100 should cover most active PRs.
+        run_list_result = gh_logger.execute_with_logging(
+            [
+                "gh",
+                "run",
+                "list",
+                "--limit",
+                "100",
+                "--json",
+                "databaseId,url,status,conclusion,headSha,name",
+            ],
+            repo=repo_name,
+            capture_output=True,
+        )
+
+        if run_list_result.returncode != 0:
+            logger.warning(f"Failed to preload GitHub Actions status: {run_list_result.stderr}")
+            return
+
+        try:
+            runs = json.loads(run_list_result.stdout)
+        except json.JSONDecodeError:
+            logger.warning("Failed to parse JSON from gh run list during preload")
+            return
+
+        # Group runs by SHA
+        runs_by_sha = {}
+        for run in runs:
+            head_sha = run.get("headSha")
+            if head_sha in sha_to_pr:
+                if head_sha not in runs_by_sha:
+                    runs_by_sha[head_sha] = []
+                runs_by_sha[head_sha].append(run)
+
+        # Update cache for each PR found
+        cache = get_github_cache()
+
+        for sha, pr_runs in runs_by_sha.items():
+            pr_number = sha_to_pr[sha]
+
+            run_ids = []
+            has_in_progress = False
+            all_passed = True
+
+            for run in pr_runs:
+                if run.get("databaseId"):
+                    run_ids.append(int(run["databaseId"]))
+
+                status = (run.get("status") or "").lower()
+                conclusion = (run.get("conclusion") or "").lower()
+
+                if conclusion in ["failure", "failed", "error", "cancelled", "timed_out"]:
+                    all_passed = False
+                elif status in ["in_progress", "queued", "pending", "waiting"]:
+                    has_in_progress = True
+                    all_passed = False
+
+            run_ids = list(set(run_ids))
+
+            result = GitHubActionsStatusResult(
+                success=all_passed,
+                ids=run_ids,
+                in_progress=has_in_progress,
+            )
+
+            cache_key = f"gh_actions_status:{repo_name}:{pr_number}:{sha}"
+            cache.set(cache_key, result)
+            logger.debug(f"Preloaded cache for PR #{pr_number} ({sha[:8]})")
+
+    except Exception as e:
+        logger.error(f"Error in preload_github_actions_status: {e}")
+
+
 def check_github_actions_and_exit_if_in_progress(
     repo_name: str,
     pr_data: Dict[str, Any],
