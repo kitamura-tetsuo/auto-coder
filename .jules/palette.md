@@ -5,3 +5,7 @@
 ## 2025-12-15 - Visual Hierarchy in CLI
 **Learning:** Adding visual anchors (icons like 🔀, 🐛) and clear separators (›) significantly improves the scanability of dense CLI progress logs.
 **Action:** Always pair icons with text labels and ensure a clean fallback for NO_COLOR environments.
+
+## 2025-12-17 - Activity Indicators in Sync Operations
+**Learning:** Even in a synchronous CLI environment, users need immediate feedback that the process hasn't hung. A simple tick-based spinner in the main loop of blocking operations (like command execution) provides this "heartbeat" without complex threading.
+**Action:** When designing CLI tools, identify the main blocking loops and insert a lightweight "tick" mechanism to update UI indicators.

@@ -43,6 +43,13 @@ class ProgressFooter:
         self._related_issues: list[int] = []
         self._branch_name: Optional[str] = None
 
+        # Spinner state
+        if self._no_color:
+            self._spinner_frames = ["|", "/", "-", "\\"]
+        else:
+            self._spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self._spinner_idx = 0
+
     def _format_footer(
         self,
         item_type: str,
@@ -81,15 +88,16 @@ class ProgressFooter:
             sym_branch = " 🌿 "
 
         # Build the main item display with color based on item_type
+        spinner = self._spinner_frames[self._spinner_idx] + " "
         if item_type.upper() == "PR":
             # PR: cyan color
-            main_display = f"{c_cyan}[{sym_pr} #{item_number}"
+            main_display = f"{c_cyan}{spinner}[{sym_pr} #{item_number}"
         elif item_type.upper() == "ISSUE":
             # Issue: light purple/magenta
-            main_display = f"{c_magenta}[{sym_issue} #{item_number}"
+            main_display = f"{c_magenta}{spinner}[{sym_issue} #{item_number}"
         else:
             # Fallback: use cyan
-            main_display = f"{c_cyan}[{item_type} #{item_number}"
+            main_display = f"{c_cyan}{spinner}[{item_type} #{item_number}"
 
         # Add branch name if available (in dark red)
         if self._branch_name:
@@ -109,6 +117,18 @@ class ProgressFooter:
         else:
             # No stages, just show main info
             return main_display
+
+    def tick(self) -> None:
+        """Advance the spinner and reprint the footer."""
+        if not self._is_active:
+            return
+
+        with self._lock:
+            self._spinner_idx = (self._spinner_idx + 1) % len(self._spinner_frames)
+            self._render_footer()
+
+        # Print footer outside the lock
+        self.print_footer()
 
     def print_footer(self) -> None:
         """Print the current footer at the bottom of the terminal."""
