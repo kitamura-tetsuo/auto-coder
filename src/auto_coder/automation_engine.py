@@ -199,6 +199,7 @@ class AutomationEngine:
                     item_type="pr",
                     skip_label_add=True,
                     check_labels=self.config.CHECK_LABELS,
+                    known_labels=pr_data.get("labels"),
                 ) as should_process:
                     if not should_process:
                         continue
@@ -401,6 +402,7 @@ class AutomationEngine:
                         item_type="issue",
                         skip_label_add=True,
                         check_labels=self.config.CHECK_LABELS,
+                        known_labels=labels,
                     ) as should_process:
                         if not should_process:
                             continue
@@ -533,7 +535,15 @@ class AutomationEngine:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
 
             # Use LabelManager context manager to handle @auto-coder label automatically
-            with LabelManager(self.github, repo_name, item_number, item_type=item_type, config=config, check_labels=config.CHECK_LABELS) as should_process:
+            with LabelManager(
+                self.github,
+                repo_name,
+                item_number,
+                item_type=item_type,
+                config=config,
+                check_labels=config.CHECK_LABELS,
+                known_labels=candidate.data.get("labels") if candidate.data else None,
+            ) as should_process:
                 if not should_process:
                     result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
                     return result

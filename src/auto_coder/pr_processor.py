@@ -162,7 +162,15 @@ def process_pull_request(
         pr_number = pr_data["number"]
 
         # Skip immediately if PR already has @auto-coder label
-        with LabelManager(github_client, repo_name, pr_number, item_type="pr", skip_label_add=True, check_labels=config.CHECK_LABELS) as should_process:
+        with LabelManager(
+            github_client,
+            repo_name,
+            pr_number,
+            item_type="pr",
+            skip_label_add=True,
+            check_labels=config.CHECK_LABELS,
+            known_labels=pr_data.get("labels"),
+        ) as should_process:
             if not should_process:
                 logger.info(f"Skipping PR #{pr_number} - already has @auto-coder label")
                 processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
@@ -516,7 +524,15 @@ def _process_pr_for_merge(
     github_client = GitHubClient.get_instance()
 
     # Use LabelManager context manager to handle @auto-coder label automatically
-    with LabelManager(github_client, repo_name, pr_data["number"], item_type="pr", config=config, check_labels=config.CHECK_LABELS) as should_process:
+    with LabelManager(
+        github_client,
+        repo_name,
+        pr_data["number"],
+        item_type="pr",
+        config=config,
+        check_labels=config.CHECK_LABELS,
+        known_labels=pr_data.get("labels"),
+    ) as should_process:
         if not should_process:
             processed_pr.actions_taken = ["Skipped - already being processed (@auto-coder label present)"]
             return processed_pr
@@ -868,7 +884,14 @@ def _handle_pr_merge(
 
             # 1. Add @auto-coder label to prevent multiple executions
             # We use LabelManager to add the label
-            with LabelManager(github_client, repo_name, pr_number, item_type="pr", config=config) as lm:
+            with LabelManager(
+                github_client,
+                repo_name,
+                pr_number,
+                item_type="pr",
+                config=config,
+                known_labels=pr_data.get("labels"),
+            ) as lm:
                 # Label added by entering context
 
                 # 2. Trigger workflow_dispatch

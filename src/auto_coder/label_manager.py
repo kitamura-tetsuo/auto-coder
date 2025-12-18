@@ -302,6 +302,10 @@ class LabelManagerContext:
         """Set flag to keep the label on exit instead of removing it."""
         self._keep_label_on_exit = True
 
+    def remove_label(self) -> None:
+        """Explicitly remove the label."""
+        self._label_manager.remove_label()
+
     def _should_remove_label(self) -> bool:
         """Check if the label should be removed on exit.
 
@@ -369,6 +373,7 @@ class LabelManager:
         retry_delay: float = 1.0,
         skip_label_add: bool = False,
         check_labels: bool = True,
+        known_labels: Optional[List[Any]] = None,
     ):
         """Initialize LabelManager context manager.
 
@@ -383,6 +388,7 @@ class LabelManager:
             retry_delay: Delay in seconds between retries
             skip_label_add: When True, only check for existing labels without adding.
             check_labels: When False, skip the existing label check to bypass label verification.
+            known_labels: Optional list of known labels to avoid API calls for existence check.
         Returns True if label does not exist (should process), False if label exists (should not process).
         """
         self.github_client = github_client
@@ -395,6 +401,19 @@ class LabelManager:
         self.retry_delay = retry_delay
         self.skip_label_add = skip_label_add
         self.check_labels = check_labels
+
+        # Normalize known_labels to a list of strings
+        self.known_labels: Optional[List[str]] = None
+        if known_labels is not None:
+            self.known_labels = []
+            for label in known_labels:
+                if isinstance(label, str):
+                    self.known_labels.append(label)
+                elif isinstance(label, dict) and "name" in label:
+                    self.known_labels.append(label["name"])
+                elif hasattr(label, "name"):
+                    self.known_labels.append(label.name)
+
         self._lock = threading.Lock()
         self._label_added = False
         self._reentered = False
@@ -515,7 +534,7 @@ class LabelManager:
             return
 
         # Check if the context has the keep_label flag set
-        if hasattr(self, "_context") and not self._context._should_remove_label():
+        if hasattr(self, "_context") and self._context and not self._context._should_remove_label():
             logger.debug(f"Keeping '{self.label_name}' label on exit as requested for {self.item_type} #{self.item_number}")
             return
 
@@ -525,27 +544,42 @@ class LabelManager:
             if not self._label_added or self._is_labels_disabled():
                 return
 
-            # Remove the label with retry logic
-            for attempt in range(self.max_retries):
-                try:
-                    # Respect the item type ("issue" vs "pr") so logs and GitHub API paths are consistent
-                    self.github_client.remove_labels(
-                        self.repo_name,
-                        self.item_number,
-                        [self.label_name],
-                        self.item_type,
-                    )
-                    logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
-                    return
+            self._remove_label_internal()
 
-                except Exception as e:
-                    if attempt < self.max_retries - 1:
-                        logger.warning(f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} " f"(attempt {attempt + 1}/{self.max_retries}): {e}. Retrying in {self.retry_delay}s...")
-                        time.sleep(self.retry_delay)
-                    else:
-                        logger.error(f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} " f"after {self.max_retries} attempts: {e}")
-                        # Log but don't raise - we don't want to break the cleanup process
-                        return
+    def remove_label(self) -> None:
+        """Explicitly remove the managed label."""
+        with self._lock:
+            self._remove_label_internal()
+
+    def _remove_label_internal(self) -> None:
+        """Internal helper to remove label with retry logic."""
+        # Remove the label with retry logic
+        for attempt in range(self.max_retries):
+            try:
+                # Respect the item type ("issue" vs "pr") so logs and GitHub API paths are consistent
+                self.github_client.remove_labels(
+                    self.repo_name,
+                    self.item_number,
+                    [self.label_name],
+                    self.item_type,
+                )
+                logger.info(f"Removed '{self.label_name}' label from {self.item_type} #{self.item_number}")
+                return
+
+            except Exception as e:
+                if attempt < self.max_retries - 1:
+                    logger.warning(
+                        f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} "
+                        f"(attempt {attempt + 1}/{self.max_retries}): {e}. Retrying in {self.retry_delay}s..."
+                    )
+                    time.sleep(self.retry_delay)
+                else:
+                    logger.error(
+                        f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} "
+                        f"after {self.max_retries} attempts: {e}"
+                    )
+                    # Log but don't raise - we don't want to break the cleanup process
+                    return
 
     def _check_label_exists(self) -> bool:
         """Check whether the target label exists and decide if processing should continue.
@@ -555,6 +589,15 @@ class LabelManager:
             False: skip processing (label already exists)
         """
         try:
+            # Optimization: Use known_labels if provided to avoid API calls
+            if self.known_labels is not None:
+                if self.label_name in self.known_labels:
+                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label (checked via known_labels) - skipping")
+                    return False
+                else:
+                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label (checked via known_labels) - will process")
+                    return True
+
             # Prefer dedicated has_label() when using a real GitHubClient instance or a mock with has_label
             # Check if client is a GitHubClient instance OR has a callable has_label method
             if isinstance(self.github_client, GitHubClient) or (hasattr(self.github_client, "has_label") and callable(getattr(self.github_client, "has_label", None))):
