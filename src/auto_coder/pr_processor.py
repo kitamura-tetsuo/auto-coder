@@ -955,15 +955,15 @@ def _handle_pr_merge(
                         logger.info(f"PR #{pr_number} has {failure_count} Jules failure comments (> 10). Switching to local llm_backend.")
                         should_fallback = True
                     else:
-                        # Check if the last failure comment was more than 1 hour ago
+                        # Check if the last failure comment was more than 2 hour ago
                         last_failure_comment = next((c for c in reversed(comments) if target_message in c.get("body", "")), None)
                         if last_failure_comment:
                             last_comment_time = last_failure_comment["created_at"]
                             last_comment_dt = datetime.fromisoformat(last_comment_time.replace("Z", "+00:00"))
                             current_time = datetime.now(timezone.utc)
 
-                            if current_time - last_comment_dt > timedelta(hours=1):
-                                logger.info(f"PR #{pr_number} has been waiting for Jules for > 1 hour (last failure). Switching to local llm_backend.")
+                            if current_time - last_comment_dt > timedelta(hours=2):
+                                logger.info(f"PR #{pr_number} has been waiting for Jules for > 2 hour (last failure). Switching to local llm_backend.")
                                 should_fallback = True
 
                 except Exception as e:

@@ -8,6 +8,7 @@ stateful sessions when the same backend is invoked consecutively.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -68,6 +69,10 @@ class BackendSessionManager:
                 temp_file_path = state_file_path.with_suffix(".tmp")
 
                 with open(temp_file_path, "w", encoding="utf-8") as f:
+                    try:
+                        os.chmod(temp_file_path, 0o600)
+                    except OSError:
+                        pass  # Ignore permission errors on systems that don't support it
                     json.dump(payload, f, indent=2)
 
                 temp_file_path.replace(state_file_path)

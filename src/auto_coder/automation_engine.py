@@ -144,7 +144,11 @@ class AutomationEngine:
         """
         from .pr_processor import _extract_linked_issues_from_pr_body, _is_dependabot_pr, _is_jules_pr
         from .util.dependabot_timestamp import should_process_dependabot_pr
-        from .util.github_action import _check_github_actions_status, check_github_actions_and_exit_if_in_progress
+        from .util.github_action import (
+            _check_github_actions_status,
+            check_github_actions_and_exit_if_in_progress,
+            preload_github_actions_status,
+        )
 
         candidates: List[Candidate] = []
         candidates_count = 0
@@ -158,8 +162,11 @@ class AutomationEngine:
             if not can_process_dependabot_pr:
                 logger.info("Skipping Dependabot PRs in this run due to 24-hour processing limit.")
 
-            for pr in prs:
-                pr_data = self.github.get_pr_details(pr)
+            # Preload PR data and GitHub Actions statuses to avoid N+1 API calls
+            pr_data_pairs = [(pr, self.github.get_pr_details(pr)) for pr in prs]
+            preload_github_actions_status(repo_name, [p[1] for p in pr_data_pairs])
+
+            for pr, pr_data in pr_data_pairs:
                 labels = pr_data.get("labels", []) or []
 
                 pr_number = pr_data.get("number")
@@ -605,7 +612,7 @@ class AutomationEngine:
         # Get LLM backend information
         llm_backend_info = self._get_llm_backend_info()
 
-        results = {
+        results: Dict[str, Any] = {
             "repository": repo_name,
             "timestamp": datetime.now().isoformat(),
             "llm_backend": llm_backend_info["backend"],

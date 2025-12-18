@@ -894,3 +894,76 @@ def graph_rag_index_manager_with_override(graph_builder_structure):
     manager = GraphRAGIndexManager()
     manager.set_graph_builder_path_for_testing(graph_builder_structure)
     return manager
+
+
+def pytest_sessionfinish(session, exitstatus):
+    """
+    Called after the entire test session finishes.
+    Collects log if running via simple pytest command (not via local_test_log_collector.py).
+    """
+    # Check if we are running via local_test_log_collector.py by checking an env var or arg
+    # Ideally, local_test_log_collector.py could set an env var, but we didn't add that.
+    # However, if we blindly save a log here, we might duplicate it if the runner also saves it.
+    # But better duplicate than missing.
+    # Or we can check if we are in a subprocess of the runner?
+    # Let's check environment variable that we can set in runner, OR just always save
+    # and maybe overwrite or have two files.
+    # Given the user issue "log collection not functioning", redundancy is safer.
+    # But duplication is annoying.
+    # Let's try to detect if we should run.
+    # Actually, the runner SAVES the stdout/stderr. Inside pytest, we can't easily access full stdout/stderr
+    # of the session itself including what happened before this hook.
+    # But we CAN save what pytest knows: the test results.
+    # However, the requirement seems to be about the "test log" JSON format.
+    # If the user runs `pytest`, they expect the JSON log to be created.
+
+    # We need to reconstruct the LogEntry.
+    try:
+        import platform
+        from datetime import datetime
+
+        from src.auto_coder.git_info import get_current_repo_name
+        from src.auto_coder.log_utils import LogEntry, get_test_log_dir
+
+        repo_name = get_current_repo_name()
+        if not repo_name:
+            return
+
+        timestamp = datetime.now()
+        # We don't have full stdout/stderr here easily unless we used capsys globally and somehow kept it.
+        # But we can save a "minimal" log entry indicating completion and exit code.
+        # This at least provides a record.
+
+        # To avoid duplication with local_test_log_collector.py, we can check if an env var is set.
+        # We will modify local_test_log_collector.py to set AUTO_CODER_LOG_COLLECTOR_ACTIVE=1 later if needed.
+        # For now, let's assume we want to cover the case where it's NOT set.
+        if os.environ.get("AUTO_CODER_LOG_COLLECTOR_ACTIVE") == "1":
+            return
+
+        log_dir = get_test_log_dir(repo_name)
+        log_filename = f"{timestamp.strftime('%Y%m%d_%H%M%S')}_pytest_direct.json"
+
+        # Try to gather some summary info
+        # We can't easily get the full stdout of the process *running* us.
+        # But we can log that it happened.
+        log_entry = LogEntry(
+            ts=timestamp.isoformat(),
+            source="pytest_hook",
+            repo=repo_name,
+            command=" ".join(sys.argv),
+            exit_code=exitstatus,
+            stdout="(Captured via pytest hook - full output unavailable)",
+            stderr="",
+            file=None,
+            meta={
+                "os": platform.system(),
+                "python_version": platform.python_version(),
+            },
+        )
+        log_entry.save(log_dir, log_filename)
+        # We print to stderr so it doesn't interfere with json output if any
+        # print(f"Test log saved to: {log_dir / log_filename}", file=sys.stderr)
+
+    except Exception:
+        # Don't fail the test run just because logging failed
+        pass

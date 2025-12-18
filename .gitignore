@@ -237,3 +237,4 @@ pyright_results.json
 
 # Mock files from tests
 <MagicMock*
+.aider*
