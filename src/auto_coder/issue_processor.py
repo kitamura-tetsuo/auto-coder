@@ -839,7 +839,15 @@ def _apply_issue_actions_directly(
 
         # Now perform all work on the target branch using branch_context
         assert target_branch is not None, "target_branch must be set before using branch_context"
-        with LabelManager(github_client, repo_name, issue_number, item_type="issue", config=config, check_labels=config.CHECK_LABELS) as should_process:
+        with LabelManager(
+            github_client,
+            repo_name,
+            issue_number,
+            item_type="issue",
+            config=config,
+            check_labels=config.CHECK_LABELS,
+            known_labels=issue_data.get("labels"),
+        ) as should_process:
             if not should_process:
                 return actions
 

@@ -369,6 +369,7 @@ class LabelManager:
         retry_delay: float = 1.0,
         skip_label_add: bool = False,
         check_labels: bool = True,
+        known_labels: Optional[List[str]] = None,
     ):
         """Initialize LabelManager context manager.
 
@@ -383,6 +384,7 @@ class LabelManager:
             retry_delay: Delay in seconds between retries
             skip_label_add: When True, only check for existing labels without adding.
             check_labels: When False, skip the existing label check to bypass label verification.
+            known_labels: Optional list of known labels to avoid API calls for existence check.
         Returns True if label does not exist (should process), False if label exists (should not process).
         """
         self.github_client = github_client
@@ -395,6 +397,7 @@ class LabelManager:
         self.retry_delay = retry_delay
         self.skip_label_add = skip_label_add
         self.check_labels = check_labels
+        self.known_labels = known_labels
         self._lock = threading.Lock()
         self._label_added = False
         self._reentered = False
@@ -555,6 +558,15 @@ class LabelManager:
             False: skip processing (label already exists)
         """
         try:
+            # Optimization: Use known_labels if provided to avoid API calls
+            if self.known_labels is not None:
+                if self.label_name in self.known_labels:
+                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} already has '{self.label_name}' label (checked via known_labels) - skipping")
+                    return False
+                else:
+                    logger.info(f"{self.item_type.capitalize()} #{self.item_number} does not have '{self.label_name}' label (checked via known_labels) - will process")
+                    return True
+
             # Prefer dedicated has_label() when using a real GitHubClient instance or a mock with has_label
             # Check if client is a GitHubClient instance OR has a callable has_label method
             if isinstance(self.github_client, GitHubClient) or (hasattr(self.github_client, "has_label") and callable(getattr(self.github_client, "has_label", None))):
