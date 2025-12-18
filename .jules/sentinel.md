@@ -7,3 +7,8 @@
 **Vulnerability:** `GHCommandLogger` logged command arguments to CSV files without redaction, potentially exposing secrets passed as arguments (e.g., to `gh secret set` or `gemini config`).
 **Learning:** Logging command execution is useful for debugging but dangerous if not sanitized. CLI tools often pass secrets as arguments.
 **Prevention:** Implement redaction logic in logging utilities to mask known secret patterns (tokens, keys) before writing to persistent logs.
+
+## 2025-12-18 - Insecure File Permissions for Generated .env Files
+**Vulnerability:** The application generated `.env` files containing sensitive credentials (like `NEO4J_PASSWORD`) using standard `open()`, which creates files with default permissions (often world-readable). `os.chmod` was sometimes called afterwards, leaving a race condition window.
+**Learning:** Creating sensitive files with default permissions and relying on a subsequent `chmod` is insecure due to race conditions.
+**Prevention:** Use `os.open` with `os.O_CREAT | os.O_WRONLY | os.O_TRUNC` and `mode=0o600`, then wrap the file descriptor with `os.fdopen`. This ensures the file is created with restricted permissions atomically.

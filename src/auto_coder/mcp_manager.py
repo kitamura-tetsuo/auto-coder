@@ -5,6 +5,7 @@ This module provides a unified interface for managing multiple MCP servers
 (graphrag_mcp, test_watcher, etc.) with automatic setup and configuration.
 """
 
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -172,10 +173,12 @@ class MCPServerManager:
         if merged_env_vars:
             env_file = target_dir / ".env"
             try:
-                with open(env_file, "w") as f:
+                # Use os.open to ensure file is created with 600 permissions
+                fd = os.open(str(env_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     for key, value in merged_env_vars.items():
                         f.write(f"{key}={value}\n")
-                logger.info(f"✅ Created .env file")
+                logger.info(f"✅ Created .env file with secure permissions")
             except Exception as e:
                 logger.error(f"Failed to create .env file: {e}")
                 return False
