@@ -9,3 +9,7 @@
 ## 2025-12-17 - Activity Indicators in Sync Operations
 **Learning:** Even in a synchronous CLI environment, users need immediate feedback that the process hasn't hung. A simple tick-based spinner in the main loop of blocking operations (like command execution) provides this "heartbeat" without complex threading.
 **Action:** When designing CLI tools, identify the main blocking loops and insert a lightweight "tick" mechanism to update UI indicators.
+
+## 2025-12-18 - Time Perception in CLI
+**Learning:** For long-running CLI processes, users lose track of time and may suspect a hang. Adding an explicit elapsed time counter provides reassurance and context without requiring user interaction.
+**Action:** Include elapsed time indicators for any CLI operation expected to take more than a few seconds.
