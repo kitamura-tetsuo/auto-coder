@@ -143,7 +143,11 @@ class AutomationEngine:
         - Creation time ascending (oldest first)
         """
         from .pr_processor import _extract_linked_issues_from_pr_body, _is_dependabot_pr, _is_jules_pr
-        from .util.github_action import _check_github_actions_status, check_github_actions_and_exit_if_in_progress
+        from .util.github_action import (
+            _check_github_actions_status,
+            check_github_actions_and_exit_if_in_progress,
+            preload_github_actions_status,
+        )
 
         candidates: List[Candidate] = []
         candidates_count = 0
@@ -151,8 +155,12 @@ class AutomationEngine:
         try:
             # Collect PR candidates
             prs = self.github.get_open_pull_requests(repo_name)
-            for pr in prs:
-                pr_data = self.github.get_pr_details(pr)
+
+            # Preload PR data and GitHub Actions statuses to avoid N+1 API calls
+            pr_data_pairs = [(pr, self.github.get_pr_details(pr)) for pr in prs]
+            preload_github_actions_status(repo_name, [p[1] for p in pr_data_pairs])
+
+            for pr, pr_data in pr_data_pairs:
                 labels = pr_data.get("labels", []) or []
 
                 pr_number = pr_data.get("number")
