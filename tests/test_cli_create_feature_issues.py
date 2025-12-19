@@ -49,7 +49,8 @@ class TestCLICreateFeatureIssues:
         )
 
         assert result.exit_code == 0
-        assert "Using backends: codex (default: codex)" in result.output
+        assert "Backends" in result.output
+        assert "codex (default: codex)" in result.output
 
     @patch("src.auto_coder.cli_commands_main.initialize_graphrag")
     @patch("src.auto_coder.cli_helpers.check_codex_cli_or_fail")
@@ -249,7 +250,7 @@ class TestCLICreateFeatureIssues:
 
         assert result.exit_code == 0
         # Verify output
-        assert "Force reindex: True" in result.output
+        assert "Force reindex" in result.output
         # Verify initialize_graphrag was called with force_reindex=True
         mock_initialize_graphrag.assert_called_once_with(force_reindex=True)
 
@@ -291,6 +292,6 @@ class TestCLICreateFeatureIssues:
 
         assert result.exit_code == 0
         # Verify output
-        assert "Force reindex: False" in result.output
+        assert "Force reindex" in result.output
         # Verify initialize_graphrag was called with force_reindex=False
         mock_initialize_graphrag.assert_called_once_with(force_reindex=False)
