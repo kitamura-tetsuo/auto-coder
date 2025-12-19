@@ -225,10 +225,10 @@ class GitHubClient:
                 commits_count = len(commits)
 
                 # Labels
-                labels = [l.get("name") for l in pr.get("labels", [])]
+                labels = [label.get("name") for label in pr.get("labels", [])]
 
                 # Assignees
-                assignees = [a.get("login") for a in pr.get("assignees", [])]
+                assignees = [assignee.get("login") for assignee in pr.get("assignees", [])]
 
                 # Author
                 author = pr.get("author", {}).get("login")
