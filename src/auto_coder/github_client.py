@@ -238,7 +238,7 @@ class GitHubClient:
                     "number": pr.get("number"),
                     "title": pr.get("title"),
                     "body": pr.get("body", "") or "",
-                    "state": pr.get("state", "").lower(), # Ensure lowercase 'open'
+                    "state": pr.get("state", "").lower(),  # Ensure lowercase 'open'
                     "labels": labels,
                     "assignees": assignees,
                     "created_at": pr.get("createdAt"),
@@ -257,13 +257,8 @@ class GitHubClient:
                     "deletions": pr.get("deletions", 0),
                     "changed_files": pr.get("changedFiles", 0),
                     # Extra fields useful for avoiding N+1 and providing missing nested data
-                    "head": {
-                        "ref": pr.get("headRefName"),
-                        "sha": pr.get("headRefOid")
-                    },
-                    "base": {
-                        "ref": pr.get("baseRefName")
-                    }
+                    "head": {"ref": pr.get("headRefName"), "sha": pr.get("headRefOid")},
+                    "base": {"ref": pr.get("baseRefName")},
                 }
 
                 processed_prs.append(processed_pr)
