@@ -1,6 +1,7 @@
 """
 UI helper functions for the CLI.
 """
+
 import os
 from typing import Any, Dict
 
