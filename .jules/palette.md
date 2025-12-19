@@ -13,3 +13,7 @@
 ## 2025-12-18 - Time Perception in CLI
 **Learning:** For long-running CLI processes, users lose track of time and may suspect a hang. Adding an explicit elapsed time counter provides reassurance and context without requiring user interaction.
 **Action:** Include elapsed time indicators for any CLI operation expected to take more than a few seconds.
+
+## 2025-12-19 - Information Density in CLI Startup
+**Learning:** Displaying configuration as a dense "wall of text" makes it hard for users to verify their settings at a glance. Structured, aligned output with visual separation (colors/icons) drastically improves readability and confidence before a long-running process starts.
+**Action:** When printing startup configuration, use a key-value alignment strategy and grouped summaries instead of sequential log lines.

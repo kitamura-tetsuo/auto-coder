@@ -568,16 +568,10 @@ class LabelManager:
 
             except Exception as e:
                 if attempt < self.max_retries - 1:
-                    logger.warning(
-                        f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} "
-                        f"(attempt {attempt + 1}/{self.max_retries}): {e}. Retrying in {self.retry_delay}s..."
-                    )
+                    logger.warning(f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} " f"(attempt {attempt + 1}/{self.max_retries}): {e}. Retrying in {self.retry_delay}s...")
                     time.sleep(self.retry_delay)
                 else:
-                    logger.error(
-                        f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} "
-                        f"after {self.max_retries} attempts: {e}"
-                    )
+                    logger.error(f"Failed to remove '{self.label_name}' label from {self.item_type} #{self.item_number} " f"after {self.max_retries} attempts: {e}")
                     # Log but don't raise - we don't want to break the cleanup process
                     return
 
