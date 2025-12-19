@@ -175,6 +175,101 @@ class GitHubClient:
             logger.error(f"Failed to get pull requests from {repo_name}: {e}")
             raise
 
+    def get_open_prs_json(self, repo_name: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get open pull requests with detailed information using gh CLI to avoid N+1 API calls.
+
+        Args:
+            repo_name: Repository name (owner/repo)
+            limit: Optional limit on number of PRs to fetch
+
+        Returns:
+            List of PR data dictionaries compatible with get_pr_details
+        """
+        try:
+            gh_logger = get_gh_logger()
+            # Request all fields needed for filtering and prioritization
+            # Including additions, deletions, changedFiles as they are supported by gh pr list --json
+            fields = "number,title,body,state,labels,assignees,createdAt,updatedAt,url,author,headRefName,headRefOid,baseRefName,mergeable,isDraft,comments,commits,additions,deletions,changedFiles"
+
+            cmd = ["gh", "pr", "list", "--repo", repo_name, "--json", fields, "--state", "open"]
+            if limit:
+                cmd.extend(["--limit", str(limit)])
+            else:
+                # Default limit for gh pr list is 30. We want all open PRs.
+                # Setting a high limit (1000) to emulate getting all open PRs.
+                cmd.extend(["--limit", "1000"])
+
+            result = gh_logger.execute_with_logging(cmd, repo=repo_name, capture_output=True)
+
+            if not result.success:
+                logger.error(f"Failed to get PR list via gh CLI: {result.stderr}")
+                return []
+
+            pr_list = json.loads(result.stdout)
+            processed_prs = []
+
+            for pr in pr_list:
+                # Map fields to match get_pr_details format
+
+                # Mergeable mapping
+                mergeable_status = pr.get("mergeable")
+                mergeable = None
+                if mergeable_status == "MERGEABLE":
+                    mergeable = True
+                elif mergeable_status == "CONFLICTING":
+                    mergeable = False
+                # "UNKNOWN" remains None
+
+                # Commits count
+                commits = pr.get("commits", [])
+                commits_count = len(commits)
+
+                # Labels
+                labels = [label.get("name") for label in pr.get("labels", [])]
+
+                # Assignees
+                assignees = [assignee.get("login") for assignee in pr.get("assignees", [])]
+
+                # Author
+                author = pr.get("author", {}).get("login")
+
+                # Map to get_pr_details structure
+                processed_pr = {
+                    "number": pr.get("number"),
+                    "title": pr.get("title"),
+                    "body": pr.get("body", "") or "",
+                    "state": pr.get("state", "").lower(),  # Ensure lowercase 'open'
+                    "labels": labels,
+                    "assignees": assignees,
+                    "created_at": pr.get("createdAt"),
+                    "updated_at": pr.get("updatedAt"),
+                    "url": pr.get("url"),
+                    "author": author,
+                    "head_branch": pr.get("headRefName"),
+                    "base_branch": pr.get("baseRefName"),
+                    "mergeable": mergeable,
+                    "draft": pr.get("isDraft"),
+                    "comments_count": len(pr.get("comments", [])),
+                    # review_comments_count is not available in gh pr list --json
+                    "review_comments_count": 0,
+                    "commits_count": commits_count,
+                    "additions": pr.get("additions", 0),
+                    "deletions": pr.get("deletions", 0),
+                    "changed_files": pr.get("changedFiles", 0),
+                    # Extra fields useful for avoiding N+1 and providing missing nested data
+                    "head": {"ref": pr.get("headRefName"), "sha": pr.get("headRefOid")},
+                    "base": {"ref": pr.get("baseRefName")},
+                }
+
+                processed_prs.append(processed_pr)
+
+            logger.info(f"Retrieved {len(processed_prs)} open PRs via gh CLI")
+            return processed_prs
+
+        except Exception as e:
+            logger.error(f"Error getting PR list via gh CLI: {e}")
+            return []
+
     def get_issue_details(self, issue: Issue.Issue) -> Dict[str, Any]:
         """Extract detailed information from an issue."""
         return {

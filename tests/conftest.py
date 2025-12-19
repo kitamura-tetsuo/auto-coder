@@ -133,6 +133,10 @@ def mock_github_client(mock_github_token):
     """Mock GitHub client for testing."""
     client = Mock()
     client.token = mock_github_token
+    # Set get_open_prs_json to return an empty list by default to prevent iteration errors
+    client.get_open_prs_json.return_value = []
+    # Set get_open_issues to return an empty list by default to prevent iteration errors
+    client.get_open_issues.return_value = []
     return client
 
 
