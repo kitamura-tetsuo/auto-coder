@@ -5,10 +5,12 @@ from unittest import mock
 import os
 from src.auto_coder.graphrag_docker_manager import GraphRAGDockerManager
 
+
 @pytest.fixture
 def mock_executor():
     """Create a mock CommandExecutor."""
     return mock.MagicMock()
+
 
 @pytest.fixture
 def docker_manager(mock_executor):
@@ -30,6 +32,7 @@ def docker_manager(mock_executor):
             ):
                 manager = GraphRAGDockerManager()
                 return manager
+
 
 def test_run_docker_compose_preserves_password_with_sudo(docker_manager, mock_executor):
     """Test that docker compose preserves NEO4J_PASSWORD when retrying with sudo."""
@@ -64,4 +67,4 @@ def test_run_docker_compose_preserves_password_with_sudo(docker_manager, mock_ex
         has_preserve = any(arg == "-E" or arg == "--preserve-env=NEO4J_PASSWORD" for arg in second_call_args)
 
         if not has_preserve:
-             pytest.fail(f"Sudo command does not preserve environment variables: {second_call_args}")
+            pytest.fail(f"Sudo command does not preserve environment variables: {second_call_args}")
