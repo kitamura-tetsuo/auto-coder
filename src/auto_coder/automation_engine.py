@@ -163,7 +163,19 @@ class AutomationEngine:
                 logger.info("Skipping Dependabot PRs in this run due to 24-hour processing limit.")
 
             # Preload PR data and GitHub Actions statuses to avoid N+1 API calls
-            pr_data_pairs = [(pr, self.github.get_pr_details(pr)) for pr in prs]
+            # Optimized to use get_open_prs_json to batch fetch details
+            pr_data_list = self.github.get_open_prs_json(repo_name)
+            pr_data_map = {d["number"]: d for d in pr_data_list}
+
+            pr_data_pairs = []
+            for pr in prs:
+                if pr.number in pr_data_map:
+                    pr_data_pairs.append((pr, pr_data_map[pr.number]))
+                else:
+                    # Fallback if somehow not in the list (shouldn't happen)
+                    logger.warning(f"PR #{pr.number} not found in bulk fetch, falling back to individual fetch")
+                    pr_data_pairs.append((pr, self.github.get_pr_details(pr)))
+
             preload_github_actions_status(repo_name, [p[1] for p in pr_data_pairs])
 
             for pr, pr_data in pr_data_pairs:
