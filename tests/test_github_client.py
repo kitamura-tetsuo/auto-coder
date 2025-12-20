@@ -1429,6 +1429,26 @@ Some other text that's not indented
         result = client.get_issue_dependencies(body)
         assert sorted(result) == [100, 456, 789]
 
+    @patch("src.auto_coder.github_client.GhApi")
+    @patch("src.auto_coder.github_client.httpx_adapter")
+    def test_get_ghapi_client_uses_httpx_adapter(self, mock_httpx_adapter, mock_ghapi_class, mock_github_token):
+        """Test that _get_ghapi_client correctly patches GhApi._call with httpx_adapter."""
+        # Reset singleton to ensure a fresh instance is created
+        GitHubClient.reset_singleton()
+
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        ghapi_client = client._get_ghapi_client()
+
+        # Assert
+        # Check that GhApi was instantiated
+        mock_ghapi_class.assert_called_once_with(token=mock_github_token, gh_url="https://api.github.com")
+
+        # Check that the _call method was patched with our mock adapter
+        assert hasattr(ghapi_client, "_call")
+        assert ghapi_client._call.__func__ is mock_httpx_adapter
+
 
 class TestGitHubClientLogging:
     """Test cases for GitHub client logging functionality."""
