@@ -5,10 +5,10 @@ Tests for GitHub client functionality.
 import json
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
-import httpx
 
 from src.auto_coder.github_client import GitHubClient
 

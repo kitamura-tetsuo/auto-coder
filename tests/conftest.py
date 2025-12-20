@@ -20,6 +20,7 @@ from src.auto_coder.automation_engine import AutomationEngine
 from src.auto_coder.backend_manager import LLMBackendManager, get_llm_backend_manager
 from src.auto_coder.gemini_client import GeminiClient
 from src.auto_coder.github_client import GitHubClient
+from src.auto_coder.llm_backend_config import reset_llm_config
 
 
 # Test stabilization: eliminate external environment variables and user HOME influence (to ensure consistent CLI behavior)
@@ -50,6 +51,14 @@ def _reset_github_client_singleton():
     GitHubClient.reset_singleton()
     yield
     GitHubClient.reset_singleton()
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_config_singleton():
+    """Reset LLM config singleton between tests to ensure isolation."""
+    reset_llm_config()
+    yield
+    reset_llm_config()
 
 
 @pytest.fixture(autouse=True)

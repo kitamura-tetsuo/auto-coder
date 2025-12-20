@@ -7,7 +7,6 @@ import json
 import subprocess
 import threading
 from typing import Any, Dict, List, Optional, Tuple
-
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
@@ -133,7 +132,7 @@ class GitHubClient:
         if extra_headers:
             headers.update(extra_headers)
 
-        payload = {"query": query}
+        payload: Dict[str, Any] = {"query": query}
         if variables:
             payload["variables"] = variables
 

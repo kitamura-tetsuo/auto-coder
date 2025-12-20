@@ -13,8 +13,7 @@ from src.auto_coder.github_client import GitHubClient
 class TestGitHubClientParentIssue:
     """Test cases for parent issue detection in GitHubClient using GraphQL API."""
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_exists(self, mock_subprocess_run):
+    def test_get_parent_issue_exists(self):
         """Test get_parent_issue when parent issue exists."""
         client = GitHubClient.get_instance("test_token")
 
@@ -36,22 +35,22 @@ class TestGitHubClientParentIssue:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_parent_issue("owner/repo", 100)
-        assert result == 1
+        with patch.object(client._caching_client, "post", return_value=mock_response) as mock_post:
+            result = client.get_parent_issue("owner/repo", 100)
+            assert result == 1
 
-        # Verify the GraphQL-Features header was included
-        mock_subprocess_run.assert_called_once()
-        call_args = mock_subprocess_run.call_args[0][0]
-        assert "-H" in call_args
-        header_index = call_args.index("-H")
-        assert call_args[header_index + 1] == "GraphQL-Features: sub_issues"
+            # Verify the GraphQL-Features header was included
+            mock_post.assert_called_once()
+            call_kwargs = mock_post.call_args
+            headers = call_kwargs.kwargs.get("headers", {})
+            assert headers.get("GraphQL-Features") == "sub_issues"
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_no_parent(self, mock_subprocess_run):
+    def test_get_parent_issue_no_parent(self):
         """Test get_parent_issue when issue has no parent."""
         client = GitHubClient.get_instance("test_token")
 
@@ -68,29 +67,36 @@ class TestGitHubClientParentIssue:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_parent_issue("owner/repo", 1)
-        assert result is None
+        with patch.object(client._caching_client, "post", return_value=mock_response):
+            result = client.get_parent_issue("owner/repo", 1)
+            assert result is None
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_graphql_error(self, mock_subprocess_run):
+    def test_get_parent_issue_graphql_error(self):
         """Test get_parent_issue when GraphQL query fails."""
-        import subprocess
+        import httpx
 
         client = GitHubClient.get_instance("test_token")
 
-        # Mock subprocess error
-        mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")
+        # Mock httpx error
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal Server Error"
 
-        result = client.get_parent_issue("owner/repo", 1)
-        # Should return None on error
-        assert result is None
+        with patch.object(
+            client._caching_client,
+            "post",
+            side_effect=httpx.HTTPStatusError("Server Error", request=Mock(), response=mock_response),
+        ):
+            result = client.get_parent_issue("owner/repo", 1)
+            # Should return None on error
+            assert result is None
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_closed_parent(self, mock_subprocess_run):
+    def test_get_parent_issue_closed_parent(self):
         """Test get_parent_issue when parent issue is closed."""
         client = GitHubClient.get_instance("test_token")
 
@@ -112,20 +118,21 @@ class TestGitHubClientParentIssue:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_parent_issue("owner/repo", 100)
-        # Should still return parent issue number even if closed
-        assert result == 1
+        with patch.object(client._caching_client, "post", return_value=mock_response):
+            result = client.get_parent_issue("owner/repo", 100)
+            # Should still return parent issue number even if closed
+            assert result == 1
 
 
 class TestGitHubClientParentIssueBody:
     """Test cases for parent issue body retrieval in GitHubClient."""
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_body_exists(self, mock_subprocess_run):
+    def test_get_parent_issue_body_exists(self):
         """Test get_parent_issue_body when parent issue exists with body."""
         client = GitHubClient.get_instance("test_token")
 
@@ -162,19 +169,22 @@ class TestGitHubClientParentIssueBody:
             }
         }
 
-        mock_result1 = Mock()
-        mock_result1.stdout = json.dumps(parent_details_response)
-        mock_result2 = Mock()
-        mock_result2.stdout = json.dumps(issue_with_body_response)
+        mock_response1 = Mock()
+        mock_response1.status_code = 200
+        mock_response1.json.return_value = parent_details_response
+        mock_response1.raise_for_status = Mock()
 
-        mock_subprocess_run.side_effect = [mock_result1, mock_result2]
+        mock_response2 = Mock()
+        mock_response2.status_code = 200
+        mock_response2.json.return_value = issue_with_body_response
+        mock_response2.raise_for_status = Mock()
 
-        result = client.get_parent_issue_body("owner/repo", 100)
-        assert result == "This is the parent issue body with full details."
-        assert mock_subprocess_run.call_count == 2
+        with patch.object(client._caching_client, "post", side_effect=[mock_response1, mock_response2]) as mock_post:
+            result = client.get_parent_issue_body("owner/repo", 100)
+            assert result == "This is the parent issue body with full details."
+            assert mock_post.call_count == 2
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_body_no_parent(self, mock_subprocess_run):
+    def test_get_parent_issue_body_no_parent(self):
         """Test get_parent_issue_body when issue has no parent."""
         client = GitHubClient.get_instance("test_token")
 
@@ -191,17 +201,18 @@ class TestGitHubClientParentIssueBody:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_parent_issue_body("owner/repo", 1)
-        assert result is None
-        # Should only call once for get_parent_issue_details
-        assert mock_subprocess_run.call_count == 1
+        with patch.object(client._caching_client, "post", return_value=mock_response) as mock_post:
+            result = client.get_parent_issue_body("owner/repo", 1)
+            assert result is None
+            # Should only call once for get_parent_issue_details
+            assert mock_post.call_count == 1
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_body_empty_body(self, mock_subprocess_run):
+    def test_get_parent_issue_body_empty_body(self):
         """Test get_parent_issue_body when parent issue has empty body."""
         client = GitHubClient.get_instance("test_token")
 
@@ -238,20 +249,23 @@ class TestGitHubClientParentIssueBody:
             }
         }
 
-        mock_result1 = Mock()
-        mock_result1.stdout = json.dumps(parent_details_response)
-        mock_result2 = Mock()
-        mock_result2.stdout = json.dumps(issue_with_empty_body_response)
+        mock_response1 = Mock()
+        mock_response1.status_code = 200
+        mock_response1.json.return_value = parent_details_response
+        mock_response1.raise_for_status = Mock()
 
-        mock_subprocess_run.side_effect = [mock_result1, mock_result2]
+        mock_response2 = Mock()
+        mock_response2.status_code = 200
+        mock_response2.json.return_value = issue_with_empty_body_response
+        mock_response2.raise_for_status = Mock()
 
-        result = client.get_parent_issue_body("owner/repo", 100)
-        assert result is None
+        with patch.object(client._caching_client, "post", side_effect=[mock_response1, mock_response2]):
+            result = client.get_parent_issue_body("owner/repo", 100)
+            assert result is None
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_body_graphql_error(self, mock_subprocess_run):
+    def test_get_parent_issue_body_graphql_error(self):
         """Test get_parent_issue_body when fetching parent issue body fails."""
-        import subprocess
+        import httpx
 
         client = GitHubClient.get_instance("test_token")
 
@@ -273,15 +287,25 @@ class TestGitHubClientParentIssueBody:
             }
         }
 
-        mock_result1 = Mock()
-        mock_result1.stdout = json.dumps(parent_details_response)
-        mock_subprocess_run.side_effect = [mock_result1, subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")]
+        mock_response1 = Mock()
+        mock_response1.status_code = 200
+        mock_response1.json.return_value = parent_details_response
+        mock_response1.raise_for_status = Mock()
 
-        result = client.get_parent_issue_body("owner/repo", 100)
-        assert result is None
+        # Second call fails
+        mock_error_response = Mock()
+        mock_error_response.status_code = 500
+        mock_error_response.text = "Internal Server Error"
 
-    @patch("subprocess.run")
-    def test_get_parent_issue_body_multiline_body(self, mock_subprocess_run):
+        with patch.object(
+            client._caching_client,
+            "post",
+            side_effect=[mock_response1, httpx.HTTPStatusError("Server Error", request=Mock(), response=mock_error_response)],
+        ):
+            result = client.get_parent_issue_body("owner/repo", 100)
+            assert result is None
+
+    def test_get_parent_issue_body_multiline_body(self):
         """Test get_parent_issue_body with multiline body content."""
         client = GitHubClient.get_instance("test_token")
 
@@ -326,14 +350,18 @@ It contains multiple paragraphs and detailed information about the issue.
             }
         }
 
-        mock_result1 = Mock()
-        mock_result1.stdout = json.dumps(parent_details_response)
-        mock_result2 = Mock()
-        mock_result2.stdout = json.dumps(issue_with_multiline_body_response)
+        mock_response1 = Mock()
+        mock_response1.status_code = 200
+        mock_response1.json.return_value = parent_details_response
+        mock_response1.raise_for_status = Mock()
 
-        mock_subprocess_run.side_effect = [mock_result1, mock_result2]
+        mock_response2 = Mock()
+        mock_response2.status_code = 200
+        mock_response2.json.return_value = issue_with_multiline_body_response
+        mock_response2.raise_for_status = Mock()
 
-        result = client.get_parent_issue_body("owner/repo", 100)
-        assert result == multiline_body
-        assert "multiple paragraphs" in result
-        assert "- Point 1" in result
+        with patch.object(client._caching_client, "post", side_effect=[mock_response1, mock_response2]):
+            result = client.get_parent_issue_body("owner/repo", 100)
+            assert result == multiline_body
+            assert "multiple paragraphs" in result
+            assert "- Point 1" in result
