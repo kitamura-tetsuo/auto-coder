@@ -2059,15 +2059,15 @@ enabled = true
             assert gemini_config.timeout == 30
 
 
-class TestBackendForFailedPR:
-    """Test cases for backend_for_failed_pr configuration."""
+class TestBackendWithHighScore:
+    """Test cases for backend_with_high_score configuration."""
 
-    def test_backend_for_failed_pr_optional_in_initialization(self):
-        """Test that backend_for_failed_pr is optional during initialization."""
+    def test_backend_with_high_score_optional_in_initialization(self):
+        """Test that backend_with_high_score is optional during initialization."""
         config = LLMBackendConfiguration()
-        assert config.backend_for_failed_pr is None
+        assert config.backend_with_high_score is None
 
-    def test_backend_for_failed_pr_with_custom_values(self):
+    def test_backend_with_high_score_with_custom_values(self):
         """Test creating LLMBackendConfiguration with custom fallback backend."""
         fallback_backend = BackendConfig(
             name="fallback",
@@ -2077,23 +2077,23 @@ class TestBackendForFailedPR:
             temperature=0.5,
             backend_type="codex",
         )
-        config = LLMBackendConfiguration(backend_for_failed_pr=fallback_backend)
+        config = LLMBackendConfiguration(backend_with_high_score=fallback_backend)
 
-        assert config.backend_for_failed_pr is not None
-        assert config.backend_for_failed_pr.name == "fallback"
-        assert config.backend_for_failed_pr.model == "fallback-model"
-        assert config.backend_for_failed_pr.api_key == "fallback_key"
-        assert config.backend_for_failed_pr.temperature == 0.5
-        assert config.backend_for_failed_pr.backend_type == "codex"
+        assert config.backend_with_high_score is not None
+        assert config.backend_with_high_score.name == "fallback"
+        assert config.backend_with_high_score.model == "fallback-model"
+        assert config.backend_with_high_score.api_key == "fallback_key"
+        assert config.backend_with_high_score.temperature == 0.5
+        assert config.backend_with_high_score.backend_type == "codex"
 
-    def test_save_and_load_backend_for_failed_pr(self):
+    def test_save_and_load_backend_with_high_score(self):
         """Test saving and loading configuration with fallback backend."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "test_fallback_config.toml"
 
             # Create configuration with fallback backend
             config = LLMBackendConfiguration()
-            config.backend_for_failed_pr = BackendConfig(
+            config.backend_with_high_score = BackendConfig(
                 name="gemini-fallback",
                 enabled=True,
                 model="gemini-2.0-flash",
@@ -2114,8 +2114,8 @@ class TestBackendForFailedPR:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify fallback backend was persisted
-            assert loaded_config.backend_for_failed_pr is not None
-            fallback = loaded_config.backend_for_failed_pr
+            assert loaded_config.backend_with_high_score is not None
+            fallback = loaded_config.backend_with_high_score
             assert fallback.name == "gemini-fallback"
             assert fallback.model == "gemini-2.0-flash"
             assert fallback.api_key == "fallback_api_key"
@@ -2124,8 +2124,8 @@ class TestBackendForFailedPR:
             assert fallback.backend_type == "gemini"
             assert fallback.enabled is True
 
-    def test_load_toml_with_backend_for_failed_pr_section(self):
-        """Test loading TOML file with [backend_for_failed_pr] section."""
+    def test_load_toml_with_backend_with_high_score_section(self):
+        """Test loading TOML file with [backend_with_high_score] section."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "llm_config.toml"
             data = {
@@ -2140,7 +2140,7 @@ class TestBackendForFailedPR:
                         "model": "gemini-pro",
                     },
                 },
-                "backend_for_failed_pr": {
+                "backend_with_high_score": {
                     "enabled": True,
                     "model": "gemini-2.0-flash",
                     "api_key": "fallback_key_123",
@@ -2156,8 +2156,8 @@ class TestBackendForFailedPR:
             config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify fallback backend was loaded
-            assert config.backend_for_failed_pr is not None
-            fallback = config.backend_for_failed_pr
+            assert config.backend_with_high_score is not None
+            fallback = config.backend_with_high_score
             assert fallback.model == "gemini-2.0-flash"
             assert fallback.api_key == "fallback_key_123"
             assert fallback.temperature == 0.2
@@ -2166,8 +2166,8 @@ class TestBackendForFailedPR:
             assert fallback.providers == ["fallback-provider"]
             assert fallback.enabled is True
 
-    def test_load_toml_without_backend_for_failed_pr_section(self):
-        """Test loading TOML file without [backend_for_failed_pr] section (backward compatibility)."""
+    def test_load_toml_without_backend_with_high_score_section(self):
+        """Test loading TOML file without [backend_with_high_score] section (backward compatibility)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "llm_config.toml"
             data = {
@@ -2189,40 +2189,40 @@ class TestBackendForFailedPR:
             config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify fallback backend is None when not in config
-            assert config.backend_for_failed_pr is None
+            assert config.backend_with_high_score is None
 
-    def test_get_backend_for_failed_pr_method(self):
-        """Test get_backend_for_failed_pr method."""
+    def test_get_backend_with_high_score_method(self):
+        """Test get_backend_with_high_score method."""
         config = LLMBackendConfiguration()
-        assert config.get_backend_for_failed_pr() is None
+        assert config.get_backend_with_high_score() is None
 
         # Set fallback backend
         fallback = BackendConfig(name="test-fallback", model="test-model")
-        config.backend_for_failed_pr = fallback
+        config.backend_with_high_score = fallback
 
         # Verify method returns the fallback backend
-        result = config.get_backend_for_failed_pr()
+        result = config.get_backend_with_high_score()
         assert result is fallback
         assert result.name == "test-fallback"
         assert result.model == "test-model"
 
-    def test_get_model_for_failed_pr_backend_method(self):
-        """Test get_model_for_failed_pr_backend method."""
+    def test_get_model_for_backend_with_high_score_method(self):
+        """Test get_model_for_backend_with_high_score method."""
         config = LLMBackendConfiguration()
 
         # No fallback backend configured
-        assert config.get_model_for_failed_pr_backend() is None
+        assert config.get_model_for_backend_with_high_score() is None
 
         # Fallback backend without model
-        config.backend_for_failed_pr = BackendConfig(name="test-fallback")
-        assert config.get_model_for_failed_pr_backend() is None
+        config.backend_with_high_score = BackendConfig(name="test-fallback")
+        assert config.get_model_for_backend_with_high_score() is None
 
         # Fallback backend with model
-        config.backend_for_failed_pr = BackendConfig(name="test-fallback", model="fallback-model")
-        assert config.get_model_for_failed_pr_backend() == "fallback-model"
+        config.backend_with_high_score = BackendConfig(name="test-fallback", model="fallback-model")
+        assert config.get_model_for_backend_with_high_score() == "fallback-model"
 
-    def test_save_to_file_without_backend_for_failed_pr(self):
-        """Test that save_to_file works when backend_for_failed_pr is not configured."""
+    def test_save_to_file_without_backend_with_high_score(self):
+        """Test that save_to_file works when backend_with_high_score is not configured."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "test_no_fallback.toml"
 
@@ -2241,18 +2241,18 @@ class TestBackendForFailedPR:
             with open(config_file, "r") as f:
                 data = toml.load(f)
 
-            # Verify no backend_for_failed_pr section in the file
-            assert "backend_for_failed_pr" not in data
+            # Verify no backend_with_high_score section in the file
+            assert "backend_with_high_score" not in data
             assert data["backend"]["default"] == "gemini"
 
-    def test_backend_for_failed_pr_all_fields(self):
+    def test_backend_with_high_score_all_fields(self):
         """Test that all BackendConfig fields are properly saved and loaded for fallback backend."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "test_all_fields_fallback.toml"
 
             # Create configuration with all fields set for fallback backend
             config = LLMBackendConfiguration()
-            config.backend_for_failed_pr = BackendConfig(
+            config.backend_with_high_score = BackendConfig(
                 name="full-fallback",
                 enabled=False,
                 model="full-fallback-model",
@@ -2284,7 +2284,7 @@ class TestBackendForFailedPR:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify all fields were persisted
-            fallback = loaded_config.backend_for_failed_pr
+            fallback = loaded_config.backend_with_high_score
             assert fallback is not None
             assert fallback.enabled is False
             assert fallback.model == "full-fallback-model"
@@ -2308,14 +2308,14 @@ class TestBackendForFailedPR:
             assert fallback.usage_markers == ["fallback-marker1", "fallback-marker2"]
             assert fallback.options_for_noedit == ["fallback-noedit1", "fallback-noedit2"]
 
-    def test_backend_for_failed_pr_minimal_config(self):
+    def test_backend_with_high_score_minimal_config(self):
         """Test fallback backend with minimal configuration (only required fields)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             config_file = Path(tmpdir) / "test_minimal_fallback.toml"
 
             # Create configuration with minimal fallback backend
             config = LLMBackendConfiguration()
-            config.backend_for_failed_pr = BackendConfig(name="minimal-fallback")
+            config.backend_with_high_score = BackendConfig(name="minimal-fallback")
 
             # Save to file
             config.save_to_file(str(config_file))
@@ -2324,7 +2324,7 @@ class TestBackendForFailedPR:
             loaded_config = LLMBackendConfiguration.load_from_file(str(config_file))
 
             # Verify minimal config was persisted with defaults
-            fallback = loaded_config.backend_for_failed_pr
+            fallback = loaded_config.backend_with_high_score
             assert fallback is not None
             assert fallback.name == "minimal-fallback"
             assert fallback.enabled is True  # Default value
