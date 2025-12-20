@@ -10,14 +10,19 @@ import pytest
 from src.auto_coder.github_client import GitHubClient
 
 
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    """Reset GitHubClient singleton before each test."""
+    GitHubClient.reset_singleton()
+    yield
+    GitHubClient.reset_singleton()
+
+
 class TestGitHubClientSubIssues:
     """Test cases for sub-issues detection in GitHubClient using GraphQL API."""
 
-    @patch("subprocess.run")
-    def test_get_open_sub_issues_all_open(self, mock_subprocess_run):
+    def test_get_open_sub_issues_all_open(self):
         """Test get_open_sub_issues when all sub-issues are open."""
-        client = GitHubClient.get_instance("test_token")
-
         # Mock GraphQL response
         graphql_response = {
             "data": {
@@ -52,25 +57,27 @@ class TestGitHubClientSubIssues:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_open_sub_issues("owner/repo", 1)
-        assert result == [100, 200, 300]
+        mock_caching_client = Mock()
+        mock_caching_client.post.return_value = mock_response
 
-        # Verify the GraphQL-Features header was included
-        mock_subprocess_run.assert_called_once()
-        call_args = mock_subprocess_run.call_args[0][0]
-        assert "-H" in call_args
-        header_index = call_args.index("-H")
-        assert call_args[header_index + 1] == "GraphQL-Features: sub_issues"
+        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+            client = GitHubClient.get_instance("test_token")
+            result = client.get_open_sub_issues("owner/repo", 1)
+            assert result == [100, 200, 300]
 
-    @patch("subprocess.run")
-    def test_get_open_sub_issues_some_closed(self, mock_subprocess_run):
+            # Verify the GraphQL-Features header was included
+            mock_caching_client.post.assert_called_once()
+            call_kwargs = mock_caching_client.post.call_args
+            headers = call_kwargs.kwargs.get("headers", {})
+            assert headers.get("GraphQL-Features") == "sub_issues"
+
+    def test_get_open_sub_issues_some_closed(self):
         """Test get_open_sub_issues when some sub-issues are closed."""
-        client = GitHubClient.get_instance("test_token")
-
         # Mock GraphQL response with mixed states
         graphql_response = {
             "data": {
@@ -105,18 +112,21 @@ class TestGitHubClientSubIssues:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_open_sub_issues("owner/repo", 1)
-        assert result == [100, 300]
+        mock_caching_client = Mock()
+        mock_caching_client.post.return_value = mock_response
 
-    @patch("subprocess.run")
-    def test_get_open_sub_issues_all_closed(self, mock_subprocess_run):
+        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+            client = GitHubClient.get_instance("test_token")
+            result = client.get_open_sub_issues("owner/repo", 1)
+            assert result == [100, 300]
+
+    def test_get_open_sub_issues_all_closed(self):
         """Test get_open_sub_issues when all sub-issues are closed."""
-        client = GitHubClient.get_instance("test_token")
-
         # Mock GraphQL response with all closed
         graphql_response = {
             "data": {
@@ -145,18 +155,21 @@ class TestGitHubClientSubIssues:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_open_sub_issues("owner/repo", 1)
-        assert result == []
+        mock_caching_client = Mock()
+        mock_caching_client.post.return_value = mock_response
 
-    @patch("subprocess.run")
-    def test_get_open_sub_issues_no_sub_issues(self, mock_subprocess_run):
+        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+            client = GitHubClient.get_instance("test_token")
+            result = client.get_open_sub_issues("owner/repo", 1)
+            assert result == []
+
+    def test_get_open_sub_issues_no_sub_issues(self):
         """Test get_open_sub_issues when issue has no sub-issues."""
-        client = GitHubClient.get_instance("test_token")
-
         # Mock GraphQL response with no sub-issues
         graphql_response = {
             "data": {
@@ -170,23 +183,33 @@ class TestGitHubClientSubIssues:
             }
         }
 
-        mock_result = Mock()
-        mock_result.stdout = json.dumps(graphql_response)
-        mock_subprocess_run.return_value = mock_result
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = graphql_response
+        mock_response.raise_for_status = Mock()
 
-        result = client.get_open_sub_issues("owner/repo", 1)
-        assert result == []
+        mock_caching_client = Mock()
+        mock_caching_client.post.return_value = mock_response
 
-    @patch("subprocess.run")
-    def test_get_open_sub_issues_graphql_error(self, mock_subprocess_run):
+        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+            client = GitHubClient.get_instance("test_token")
+            result = client.get_open_sub_issues("owner/repo", 1)
+            assert result == []
+
+    def test_get_open_sub_issues_graphql_error(self):
         """Test get_open_sub_issues when GraphQL query fails."""
-        import subprocess
+        import httpx
 
-        client = GitHubClient.get_instance("test_token")
+        # Mock httpx error
+        mock_error_response = Mock()
+        mock_error_response.status_code = 500
+        mock_error_response.text = "Internal Server Error"
 
-        # Mock subprocess error
-        mock_subprocess_run.side_effect = subprocess.CalledProcessError(1, "gh api graphql", stderr="GraphQL error")
+        mock_caching_client = Mock()
+        mock_caching_client.post.side_effect = httpx.HTTPStatusError("Server Error", request=Mock(), response=mock_error_response)
 
-        result = client.get_open_sub_issues("owner/repo", 1)
-        # Should return empty list on error
-        assert result == []
+        with patch("src.auto_coder.github_client.get_caching_client", return_value=mock_caching_client):
+            client = GitHubClient.get_instance("test_token")
+            result = client.get_open_sub_issues("owner/repo", 1)
+            # Should return empty list on error
+            assert result == []

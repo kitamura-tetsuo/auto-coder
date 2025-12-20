@@ -119,7 +119,7 @@ requires-dist = [
     { name = "flake8", marker = "extra == 'dev'", specifier = ">=6.0.0" },
     { name = "gitpython", specifier = ">=3.1.0" },
     { name = "google-auth", specifier = ">=2.0.0" },
-    { name = "hishel", specifier = ">=0.1.5" },
+    { name = "hishel", extras = ["sqlite"], specifier = ">=1.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "isort", marker = "extra == 'dev'", specifier = ">=5.0.0" },
     { name = "loguru", specifier = ">=0.7.0" },

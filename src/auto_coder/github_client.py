@@ -7,11 +7,13 @@ import subprocess
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
 from .gh_logger import get_gh_logger
 from .logger_config import get_logger
+from .util.gh_cache import get_caching_client
 
 logger = get_logger(__name__)
 
@@ -62,6 +64,7 @@ class GitHubClient:
         self.disable_labels = disable_labels
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
+        self._caching_client: Optional[httpx.Client] = None
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
@@ -103,6 +106,58 @@ class GitHubClient:
         """
         with cls._lock:
             cls._instance = None
+
+    def graphql_query(self, query: str, variables: Optional[Dict[str, Any]] = None, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Executes a GraphQL query against the GitHub API using a caching client.
+
+        Args:
+            query: The GraphQL query string.
+            variables: A dictionary of variables for the query.
+            extra_headers: Optional extra headers to include in the request.
+
+        Returns:
+            The JSON response from the API as a dictionary.
+
+        Raises:
+            httpx.HTTPStatusError: If the API returns a non-200 status code.
+            ValueError: If the response contains GraphQL errors.
+        """
+        if self._caching_client is None:
+            self._caching_client = get_caching_client()
+        url = "https://api.github.com/graphql"
+        headers = {
+            "Authorization": f"bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+
+        payload: Dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
+
+        try:
+            response = self._caching_client.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if "errors" in data:
+                error_messages = [err.get("message", "Unknown error") for err in data["errors"]]
+                logger.error(f"GraphQL query failed with errors: {', '.join(error_messages)}")
+                # For cache debugging, log if the response was from cache
+                if getattr(response, "from_cache", False):
+                    logger.debug("GraphQL error response was served from cache.")
+                raise ValueError(f"GraphQL query failed: {', '.join(error_messages)}")
+
+            return data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"GraphQL query failed with HTTP status {e.response.status_code}: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during GraphQL query: {e}")
+            raise
 
     def clear_sub_issue_cache(self) -> None:
         """Clear the sub-issue cache."""
@@ -268,33 +323,9 @@ class GitHubClient:
               }
             }
             """
+            variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
+            data = self.graphql_query(query, variables)
 
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-f",
-                    f"query={query}",
-                    "-F",
-                    f"owner={owner}",
-                    "-F",
-                    f"repo={repo}",
-                    "-F",
-                    f"issueNumber={issue_number}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-            if result.returncode != 0:
-                logger.warning(f"GraphQL query failed for issue #{issue_number}: {result.stderr}")
-                return []
-
-            data = json.loads(result.stdout)
             timeline_items = data.get("data", {}).get("repository", {}).get("issue", {}).get("timelineItems", {}).get("nodes", [])
 
             pr_numbers = []
@@ -429,9 +460,9 @@ class GitHubClient:
 
             # GraphQL query to fetch sub-issues (new sub-issues feature)
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   subIssues(first: 100) {
@@ -445,31 +476,10 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                issue_number,
-            )
-
-            # Execute GraphQL query using gh CLI with sub_issues feature header
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-H",
-                    "GraphQL-Features: sub_issues",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
+            headers = {"GraphQL-Features": "sub_issues"}
+            data = self.graphql_query(query, variables, extra_headers=headers)
 
             # Extract open sub-issues
             open_sub_issues = []
@@ -487,9 +497,6 @@ class GitHubClient:
 
             return open_sub_issues
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}")
-            return []
         except Exception as e:
             logger.error(f"Failed to get open sub-issues for issue #{issue_number}: {e}")
             return []
@@ -509,9 +516,9 @@ class GitHubClient:
 
             # GraphQL query to fetch closingIssuesReferences
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                pullRequest(number: %d) {
+            query($owner: String!, $repo: String!, $prNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $prNumber) {
                   number
                   title
                   closingIssuesReferences(first: 100) {
@@ -524,29 +531,9 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                pr_number,
-            )
-
-            # Execute GraphQL query using gh CLI
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            variables = {"owner": owner, "repo": repo, "prNumber": pr_number}
+            data = self.graphql_query(query, variables)
 
             # Extract closing issues
             closing_issues = []
@@ -560,9 +547,6 @@ class GitHubClient:
 
             return closing_issues
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to execute gh GraphQL query for PR #{pr_number}: {e.stderr}")
-            return []
         except Exception as e:
             logger.error(f"Failed to get closing issues for PR #{pr_number}: {e}")
             return []
@@ -583,9 +567,9 @@ class GitHubClient:
             # GraphQL query to fetch parent issue (sub-issues feature)
             # Note: Use 'parent' field, not 'parentIssue'
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   parent {
@@ -599,31 +583,10 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                issue_number,
-            )
-
-            # Execute GraphQL query using gh CLI with sub_issues feature header
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-H",
-                    "GraphQL-Features: sub_issues",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
+            headers = {"GraphQL-Features": "sub_issues"}
+            data = self.graphql_query(query, variables, extra_headers=headers)
 
             # Extract parent issue
             parent_issue = data.get("data", {}).get("repository", {}).get("issue", {}).get("parent")
@@ -634,9 +597,6 @@ class GitHubClient:
 
             return None
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}")
-            return None
         except Exception as e:
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
@@ -685,9 +645,9 @@ class GitHubClient:
             # Now fetch the full parent issue with body using GraphQL
             owner, repo = repo_name.split("/")
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   body
@@ -696,29 +656,9 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                parent_number,
-            )
-
-            # Execute GraphQL query using gh CLI
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            variables = {"owner": owner, "repo": repo, "issueNumber": parent_number}
+            data = self.graphql_query(query, variables)
 
             # Extract parent issue body
             parent_issue = data.get("data", {}).get("repository", {}).get("issue", {})
@@ -731,9 +671,6 @@ class GitHubClient:
             logger.debug(f"No body found for parent issue #{parent_number}")
             return None
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to execute gh GraphQL query for parent issue body: {e.stderr}")
-            return None
         except Exception as e:
             logger.error(f"Failed to get parent issue body for issue #{issue_number}: {e}")
             return None
@@ -933,9 +870,9 @@ class GitHubClient:
 
             # GraphQL query to fetch sub-issues (new sub-issues feature)
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   subIssues(first: 100) {
@@ -949,31 +886,10 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                issue_number,
-            )
-
-            # Execute GraphQL query using gh CLI with sub_issues feature header
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-H",
-                    "GraphQL-Features: sub_issues",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
+            headers = {"GraphQL-Features": "sub_issues"}
+            data = self.graphql_query(query, variables, extra_headers=headers)
 
             # Extract all sub-issues (both open and closed)
             all_sub_issues = []
@@ -987,9 +903,6 @@ class GitHubClient:
 
             return all_sub_issues
 
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Failed to execute gh GraphQL query for issue #{issue_number}: {e.stderr}")
-            return []
         except Exception as e:
             logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
             return []
