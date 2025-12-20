@@ -569,14 +569,14 @@ class AutomationEngine:
                         # This might be populated by previous calls (e.g. in _get_candidates)
                         # but usually we need to check specifically if we don't have that info
                         pass
-                    
+
                     # Reliable check for sub-issues
                     try:
                         all_sub_issues = self.github.get_all_sub_issues(repo_name, item_number)
                         has_sub_issues = len(all_sub_issues) > 0
                     except Exception as e:
                         logger.warning(f"Failed to check for sub-issues for #{item_number}: {e}")
-                    
+
                     if has_sub_issues:
                         logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing to ensure branch merging.")
                         # Force local processing for parent issues
