@@ -12,8 +12,8 @@ from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
 from .gh_logger import get_gh_logger
-from .util.gh_cache import httpx_adapter
 from .logger_config import get_logger
+from .util.gh_cache import httpx_adapter
 
 logger = get_logger(__name__)
 
