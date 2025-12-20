@@ -190,8 +190,8 @@ class LLMBackendConfiguration:
     backend_for_noedit_order: List[str] = field(default_factory=list)
     backend_for_noedit_default: Optional[str] = None
     # Fallback backend configuration for failed PRs
-    backend_for_failed_pr: Optional[BackendConfig] = None
-    backend_for_failed_pr_order: List[str] = field(default_factory=list)
+    backend_with_high_score: Optional[BackendConfig] = None
+    backend_with_high_score_order: List[str] = field(default_factory=list)
     # Environment variable overrides
     env_prefix: str = "AUTO_CODER_"
     # Configuration file path - relative to user's home directory
@@ -335,7 +335,7 @@ class LLMBackendConfiguration:
                 find_backends_recursive(value, full_key)
 
         # Exclude reserved top-level keys from recursion
-        reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends", "backend_for_failed_pr"}
+        reserved_keys = {"backend", "message_backend", "backend_for_noedit", "backends", "backend_with_high_score"}
 
         # Create a dict of potential top-level backends to recurse
         potential_roots = {k: v for k, v in data.items() if k not in reserved_keys and isinstance(v, dict)}
@@ -394,21 +394,21 @@ class LLMBackendConfiguration:
         if not backend_for_noedit_default:
             backend_for_noedit_default = default_backend
 
-        # Parse backend_for_failed_pr section
-        backend_for_failed_pr_data = data.get("backend_for_failed_pr", {})
-        backend_for_failed_pr = None
-        backend_for_failed_pr_order = []
+        # Parse backend_with_high_score section
+        backend_with_high_score_data = data.get("backend_with_high_score", {})
+        backend_with_high_score = None
+        backend_with_high_score_order = []
 
-        if backend_for_failed_pr_data:
+        if backend_with_high_score_data:
             # Check for order
-            backend_for_failed_pr_order = backend_for_failed_pr_data.get("order", [])
+            backend_with_high_score_order = backend_with_high_score_data.get("order", [])
 
-            # Use "backend_for_failed_pr" as default name if not specified in data
+            # Use "backend_with_high_score" as default name if not specified in data
             # Only parse as a backend config if it has backend-like fields or if order is empty
             # If it has order, it might still have backend fields, but we prioritize order for the manager
             # We still parse it as a config in case it's used as a backend definition too
-            fallback_name = backend_for_failed_pr_data.get("name", "backend_for_failed_pr")
-            backend_for_failed_pr = parse_backend_config(fallback_name, backend_for_failed_pr_data)
+            fallback_name = backend_with_high_score_data.get("name", "backend_with_high_score")
+            backend_with_high_score = parse_backend_config(fallback_name, backend_with_high_score_data)
 
         config = cls(
             backend_order=backend_order,
@@ -416,8 +416,8 @@ class LLMBackendConfiguration:
             backends=backends,
             backend_for_noedit_order=backend_for_noedit_order,
             backend_for_noedit_default=backend_for_noedit_default,
-            backend_for_failed_pr=backend_for_failed_pr,
-            backend_for_failed_pr_order=backend_for_failed_pr_order,
+            backend_with_high_score=backend_with_high_score,
+            backend_with_high_score_order=backend_with_high_score_order,
             config_file_path=config_path or "~/.auto-coder/llm_config.toml",
         )
 
@@ -463,11 +463,11 @@ class LLMBackendConfiguration:
                 "options_for_noedit_explicitly_set": config.options_for_noedit_explicitly_set,
             }
 
-        # Prepare backend_for_failed_pr data
-        backend_for_failed_pr_data = {}
-        if self.backend_for_failed_pr:
-            config = self.backend_for_failed_pr
-            backend_for_failed_pr_data = {
+        # Prepare backend_with_high_score data
+        backend_with_high_score_data = {}
+        if self.backend_with_high_score:
+            config = self.backend_with_high_score
+            backend_with_high_score_data = {
                 "name": config.name,
                 "enabled": config.enabled,
                 "model": config.model,
@@ -498,9 +498,9 @@ class LLMBackendConfiguration:
 
         data = {"backend": {"order": self.backend_order, "default": self.default_backend}, "backend_for_noedit": {"order": self.backend_for_noedit_order, "default": self.backend_for_noedit_default or self.default_backend}, "backends": backend_data}
 
-        # Add backend_for_failed_pr section if configured
-        if backend_for_failed_pr_data:
-            data["backend_for_failed_pr"] = backend_for_failed_pr_data
+        # Add backend_with_high_score section if configured
+        if backend_with_high_score_data:
+            data["backend_with_high_score"] = backend_with_high_score_data
 
         # Write TOML file
         with open(config_path, "w") as f:
@@ -511,8 +511,8 @@ class LLMBackendConfiguration:
         config = self.backends.get(backend_name)
         if config:
             return config
-        if self.backend_for_failed_pr and self.backend_for_failed_pr.name == backend_name:
-            return self.backend_for_failed_pr
+        if self.backend_with_high_score and self.backend_with_high_score.name == backend_name:
+            return self.backend_with_high_score
         return None
 
     def get_active_backends(self) -> List[str]:
@@ -566,21 +566,21 @@ class LLMBackendConfiguration:
         has_general_config = bool(self.backend_order or self.default_backend)
         return has_noedit_config and has_general_config
 
-    def get_backend_for_failed_pr(self) -> Optional[BackendConfig]:
+    def get_backend_with_high_score(self) -> Optional[BackendConfig]:
         """Get the fallback backend configuration for failed PRs.
 
-        Returns the backend_for_failed_pr configuration if configured, None otherwise.
+        Returns the backend_with_high_score configuration if configured, None otherwise.
         """
-        return self.backend_for_failed_pr
+        return self.backend_with_high_score
 
-    def get_model_for_failed_pr_backend(self) -> Optional[str]:
-        """Get the model for the fallback backend for failed PRs.
+    def get_model_for_backend_with_high_score(self) -> Optional[str]:
+        """Get the model for the fallback backend for high-scoring PRs.
 
         Returns the model name if a fallback backend is configured and has a model,
         None otherwise.
         """
-        if self.backend_for_failed_pr and self.backend_for_failed_pr.model:
-            return self.backend_for_failed_pr.model
+        if self.backend_with_high_score and self.backend_with_high_score.model:
+            return self.backend_with_high_score.model
         return None
 
     def get_model_for_backend(self, backend_name: str) -> Optional[str]:
