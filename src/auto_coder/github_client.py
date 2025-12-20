@@ -5,6 +5,7 @@ GitHub API client for Auto-Coder.
 import json
 import subprocess
 import threading
+import types
 from typing import Any, Dict, List, Optional, Tuple
 
 from ghapi.all import GhApi
@@ -69,7 +70,8 @@ class GitHubClient:
     def _get_ghapi_client(self) -> GhApi:
         """Returns a singleton instance of the GhApi client with caching."""
         if self._ghapi_client is None:
-            self._ghapi_client = GhApi(token=self.token, gh_url="https://api.github.com", adapter=httpx_adapter)
+            self._ghapi_client = GhApi(token=self.token, gh_url="https://api.github.com")
+            self._ghapi_client._call = types.MethodType(httpx_adapter, self._ghapi_client)
         return self._ghapi_client
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
