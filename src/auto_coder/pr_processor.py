@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from auto_coder.backend_manager import BackendManager, get_llm_backend_manager, run_llm_prompt
-from auto_coder.cli_helpers import create_failed_pr_backend_manager
+from auto_coder.cli_helpers import create_high_score_backend_manager
 from auto_coder.cloud_manager import CloudManager
 from auto_coder.github_client import GitHubClient
 from auto_coder.llm_backend_config import get_jules_fallback_enabled_from_config
@@ -2117,7 +2117,7 @@ def _fix_pr_issues_with_testing(
 
     # Initialize backend managers
     current_backend_manager = get_llm_backend_manager()
-    failed_pr_backend_manager = create_failed_pr_backend_manager()
+    high_score_backend_manager = create_high_score_backend_manager()
 
     # Track history of previous attempts for context
     attempt_history: List[Dict[str, Any]] = []
@@ -2141,10 +2141,10 @@ def _fix_pr_issues_with_testing(
                 attempt += 1
 
                 # Backend switching logic: switch to fallback after 2 attempts
-                if attempt >= 2 and failed_pr_backend_manager:
-                    if current_backend_manager != failed_pr_backend_manager:
+                if attempt >= 2 and high_score_backend_manager:
+                    if current_backend_manager != high_score_backend_manager:
                         logger.info(f"Switching to fallback backend for PR #{pr_number} after {attempt} attempts")
-                        current_backend_manager = failed_pr_backend_manager
+                        current_backend_manager = high_score_backend_manager
                         actions.append(f"Switched to fallback backend for PR #{pr_number}")
 
                 actions.append(f"Running local tests (attempt {attempt}/{attempts_limit})")

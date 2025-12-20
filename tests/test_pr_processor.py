@@ -18,14 +18,14 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_backend_switching_on_attempt_2(
         self,
         mock_commit,
         mock_get_default_manager,
-        mock_create_failed_manager,
+        mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -47,9 +47,9 @@ class TestPRProcessorBackendSwitching:
 
         # Mock managers
         default_manager = Mock(name="default_manager")
-        failed_manager = Mock(name="failed_manager")
+        high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
-        mock_create_failed_manager.return_value = failed_manager
+        mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock the test results - fail first, pass on third
         mock_run_tests.side_effect = [
@@ -75,21 +75,21 @@ class TestPRProcessorBackendSwitching:
         call_args_1 = mock_apply_local_fix.call_args_list[0]
         assert call_args_1.kwargs["backend_manager"] == default_manager
 
-        # Second call (attempt 2) should use failed manager
+        # Second call (attempt 2) should use high_score manager
         call_args_2 = mock_apply_local_fix.call_args_list[1]
-        assert call_args_2.kwargs["backend_manager"] == failed_manager
+        assert call_args_2.kwargs["backend_manager"] == high_score_manager
 
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_no_backend_switching_on_attempt_1(
         self,
         mock_commit,
         mock_get_default_manager,
-        mock_create_failed_manager,
+        mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -111,9 +111,9 @@ class TestPRProcessorBackendSwitching:
 
         # Mock managers
         default_manager = Mock(name="default_manager")
-        failed_manager = Mock(name="failed_manager")
+        high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
-        mock_create_failed_manager.return_value = failed_manager
+        mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test to pass on first attempt
         mock_run_tests.return_value = {"success": True, "output": "Tests passed", "errors": ""}
@@ -134,14 +134,14 @@ class TestPRProcessorBackendSwitching:
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_backend_switching_on_multiple_attempts(
         self,
         mock_commit,
         mock_get_default_manager,
-        mock_create_failed_manager,
+        mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -163,9 +163,9 @@ class TestPRProcessorBackendSwitching:
 
         # Mock managers
         default_manager = Mock(name="default_manager")
-        failed_manager = Mock(name="failed_manager")
+        high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
-        mock_create_failed_manager.return_value = failed_manager
+        mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - fail multiple times
         mock_run_tests.side_effect = [
@@ -190,22 +190,22 @@ class TestPRProcessorBackendSwitching:
 
         # Attempt 1: default manager
         assert mock_apply_local_fix.call_args_list[0].kwargs["backend_manager"] == default_manager
-        # Attempt 2: failed manager
-        assert mock_apply_local_fix.call_args_list[1].kwargs["backend_manager"] == failed_manager
-        # Attempt 3: failed manager
-        assert mock_apply_local_fix.call_args_list[2].kwargs["backend_manager"] == failed_manager
+        # Attempt 2: high_score manager
+        assert mock_apply_local_fix.call_args_list[1].kwargs["backend_manager"] == high_score_manager
+        # Attempt 3: high_score manager
+        assert mock_apply_local_fix.call_args_list[2].kwargs["backend_manager"] == high_score_manager
 
     @patch("src.auto_coder.pr_processor._apply_github_actions_fix")
     @patch("src.auto_coder.pr_processor.run_local_tests")
     @patch("src.auto_coder.pr_processor._apply_local_test_fix")
-    @patch("src.auto_coder.pr_processor.create_failed_pr_backend_manager")
+    @patch("src.auto_coder.pr_processor.create_high_score_backend_manager")
     @patch("src.auto_coder.pr_processor.get_llm_backend_manager")
     @patch("src.auto_coder.pr_processor.commit_and_push_changes")
     def test_backend_switching_with_finite_attempts_limit(
         self,
         mock_commit,
         mock_get_default_manager,
-        mock_create_failed_manager,
+        mock_create_high_score_manager,
         mock_apply_local_fix,
         mock_run_tests,
         mock_github_actions_fix,
@@ -227,9 +227,9 @@ class TestPRProcessorBackendSwitching:
 
         # Mock managers
         default_manager = Mock(name="default_manager")
-        failed_manager = Mock(name="failed_manager")
+        high_score_manager = Mock(name="high_score_manager")
         mock_get_default_manager.return_value = default_manager
-        mock_create_failed_manager.return_value = failed_manager
+        mock_create_high_score_manager.return_value = high_score_manager
 
         # Mock test results - always fail
         mock_run_tests.return_value = {"success": False, "output": "Test failed", "errors": "Errors"}
@@ -249,8 +249,8 @@ class TestPRProcessorBackendSwitching:
 
         # Attempt 1: default manager
         assert mock_apply_local_fix.call_args_list[0].kwargs["backend_manager"] == default_manager
-        # Attempt 2: failed manager
-        assert mock_apply_local_fix.call_args_list[1].kwargs["backend_manager"] == failed_manager
+        # Attempt 2: high_score manager
+        assert mock_apply_local_fix.call_args_list[1].kwargs["backend_manager"] == high_score_manager
 
 
 class TestKeepLabelOnPRMerge:
