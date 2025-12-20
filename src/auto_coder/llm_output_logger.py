@@ -118,8 +118,23 @@ class LLMOutputLogger:
         """Open the log file for writing."""
         if self._file_handle is None:
             try:
-                self._file_handle = open(
+                # Open with secure permissions (0o600)
+                # We use os.open to ensure permissions are set on creation
+                fd = os.open(
                     self.log_path,
+                    os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                    0o600,
+                )
+
+                # Ensure permissions are correct even if file already existed
+                try:
+                    os.chmod(self.log_path, 0o600)
+                except Exception:
+                    # Ignore chmod errors (e.g. on Windows or if not owner)
+                    pass
+
+                self._file_handle = open(
+                    fd,
                     "a",
                     encoding="utf-8",
                 )

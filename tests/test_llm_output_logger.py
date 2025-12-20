@@ -409,3 +409,22 @@ class TestLLMOutputLogger:
 
             assert data["prompt_length"] == 10000
             assert data["response_length"] == 10000
+
+    def test_log_file_permissions(self):
+        """Test that the log file is created with secure permissions (0o600)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_file = Path(temp_dir) / "test_permissions.jsonl"
+            logger = LLMOutputLogger(log_path=log_file, enabled=True)
+
+            logger.log_request(backend="codex", model="codex")
+            logger.flush()
+            logger.close()
+
+            assert log_file.exists()
+
+            # Check file permissions
+            stat = os.stat(log_file)
+            mode = stat.st_mode & 0o777
+            # On Windows, permissions might behave differently, but for this environment it should be 0o600
+            if os.name != "nt":
+                assert mode == 0o600, f"File permissions are {oct(mode)}, expected 0o600"
