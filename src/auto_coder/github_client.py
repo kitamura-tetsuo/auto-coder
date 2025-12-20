@@ -5,6 +5,7 @@ GitHub API client for Auto-Coder.
 import json
 import subprocess
 import threading
+import types
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -65,6 +66,74 @@ class GitHubClient:
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
         self._caching_client: Optional[httpx.Client] = None
+        self._caching_client_lock = threading.Lock()
+
+        # MONKEY-PATCHING PYGTIHUB FOR CACHING
+        # -------------------------------------
+        # WHAT: We are replacing PyGithub's internal `requestJsonAndCheck` method with our own
+        # `_caching_requester`. This allows us to intercept all REST API calls.
+        #
+        # WHY: PyGithub does not provide a public API to substitute the underlying HTTP client or to add
+        # caching middleware. To implement ETag-based caching for GET requests without forking the
+        # library, monkey-patching is the most pragmatic approach.
+        #
+        # RISK: This implementation is tightly coupled to the internal structure of PyGithub. The
+        # attributes `_Github__requester` and its method `requestJsonAndCheck` are private and could
+        # change in any future version of the library, which would break this integration. This is a
+        # calculated risk to gain significant performance benefits.
+        self._original_requester = self.github._Github__requester.requestJsonAndCheck
+        self.github._Github__requester.requestJsonAndCheck = types.MethodType(lambda requester, verb, url, parameters=None, headers=None, input=None, cnx=None: self._caching_requester(requester, verb, url, parameters, headers, input, cnx), self.github._Github__requester)
+
+    def _caching_requester(self, requester, verb, url, parameters=None, headers=None, input=None, cnx=None):
+        """
+        A custom requester for PyGithub that uses httpx with caching for GET requests.
+        """
+        if verb.upper() == "GET":
+            if self._caching_client is None:
+                with self._caching_client_lock:
+                    if self._caching_client is None:
+                        self._caching_client = get_caching_client()
+
+            # Construct the full URL if it's not already
+            if not url.startswith("http"):
+                url = f"{requester._Requester__base_url}{url}"
+
+            # Prepare headers for httpx
+            final_headers = {
+                "Authorization": f"bearer {self.token}",
+                "Accept": "application/vnd.github.v3+json",
+            }
+            if headers:
+                final_headers.update(headers)
+
+            try:
+                response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
+                response.raise_for_status()
+
+                # PyGithub's requester returns a tuple (headers, data)
+                # We need to simulate this.
+                # By calling .read(), we allow hishel to cache the response body.
+                body = response.read()
+                response_data = json.loads(body) if body else None
+                response_headers = response.headers
+
+                # For some reason, PyGithub expects headers to be a dictionary-like object that also has a getheader method
+                class HeaderWrapper(dict):
+                    def getheader(self, name, default=None):
+                        return self.get(name, default)
+
+                return HeaderWrapper(response_headers), response_data
+
+            except httpx.HTTPStatusError as e:
+                # Convert httpx exception to GithubException
+                raise GithubException(
+                    status=e.response.status_code,
+                    data=e.response.text,
+                    headers=e.response.headers,
+                )
+        else:
+            # For non-GET requests, use the original requester
+            return self._original_requester(verb, url, parameters, headers, input, cnx)
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
