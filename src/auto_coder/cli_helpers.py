@@ -786,25 +786,25 @@ def build_message_backend_manager(
     return LLMBackendManager.get_noedit_instance()
 
 
-def create_failed_pr_backend_manager() -> Optional[BackendManager]:
-    """Create a BackendManager for the backend_for_failed_pr configuration.
+def create_high_score_backend_manager() -> Optional[BackendManager]:
+    """Create a BackendManager for the backend_with_high_score configuration.
 
     Returns:
-        BackendManager instance if backend_for_failed_pr is configured, None otherwise.
+        BackendManager instance if backend_with_high_score is configured, None otherwise.
     """
     config = get_llm_config()
 
     # Check for order first
-    failed_pr_order = config.backend_with_high_score_order
-    failed_pr_config = config.get_backend_with_high_score()
+    high_score_order = config.backend_with_high_score_order
+    high_score_config = config.get_backend_with_high_score()
 
-    if not failed_pr_order and not failed_pr_config:
+    if not high_score_order and not high_score_config:
         return None
 
     # If order is present, use it
-    if failed_pr_order:
-        selected_backends = failed_pr_order
-        primary_backend = failed_pr_order[0]
+    if high_score_order:
+        selected_backends = high_score_order
+        primary_backend = high_score_order[0]
 
         # Build models map for these backends
         models = {}
@@ -813,13 +813,13 @@ def create_failed_pr_backend_manager() -> Optional[BackendManager]:
 
     else:
         # Fallback to single backend config (legacy behavior)
-        assert failed_pr_config is not None
-        backend_name = failed_pr_config.name
+        assert high_score_config is not None
+        backend_name = high_score_config.name
         selected_backends = [backend_name]
         primary_backend = backend_name
 
         # Determine model: use configured model or fallback to name
-        model = failed_pr_config.model or backend_name
+        model = high_score_config.model or backend_name
         models = {backend_name: model}
 
     try:
@@ -834,5 +834,5 @@ def create_failed_pr_backend_manager() -> Optional[BackendManager]:
         from .logger_config import get_logger
 
         logger = get_logger(__name__)
-        logger.error(f"Failed to create backend manager for failed PR: {e}")
+        logger.error(f"Failed to create backend manager for high score backend: {e}")
         return None

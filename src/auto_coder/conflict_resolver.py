@@ -11,6 +11,7 @@ from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
 
 from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
+from .cli_helpers import create_high_score_backend_manager
 from .gh_logger import get_gh_logger
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
 from .logger_config import get_logger
@@ -245,7 +246,12 @@ def check_mergeability_with_llm(
         logger.info(f"Asking LLM to check mergeability for PR #{pr_data.get('number')}")
 
         # Call LLM to check mergeability
-        response = run_llm_noedit_prompt(prompt)
+        high_score_backend_manager = create_high_score_backend_manager()
+        if high_score_backend_manager:
+            logger.info("Using high score backend for mergeability check.")
+            response = high_score_backend_manager.run_prompt(prompt)
+        else:
+            response = run_llm_noedit_prompt(prompt)
 
         # Parse the response
         if response and len(response.strip()) > 0:
@@ -304,7 +310,12 @@ def resolve_merge_conflicts_with_llm(
         logger.info(f"Asking LLM to resolve merge conflicts for PR #{pr_data}")
 
         # Call LLM to resolve conflicts
-        response = run_llm_prompt(prompt)
+        high_score_backend_manager = create_high_score_backend_manager()
+        if high_score_backend_manager:
+            logger.info("Using high score backend for merge conflict resolution.")
+            response = high_score_backend_manager.run_prompt(prompt)
+        else:
+            response = run_llm_prompt(prompt)
 
         # Parse the response
         if response and len(response.strip()) > 0:

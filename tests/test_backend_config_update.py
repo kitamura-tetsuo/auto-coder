@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import toml
 
-from src.auto_coder.cli_helpers import create_failed_pr_backend_manager
+from src.auto_coder.cli_helpers import create_high_score_backend_manager
 from src.auto_coder.llm_backend_config import BackendConfig, LLMBackendConfiguration
 
 
@@ -33,8 +33,8 @@ class TestBackendConfigUpdate:
 
     @patch("src.auto_coder.cli_helpers.get_llm_config")
     @patch("src.auto_coder.cli_helpers.build_backend_manager")
-    def test_create_failed_pr_backend_manager_with_order(self, mock_build, mock_get_config):
-        """Test create_failed_pr_backend_manager uses order."""
+    def test_create_high_score_backend_manager_with_order(self, mock_build, mock_get_config):
+        """Test create_high_score_backend_manager uses order."""
         mock_config = MagicMock(spec=LLMBackendConfiguration)
         mock_config.backend_with_high_score_order = ["codex", "claude"]
         mock_config.get_backend_with_high_score.return_value = None
@@ -42,7 +42,7 @@ class TestBackendConfigUpdate:
 
         mock_get_config.return_value = mock_config
 
-        create_failed_pr_backend_manager()
+        create_high_score_backend_manager()
 
         mock_build.assert_called_once()
         call_args = mock_build.call_args[1]
@@ -53,18 +53,18 @@ class TestBackendConfigUpdate:
 
     def test_legacy_backend_with_high_score(self):
         """Test backward compatibility for backend_with_high_score as a config."""
-        config_data = {"backend_with_high_score": {"name": "custom_failed_backend", "model": "gpt-4"}}
+        config_data = {"backend_with_high_score": {"name": "custom_high_score_backend", "model": "gpt-4"}}
 
         config = LLMBackendConfiguration.load_from_dict(config_data)
         assert config.backend_with_high_score is not None
-        assert config.backend_with_high_score.name == "custom_failed_backend"
+        assert config.backend_with_high_score.name == "custom_high_score_backend"
         assert config.backend_with_high_score.model == "gpt-4"
         assert config.backend_with_high_score_order == []
 
     @patch("src.auto_coder.cli_helpers.get_llm_config")
     @patch("src.auto_coder.cli_helpers.build_backend_manager")
-    def test_create_failed_pr_backend_manager_legacy(self, mock_build, mock_get_config):
-        """Test create_failed_pr_backend_manager with legacy config."""
+    def test_create_high_score_backend_manager_legacy(self, mock_build, mock_get_config):
+        """Test create_high_score_backend_manager with legacy config."""
         mock_config = MagicMock(spec=LLMBackendConfiguration)
         mock_config.backend_with_high_score_order = []
 
@@ -76,7 +76,7 @@ class TestBackendConfigUpdate:
 
         mock_get_config.return_value = mock_config
 
-        create_failed_pr_backend_manager()
+        create_high_score_backend_manager()
 
         mock_build.assert_called_once()
         call_args = mock_build.call_args[1]
