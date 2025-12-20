@@ -257,17 +257,23 @@ class GitHubClient:
             logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
 
-    def graphql_query(self, query: str, **variables) -> Dict[str, Any]:
+    def graphql_query(self, query: str, headers: Optional[Dict[str, str]] = None, **variables) -> Dict[str, Any]:
         """Execute a GraphQL query using the httpx client."""
         client = self._get_httpx_client()
-        headers = {
+        base_headers = {
             "Authorization": f"bearer {self.token}",
             "Content-Type": "application/json",
         }
+        if headers:
+            base_headers.update(headers)
+
         json_payload = {"query": query, "variables": variables}
-        response = client.post("https://api.github.com/graphql", headers=headers, json=json_payload)
+        response = client.post("https://api.github.com/graphql", headers=base_headers, json=json_payload)
         response.raise_for_status()
-        return response.json()
+        json_response = response.json()
+        if "errors" in json_response:
+            logger.warning(f"GraphQL query returned errors: {json_response['errors']}")
+        return json_response
 
     def get_linked_prs_via_graphql(self, repo_name: str, issue_number: int) -> List[int]:
         """Get linked PRs for an issue using GitHub GraphQL API.
@@ -451,7 +457,8 @@ class GitHubClient:
               }
             }
             """
-            result = self.graphql_query(query, owner=owner, repo=repo, issueNumber=issue_number)
+            headers = {"GraphQL-Features": "sub_issues"}
+            result = self.graphql_query(query, headers=headers, owner=owner, repo=repo, issueNumber=issue_number)
 
             # Extract open sub-issues
             open_sub_issues = []
@@ -561,7 +568,8 @@ class GitHubClient:
               }
             }
             """
-            result = self.graphql_query(query, owner=owner, repo=repo, issueNumber=issue_number)
+            headers = {"GraphQL-Features": "sub_issues"}
+            result = self.graphql_query(query, headers=headers, owner=owner, repo=repo, issueNumber=issue_number)
 
             # Extract parent issue
             parent_issue = result.get("data", {}).get("repository", {}).get("issue", {}).get("parent")
@@ -885,7 +893,8 @@ class GitHubClient:
               }
             }
             """
-            result = self.graphql_query(query, owner=owner, repo=repo, issueNumber=issue_number)
+            headers = {"GraphQL-Features": "sub_issues"}
+            result = self.graphql_query(query, headers=headers, owner=owner, repo=repo, issueNumber=issue_number)
 
             # Extract all sub-issues (both open and closed)
             all_sub_issues = []
