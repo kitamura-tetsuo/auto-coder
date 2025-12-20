@@ -106,24 +106,33 @@ class GitHubClient:
             if headers:
                 final_headers.update(headers)
 
+            response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
             try:
-                response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
-                response.raise_for_status()
+                # We cannot use `response.raise_for_status()` for two reasons:
+                # 1. It raises an error on 304 Not Modified, which is a success condition for caching.
+                # 2. Responses from `hishel`'s cache may lack the `.request` attribute, causing a `RuntimeError`.
+                if response.status_code >= 400:
+                    # Manually trigger the exception handling path.
+                    raise httpx.HTTPStatusError(
+                        f"Error response {response.status_code} while requesting {response.url}",
+                        request=httpx.Request("GET", url),  # Dummy request to satisfy the constructor
+                        response=response,
+                    )
 
-                # PyGithub's requester returns a tuple (headers, data)
-                # We need to simulate this.
-                # By calling .read(), we allow hishel to cache the response body.
+                # PyGithub's requester returns a tuple (headers, data).
+                # By calling .read(), we ensure the response body is consumed, which is necessary
+                # for `hishel` to store the response in its cache.
                 body = response.read()
                 response_data = json.loads(body) if body else None
-                response_headers = response.headers
 
-                # For some reason, PyGithub expects headers to be a dictionary-like object that also has a getheader method
+                # PyGithub's requester expects a case-insensitive dict-like object for headers.
                 class HeaderWrapper(dict):
                     def getheader(self, name, default=None):
-                        return self.get(name, default)
+                        return self.get(name.lower(), default)
 
+                # Normalize header keys to lowercase for consistent access.
+                response_headers = {k.lower(): v for k, v in response.headers.items()}
                 return HeaderWrapper(response_headers), response_data
-
             except httpx.HTTPStatusError as e:
                 # Convert httpx exception to GithubException
                 raise GithubException(
@@ -131,6 +140,9 @@ class GitHubClient:
                     data=e.response.text,
                     headers=e.response.headers,
                 )
+            finally:
+                # Ensure the response stream is closed to free up resources.
+                response.close()
         else:
             # For non-GET requests, use the original requester
             return self._original_requester(verb, url, parameters, headers, input, cnx)
