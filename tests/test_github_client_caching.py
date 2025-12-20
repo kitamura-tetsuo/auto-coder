@@ -1,13 +1,14 @@
 import json
 import os
 import tempfile
-import unittest
-from unittest.mock import patch
-from http.server import BaseHTTPRequestHandler, HTTPServer
 import threading
 import time
+import unittest
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
 
 from hishel import SyncSqliteStorage
+
 from src.auto_coder.github_client import GitHubClient
 
 # --- HTTP Server for realistic testing ---
