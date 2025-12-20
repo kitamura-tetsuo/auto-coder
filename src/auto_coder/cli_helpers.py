@@ -795,8 +795,8 @@ def create_failed_pr_backend_manager() -> Optional[BackendManager]:
     config = get_llm_config()
 
     # Check for order first
-    failed_pr_order = config.backend_for_failed_pr_order
-    failed_pr_config = config.get_backend_for_failed_pr()
+    failed_pr_order = config.backend_with_high_score_order
+    failed_pr_config = config.get_backend_with_high_score()
 
     if not failed_pr_order and not failed_pr_config:
         return None
