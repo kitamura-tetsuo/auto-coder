@@ -8,13 +8,14 @@ import threading
 import types
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from ghapi.all import GhApi
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
 from .gh_logger import get_gh_logger
 from .logger_config import get_logger
-from .util.gh_cache import httpx_adapter
+from .util.gh_cache import get_caching_transport
 
 logger = get_logger(__name__)
 
@@ -66,12 +67,19 @@ class GitHubClient:
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
         self._ghapi_client: Optional[GhApi] = None
+        self._httpx_client: Optional[httpx.Client] = None
+
+    def _get_httpx_client(self) -> httpx.Client:
+        """Returns a singleton instance of the httpx client with caching."""
+        if self._httpx_client is None:
+            transport = get_caching_transport()
+            self._httpx_client = httpx.Client(transport=transport)
+        return self._httpx_client
 
     def _get_ghapi_client(self) -> GhApi:
         """Returns a singleton instance of the GhApi client with caching."""
         if self._ghapi_client is None:
             self._ghapi_client = GhApi(token=self.token, gh_url="https://api.github.com")
-            self._ghapi_client._call = types.MethodType(httpx_adapter, self._ghapi_client)
         return self._ghapi_client
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
@@ -249,6 +257,24 @@ class GitHubClient:
             logger.warning(f"Failed to search for PR with head branch '{branch_name}': {e}")
             return None
 
+    def graphql_query(self, query: str, headers: Optional[Dict[str, str]] = None, **variables) -> Dict[str, Any]:
+        """Execute a GraphQL query using the httpx client."""
+        client = self._get_httpx_client()
+        base_headers = {
+            "Authorization": f"bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+        if headers:
+            base_headers.update(headers)
+
+        json_payload = {"query": query, "variables": variables}
+        response = client.post("https://api.github.com/graphql", headers=base_headers, json=json_payload)
+        response.raise_for_status()
+        json_response = response.json()
+        if "errors" in json_response:
+            logger.warning(f"GraphQL query returned errors: {json_response['errors']}")
+        return json_response
+
     def get_linked_prs_via_graphql(self, repo_name: str, issue_number: int) -> List[int]:
         """Get linked PRs for an issue using GitHub GraphQL API.
 
@@ -279,9 +305,8 @@ class GitHubClient:
               }
             }
             """
-            ghapi_client = self._get_ghapi_client()
-            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number)
-            timeline_items = result.get("repository", {}).get("issue", {}).get("timelineItems", {}).get("nodes", [])
+            result = self.graphql_query(query, owner=owner, repo=repo, issueNumber=issue_number)
+            timeline_items = result.get("data", {}).get("repository", {}).get("issue", {}).get("timelineItems", {}).get("nodes", [])
 
             pr_numbers = []
             for item in timeline_items:
@@ -432,12 +457,12 @@ class GitHubClient:
               }
             }
             """
-            ghapi_client = self._get_ghapi_client()
-            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number, headers={"GraphQL-Features": "sub_issues"})
+            headers = {"GraphQL-Features": "sub_issues"}
+            result = self.graphql_query(query, headers=headers, owner=owner, repo=repo, issueNumber=issue_number)
 
             # Extract open sub-issues
             open_sub_issues = []
-            sub_issues = result.get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
+            sub_issues = result.get("data", {}).get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
 
             for sub_issue in sub_issues:
                 if sub_issue.get("state") == "OPEN":
@@ -489,12 +514,11 @@ class GitHubClient:
               }
             }
             """
-            ghapi_client = self._get_ghapi_client()
-            result = ghapi_client.graphql(query, owner=owner, repo=repo, prNumber=pr_number)
+            result = self.graphql_query(query, owner=owner, repo=repo, prNumber=pr_number)
 
             # Extract closing issues
             closing_issues = []
-            issues = result.get("repository", {}).get("pullRequest", {}).get("closingIssuesReferences", {}).get("nodes", [])
+            issues = result.get("data", {}).get("repository", {}).get("pullRequest", {}).get("closingIssuesReferences", {}).get("nodes", [])
 
             for issue in issues:
                 closing_issues.append(issue.get("number"))
@@ -544,11 +568,11 @@ class GitHubClient:
               }
             }
             """
-            ghapi_client = self._get_ghapi_client()
-            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number, headers={"GraphQL-Features": "sub_issues"})
+            headers = {"GraphQL-Features": "sub_issues"}
+            result = self.graphql_query(query, headers=headers, owner=owner, repo=repo, issueNumber=issue_number)
 
             # Extract parent issue
-            parent_issue = result.get("repository", {}).get("issue", {}).get("parent")
+            parent_issue = result.get("data", {}).get("repository", {}).get("issue", {}).get("parent")
 
             if parent_issue:
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')}: {parent_issue.get('title')}")
@@ -619,11 +643,10 @@ class GitHubClient:
               }
             }
             """
-            ghapi_client = self._get_ghapi_client()
-            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=parent_number)
+            result = self.graphql_query(query, owner=owner, repo=repo, issueNumber=parent_number)
 
             # Extract parent issue body
-            parent_issue = result.get("repository", {}).get("issue", {})
+            parent_issue = result.get("data", {}).get("repository", {}).get("issue", {})
 
             if parent_issue and "body" in parent_issue:
                 body = parent_issue.get("body")
@@ -791,7 +814,14 @@ class GitHubClient:
             pr = repo.get_pull(pr_number)
             comments = []
             for comment in pr.get_issue_comments():
-                comments.append({"body": comment.body, "created_at": comment.created_at.isoformat(), "user": {"login": comment.user.login} if comment.user else None, "id": comment.id})
+                comments.append(
+                    {
+                        "body": comment.body,
+                        "created_at": comment.created_at.isoformat(),
+                        "user": {"login": comment.user.login} if comment.user else None,
+                        "id": comment.id,
+                    }
+                )
             return comments
         except GithubException as e:
             logger.error(f"Failed to get comments for PR #{pr_number}: {e}")
@@ -812,7 +842,18 @@ class GitHubClient:
             pr = repo.get_pull(pr_number)
             commits = []
             for commit in pr.get_commits():
-                commits.append({"sha": commit.sha, "commit": {"message": commit.commit.message, "committer": {"date": commit.commit.committer.date.isoformat(), "name": commit.commit.committer.name}}})
+                commits.append(
+                    {
+                        "sha": commit.sha,
+                        "commit": {
+                            "message": commit.commit.message,
+                            "committer": {
+                                "date": commit.commit.committer.date.isoformat(),
+                                "name": commit.commit.committer.name,
+                            },
+                        },
+                    }
+                )
             return commits
         except GithubException as e:
             logger.error(f"Failed to get commits for PR #{pr_number}: {e}")
@@ -852,12 +893,12 @@ class GitHubClient:
               }
             }
             """
-            ghapi_client = self._get_ghapi_client()
-            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number, headers={"GraphQL-Features": "sub_issues"})
+            headers = {"GraphQL-Features": "sub_issues"}
+            result = self.graphql_query(query, headers=headers, owner=owner, repo=repo, issueNumber=issue_number)
 
             # Extract all sub-issues (both open and closed)
             all_sub_issues = []
-            sub_issues = result.get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
+            sub_issues = result.get("data", {}).get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
 
             for sub_issue in sub_issues:
                 all_sub_issues.append(sub_issue.get("number"))
@@ -1080,7 +1121,12 @@ class GitHubClient:
             logger.warning(f"Failed to search for issue by title '{search_title}': {e}")
             return None
 
-    def get_issue_dependencies(self, issue_body: str, repo_name: Optional[str] = None, issue_number: Optional[int] = None) -> List[int]:
+    def get_issue_dependencies(
+        self,
+        issue_body: str,
+        repo_name: Optional[str] = None,
+        issue_number: Optional[int] = None,
+    ) -> List[int]:
         """Extract issue numbers that this issue depends on from the issue body.
 
         Supports both number-based dependencies (e.g., "#123") and title-based dependencies
