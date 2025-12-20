@@ -162,4 +162,12 @@ It retrieves issues and error-related PRs from GitHub to build and fix the appli
 * **Integration Tests:** test API and CLI integrations.
 * **End-to-End Tests:** test full automation flows.
 
+## Rule for Python Dependency Issues
+When encountering Python dependency-related errors (`ImportError`, `ModuleNotFoundError`, `AttributeError`, etc.) or suspecting a library version conflict:
+
+1. **DO NOT attempt any code modifications or fixes immediately.**
+2. **First, perform a web search for the following two items:**
+   - The library's latest documentation and release notes (to check for breaking changes or deprecated APIs).
+   - Similar reports on GitHub Issues and Stack Overflow.
+3. **Analyze the search results** to determine if the issue is environmental or version-specific before suggesting any changes.
 ---
