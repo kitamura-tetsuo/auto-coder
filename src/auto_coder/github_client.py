@@ -311,6 +311,127 @@ class GitHubClient:
             logger.error(f"Failed to get pull requests from {repo_name}: {e}")
             raise
 
+    def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get open pull requests from repository using GraphQL API.
+
+        This method uses the GraphQL API to efficiently fetch all PR details in a single
+        request, avoiding N+1 API calls that occur with the REST API approach.
+
+        Args:
+            repo_name: Repository name in format 'owner/repo'
+            limit: Maximum number of PRs to fetch per page (default: 100)
+
+        Returns:
+            List of PR data dictionaries with fields matching get_pr_details output format,
+            plus additional fields needed by automation engine.
+        """
+        try:
+            owner, repo = repo_name.split("/")
+
+            query = """
+            query($owner: String!, $repo: String!, $cursor: String, $limit: Int) {
+              repository(owner: $owner, name: $repo) {
+                pullRequests(states: OPEN, first: $limit, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+                  nodes {
+                    number
+                    title
+                    body
+                    state
+                    url
+                    createdAt
+                    updatedAt
+                    isDraft
+                    mergeable
+                    headRefName
+                    headRefOid
+                    baseRefName
+                    author {
+                      login
+                    }
+                    assignees(first: 10) {
+                      nodes {
+                        login
+                      }
+                    }
+                    labels(first: 20) {
+                      nodes {
+                        name
+                      }
+                    }
+                    comments {
+                      totalCount
+                    }
+                    commits {
+                      totalCount
+                    }
+                    additions
+                    deletions
+                    changedFiles
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+            """
+
+            all_prs: List[Dict[str, Any]] = []
+            cursor: Optional[str] = None
+
+            while True:
+                variables = {"owner": owner, "repo": repo, "limit": limit, "cursor": cursor}
+                data = self.graphql_query(query, variables)
+
+                pull_requests = data.get("data", {}).get("repository", {}).get("pullRequests", {})
+                nodes = pull_requests.get("nodes", [])
+                page_info = pull_requests.get("pageInfo", {})
+
+                for pr_node in nodes:
+                    # Convert GraphQL response to the format expected by automation engine
+                    # Match the format of get_pr_details but include additional fields
+                    mergeable_value = pr_node.get("mergeable")
+                    # GraphQL returns MERGEABLE, CONFLICTING, UNKNOWN
+                    # Convert to boolean: True for MERGEABLE, False otherwise
+                    mergeable_bool = mergeable_value == "MERGEABLE" if mergeable_value else None
+
+                    pr_data: Dict[str, Any] = {
+                        "number": pr_node.get("number"),
+                        "title": pr_node.get("title"),
+                        "body": pr_node.get("body") or "",
+                        "state": pr_node.get("state", "").lower(),  # GraphQL returns OPEN/CLOSED/MERGED
+                        "url": pr_node.get("url"),
+                        "created_at": pr_node.get("createdAt"),
+                        "updated_at": pr_node.get("updatedAt"),
+                        "draft": pr_node.get("isDraft", False),
+                        "mergeable": mergeable_bool,
+                        "head_branch": pr_node.get("headRefName"),
+                        "head": {"ref": pr_node.get("headRefName"), "sha": pr_node.get("headRefOid")},
+                        "base_branch": pr_node.get("baseRefName"),
+                        "author": pr_node.get("author", {}).get("login") if pr_node.get("author") else None,
+                        "assignees": [a.get("login") for a in pr_node.get("assignees", {}).get("nodes", []) if a],
+                        "labels": [lbl.get("name") for lbl in pr_node.get("labels", {}).get("nodes", []) if lbl],
+                        "comments_count": pr_node.get("comments", {}).get("totalCount", 0),
+                        "commits_count": pr_node.get("commits", {}).get("totalCount", 0),
+                        "additions": pr_node.get("additions"),
+                        "deletions": pr_node.get("deletions"),
+                        "changed_files": pr_node.get("changedFiles"),
+                    }
+                    all_prs.append(pr_data)
+
+                if not page_info.get("hasNextPage"):
+                    break
+
+                cursor = page_info.get("endCursor")
+
+            logger.info(f"Retrieved {len(all_prs)} open pull requests from {repo_name} via GraphQL (oldest first)")
+            return all_prs
+
+        except Exception as e:
+            logger.error(f"Failed to get open PRs via GraphQL from {repo_name}: {e}")
+            raise
+
     def get_issue_details(self, issue: Issue.Issue) -> Dict[str, Any]:
         """Extract detailed information from an issue."""
         return {
