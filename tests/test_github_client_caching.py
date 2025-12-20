@@ -1,4 +1,3 @@
-
 import json
 import os
 import tempfile
@@ -31,16 +30,16 @@ class TestGitHubClientCaching(unittest.TestCase):
         mock_transport = MagicMock(spec=httpx.HTTPTransport)
 
         # Configure the mock transport to return a cacheable response
-        response_content = json.dumps({"name": "auto-coder", "description": "test"}).encode('utf-8')
+        response_content = json.dumps({"name": "auto-coder", "description": "test"}).encode("utf-8")
         mock_response = httpx.Response(
             200,
             headers={
                 "content-type": "application/json",
                 "Cache-Control": "max-age=60",
-                "ETag": "fake-etag", # Add ETag for revalidation
+                "ETag": "fake-etag",  # Add ETag for revalidation
             },
             content=response_content,
-            request=httpx.Request("GET", "https://api.github.com/repos/test-owner/auto-coder")
+            request=httpx.Request("GET", "https://api.github.com/repos/test-owner/auto-coder"),
         )
         mock_transport.handle_request.return_value = mock_response
 

@@ -66,6 +66,7 @@ class GitHubClient:
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
         self._caching_client: Optional[httpx.Client] = None
+        self._caching_client_lock = threading.Lock()
 
         # MONKEY-PATCHING PYGTIHUB FOR CACHING
         # -------------------------------------
@@ -81,10 +82,7 @@ class GitHubClient:
         # change in any future version of the library, which would break this integration. This is a
         # calculated risk to gain significant performance benefits.
         self._original_requester = self.github._Github__requester.requestJsonAndCheck
-        self.github._Github__requester.requestJsonAndCheck = types.MethodType(
-            lambda requester, verb, url, parameters=None, headers=None, input=None, cnx=None: self._caching_requester(requester, verb, url, parameters, headers, input, cnx),
-            self.github._Github__requester
-        )
+        self.github._Github__requester.requestJsonAndCheck = types.MethodType(lambda requester, verb, url, parameters=None, headers=None, input=None, cnx=None: self._caching_requester(requester, verb, url, parameters, headers, input, cnx), self.github._Github__requester)
 
     def _caching_requester(self, requester, verb, url, parameters=None, headers=None, input=None, cnx=None):
         """
@@ -92,7 +90,9 @@ class GitHubClient:
         """
         if verb.upper() == "GET":
             if self._caching_client is None:
-                self._caching_client = get_caching_client()
+                with self._caching_client_lock:
+                    if self._caching_client is None:
+                        self._caching_client = get_caching_client()
 
             # Construct the full URL if it's not already
             if not url.startswith("http"):
