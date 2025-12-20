@@ -7,11 +7,13 @@ import subprocess
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from ghapi.all import GhApi
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
 from .gh_logger import get_gh_logger
 from .logger_config import get_logger
+from .util.gh_cache import httpx_adapter
 
 logger = get_logger(__name__)
 
@@ -62,6 +64,13 @@ class GitHubClient:
         self.disable_labels = disable_labels
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
+        self._ghapi_client: Optional[GhApi] = None
+
+    def _get_ghapi_client(self) -> GhApi:
+        """Returns a singleton instance of the GhApi client with caching."""
+        if self._ghapi_client is None:
+            self._ghapi_client = GhApi(token=self.token, gh_url="https://api.github.com", adapter=httpx_adapter)
+        return self._ghapi_client
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
@@ -268,34 +277,9 @@ class GitHubClient:
               }
             }
             """
-
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-f",
-                    f"query={query}",
-                    "-F",
-                    f"owner={owner}",
-                    "-F",
-                    f"repo={repo}",
-                    "-F",
-                    f"issueNumber={issue_number}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-            if result.returncode != 0:
-                logger.warning(f"GraphQL query failed for issue #{issue_number}: {result.stderr}")
-                return []
-
-            data = json.loads(result.stdout)
-            timeline_items = data.get("data", {}).get("repository", {}).get("issue", {}).get("timelineItems", {}).get("nodes", [])
+            ghapi_client = self._get_ghapi_client()
+            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number)
+            timeline_items = result.get("repository", {}).get("issue", {}).get("timelineItems", {}).get("nodes", [])
 
             pr_numbers = []
             for item in timeline_items:
@@ -429,9 +413,9 @@ class GitHubClient:
 
             # GraphQL query to fetch sub-issues (new sub-issues feature)
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   subIssues(first: 100) {
@@ -445,35 +429,13 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                issue_number,
-            )
-
-            # Execute GraphQL query using gh CLI with sub_issues feature header
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-H",
-                    "GraphQL-Features: sub_issues",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            ghapi_client = self._get_ghapi_client()
+            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number, headers={"GraphQL-Features": "sub_issues"})
 
             # Extract open sub-issues
             open_sub_issues = []
-            sub_issues = data.get("data", {}).get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
+            sub_issues = result.get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
 
             for sub_issue in sub_issues:
                 if sub_issue.get("state") == "OPEN":
@@ -509,9 +471,9 @@ class GitHubClient:
 
             # GraphQL query to fetch closingIssuesReferences
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                pullRequest(number: %d) {
+            query($owner: String!, $repo: String!, $prNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                pullRequest(number: $prNumber) {
                   number
                   title
                   closingIssuesReferences(first: 100) {
@@ -524,33 +486,13 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                pr_number,
-            )
-
-            # Execute GraphQL query using gh CLI
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            ghapi_client = self._get_ghapi_client()
+            result = ghapi_client.graphql(query, owner=owner, repo=repo, prNumber=pr_number)
 
             # Extract closing issues
             closing_issues = []
-            issues = data.get("data", {}).get("repository", {}).get("pullRequest", {}).get("closingIssuesReferences", {}).get("nodes", [])
+            issues = result.get("repository", {}).get("pullRequest", {}).get("closingIssuesReferences", {}).get("nodes", [])
 
             for issue in issues:
                 closing_issues.append(issue.get("number"))
@@ -583,9 +525,9 @@ class GitHubClient:
             # GraphQL query to fetch parent issue (sub-issues feature)
             # Note: Use 'parent' field, not 'parentIssue'
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   parent {
@@ -599,34 +541,12 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                issue_number,
-            )
-
-            # Execute GraphQL query using gh CLI with sub_issues feature header
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-H",
-                    "GraphQL-Features: sub_issues",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            ghapi_client = self._get_ghapi_client()
+            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number, headers={"GraphQL-Features": "sub_issues"})
 
             # Extract parent issue
-            parent_issue = data.get("data", {}).get("repository", {}).get("issue", {}).get("parent")
+            parent_issue = result.get("repository", {}).get("issue", {}).get("parent")
 
             if parent_issue:
                 logger.info(f"Issue #{issue_number} has parent issue #{parent_issue.get('number')}: {parent_issue.get('title')}")
@@ -685,9 +605,9 @@ class GitHubClient:
             # Now fetch the full parent issue with body using GraphQL
             owner, repo = repo_name.split("/")
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   body
@@ -696,32 +616,12 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                parent_number,
-            )
-
-            # Execute GraphQL query using gh CLI
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            ghapi_client = self._get_ghapi_client()
+            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=parent_number)
 
             # Extract parent issue body
-            parent_issue = data.get("data", {}).get("repository", {}).get("issue", {})
+            parent_issue = result.get("repository", {}).get("issue", {})
 
             if parent_issue and "body" in parent_issue:
                 body = parent_issue.get("body")
@@ -933,9 +833,9 @@ class GitHubClient:
 
             # GraphQL query to fetch sub-issues (new sub-issues feature)
             query = """
-            {
-              repository(owner: "%s", name: "%s") {
-                issue(number: %d) {
+            query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
                   number
                   title
                   subIssues(first: 100) {
@@ -949,35 +849,13 @@ class GitHubClient:
                 }
               }
             }
-            """ % (
-                owner,
-                repo,
-                issue_number,
-            )
-
-            # Execute GraphQL query using gh CLI with sub_issues feature header
-            gh_logger = get_gh_logger()
-            result = gh_logger.execute_with_logging(
-                [
-                    "gh",
-                    "api",
-                    "graphql",
-                    "-H",
-                    "GraphQL-Features: sub_issues",
-                    "-f",
-                    f"query={query}",
-                ],
-                repo=repo_name,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-
-            data = json.loads(result.stdout)
+            """
+            ghapi_client = self._get_ghapi_client()
+            result = ghapi_client.graphql(query, owner=owner, repo=repo, issueNumber=issue_number, headers={"GraphQL-Features": "sub_issues"})
 
             # Extract all sub-issues (both open and closed)
             all_sub_issues = []
-            sub_issues = data.get("data", {}).get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
+            sub_issues = result.get("repository", {}).get("issue", {}).get("subIssues", {}).get("nodes", [])
 
             for sub_issue in sub_issues:
                 all_sub_issues.append(sub_issue.get("number"))
