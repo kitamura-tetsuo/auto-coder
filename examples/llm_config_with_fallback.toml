@@ -176,7 +176,7 @@ default = "claude"
 # This backend will be used as a fallback when the primary backends fail
 # to process a PR successfully. This is useful for resilience and ensuring
 # that PR processing can continue even when the default backend is unavailable.
-[backend_for_failed_pr]
+[backend_with_high_score]
 # Optional: Name for identification purposes
 name = "gemini-fallback"
 
