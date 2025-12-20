@@ -12,8 +12,10 @@ from src.auto_coder.github_client import GitHubClient
 
 # --- HTTP Server for realistic testing ---
 
+
 class StoppableHTTPServer(HTTPServer):
     """A stoppable version of HTTPServer for clean shutdown in tests."""
+
     def run(self):
         self.serve_forever()
 
@@ -21,8 +23,10 @@ class StoppableHTTPServer(HTTPServer):
         self.shutdown()
         self.server_close()
 
+
 class GitHubAPIHandler(BaseHTTPRequestHandler):
     """A handler that mimics GitHub API's ETag behavior."""
+
     repo_data = json.dumps({"name": "auto-coder", "description": "test"}).encode("utf-8")
     etag = 'W/"12345"'
     call_count = 0
@@ -48,7 +52,9 @@ class GitHubAPIHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"Not Found")
 
+
 # --- Test Case ---
+
 
 class TestGitHubClientCachingWithServer(unittest.TestCase):
     http_server: StoppableHTTPServer = None
