@@ -620,5 +620,27 @@ def test_progress_footer_elapsed_time_short():
         assert "[5s]" in formatted
 
 
+def test_progress_footer_elapsed_time_hours():
+    """Test that progress footer displays elapsed time with hours."""
+    footer = ProgressFooter()
+
+    # Mock time.time to return start time, then start time + 3665 seconds (1h 1m 5s)
+    start_time = 1000.0
+
+    with patch("time.time") as mock_time:
+        mock_time.return_value = start_time
+
+        # Set item (initializes start time)
+        footer.set_item("PR", 123)
+
+        # Move time forward by 3665 seconds (1h 01m 05s)
+        mock_time.return_value = start_time + 3665.0
+
+        formatted = footer._format_footer("PR", 123)
+
+        # Should contain formatted time with hours
+        assert "[1h 01m 05s]" in formatted
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

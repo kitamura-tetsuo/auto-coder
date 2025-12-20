@@ -125,8 +125,12 @@ class ProgressFooter:
         # Add elapsed time if available
         if self._start_time:
             elapsed = int(time.time() - self._start_time)
-            minutes, seconds = divmod(elapsed, 60)
-            if minutes > 0:
+            hours, remainder = divmod(elapsed, 3600)
+            minutes, seconds = divmod(remainder, 60)
+
+            if hours > 0:
+                time_str = f"[{hours}h {minutes:02d}m {seconds:02d}s]"
+            elif minutes > 0:
                 time_str = f"[{minutes}m {seconds:02d}s]"
             else:
                 time_str = f"[{seconds}s]"
