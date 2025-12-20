@@ -19,11 +19,10 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_mock = Mock()
         pr_data = {"number": 123, "title": "Jules PR", "draft": True, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}
 
-        mock_github_client.get_open_pull_requests.return_value = [pr_mock]
-        mock_github_client.get_pr_details.return_value = pr_data
+        # Mock get_open_prs_json to return the PR data
+        mock_github_client.get_open_prs_json.return_value = [pr_data]
 
         # Mock _is_jules_pr to return True
         mock_is_jules_pr.return_value = True
@@ -72,11 +71,10 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_mock = Mock()
         pr_data = {"number": 123, "title": "Jules PR", "draft": False, "head": {"ref": "jules-branch"}, "labels": [], "body": "Session ID: abc", "created_at": "2023-01-01T00:00:00Z"}  # Already ready
 
-        mock_github_client.get_open_pull_requests.return_value = [pr_mock]
-        mock_github_client.get_pr_details.return_value = pr_data
+        # Mock get_open_prs_json to return the PR data
+        mock_github_client.get_open_prs_json.return_value = [pr_data]
 
         # Mock _is_jules_pr to return True
         mock_is_jules_pr.return_value = True
@@ -118,11 +116,10 @@ class TestAutomationEngineCandidates:
         repo_name = "owner/repo"
 
         # Mock PR data
-        pr_mock = Mock()
         pr_data = {"number": 123, "title": "Regular PR", "draft": True, "head": {"ref": "feature-branch"}, "labels": [], "body": "Description", "created_at": "2023-01-01T00:00:00Z"}
 
-        mock_github_client.get_open_pull_requests.return_value = [pr_mock]
-        mock_github_client.get_pr_details.return_value = pr_data
+        # Mock get_open_prs_json to return the PR data
+        mock_github_client.get_open_prs_json.return_value = [pr_data]
 
         # Mock _is_jules_pr to return False
         mock_is_jules_pr.return_value = False
