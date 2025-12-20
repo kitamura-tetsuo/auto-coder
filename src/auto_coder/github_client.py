@@ -1,6 +1,7 @@
 """
 GitHub API client for Auto-Coder.
 """
+
 import httpx
 import json
 import subprocess
@@ -63,7 +64,7 @@ class GitHubClient:
         self.disable_labels = disable_labels
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
-        self._caching_client: httpx.Client = get_caching_client()
+        self._caching_client: Optional[httpx.Client] = None
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
@@ -122,6 +123,8 @@ class GitHubClient:
             httpx.HTTPStatusError: If the API returns a non-200 status code.
             ValueError: If the response contains GraphQL errors.
         """
+        if self._caching_client is None:
+            self._caching_client = get_caching_client()
         url = "https://api.github.com/graphql"
         headers = {
             "Authorization": f"bearer {self.token}",

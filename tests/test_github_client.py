@@ -556,19 +556,7 @@ class TestGitHubClient:
     def test_has_linked_pr_with_linked_pr(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test has_linked_pr returns True when PR references the issue."""
         # Setup
-        mock_graphql_query.return_value = {
-            "data": {
-                "repository": {
-                    "issue": {
-                        "timelineItems": {
-                            "nodes": [
-                                {"source": {"number": 456, "state": "OPEN"}}
-                            ]
-                        }
-                    }
-                }
-            }
-        }
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": [{"source": {"number": 456, "state": "OPEN"}}]}}}}}
         mock_github = Mock()
         mock_repo = Mock(spec=Repository.Repository)
 
@@ -1400,7 +1388,7 @@ Some other text that's not indented
         assert sorted(result) == [100, 456, 789]
 
     def test_get_issue_dependencies_multiline_blocked_by(self, mock_github_token):
-        """Test extracting multi-.line dependencies with 'blocked by' pattern."""
+        """Test extracting multi-line dependencies with 'blocked by' pattern."""
         client = GitHubClient.get_instance(mock_github_token)
 
         # Test case: Multi-line "blocked by:"
