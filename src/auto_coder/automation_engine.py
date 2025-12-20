@@ -561,8 +561,27 @@ class AutomationEngine:
                     return result
 
                 if item_type == "issue":
-                    # Issue processing
-                    if jules_mode:
+                    # Check if issue has sub-issues (Parent Issue)
+                    # If so, force local processing to handle branch merging correctly
+                    has_sub_issues = False
+                    if candidate.data:
+                        # Try to use data from candidate first if available
+                        # This might be populated by previous calls (e.g. in _get_candidates)
+                        # but usually we need to check specifically if we don't have that info
+                        pass
+                    
+                    # Reliable check for sub-issues
+                    try:
+                        all_sub_issues = self.github.get_all_sub_issues(repo_name, item_number)
+                        has_sub_issues = len(all_sub_issues) > 0
+                    except Exception as e:
+                        logger.warning(f"Failed to check for sub-issues for #{item_number}: {e}")
+                    
+                    if has_sub_issues:
+                        logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing to ensure branch merging.")
+                        # Force local processing for parent issues
+                        result.actions = self._take_issue_actions(repo_name, candidate.data)
+                    elif jules_mode:
                         # Use Jules mode for issue processing
                         from .issue_processor import _process_issue_jules_mode
 
