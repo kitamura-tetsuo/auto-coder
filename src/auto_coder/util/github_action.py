@@ -331,6 +331,20 @@ def _check_github_actions_status(repo_name: str, pr_data: Dict[str, Any], config
             c["url"] = check.get("html_url", "")
             matching_checks.append(c)
 
+        # Deduplicate checks by name, keeping only the latest run
+        # Sort by completed_at (descending), then created_at (descending)
+        # We want the most recent run for each name
+        matching_checks.sort(key=lambda x: (x.get("completed_at") or x.get("created_at") or "", x.get("id") or 0), reverse=True)
+
+        unique_checks = {}
+        for check in matching_checks:
+            name = check.get("name")
+            if name and name not in unique_checks:
+                unique_checks[name] = check
+
+        # Use the deduplicated values
+        matching_checks = list(unique_checks.values())
+
         checks = []
         failed_checks = []
         all_passed = True
