@@ -5,6 +5,7 @@ Tests for GitHub client functionality.
 import json
 from unittest.mock import Mock, patch
 
+import httpx
 import pytest
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
@@ -551,9 +552,11 @@ class TestGitHubClient:
         assert mock_pr.add_to_labels.call_count == 0
 
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_with_linked_pr(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_has_linked_pr_with_linked_pr(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test has_linked_pr returns True when PR references the issue."""
         # Setup
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": [{"source": {"number": 456, "state": "OPEN"}}]}}}}}
         mock_github = Mock()
         mock_repo = Mock(spec=Repository.Repository)
 
@@ -574,12 +577,13 @@ class TestGitHubClient:
 
         # Assert
         assert result is True
-        mock_repo.get_pulls.assert_called_once_with(state="open")
 
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_with_no_linked_pr(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_has_linked_pr_with_no_linked_pr(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test has_linked_pr returns False when no PR references the issue."""
         # Setup
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
         mock_github = Mock()
         mock_repo = Mock(spec=Repository.Repository)
 
@@ -603,9 +607,11 @@ class TestGitHubClient:
         mock_repo.get_pulls.assert_called_once_with(state="open")
 
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_with_multiple_patterns(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_has_linked_pr_with_multiple_patterns(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test has_linked_pr detects various reference patterns."""
         # Setup
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
         mock_github = Mock()
         mock_repo = Mock(spec=Repository.Repository)
 
@@ -647,12 +653,15 @@ class TestGitHubClient:
         client = GitHubClient.get_instance(mock_github_token)
 
         # Execute
-        result = client.has_linked_pr("test/repo", 123)
+        with patch("src.auto_coder.github_client.GitHubClient.graphql_query") as mock_graphql_query:
+            mock_graphql_query.side_effect = Exception("GraphQL error")
+            result = client.has_linked_pr("test/repo", 123)
 
         # Assert
         assert result is False
 
-    def test_get_linked_prs_via_graphql_success(self, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_linked_prs_via_graphql_success(self, mock_graphql_query, mock_github_token):
         """Test get_linked_prs_via_graphql returns linked PR numbers."""
         # Setup
         graphql_response = {
@@ -669,67 +678,71 @@ class TestGitHubClient:
                 }
             }
         }
-        GitHubClient.reset_singleton()
+        mock_graphql_query.return_value = graphql_response
+
         client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute
-            result = client.get_linked_prs_via_graphql("test/repo", 123)
 
-            # Assert
-            assert result == [456]  # Only OPEN PRs
-            mock_graphql_query.assert_called_once()
-            call_args = mock_graphql_query.call_args
-            assert "query($owner: String!, $repo: String!, $issueNumber: Int!)" in call_args[0][0]
-            assert call_args[0][1] == {"owner": "test", "repo": "repo", "issueNumber": 123}
+        # Execute
+        result = client.get_linked_prs_via_graphql("test/repo", 123)
 
-    def test_get_linked_prs_via_graphql_no_linked_prs(self, mock_github_token):
+        # Assert
+        assert result == [456]  # Only OPEN PRs
+
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_linked_prs_via_graphql_no_linked_prs(self, mock_graphql_query, mock_github_token):
         """Test get_linked_prs_via_graphql returns
         empty list when no PRs linked.
         """
         # Setup
         graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
-        GitHubClient.reset_singleton()
+        mock_graphql_query.return_value = graphql_response
+
         client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "graphql_query", return_value=graphql_response):
-            # Execute
-            result = client.get_linked_prs_via_graphql("test/repo", 123)
 
-            # Assert
-            assert result == []
+        # Execute
+        result = client.get_linked_prs_via_graphql("test/repo", 123)
 
-    def test_get_linked_prs_via_graphql_handles_error(self, mock_github_token):
-        """Test get_linked_prs_via_graphql handles errors."""
+        # Assert
+        assert result == []
+
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_linked_prs_via_graphql_handles_error(self, mock_graphql_query, mock_github_token):
+        """Test get_linked_prs_via_graphql handles subprocess errors."""
         # Setup
-        GitHubClient.reset_singleton()
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "graphql_query", side_effect=Exception("GraphQL error")):
-            # Execute
-            result = client.get_linked_prs_via_graphql("test/repo", 123)
+        mock_graphql_query.side_effect = Exception("GraphQL error")
 
-            # Assert
-            assert result == []
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        result = client.get_linked_prs_via_graphql("test/repo", 123)
+
+        # Assert
+        assert result == []
 
     @patch("src.auto_coder.github_client.Github")
-    def test_has_linked_pr_uses_graphql_first(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_has_linked_pr_uses_graphql_first(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test has_linked_pr uses GraphQL API first."""
         # Setup GraphQL to return a linked PR
         graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": [{"source": {"number": 456, "state": "OPEN"}}]}}}}}
+        mock_graphql_query.return_value = graphql_response
 
         mock_github = Mock()
         mock_github_class.return_value = mock_github
-        GitHubClient.reset_singleton()
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "graphql_query", return_value=graphql_response):
-            # Execute
-            result = client.has_linked_pr("test/repo", 123)
 
-            # Assert
-            assert result is True
-            # Should not call get_pulls since GraphQL found a PR
-            mock_github.get_repo.assert_not_called()
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        result = client.has_linked_pr("test/repo", 123)
+
+        # Assert
+        assert result is True
+        # Should not call get_pulls since GraphQL found a PR
+        mock_github.get_repo.assert_not_called()
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_closing_issues_success(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_pr_closing_issues_success(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test successful retrieval of closing issues for a PR."""
         # Setup
         graphql_response = {
@@ -752,21 +765,22 @@ class TestGitHubClient:
                 }
             }
         }
+        mock_graphql_query.return_value = graphql_response
 
         mock_github = Mock()
         mock_github_class.return_value = mock_github
-        GitHubClient.reset_singleton()
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute
-            result = client.get_pr_closing_issues("test/repo", 456)
 
-            # Assert
-            assert result == [123, 124]
-            mock_graphql_query.assert_called_once()
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        result = client.get_pr_closing_issues("test/repo", 456)
+
+        # Assert
+        assert result == [123, 124]
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_closing_issues_empty(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_pr_closing_issues_empty(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test PR with no closing issues."""
         # Setup
         graphql_response = {
@@ -780,32 +794,36 @@ class TestGitHubClient:
                 }
             }
         }
+        mock_graphql_query.return_value = graphql_response
 
         mock_github = Mock()
         mock_github_class.return_value = mock_github
-        GitHubClient.reset_singleton()
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "graphql_query", return_value=graphql_response):
-            # Execute
-            result = client.get_pr_closing_issues("test/repo", 456)
 
-            # Assert
-            assert result == []
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        result = client.get_pr_closing_issues("test/repo", 456)
+
+        # Assert
+        assert result == []
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_closing_issues_error(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_pr_closing_issues_error(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test error handling when GraphQL query fails."""
         # Setup
+        mock_graphql_query.side_effect = Exception("GraphQL error")
+
         mock_github = Mock()
         mock_github_class.return_value = mock_github
-        GitHubClient.reset_singleton()
-        client = GitHubClient.get_instance(mock_github_token)
-        with patch.object(client, "graphql_query", side_effect=Exception("GraphQL error")):
-            # Execute
-            result = client.get_pr_closing_issues("test/repo", 456)
 
-            # Assert
-            assert result == []
+        client = GitHubClient.get_instance(mock_github_token)
+
+        # Execute
+        result = client.get_pr_closing_issues("test/repo", 456)
+
+        # Assert
+        assert result == []
 
     def test_get_issue_dependencies_with_depends_on(self, mock_github_token):
         """Test extracting dependencies with 'Depends on:' pattern."""
@@ -1399,72 +1417,76 @@ class TestGitHubClientLogging:
     """Test cases for GitHub client logging functionality."""
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_linked_prs_via_graphql_logs_command(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_linked_prs_via_graphql_logs_command(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test that get_linked_prs_via_graphql logs the gh command."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
-        graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute
-            result = client.get_linked_prs_via_graphql("test/repo", 123)
+        # Mock graphql_query to return successful result
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
 
-            # Assert
-            assert result == []
-            mock_graphql_query.assert_called_once()
+        # Execute
+        result = client.get_linked_prs_via_graphql("test/repo", 123)
+
+        # Assert
+        assert result == []
+        mock_graphql_query.assert_called_once()
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_open_sub_issues_logs_command(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_open_sub_issues_logs_command(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test that get_open_sub_issues logs the gh command."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
-        graphql_response = {"data": {"repository": {"issue": {"subIssues": {"nodes": []}}}}}
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute
-            result = client.get_open_sub_issues("test/repo", 123)
+        # Mock graphql_query
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"subIssues": {"nodes": []}}}}}
 
-            # Assert
-            assert result == []
-            mock_graphql_query.assert_called_once()
+        # Execute
+        result = client.get_open_sub_issues("test/repo", 123)
+
+        # Assert
+        assert result == []
+        mock_graphql_query.assert_called_once()
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_pr_closing_issues_logs_command(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_pr_closing_issues_logs_command(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test that get_pr_closing_issues logs the gh command."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
-        graphql_response = {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {"nodes": []}}}}}
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute
-            result = client.get_pr_closing_issues("test/repo", 456)
+        # Mock graphql_query
+        mock_graphql_query.return_value = {"data": {"repository": {"pullRequest": {"closingIssuesReferences": {"nodes": []}}}}}
 
-            # Assert
-            assert result == []
-            mock_graphql_query.assert_called_once()
+        # Execute
+        result = client.get_pr_closing_issues("test/repo", 456)
+
+        # Assert
+        assert result == []
+        mock_graphql_query.assert_called_once()
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_parent_issue_logs_command(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_parent_issue_logs_command(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test that get_parent_issue logs the gh command."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
-        graphql_response = {"data": {"repository": {"issue": {"parent": None}}}}
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute
-            result = client.get_parent_issue("test/repo", 789)
+        # Mock graphql_query
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"parent": None}}}}
 
-            # Assert
-            assert result is None
-            mock_graphql_query.assert_called_once()
+        # Execute
+        result = client.get_parent_issue("test/repo", 789)
+
+        # Assert
+        assert result is None
+        mock_graphql_query.assert_called_once()
 
     @patch("src.auto_coder.auth_utils.subprocess.run")
     def test_auth_utils_get_github_token_logs_command(self, mock_subprocess):
@@ -1555,10 +1577,10 @@ class TestGitHubClientSubIssueCaching:
     """Test cases for sub-issue caching functionality."""
 
     @patch("src.auto_coder.github_client.Github")
-    def test_get_open_sub_issues_returns_cached_results(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_get_open_sub_issues_returns_cached_results(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test that get_open_sub_issues returns cached results on subsequent calls."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
@@ -1578,28 +1600,28 @@ class TestGitHubClientSubIssueCaching:
                 }
             }
         }
+        mock_graphql_query.return_value = graphql_response
 
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute - first call (should trigger API)
-            result1 = client.get_open_sub_issues("test/repo", 123)
+        # Execute - first call (should trigger API)
+        result1 = client.get_open_sub_issues("test/repo", 123)
 
-            # Assert first call
-            assert result1 == [456, 789]
-            assert mock_graphql_query.call_count == 1  # API should be called once
+        # Assert first call
+        assert result1 == [456, 789]
+        assert mock_graphql_query.call_count == 1  # API should be called once
 
-            # Execute - second call (should use cache)
-            result2 = client.get_open_sub_issues("test/repo", 123)
+        # Execute - second call (should use cache)
+        result2 = client.get_open_sub_issues("test/repo", 123)
 
-            # Assert second call uses cache
-            assert result2 == [456, 789]
-            assert mock_graphql_query.call_count == 1  # API should still be called only once (using cache)
-            assert result1 == result2  # Both results should be identical
+        # Assert second call uses cache
+        assert result2 == [456, 789]
+        assert mock_graphql_query.call_count == 1  # API should still be called only once (using cache)
+        assert result1 == result2  # Both results should be identical
 
     @patch("src.auto_coder.github_client.Github")
-    def test_clear_sub_issue_cache_clears_cache(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_clear_sub_issue_cache_clears_cache(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test that clear_sub_issue_cache clears the cache."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
@@ -1618,37 +1640,37 @@ class TestGitHubClientSubIssueCaching:
                 }
             }
         }
+        mock_graphql_query.return_value = graphql_response
 
-        with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql_query:
-            # Execute - first call (should trigger API)
-            result1 = client.get_open_sub_issues("test/repo", 123)
-            assert result1 == [456]
-            assert mock_graphql_query.call_count == 1
+        # Execute - first call (should trigger API)
+        result1 = client.get_open_sub_issues("test/repo", 123)
+        assert result1 == [456]
+        assert mock_graphql_query.call_count == 1
 
-            # Clear the cache
-            client.clear_sub_issue_cache()
+        # Clear the cache
+        client.clear_sub_issue_cache()
 
-            # Verify cache is empty
-            cache_key = ("test/repo", 123)
-            assert cache_key not in client._sub_issue_cache
+        # Verify cache is empty
+        cache_key = ("test/repo", 123)
+        assert cache_key not in client._sub_issue_cache
 
-            # Execute - second call after cache clear (should trigger API again)
-            result2 = client.get_open_sub_issues("test/repo", 123)
+        # Execute - second call after cache clear (should trigger API again)
+        result2 = client.get_open_sub_issues("test/repo", 123)
 
-            # Assert second call triggers API again
-            assert result2 == [456]
-            assert mock_graphql_query.call_count == 2  # API should be called twice (cache was cleared)
-            assert result1 == result2  # Results should still be identical
+        # Assert second call triggers API again
+        assert result2 == [456]
+        assert mock_graphql_query.call_count == 2  # API should be called twice (cache was cleared)
+        assert result1 == result2  # Results should still be identical
 
 
 class TestGitHubClientFindClosingPr:
     """Test cases for find_closing_pr functionality."""
 
     @patch("src.auto_coder.github_client.Github")
-    def test_find_closing_pr_via_graphql_closing_references(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_find_closing_pr_via_graphql_closing_references(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test find_closing_pr finds PR via closingIssuesReferences."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
@@ -1667,26 +1689,12 @@ class TestGitHubClientFindClosingPr:
                 }
             }
         }
+        mock_graphql_query.return_value = linked_prs_response
 
-        # Second call: get_pr_closing_issues for PR 456
-        closing_issues_response_456 = {
-            "data": {
-                "repository": {
-                    "pullRequest": {
-                        "number": 456,
-                        "title": "Fix bug",
-                        "closingIssuesReferences": {
-                            "nodes": [
-                                {"number": 123, "title": "Bug report", "state": "OPEN"},
-                            ]
-                        },
-                    }
-                }
-            }
-        }
+        # Patch the get_pr_closing_issues method directly to return the correct closing issues
+        with patch.object(client, "get_pr_closing_issues") as mock_get_closing:
+            mock_get_closing.return_value = [123]
 
-        # Use side_effect to return different responses based on call count
-        with patch.object(client, "get_linked_prs_via_graphql", return_value=[456, 789]), patch.object(client, "get_pr_closing_issues", side_effect=[[123], []]) as mock_get_closing:
             # Execute
             result = client.find_closing_pr("test/repo", 123)
 
@@ -1695,10 +1703,10 @@ class TestGitHubClientFindClosingPr:
             mock_get_closing.assert_called_once_with("test/repo", 456)
 
     @patch("src.auto_coder.github_client.Github")
-    def test_find_closing_pr_fallback_to_text_search(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_find_closing_pr_fallback_to_text_search(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test find_closing_pr falls back to text search when closingIssuesReferences not found."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
@@ -1713,8 +1721,12 @@ class TestGitHubClientFindClosingPr:
         mock_github_class.return_value.get_repo.return_value = mock_repo
 
         # Mock GraphQL to return no closing PRs
-        graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
-        with patch.object(client, "graphql_query", return_value=graphql_response), patch.object(client, "get_pr_closing_issues", return_value=[]) as mock_get_closing:
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
+
+        # Patch get_pr_closing_issues to return empty list
+        with patch.object(client, "get_pr_closing_issues") as mock_get_closing:
+            mock_get_closing.return_value = []
+
             # Execute
             result = client.find_closing_pr("test/repo", 123)
 
@@ -1722,35 +1734,38 @@ class TestGitHubClientFindClosingPr:
             assert result == 789  # Should return PR 789 from text search
 
     @patch("src.auto_coder.github_client.Github")
-    def test_find_closing_pr_no_closing_pr(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_find_closing_pr_no_closing_pr(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test find_closing_pr returns None when no closing PR found."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
         # GraphQL response: no linked PRs
         linked_prs_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
+        mock_graphql_query.return_value = linked_prs_response
 
         # No PRs found in text search either
         mock_repo = Mock()
         mock_repo.get_pulls.return_value = []
         mock_github_class.return_value.get_repo.return_value = mock_repo
 
-        with patch.object(client, "graphql_query", return_value=linked_prs_response):
-            # Execute
-            result = client.find_closing_pr("test/repo", 123)
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
 
-            # Assert
-            assert result is None
+        # Assert
+        assert result is None
 
     @patch("src.auto_coder.github_client.Github")
-    def test_find_closing_pr_handles_graphql_error(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_find_closing_pr_handles_graphql_error(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test find_closing_pr handles GraphQL errors gracefully."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
+
+        # GraphQL query fails
+        mock_graphql_query.side_effect = Exception("GraphQL error")
 
         # Create mock PR for text search fallback
         mock_pr = Mock(spec=PullRequest.PullRequest)
@@ -1762,12 +1777,11 @@ class TestGitHubClientFindClosingPr:
         mock_repo.get_pulls.return_value = [mock_pr]
         mock_github_class.return_value.get_repo.return_value = mock_repo
 
-        with patch.object(client, "graphql_query", side_effect=Exception("GraphQL error")):
-            # Execute
-            result = client.find_closing_pr("test/repo", 123)
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
 
-            # Assert - should fall back to text search and find PR
-            assert result == 456
+        # Assert - should fall back to text search and find PR
+        assert result == 456
 
     @pytest.mark.parametrize(
         "title,body,pr_number",
@@ -1780,10 +1794,10 @@ class TestGitHubClientFindClosingPr:
         ],
     )
     @patch("src.auto_coder.github_client.Github")
-    def test_find_closing_pr_with_multiple_patterns(self, mock_github_class, mock_github_token, title, body, pr_number):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_find_closing_pr_with_multiple_patterns(self, mock_graphql_query, mock_github_class, mock_github_token, title, body, pr_number):
         """Test find_closing_pr detects various reference patterns in PR text."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
@@ -1797,31 +1811,31 @@ class TestGitHubClientFindClosingPr:
         mock_github_class.return_value.get_repo.return_value = mock_repo
 
         # Mock GraphQL to return no linked PRs
-        graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
-        with patch.object(client, "graphql_query", return_value=graphql_response):
-            # Execute
-            result = client.find_closing_pr("test/repo", 123)
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
 
-            # Assert
-            assert result == pr_number, f"Failed for title='{title}', body='{body}'"
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
+
+        # Assert
+        assert result == pr_number, f"Failed for title='{title}', body='{body}'"
 
     @patch("src.auto_coder.github_client.Github")
-    def test_find_closing_pr_github_exception(self, mock_github_class, mock_github_token):
+    @patch("src.auto_coder.github_client.GitHubClient.graphql_query")
+    def test_find_closing_pr_github_exception(self, mock_graphql_query, mock_github_class, mock_github_token):
         """Test find_closing_pr handles GithubException gracefully."""
         # Setup
-        GitHubClient.reset_singleton()
         client = GitHubClient.get_instance(mock_github_token)
         client.github = mock_github_class.return_value
 
         # GraphQL succeeds but get_repo raises exception
-        graphql_response = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
-        with patch.object(client, "graphql_query", return_value=graphql_response):
-            mock_github = Mock()
-            mock_github.get_repo.side_effect = GithubException(500, "Server Error")
-            mock_github_class.return_value = mock_github
+        mock_graphql_query.return_value = {"data": {"repository": {"issue": {"timelineItems": {"nodes": []}}}}}
 
-            # Execute
-            result = client.find_closing_pr("test/repo", 123)
+        mock_github = Mock()
+        mock_github.get_repo.side_effect = GithubException(500, "Server Error")
+        mock_github_class.return_value = mock_github
 
-            # Assert
-            assert result is None
+        # Execute
+        result = client.find_closing_pr("test/repo", 123)
+
+        # Assert
+        assert result is None

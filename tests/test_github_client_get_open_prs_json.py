@@ -1,7 +1,8 @@
-
 import json
 from unittest.mock import Mock, patch
+
 from src.auto_coder.github_client import GitHubClient
+
 
 class TestGitHubClientComplexityFix:
     """Tests for the fix of GraphQL complexity issue in get_open_prs_json."""
@@ -35,42 +36,38 @@ class TestGitHubClientComplexityFix:
                                 "commits": {"totalCount": 10},
                                 "additions": 100,
                                 "deletions": 20,
-                                "changedFiles": 3
+                                "changedFiles": 3,
                             }
                         ],
-                        "pageInfo": {
-                            "hasNextPage": False,
-                            "endCursor": "cursor123"
-                        }
+                        "pageInfo": {"hasNextPage": False, "endCursor": "cursor123"},
                     }
                 }
             }
         }
 
-        with patch("src.auto_coder.github_client.Github"), \
-             patch("src.auto_coder.github_client.get_caching_client"):
-            
+        with patch("src.auto_coder.github_client.Github"), patch("src.auto_coder.github_client.get_caching_client"):
+
             GitHubClient.reset_singleton()
             client = GitHubClient.get_instance("fake-token")
-            
+
             # We will mock graphql_query on the client instance once we plan to use it.
-            # However, since the current implementation uses 'gh' CLI, this test will FAIL 
+            # However, since the current implementation uses 'gh' CLI, this test will FAIL
             # or behave differently until we change the implementation.
             # To verify the FIX, we want to ensure that IF we mock graphql_query, it works.
-            # But wait, initially I want to see it fail or rather I want to prepare the test 
+            # But wait, initially I want to see it fail or rather I want to prepare the test
             # that WILL pass after my changes.
-            
+
             with patch.object(client, "graphql_query", return_value=graphql_response) as mock_graphql:
                 # Execute
                 # NOTE: The current implementation calls 'gh' CLI, not graphql_query for this method.
                 # So running this test NOW would actually try to run 'gh' and fail or return empty if blocked.
                 # I will implement the test expecting the NEW behavior.
-                
-                # To make this test fail properly before fix (if I wanted to), I'd have to assert 
+
+                # To make this test fail properly before fix (if I wanted to), I'd have to assert
                 # that graphql_query was called.
-                
+
                 result = client.get_open_prs_json("owner/repo")
-                
+
                 # Assertions for the Expected Result AFTER fix
                 assert len(result) == 1
                 pr = result[0]
@@ -81,7 +78,7 @@ class TestGitHubClientComplexityFix:
                 assert pr["labels"] == ["bug", "priority"]
                 assert pr["assignees"] == ["assignee-user"]
                 assert pr["mergeable"] is True
-                
+
                 # Verify graphql_query was called
                 mock_graphql.assert_called_once()
                 call_args = mock_graphql.call_args

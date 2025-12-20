@@ -3,14 +3,16 @@ GitHub API client for Auto-Coder.
 """
 
 import json
+import subprocess
 import threading
+import types
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
-from hishel import CacheClient
 
-
+from .gh_logger import get_gh_logger
 from .logger_config import get_logger
 from .util.gh_cache import get_caching_client
 
@@ -63,43 +65,87 @@ class GitHubClient:
         self.disable_labels = disable_labels
         self._initialized = True
         self._sub_issue_cache: Dict[Tuple[str, int], List[int]] = {}
-        self._caching_client: CacheClient = get_caching_client()
+        self._caching_client: Optional[httpx.Client] = None
+        self._caching_client_lock = threading.Lock()
 
-    def graphql_query(self, query: str, variables: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        # MONKEY-PATCHING PYGTIHUB FOR CACHING
+        # -------------------------------------
+        # WHAT: We are replacing PyGithub's internal `requestJsonAndCheck` method with our own
+        # `_caching_requester`. This allows us to intercept all REST API calls.
+        #
+        # WHY: PyGithub does not provide a public API to substitute the underlying HTTP client or to add
+        # caching middleware. To implement ETag-based caching for GET requests without forking the
+        # library, monkey-patching is the most pragmatic approach.
+        #
+        # RISK: This implementation is tightly coupled to the internal structure of PyGithub. The
+        # attributes `_Github__requester` and its method `requestJsonAndCheck` are private and could
+        # change in any future version of the library, which would break this integration. This is a
+        # calculated risk to gain significant performance benefits.
+        self._original_requester = self.github._Github__requester.requestJsonAndCheck  # type: ignore
+        self.github._Github__requester.requestJsonAndCheck = types.MethodType(lambda requester, verb, url, parameters=None, headers=None, input=None, cnx=None: self._caching_requester(requester, verb, url, parameters, headers, input, cnx), self.github._Github__requester)  # type: ignore
+
+    def _caching_requester(self, requester, verb, url, parameters=None, headers=None, input=None, cnx=None):
         """
-        Execute a GraphQL query using the caching client.
-
-        Args:
-            query: The GraphQL query string.
-            variables: A dictionary of variables for the query.
-            headers: Additional headers for the request.
-
-        Returns:
-            The JSON response from the API.
+        A custom requester for PyGithub that uses httpx with caching for GET requests.
         """
-        endpoint = "https://api.github.com/graphql"
-        request_headers = {
-            "Authorization": f"bearer {self.token}",
-            "Content-Type": "application/json",
-        }
-        if headers:
-            request_headers.update(headers)
+        if verb.upper() == "GET":
+            if self._caching_client is None:
+                with self._caching_client_lock:
+                    if self._caching_client is None:
+                        self._caching_client = get_caching_client()
 
-        payload = {"query": query}
-        if variables:
-            payload["variables"] = variables
+            # Construct the full URL if it's not already
+            if not url.startswith("http"):
+                url = f"{requester._Requester__base_url}{url}"
 
-        try:
-            response = self._caching_client.post(endpoint, headers=request_headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            if "errors" in data:
-                logger.error(f"GraphQL query failed: {data['errors']}")
-                raise Exception(f"GraphQL query failed: {data['errors']}")
-            return data
-        except Exception as e:
-            logger.error(f"Failed to execute GraphQL query: {e}")
-            raise
+            # Prepare headers for httpx
+            final_headers = {
+                "Authorization": f"bearer {self.token}",
+                "Accept": "application/vnd.github.v3+json",
+            }
+            if headers:
+                final_headers.update(headers)
+
+            response = self._caching_client.get(url, headers=final_headers, params=parameters, timeout=30)
+            try:
+                # We cannot use `response.raise_for_status()` for two reasons:
+                # 1. It raises an error on 304 Not Modified, which is a success condition for caching.
+                # 2. Responses from `hishel`'s cache may lack the `.request` attribute, causing a `RuntimeError`.
+                if response.status_code >= 400:
+                    # Manually trigger the exception handling path.
+                    raise httpx.HTTPStatusError(
+                        f"Error response {response.status_code} while requesting {response.url}",
+                        request=httpx.Request("GET", url),  # Dummy request to satisfy the constructor
+                        response=response,
+                    )
+
+                # PyGithub's requester returns a tuple (headers, data).
+                # By calling .read(), we ensure the response body is consumed, which is necessary
+                # for `hishel` to store the response in its cache.
+                body = response.read()
+                response_data = json.loads(body) if body else None
+
+                # PyGithub's requester expects a case-insensitive dict-like object for headers.
+                class HeaderWrapper(dict):
+                    def getheader(self, name, default=None):
+                        return self.get(name.lower(), default)
+
+                # Normalize header keys to lowercase for consistent access.
+                response_headers = {k.lower(): v for k, v in response.headers.items()}
+                return HeaderWrapper(response_headers), response_data
+            except httpx.HTTPStatusError as e:
+                # Convert httpx exception to GithubException
+                raise GithubException(
+                    status=e.response.status_code,
+                    data=e.response.text,
+                    headers=e.response.headers,
+                )
+            finally:
+                # Ensure the response stream is closed to free up resources.
+                response.close()
+        else:
+            # For non-GET requests, use the original requester
+            return self._original_requester(verb, url, parameters, headers, input, cnx)
 
     def __new__(cls, *args: Any, **kwargs: Any) -> "GitHubClient":
         """Implement thread-safe singleton pattern.
@@ -141,6 +187,58 @@ class GitHubClient:
         """
         with cls._lock:
             cls._instance = None
+
+    def graphql_query(self, query: str, variables: Optional[Dict[str, Any]] = None, extra_headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """
+        Executes a GraphQL query against the GitHub API using a caching client.
+
+        Args:
+            query: The GraphQL query string.
+            variables: A dictionary of variables for the query.
+            extra_headers: Optional extra headers to include in the request.
+
+        Returns:
+            The JSON response from the API as a dictionary.
+
+        Raises:
+            httpx.HTTPStatusError: If the API returns a non-200 status code.
+            ValueError: If the response contains GraphQL errors.
+        """
+        if self._caching_client is None:
+            self._caching_client = get_caching_client()
+        url = "https://api.github.com/graphql"
+        headers = {
+            "Authorization": f"bearer {self.token}",
+            "Content-Type": "application/json",
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+
+        payload: Dict[str, Any] = {"query": query}
+        if variables:
+            payload["variables"] = variables
+
+        try:
+            response = self._caching_client.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if "errors" in data:
+                error_messages = [err.get("message", "Unknown error") for err in data["errors"]]
+                logger.error(f"GraphQL query failed with errors: {', '.join(error_messages)}")
+                # For cache debugging, log if the response was from cache
+                if getattr(response, "from_cache", False):
+                    logger.debug("GraphQL error response was served from cache.")
+                raise ValueError(f"GraphQL query failed: {', '.join(error_messages)}")
+
+            return data
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"GraphQL query failed with HTTP status {e.response.status_code}: {e.response.text}")
+            raise
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during GraphQL query: {e}")
+            raise
 
     def clear_sub_issue_cache(self) -> None:
         """Clear the sub-issue cache."""
@@ -213,32 +311,27 @@ class GitHubClient:
             logger.error(f"Failed to get pull requests from {repo_name}: {e}")
             raise
 
-    def get_open_prs_json(self, repo_name: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Get open pull requests with detailed information using GraphQL to avoid complexity errors.
+    def get_open_prs_json(self, repo_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get open pull requests from repository using GraphQL API.
+
+        This method uses the GraphQL API to efficiently fetch all PR details in a single
+        request, avoiding N+1 API calls that occur with the REST API approach.
 
         Args:
-            repo_name: Repository name (owner/repo)
-            limit: Optional limit on number of PRs to fetch
+            repo_name: Repository name in format 'owner/repo'
+            limit: Maximum number of PRs to fetch per page (default: 100)
 
         Returns:
-            List of PR data dictionaries compatible with get_pr_details
+            List of PR data dictionaries with fields matching get_pr_details output format,
+            plus additional fields needed by automation engine.
         """
         try:
             owner, repo = repo_name.split("/")
-            processed_prs = []
-            cursor = None
-            has_next_page = True
-            
-            # Default to fetching all if no limit (or a very high limit)
-            # Fetch in chunks of 50 to be safe with complexity
-            page_size = 50 
-            fetched_count = 0
-            target_limit = limit if (limit and limit > 0) else 1000  # Default cap like before
 
             query = """
             query($owner: String!, $repo: String!, $cursor: String, $limit: Int) {
               repository(owner: $owner, name: $repo) {
-                pullRequests(first: $limit, after: $cursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
+                pullRequests(states: OPEN, first: $limit, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
                   nodes {
                     number
                     title
@@ -284,81 +377,60 @@ class GitHubClient:
             }
             """
 
-            while has_next_page and fetched_count < target_limit:
-                current_limit = min(page_size, target_limit - fetched_count)
-                variables = {
-                    "owner": owner, 
-                    "repo": repo, 
-                    "cursor": cursor, 
-                    "limit": current_limit
-                }
-                
-                response = self.graphql_query(query, variables)
-                data = response.get("data", {}).get("repository", {}).get("pullRequests", {})
-                
-                nodes = data.get("nodes", [])
-                if not nodes:
+            all_prs: List[Dict[str, Any]] = []
+            cursor: Optional[str] = None
+
+            while True:
+                variables = {"owner": owner, "repo": repo, "limit": limit, "cursor": cursor}
+                data = self.graphql_query(query, variables)
+
+                pull_requests = data.get("data", {}).get("repository", {}).get("pullRequests", {})
+                nodes = pull_requests.get("nodes", [])
+                page_info = pull_requests.get("pageInfo", {})
+
+                for pr_node in nodes:
+                    # Convert GraphQL response to the format expected by automation engine
+                    # Match the format of get_pr_details but include additional fields
+                    mergeable_value = pr_node.get("mergeable")
+                    # GraphQL returns MERGEABLE, CONFLICTING, UNKNOWN
+                    # Convert to boolean: True for MERGEABLE, False otherwise
+                    mergeable_bool = mergeable_value == "MERGEABLE" if mergeable_value else None
+
+                    pr_data: Dict[str, Any] = {
+                        "number": pr_node.get("number"),
+                        "title": pr_node.get("title"),
+                        "body": pr_node.get("body") or "",
+                        "state": pr_node.get("state", "").lower(),  # GraphQL returns OPEN/CLOSED/MERGED
+                        "url": pr_node.get("url"),
+                        "created_at": pr_node.get("createdAt"),
+                        "updated_at": pr_node.get("updatedAt"),
+                        "draft": pr_node.get("isDraft", False),
+                        "mergeable": mergeable_bool,
+                        "head_branch": pr_node.get("headRefName"),
+                        "head": {"ref": pr_node.get("headRefName"), "sha": pr_node.get("headRefOid")},
+                        "base_branch": pr_node.get("baseRefName"),
+                        "author": pr_node.get("author", {}).get("login") if pr_node.get("author") else None,
+                        "assignees": [a.get("login") for a in pr_node.get("assignees", {}).get("nodes", []) if a],
+                        "labels": [lbl.get("name") for lbl in pr_node.get("labels", {}).get("nodes", []) if lbl],
+                        "comments_count": pr_node.get("comments", {}).get("totalCount", 0),
+                        "commits_count": pr_node.get("commits", {}).get("totalCount", 0),
+                        "additions": pr_node.get("additions"),
+                        "deletions": pr_node.get("deletions"),
+                        "changed_files": pr_node.get("changedFiles"),
+                    }
+                    all_prs.append(pr_data)
+
+                if not page_info.get("hasNextPage"):
                     break
 
-                for pr in nodes:
-                    # Map fields to match get_pr_details format
-                    
-                    # Mergeable mapping
-                    mergeable_status = pr.get("mergeable")
-                    mergeable = None
-                    if mergeable_status == "MERGEABLE":
-                        mergeable = True
-                    elif mergeable_status == "CONFLICTING":
-                        mergeable = False
-                    
-                    # Flatten nested structures
-                    author = pr.get("author", {})
-                    author_login = author.get("login") if author else None
-                    
-                    assignees = [a.get("login") for a in pr.get("assignees", {}).get("nodes", [])]
-                    labels = [l.get("name") for l in pr.get("labels", {}).get("nodes", [])]
-
-                    # Commits & Comments counts
-                    commits_count = pr.get("commits", {}).get("totalCount", 0)
-                    comments_count = pr.get("comments", {}).get("totalCount", 0)
-
-                    processed_pr = {
-                        "number": pr.get("number"),
-                        "title": pr.get("title"),
-                        "body": pr.get("body", "") or "",
-                        "state": pr.get("state", "").lower(),
-                        "labels": labels,
-                        "assignees": assignees,
-                        "created_at": pr.get("createdAt"),
-                        "updated_at": pr.get("updatedAt"),
-                        "url": pr.get("url"),
-                        "author": author_login,
-                        "head_branch": pr.get("headRefName"),
-                        "base_branch": pr.get("baseRefName"),
-                        "mergeable": mergeable,
-                        "draft": pr.get("isDraft"),
-                        "comments_count": comments_count,
-                        "review_comments_count": 0, # Not fetched to save complexity
-                        "commits_count": commits_count,
-                        "additions": pr.get("additions", 0),
-                        "deletions": pr.get("deletions", 0),
-                        "changed_files": pr.get("changedFiles", 0),
-                        "head": {"ref": pr.get("headRefName"), "sha": pr.get("headRefOid")},
-                        "base": {"ref": pr.get("baseRefName")},
-                    }
-                    processed_prs.append(processed_pr)
-                    fetched_count += 1
-                
-                page_info = data.get("pageInfo", {})
-                has_next_page = page_info.get("hasNextPage", False)
                 cursor = page_info.get("endCursor")
 
-            logger.info(f"Retrieved {len(processed_prs)} open PRs via GraphQL")
-            return processed_prs
+            logger.info(f"Retrieved {len(all_prs)} open pull requests from {repo_name} via GraphQL (oldest first)")
+            return all_prs
 
         except Exception as e:
-            logger.error(f"Error getting PR list via GraphQL: {e}")
-            return []
+            logger.error(f"Failed to get open PRs via GraphQL from {repo_name}: {e}")
+            raise
 
     def get_issue_details(self, issue: Issue.Issue) -> Dict[str, Any]:
         """Extract detailed information from an issue."""
@@ -455,6 +527,7 @@ class GitHubClient:
             """
             variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
             data = self.graphql_query(query, variables)
+
             timeline_items = data.get("data", {}).get("repository", {}).get("issue", {}).get("timelineItems", {}).get("nodes", [])
 
             pr_numbers = []
@@ -470,6 +543,7 @@ class GitHubClient:
                 logger.info(f"Found {len(pr_numbers)} linked PR(s) for issue #{issue_number} via GraphQL: {pr_numbers}")
 
             return pr_numbers
+
         except Exception as e:
             logger.warning(f"Failed to get linked PRs via GraphQL for issue #{issue_number}: {e}")
             return []
@@ -589,25 +663,25 @@ class GitHubClient:
             # GraphQL query to fetch sub-issues (new sub-issues feature)
             query = """
             query($owner: String!, $repo: String!, $issueNumber: Int!) {
-                repository(owner: $owner, name: $repo) {
-                    issue(number: $issueNumber) {
-                        number
-                        title
-                        subIssues(first: 100) {
-                            nodes {
-                                number
-                                title
-                                state
-                                url
-                            }
-                        }
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
+                  number
+                  title
+                  subIssues(first: 100) {
+                    nodes {
+                      number
+                      title
+                      state
+                      url
                     }
+                  }
                 }
+              }
             }
             """
             variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
             headers = {"GraphQL-Features": "sub_issues"}
-            data = self.graphql_query(query, variables, headers)
+            data = self.graphql_query(query, variables, extra_headers=headers)
 
             # Extract open sub-issues
             open_sub_issues = []
@@ -624,6 +698,7 @@ class GitHubClient:
             self._sub_issue_cache[cache_key] = open_sub_issues
 
             return open_sub_issues
+
         except Exception as e:
             logger.error(f"Failed to get open sub-issues for issue #{issue_number}: {e}")
             return []
@@ -673,6 +748,7 @@ class GitHubClient:
                 logger.info(f"PR #{pr_number} will close {len(closing_issues)} issue(s): {closing_issues}")
 
             return closing_issues
+
         except Exception as e:
             logger.error(f"Failed to get closing issues for PR #{pr_number}: {e}")
             return []
@@ -712,7 +788,7 @@ class GitHubClient:
             """
             variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
             headers = {"GraphQL-Features": "sub_issues"}
-            data = self.graphql_query(query, variables, headers)
+            data = self.graphql_query(query, variables, extra_headers=headers)
 
             # Extract parent issue
             parent_issue = data.get("data", {}).get("repository", {}).get("issue", {}).get("parent")
@@ -722,6 +798,7 @@ class GitHubClient:
                 return parent_issue
 
             return None
+
         except Exception as e:
             logger.error(f"Failed to get parent issue for issue #{issue_number}: {e}")
             return None
@@ -795,6 +872,7 @@ class GitHubClient:
 
             logger.debug(f"No body found for parent issue #{parent_number}")
             return None
+
         except Exception as e:
             logger.error(f"Failed to get parent issue body for issue #{issue_number}: {e}")
             return None
@@ -1013,7 +1091,7 @@ class GitHubClient:
             """
             variables = {"owner": owner, "repo": repo, "issueNumber": issue_number}
             headers = {"GraphQL-Features": "sub_issues"}
-            data = self.graphql_query(query, variables, headers)
+            data = self.graphql_query(query, variables, extra_headers=headers)
 
             # Extract all sub-issues (both open and closed)
             all_sub_issues = []
@@ -1026,6 +1104,7 @@ class GitHubClient:
                 logger.info(f"Issue #{issue_number} has {len(all_sub_issues)} sub-issue(s): {all_sub_issues}")
 
             return all_sub_issues
+
         except Exception as e:
             logger.error(f"Failed to get all sub-issues for issue #{issue_number}: {e}")
             return []
