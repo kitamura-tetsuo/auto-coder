@@ -2,11 +2,12 @@
 GitHub API client for Auto-Coder.
 """
 
-import httpx
 import json
 import subprocess
 import threading
 from typing import Any, Dict, List, Optional, Tuple
+
+import httpx
 from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 
