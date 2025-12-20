@@ -154,9 +154,6 @@ class AutomationEngine:
         candidates_count = 0
 
         try:
-            # Collect PR candidates
-            prs = self.github.get_open_pull_requests(repo_name)
-
             # Check if we should process Dependabot PRs at all in this run
             can_process_dependabot_pr = should_process_dependabot_pr()
             if not can_process_dependabot_pr:
@@ -164,21 +161,18 @@ class AutomationEngine:
 
             # Preload PR data and GitHub Actions statuses to avoid N+1 API calls
             # Optimized to use get_open_prs_json to batch fetch details
+            # This replaces the need for get_open_pull_requests which triggers separate API calls
             pr_data_list = self.github.get_open_prs_json(repo_name)
-            pr_data_map = {d["number"]: d for d in pr_data_list}
 
-            pr_data_pairs = []
-            for pr in prs:
-                if pr.number in pr_data_map:
-                    pr_data_pairs.append((pr, pr_data_map[pr.number]))
-                else:
-                    # Fallback if somehow not in the list (shouldn't happen)
-                    logger.warning(f"PR #{pr.number} not found in bulk fetch, falling back to individual fetch")
-                    pr_data_pairs.append((pr, self.github.get_pr_details(pr)))
+            # Sort by creation date ascending (oldest first) to match processing order expectation
+            pr_data_list.sort(key=lambda x: x.get("created_at", ""))
 
-            preload_github_actions_status(repo_name, [p[1] for p in pr_data_pairs])
+            preload_github_actions_status(repo_name, pr_data_list)
 
-            for pr, pr_data in pr_data_pairs:
+            # Lazy-load repository object if needed for Jules PRs
+            repo = None
+
+            for pr_data in pr_data_list:
                 labels = pr_data.get("labels", []) or []
 
                 pr_number = pr_data.get("number")
@@ -280,6 +274,12 @@ class AutomationEngine:
                 # Check if PR is created by Jules and waiting for Jules update
                 if pr_data.get("author") == "jules":
                     try:
+                        # Lazy fetch the PR object only when needed
+                        if repo is None:
+                            repo = self.github.get_repository(repo_name)
+
+                        pr = repo.get_pull(pr_number)
+
                         last_interaction_time = None
                         last_interaction_type = None
 
