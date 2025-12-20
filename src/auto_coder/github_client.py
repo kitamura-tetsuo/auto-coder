@@ -10,7 +10,7 @@ from github import Github, Issue, PullRequest, Repository
 from github.GithubException import GithubException
 from hishel import CacheClient
 
-from .gh_logger import get_gh_logger
+
 from .logger_config import get_logger
 from .util.gh_cache import get_caching_client
 
@@ -214,7 +214,7 @@ class GitHubClient:
             raise
 
     def get_open_prs_json(self, repo_name: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Get open pull requests with detailed information using gh CLI to avoid N+1 API calls.
+        """Get open pull requests with detailed information using GraphQL to avoid complexity errors.
 
         Args:
             repo_name: Repository name (owner/repo)
@@ -224,88 +224,140 @@ class GitHubClient:
             List of PR data dictionaries compatible with get_pr_details
         """
         try:
-            gh_logger = get_gh_logger()
-            # Request all fields needed for filtering and prioritization
-            # Including additions, deletions, changedFiles as they are supported by gh pr list --json
-            fields = "number,title,body,state,labels,assignees,createdAt,updatedAt,url,author,headRefName,headRefOid,baseRefName,mergeable,isDraft,comments,commits,additions,deletions,changedFiles"
-
-            cmd = ["gh", "pr", "list", "--repo", repo_name, "--json", fields, "--state", "open"]
-            if limit:
-                cmd.extend(["--limit", str(limit)])
-            else:
-                # Default limit for gh pr list is 30. We want all open PRs.
-                # Setting a high limit (1000) to emulate getting all open PRs.
-                cmd.extend(["--limit", "1000"])
-
-            result = gh_logger.execute_with_logging(cmd, repo=repo_name, capture_output=True)
-
-            if not result.success:
-                logger.error(f"Failed to get PR list via gh CLI: {result.stderr}")
-                return []
-
-            pr_list = json.loads(result.stdout)
+            owner, repo = repo_name.split("/")
             processed_prs = []
+            cursor = None
+            has_next_page = True
+            
+            # Default to fetching all if no limit (or a very high limit)
+            # Fetch in chunks of 50 to be safe with complexity
+            page_size = 50 
+            fetched_count = 0
+            target_limit = limit if (limit and limit > 0) else 1000  # Default cap like before
 
-            for pr in pr_list:
-                # Map fields to match get_pr_details format
-
-                # Mergeable mapping
-                mergeable_status = pr.get("mergeable")
-                mergeable = None
-                if mergeable_status == "MERGEABLE":
-                    mergeable = True
-                elif mergeable_status == "CONFLICTING":
-                    mergeable = False
-                # "UNKNOWN" remains None
-
-                # Commits count
-                commits = pr.get("commits", [])
-                commits_count = len(commits)
-
-                # Labels
-                labels = [label.get("name") for label in pr.get("labels", [])]
-
-                # Assignees
-                assignees = [assignee.get("login") for assignee in pr.get("assignees", [])]
-
-                # Author
-                author = pr.get("author", {}).get("login")
-
-                # Map to get_pr_details structure
-                processed_pr = {
-                    "number": pr.get("number"),
-                    "title": pr.get("title"),
-                    "body": pr.get("body", "") or "",
-                    "state": pr.get("state", "").lower(),  # Ensure lowercase 'open'
-                    "labels": labels,
-                    "assignees": assignees,
-                    "created_at": pr.get("createdAt"),
-                    "updated_at": pr.get("updatedAt"),
-                    "url": pr.get("url"),
-                    "author": author,
-                    "head_branch": pr.get("headRefName"),
-                    "base_branch": pr.get("baseRefName"),
-                    "mergeable": mergeable,
-                    "draft": pr.get("isDraft"),
-                    "comments_count": len(pr.get("comments", [])),
-                    # review_comments_count is not available in gh pr list --json
-                    "review_comments_count": 0,
-                    "commits_count": commits_count,
-                    "additions": pr.get("additions", 0),
-                    "deletions": pr.get("deletions", 0),
-                    "changed_files": pr.get("changedFiles", 0),
-                    # Extra fields useful for avoiding N+1 and providing missing nested data
-                    "head": {"ref": pr.get("headRefName"), "sha": pr.get("headRefOid")},
-                    "base": {"ref": pr.get("baseRefName")},
+            query = """
+            query($owner: String!, $repo: String!, $cursor: String, $limit: Int) {
+              repository(owner: $owner, name: $repo) {
+                pullRequests(first: $limit, after: $cursor, states: OPEN, orderBy: {field: CREATED_AT, direction: ASC}) {
+                  nodes {
+                    number
+                    title
+                    body
+                    state
+                    url
+                    createdAt
+                    updatedAt
+                    isDraft
+                    mergeable
+                    headRefName
+                    headRefOid
+                    baseRefName
+                    author {
+                      login
+                    }
+                    assignees(first: 10) {
+                      nodes {
+                        login
+                      }
+                    }
+                    labels(first: 20) {
+                      nodes {
+                        name
+                      }
+                    }
+                    comments {
+                      totalCount
+                    }
+                    commits {
+                      totalCount
+                    }
+                    additions
+                    deletions
+                    changedFiles
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
                 }
+              }
+            }
+            """
 
-                processed_prs.append(processed_pr)
+            while has_next_page and fetched_count < target_limit:
+                current_limit = min(page_size, target_limit - fetched_count)
+                variables = {
+                    "owner": owner, 
+                    "repo": repo, 
+                    "cursor": cursor, 
+                    "limit": current_limit
+                }
+                
+                response = self.graphql_query(query, variables)
+                data = response.get("data", {}).get("repository", {}).get("pullRequests", {})
+                
+                nodes = data.get("nodes", [])
+                if not nodes:
+                    break
 
-            logger.info(f"Retrieved {len(processed_prs)} open PRs via gh CLI")
+                for pr in nodes:
+                    # Map fields to match get_pr_details format
+                    
+                    # Mergeable mapping
+                    mergeable_status = pr.get("mergeable")
+                    mergeable = None
+                    if mergeable_status == "MERGEABLE":
+                        mergeable = True
+                    elif mergeable_status == "CONFLICTING":
+                        mergeable = False
+                    
+                    # Flatten nested structures
+                    author = pr.get("author", {})
+                    author_login = author.get("login") if author else None
+                    
+                    assignees = [a.get("login") for a in pr.get("assignees", {}).get("nodes", [])]
+                    labels = [l.get("name") for l in pr.get("labels", {}).get("nodes", [])]
+
+                    # Commits & Comments counts
+                    commits_count = pr.get("commits", {}).get("totalCount", 0)
+                    comments_count = pr.get("comments", {}).get("totalCount", 0)
+
+                    processed_pr = {
+                        "number": pr.get("number"),
+                        "title": pr.get("title"),
+                        "body": pr.get("body", "") or "",
+                        "state": pr.get("state", "").lower(),
+                        "labels": labels,
+                        "assignees": assignees,
+                        "created_at": pr.get("createdAt"),
+                        "updated_at": pr.get("updatedAt"),
+                        "url": pr.get("url"),
+                        "author": author_login,
+                        "head_branch": pr.get("headRefName"),
+                        "base_branch": pr.get("baseRefName"),
+                        "mergeable": mergeable,
+                        "draft": pr.get("isDraft"),
+                        "comments_count": comments_count,
+                        "review_comments_count": 0, # Not fetched to save complexity
+                        "commits_count": commits_count,
+                        "additions": pr.get("additions", 0),
+                        "deletions": pr.get("deletions", 0),
+                        "changed_files": pr.get("changedFiles", 0),
+                        "head": {"ref": pr.get("headRefName"), "sha": pr.get("headRefOid")},
+                        "base": {"ref": pr.get("baseRefName")},
+                    }
+                    processed_prs.append(processed_pr)
+                    fetched_count += 1
+                
+                page_info = data.get("pageInfo", {})
+                has_next_page = page_info.get("hasNextPage", False)
+                cursor = page_info.get("endCursor")
+
+            logger.info(f"Retrieved {len(processed_prs)} open PRs via GraphQL")
             return processed_prs
 
         except Exception as e:
-            logger.error(f"Error getting PR list via gh CLI: {e}")
+            logger.error(f"Error getting PR list via GraphQL: {e}")
             return []
 
     def get_issue_details(self, issue: Issue.Issue) -> Dict[str, Any]:

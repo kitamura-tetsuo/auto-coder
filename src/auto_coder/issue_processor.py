@@ -420,7 +420,14 @@ def _process_issue_jules_mode(
         jules_client = JulesClient()
 
         # Prepare the prompt for Jules
-        issue_labels_list = [label.get("name", "") for label in issue_data.get("labels", [])]
+        # Prepare the prompt for Jules
+        issue_labels_list = []
+        for label in issue_data.get("labels", []):
+            if isinstance(label, dict):
+                issue_labels_list.append(label.get("name", ""))
+            elif isinstance(label, str):
+                issue_labels_list.append(label)
+
         action_prompt = render_prompt(
             "issue.action",
             repo_name=repo_name,
@@ -862,7 +869,12 @@ def _apply_issue_actions_directly(
 
                 # Create a comprehensive prompt for LLM CLI
                 # Extract issue labels for label-based prompt selection
-                issue_labels_list = issue_data.get("labels", [])
+                issue_labels_list = []
+                for label in issue_data.get("labels", []):
+                    if isinstance(label, dict):
+                        issue_labels_list.append(label.get("name", ""))
+                    elif isinstance(label, str):
+                        issue_labels_list.append(label)
 
                 action_prompt = render_prompt(
                     "issue.action",

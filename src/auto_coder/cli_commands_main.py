@@ -347,16 +347,21 @@ def process_issues(
         else:
             result = automation_engine.run(repo_name)
 
-        # Determine sleep time based on activity
-        issues_count = len(result.get("issues_processed", []))
-        prs_count = len(result.get("prs_processed", []))
+        # Determine sleep time based on OPEN issues/PRs (not just processed ones)
+        # We check if there are any open issues or PRs to decide if we should sleep short or long.
+        # Use limit=1 to minimize API cost just to check existence.
+        open_issues_exist = len(github_client.get_open_issues(repo_name, limit=1)) > 0
+        open_prs_exist = len(github_client.get_open_pull_requests(repo_name, limit=1)) > 0
 
-        if issues_count == 0 and prs_count == 0:
+        processed_issues = len(result.get("issues_processed", []))
+        processed_prs = len(result.get("prs_processed", []))
+
+        if not open_issues_exist and not open_prs_exist:
             sleep_time = get_process_issues_empty_sleep_time_from_config()
-            logger.info(f"No issues or PRs processed. Sleeping for extended time: {sleep_time} seconds...")
+            logger.info(f"No open issues or PRs found. Sleeping for extended time: {sleep_time} seconds...")
         else:
             sleep_time = get_process_issues_sleep_time_from_config()
-            logger.info(f"Processed {issues_count} issues and {prs_count} PRs. Sleeping for {sleep_time} seconds...")
+            logger.info(f"Processed {processed_issues} issues and {processed_prs} PRs (Open items detected). Sleeping for {sleep_time} seconds...")
 
         time.sleep(sleep_time)
 
