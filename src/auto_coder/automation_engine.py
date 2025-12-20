@@ -154,19 +154,25 @@ class AutomationEngine:
         candidates_count = 0
 
         try:
-            # Collect PR candidates
-            prs = self.github.get_open_pull_requests(repo_name)
-
             # Check if we should process Dependabot PRs at all in this run
             can_process_dependabot_pr = should_process_dependabot_pr()
             if not can_process_dependabot_pr:
                 logger.info("Skipping Dependabot PRs in this run due to 24-hour processing limit.")
 
             # Preload PR data and GitHub Actions statuses to avoid N+1 API calls
-            pr_data_pairs = [(pr, self.github.get_pr_details(pr)) for pr in prs]
-            preload_github_actions_status(repo_name, [p[1] for p in pr_data_pairs])
+            # Optimized to use get_open_prs_json to batch fetch details
+            # This replaces the need for get_open_pull_requests which triggers separate API calls
+            pr_data_list = self.github.get_open_prs_json(repo_name)
 
-            for pr, pr_data in pr_data_pairs:
+            # Sort by creation date ascending (oldest first) to match processing order expectation
+            pr_data_list.sort(key=lambda x: x.get("created_at", ""))
+
+            preload_github_actions_status(repo_name, pr_data_list)
+
+            # Lazy-load repository object if needed for Jules PRs
+            repo = None
+
+            for pr_data in pr_data_list:
                 labels = pr_data.get("labels", []) or []
 
                 pr_number = pr_data.get("number")
@@ -199,6 +205,7 @@ class AutomationEngine:
                     item_type="pr",
                     skip_label_add=True,
                     check_labels=self.config.CHECK_LABELS,
+                    known_labels=pr_data.get("labels"),
                 ) as should_process:
                     if not should_process:
                         continue
@@ -267,6 +274,12 @@ class AutomationEngine:
                 # Check if PR is created by Jules and waiting for Jules update
                 if pr_data.get("author") == "jules":
                     try:
+                        # Lazy fetch the PR object only when needed
+                        if repo is None:
+                            repo = self.github.get_repository(repo_name)
+
+                        pr = repo.get_pull(pr_number)
+
                         last_interaction_time = None
                         last_interaction_type = None
 
@@ -401,6 +414,7 @@ class AutomationEngine:
                         item_type="issue",
                         skip_label_add=True,
                         check_labels=self.config.CHECK_LABELS,
+                        known_labels=labels,
                     ) as should_process:
                         if not should_process:
                             continue
@@ -533,14 +547,41 @@ class AutomationEngine:
                 raise ValueError(f"Item number is missing for {item_type} #{candidate.data.get('number', 'N/A')}")
 
             # Use LabelManager context manager to handle @auto-coder label automatically
-            with LabelManager(self.github, repo_name, item_number, item_type=item_type, config=config, check_labels=config.CHECK_LABELS) as should_process:
+            with LabelManager(
+                self.github,
+                repo_name,
+                item_number,
+                item_type=item_type,
+                config=config,
+                check_labels=config.CHECK_LABELS,
+                known_labels=candidate.data.get("labels") if candidate.data else None,
+            ) as should_process:
                 if not should_process:
                     result.actions = ["Skipped - another instance started processing (@auto-coder label added)"]
                     return result
 
                 if item_type == "issue":
-                    # Issue processing
-                    if jules_mode:
+                    # Check if issue has sub-issues (Parent Issue)
+                    # If so, force local processing to handle branch merging correctly
+                    has_sub_issues = False
+                    if candidate.data:
+                        # Try to use data from candidate first if available
+                        # This might be populated by previous calls (e.g. in _get_candidates)
+                        # but usually we need to check specifically if we don't have that info
+                        pass
+
+                    # Reliable check for sub-issues
+                    try:
+                        all_sub_issues = self.github.get_all_sub_issues(repo_name, item_number)
+                        has_sub_issues = len(all_sub_issues) > 0
+                    except Exception as e:
+                        logger.warning(f"Failed to check for sub-issues for #{item_number}: {e}")
+
+                    if has_sub_issues:
+                        logger.info(f"Issue #{item_number} has sub-issues (Parent Issue). Forcing local processing to ensure branch merging.")
+                        # Force local processing for parent issues
+                        result.actions = self._take_issue_actions(repo_name, candidate.data)
+                    elif jules_mode:
                         # Use Jules mode for issue processing
                         from .issue_processor import _process_issue_jules_mode
 

@@ -10,6 +10,7 @@ from .automation_config import AutomationConfig
 from .automation_engine import AutomationEngine
 from .cli_commands_utils import get_github_token_or_fail, get_repo_or_detect
 from .cli_helpers import build_backend_manager_from_config, build_message_backend_manager, build_models_map, check_backend_prerequisites, check_github_sub_issue_or_setup, check_graphrag_mcp_for_backends, ensure_test_script_or_fail, initialize_graphrag
+from .cli_ui import print_configuration_summary
 from .git_utils import extract_number_from_branch, get_current_branch
 from .github_client import GitHubClient
 from .llm_backend_config import get_llm_config
@@ -154,19 +155,26 @@ def process_issues(
     policy_str = "SKIP (default)" if skip_main_update else "ENABLED (--no-skip-main-update)"
     logger.info(f"Base branch update before fixes when PR checks fail: {policy_str}")
 
-    click.echo(f"Processing repository: {repo_name}")
-    click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
+    summary = {
+        "Repository": repo_name,
+        "Backends": f"{backend_list_str} (default: {primary_backend})",
+    }
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
-        click.echo(f"Using model: {primary_model}")
-    click.echo(f"Disable labels: {disable_labels}")
-    click.echo(f"Check labels: {check_labels}")
-    click.echo(f"Main update before fixes when PR checks fail: {policy_str}")
-    click.echo(f"Ignore Dependabot PRs: {ignore_dependabot_prs}")
-    click.echo(f"Auto-merge: {auto_merge}")
-    click.echo(f"Auto-merge Dependabot PRs: {auto_merge_dependabot_prs}")
-    click.echo(f"Force clean before checkout: {force_clean_before_checkout}")
-    click.echo(f"Force reindex: {force_reindex}")
-    click.echo(f"Verbose logging: {verbose}")
+        summary["Model"] = primary_model
+    summary.update(
+        {
+            "Disable labels": disable_labels,
+            "Check labels": check_labels,
+            "Main update before fixes": policy_str,
+            "Ignore Dependabot PRs": ignore_dependabot_prs,
+            "Auto-merge": auto_merge,
+            "Auto-merge Dependabot PRs": auto_merge_dependabot_prs,
+            "Force clean before checkout": force_clean_before_checkout,
+            "Force reindex": force_reindex,
+            "Verbose logging": verbose,
+        }
+    )
+    print_configuration_summary("Processing Configuration", summary)
 
     # Initialize GraphRAG (conditionally enabled)
     if enable_graphrag:
@@ -339,16 +347,21 @@ def process_issues(
         else:
             result = automation_engine.run(repo_name)
 
-        # Determine sleep time based on activity
-        issues_count = len(result.get("issues_processed", []))
-        prs_count = len(result.get("prs_processed", []))
+        # Determine sleep time based on OPEN issues/PRs (not just processed ones)
+        # We check if there are any open issues or PRs to decide if we should sleep short or long.
+        # Use limit=1 to minimize API cost just to check existence.
+        open_issues_exist = len(github_client.get_open_issues(repo_name, limit=1)) > 0
+        open_prs_exist = len(github_client.get_open_pull_requests(repo_name, limit=1)) > 0
 
-        if issues_count == 0 and prs_count == 0:
+        processed_issues = len(result.get("issues_processed", []))
+        processed_prs = len(result.get("prs_processed", []))
+
+        if not open_issues_exist and not open_prs_exist:
             sleep_time = get_process_issues_empty_sleep_time_from_config()
-            logger.info(f"No issues or PRs processed. Sleeping for extended time: {sleep_time} seconds...")
+            logger.info(f"No open issues or PRs found. Sleeping for extended time: {sleep_time} seconds...")
         else:
             sleep_time = get_process_issues_sleep_time_from_config()
-            logger.info(f"Processed {issues_count} issues and {prs_count} PRs. Sleeping for {sleep_time} seconds...")
+            logger.info(f"Processed {processed_issues} issues and {processed_prs} PRs (Open items detected). Sleeping for {sleep_time} seconds...")
 
         time.sleep(sleep_time)
 
@@ -437,13 +450,20 @@ def create_feature_issues(
     logger.info(f"Verbose logging: {verbose}")
     logger.info(f"Disable labels: {disable_labels}")
 
-    click.echo(f"Analyzing repository for feature opportunities: {repo_name}")
-    click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
+    summary = {
+        "Repository": repo_name,
+        "Backends": f"{backend_list_str} (default: {primary_backend})",
+    }
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
-        click.echo(f"Using model: {primary_model}")
-    click.echo(f"Disable labels: {disable_labels}")
-    click.echo(f"Force reindex: {force_reindex}")
-    click.echo(f"Verbose logging: {verbose}")
+        summary["Model"] = primary_model
+    summary.update(
+        {
+            "Disable labels": disable_labels,
+            "Force reindex": force_reindex,
+            "Verbose logging": verbose,
+        }
+    )
+    print_configuration_summary("Feature Analysis Configuration", summary)
 
     # Initialize GraphRAG (conditionally enabled)
     if enable_graphrag:
@@ -562,12 +582,20 @@ def fix_to_pass_tests_command(
     check_github_sub_issue_or_setup()
 
     backend_list_str = ", ".join(selected_backends)
-    click.echo(f"Using backends: {backend_list_str} (default: {primary_backend})")
+
+    summary = {
+        "Backends": f"{backend_list_str} (default: {primary_backend})",
+    }
     if primary_backend in ("gemini", "qwen", "auggie", "claude"):
-        click.echo(f"Using model: {primary_model}")
-    click.echo(f"Disable labels: {disable_labels}")
-    click.echo(f"Force reindex: {force_reindex}")
-    click.echo(f"Verbose logging: {verbose}")
+        summary["Model"] = primary_model
+    summary.update(
+        {
+            "Disable labels": disable_labels,
+            "Force reindex": force_reindex,
+            "Verbose logging": verbose,
+        }
+    )
+    print_configuration_summary("Fix Tests Configuration", summary)
 
     # Initialize GraphRAG (conditionally enabled)
     if enable_graphrag:

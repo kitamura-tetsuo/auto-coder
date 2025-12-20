@@ -573,5 +573,74 @@ def test_progress_footer_stages_color():
     assert "Running tests › Analyzing" in formatted
 
 
+def test_progress_footer_elapsed_time():
+    """Test that progress footer displays elapsed time."""
+    footer = ProgressFooter()
+
+    # Mock time.time to return start time, then start time + 65 seconds
+    start_time = 1000.0
+
+    with patch("time.time") as mock_time:
+        mock_time.return_value = start_time
+
+        # Set item (initializes start time)
+        footer.set_item("PR", 123)
+
+        # Move time forward by 65 seconds (1m 5s)
+        mock_time.return_value = start_time + 65.0
+
+        formatted = footer._format_footer("PR", 123)
+
+        # Should contain formatted time
+        assert "[1m 05s]" in formatted
+        # Should contain dark gray color code if not no_color
+        if not footer._no_color:
+            assert "\033[90m" in formatted
+
+
+def test_progress_footer_elapsed_time_short():
+    """Test that progress footer displays elapsed time (short duration)."""
+    footer = ProgressFooter()
+
+    # Mock time.time to return start time, then start time + 5 seconds
+    start_time = 1000.0
+
+    with patch("time.time") as mock_time:
+        mock_time.return_value = start_time
+
+        # Set item (initializes start time)
+        footer.set_item("PR", 123)
+
+        # Move time forward by 5 seconds
+        mock_time.return_value = start_time + 5.0
+
+        formatted = footer._format_footer("PR", 123)
+
+        # Should contain formatted time
+        assert "[5s]" in formatted
+
+
+def test_progress_footer_elapsed_time_hours():
+    """Test that progress footer displays elapsed time with hours."""
+    footer = ProgressFooter()
+
+    # Mock time.time to return start time, then start time + 3665 seconds (1h 1m 5s)
+    start_time = 1000.0
+
+    with patch("time.time") as mock_time:
+        mock_time.return_value = start_time
+
+        # Set item (initializes start time)
+        footer.set_item("PR", 123)
+
+        # Move time forward by 3665 seconds (1h 01m 05s)
+        mock_time.return_value = start_time + 3665.0
+
+        formatted = footer._format_footer("PR", 123)
+
+        # Should contain formatted time with hours
+        assert "[1h 01m 05s]" in formatted
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

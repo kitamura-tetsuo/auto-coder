@@ -7,3 +7,13 @@
 **Vulnerability:** `GHCommandLogger` logged command arguments to CSV files without redaction, potentially exposing secrets passed as arguments (e.g., to `gh secret set` or `gemini config`).
 **Learning:** Logging command execution is useful for debugging but dangerous if not sanitized. CLI tools often pass secrets as arguments.
 **Prevention:** Implement redaction logic in logging utilities to mask known secret patterns (tokens, keys) before writing to persistent logs.
+
+## 2025-12-18 - Insecure File Permissions for Generated .env Files
+**Vulnerability:** The application generated `.env` files containing sensitive credentials (like `NEO4J_PASSWORD`) using standard `open()`, which creates files with default permissions (often world-readable). `os.chmod` was sometimes called afterwards, leaving a race condition window.
+**Learning:** Creating sensitive files with default permissions and relying on a subsequent `chmod` is insecure due to race conditions.
+**Prevention:** Use `os.open` with `os.O_CREAT | os.O_WRONLY | os.O_TRUNC` and `mode=0o600`, then wrap the file descriptor with `os.fdopen`. This ensures the file is created with restricted permissions atomically.
+
+## 2025-05-22 - Docker Compose Sudo Environment Stripping
+**Vulnerability:** GraphRAGDockerManager used `sudo` to retry failed docker commands (due to permission errors) but failed to preserve the `NEO4J_PASSWORD` environment variable. This caused `docker-compose` to silently fall back to the default weak password ("password") even when the user had set a secure password.
+**Learning:** `sudo` strips environment variables by default for security, but this can lead to silent security downgrades when applications rely on environment variables for configuration/secrets.
+**Prevention:** When wrapping commands with `sudo`, explicitly preserve critical security environment variables using `--preserve-env=VAR` or `sudo -E` (if appropriate), or ensure the child process receives the configuration via another channel (e.g., config file).

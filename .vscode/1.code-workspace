@@ -2,14 +2,14 @@
     "folders": [
         {
             "name": "workspace",
-            "path": "/home/node/src/auto-coder"
+            "path": "/home/node/1/auto-coder"
         },
         {
             "path": "/home/node/.auto-coder"
         }
     ],
     "settings": {
-        "window.title": "auto-coder${separator}${activeEditorShort}${separator}${remoteName}/src",
+        "window.title": "auto-coder${separator}${activeEditorShort}${separator}${remoteName}/1",
         "[typescript]": {
             "editor.defaultFormatter": "vscode.typescript-language-features",
             "editor.formatOnSave": true,

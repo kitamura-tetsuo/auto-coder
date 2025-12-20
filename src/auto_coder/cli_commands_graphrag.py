@@ -210,11 +210,10 @@ QDRANT_URL={qdrant_url}
 """
 
         try:
-            with open(env_path, "w", encoding="utf-8") as f:
+            # Use os.open to ensure file is created with 600 permissions
+            fd = os.open(str(env_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(env_content)
-
-            # Set permissions to 600 (read/write by owner only)
-            os.chmod(env_path, 0o600)
 
             if not silent:
                 logger.info(f"✅ Created .env file: {env_path}")

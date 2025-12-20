@@ -1374,21 +1374,10 @@ class TestGetCandidates:
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_pr_comments.return_value = []
-        mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_pr_comments.return_value = []
-        mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_pr_comments.return_value = []
-        mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_pr_comments.return_value = []
-        mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_pr_comments.return_value = []
-        mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_pr_comments.return_value = []
-        mock_github_client.get_pr_commits.return_value = []
-        mock_github_client.get_pr_comments.return_value = []
-        mock_github_client.get_pr_commits.return_value = []
         mock_github_client.get_issue_details.side_effect = get_issue_details_side_effect
+
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
         # Mock GitHub Actions checks
         def check_actions_side_effect(repo_name, pr_data, config):
@@ -1492,6 +1481,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
 
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
+
         # Mock GitHub Actions checks - all failing
         def check_actions_side_effect(repo_name, pr_data, config):
             return GitHubActionsStatusResult(success=False, ids=[])
@@ -1591,6 +1583,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
 
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
+
         # Mock GitHub Actions checks
         def check_actions_side_effect(repo_name, pr_data, config):
             if pr_data["number"] == 2:
@@ -1677,6 +1672,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
 
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
+
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             if pr_details["number"] == 1:
                 return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
@@ -1754,6 +1752,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
+
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             if pr_details["number"] == 1:
@@ -1837,6 +1838,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
 
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
+
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             if pr_details["number"] == 1:
                 return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
@@ -1906,6 +1910,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
 
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
+
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             return GitHubActionsStatusResult(success=True, ids=[], in_progress=False)
 
@@ -1965,6 +1972,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
+
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
@@ -2026,6 +2036,9 @@ class TestGetCandidates:
         mock_github_client.get_pr_details.side_effect = get_pr_details_side_effect
         mock_github_client.get_pr_comments.return_value = []
         mock_github_client.get_pr_commits.return_value = []
+
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = list(pr_data.values())
 
         def check_actions_side_effect(repo_name, pr_details, config_obj):
             return GitHubActionsStatusResult(success=False, ids=[], in_progress=False)
@@ -2153,7 +2166,7 @@ class TestGetCandidates:
             Mock(number=11, created_at="2024-01-03T00:00:00Z"),  # Has @auto-coder label
         ]
 
-        mock_github_client.get_pr_details.return_value = {
+        pr_details = {
             "number": 1,
             "title": "PR",
             "body": "",
@@ -2162,6 +2175,9 @@ class TestGetCandidates:
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
         }
+        mock_github_client.get_pr_details.return_value = pr_details
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = [pr_details]
 
         def get_issue_details_side_effect(issue):
             return {
@@ -2259,7 +2275,7 @@ class TestGetCandidates:
 
         mock_github_client.get_open_issues.return_value = []
 
-        mock_github_client.get_pr_details.return_value = {
+        pr_details = {
             "number": 1,
             "title": "PR",
             "body": "This PR fixes #10 and #20",
@@ -2268,6 +2284,9 @@ class TestGetCandidates:
             "mergeable": True,
             "created_at": "2024-01-01T00:00:00Z",
         }
+        mock_github_client.get_pr_details.return_value = pr_details
+        # Mock get_open_prs_json to return the list of PR data
+        mock_github_client.get_open_prs_json.return_value = [pr_details]
 
         mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
         mock_extract_issues.return_value = [10, 20]  # Extracted from PR body
@@ -3469,7 +3488,7 @@ class TestCheckAndHandleClosedBranch:
                 Mock(number=1, created_at="2024-01-01T00:00:00Z"),
             ]
             mock_github_client.get_open_issues.return_value = []
-            mock_github_client.get_pr_details.return_value = {
+            pr_details = {
                 "number": 1,
                 "title": "Dependabot PR",
                 "body": "",
@@ -3479,6 +3498,10 @@ class TestCheckAndHandleClosedBranch:
                 "created_at": "2024-01-01T00:00:00Z",
                 "author": "dependabot[bot]",
             }
+            mock_github_client.get_pr_details.return_value = pr_details
+            # Mock get_open_prs_json to return the list of PR data
+            mock_github_client.get_open_prs_json.return_value = [pr_details]
+
             mock_check_actions.return_value = GitHubActionsStatusResult(success=True, ids=[])
 
             # Execute

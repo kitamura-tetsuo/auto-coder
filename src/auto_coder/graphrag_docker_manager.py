@@ -148,7 +148,13 @@ class GraphRAGDockerManager:
         # If permission error and retry is enabled, try with sudo
         if not result.success and retry_with_sudo and self._is_permission_error(result.stderr):
             logger.warning("Permission denied when accessing Docker. Retrying with sudo...")
-            sudo_cmd = ["sudo"] + cmd
+            sudo_cmd = ["sudo"]
+
+            # Preserve NEO4J_PASSWORD if set in environment to prevent fallback to weak default
+            if "NEO4J_PASSWORD" in os.environ:
+                sudo_cmd.append("--preserve-env=NEO4J_PASSWORD")
+
+            sudo_cmd.extend(cmd)
             logger.debug(f"Running docker compose command with sudo: {' '.join(sudo_cmd)}")
             result = self.executor.run_command(sudo_cmd, timeout=timeout, cwd=compose_dir)
 

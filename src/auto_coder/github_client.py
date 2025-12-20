@@ -81,8 +81,8 @@ class GitHubClient:
         # attributes `_Github__requester` and its method `requestJsonAndCheck` are private and could
         # change in any future version of the library, which would break this integration. This is a
         # calculated risk to gain significant performance benefits.
-        self._original_requester = self.github._Github__requester.requestJsonAndCheck
-        self.github._Github__requester.requestJsonAndCheck = types.MethodType(lambda requester, verb, url, parameters=None, headers=None, input=None, cnx=None: self._caching_requester(requester, verb, url, parameters, headers, input, cnx), self.github._Github__requester)
+        self._original_requester = self.github._Github__requester.requestJsonAndCheck  # type: ignore
+        self.github._Github__requester.requestJsonAndCheck = types.MethodType(lambda requester, verb, url, parameters=None, headers=None, input=None, cnx=None: self._caching_requester(requester, verb, url, parameters, headers, input, cnx), self.github._Github__requester)  # type: ignore
 
     def _caching_requester(self, requester, verb, url, parameters=None, headers=None, input=None, cnx=None):
         """

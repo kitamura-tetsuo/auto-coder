@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Application settings
     max_issues_per_run: int = Field(default=-1, json_schema_extra={"env": "MAX_ISSUES_PER_RUN"})  # -1 means unlimited
     max_prs_per_run: int = Field(default=-1, json_schema_extra={"env": "MAX_PRS_PER_RUN"})  # -1 means unlimited
+    hishel_cache_path: Optional[str] = Field(default=None, json_schema_extra={"env": "HISHEL_CACHE_PATH"})
 
     # Dependency management settings
     check_dependencies: bool = Field(default=True, json_schema_extra={"env": "CHECK_DEPENDENCIES"})
@@ -65,6 +66,7 @@ except Exception as e:
         max_issues_per_run: int = -1
         max_prs_per_run: int = -1
         check_dependencies: bool = True
+        hishel_cache_path: Optional[str] = None
         log_format: str = "%(asctime)s - %(name)s - %(message)s"
 
     _settings = DefaultSettings()

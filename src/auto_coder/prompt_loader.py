@@ -145,18 +145,25 @@ def _resolve_label_priority(
         return applicable_mapping_keys[0] if applicable_mapping_keys else None
 
     # Sort by priority and return highest priority mapping key
-    # Check if any applicable labels match the priorities
+    # check if any applicable labels match the priorities
+
+    # Optimization: Create a map of string representation to mapping key for O(1) lookup
+    applicable_keys_map = {}
+    for key in applicable_mapping_keys:
+        try:
+            applicable_keys_map[str(key)] = key
+        except (AttributeError, TypeError):
+            continue
+
     for priority_label in label_priorities:
         try:
             priority_str = str(priority_label)
         except (AttributeError, TypeError):
             # Skip priorities that can't be converted to string
             continue
-        # Check if this priority matches any of the applicable mapping keys
-        for mapping_key in applicable_mapping_keys:
-            mapping_key_str = str(mapping_key)
-            if priority_str == mapping_key_str:
-                return mapping_key
+
+        if priority_str in applicable_keys_map:
+            return applicable_keys_map[priority_str]
 
     # If no exact match found, fall back to first applicable label
     return applicable_mapping_keys[0] if applicable_mapping_keys else None

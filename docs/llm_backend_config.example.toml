@@ -264,7 +264,7 @@ options_for_noedit = []
 
 # Fallback Backend for Failed PRs
 # --------------------------------
-# The `backend_for_failed_pr` section allows you to specify a fallback backend
+# The `backend_with_high_score` section allows you to specify a fallback backend
 # to use when PR processing fails. This is useful for resilience and ensuring
 # that PR processing can continue even when the default backend is unavailable.
 #
@@ -272,7 +272,7 @@ options_for_noedit = []
 # automatically try the fallback backend specified in this section.
 #
 # Example configuration:
-# [backend_for_failed_pr]
+# [backend_with_high_score]
 # # Backend should be enabled (default: true)
 # enabled = true
 #
@@ -419,7 +419,7 @@ options_for_noedit = []
 
 # Fallback Backend Strategy
 # --------------------------
-# The `backend_for_failed_pr` section provides a strategic fallback mechanism:
+# The `backend_with_high_score` section provides a strategic fallback mechanism:
 # 1. When a PR fails to be processed by the primary backends
 # 2. The system automatically attempts to process using the fallback backend
 # 3. This ensures high availability and resilience in PR automation

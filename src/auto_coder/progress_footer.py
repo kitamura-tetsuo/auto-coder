@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 from typing import Optional
 
 from .logger_config import get_logger
@@ -42,6 +43,9 @@ class ProgressFooter:
         # Store related issues and branch name
         self._related_issues: list[int] = []
         self._branch_name: Optional[str] = None
+
+        # Timer state
+        self._start_time: Optional[float] = None
 
         # Spinner state
         if self._no_color:
@@ -113,10 +117,31 @@ class ProgressFooter:
         # Add stages if available
         if self._stage_stack:
             all_stages = sym_sep.join(self._stage_stack)
-            return f"{main_display}{sym_sep}{c_yellow}{all_stages}{c_reset}"
+            formatted = f"{main_display}{sym_sep}{c_yellow}{all_stages}{c_reset}"
         else:
             # No stages, just show main info
-            return main_display
+            formatted = main_display
+
+        # Add elapsed time if available
+        if self._start_time:
+            elapsed = int(time.time() - self._start_time)
+            hours, remainder = divmod(elapsed, 3600)
+            minutes, seconds = divmod(remainder, 60)
+
+            if hours > 0:
+                time_str = f"[{hours}h {minutes:02d}m {seconds:02d}s]"
+            elif minutes > 0:
+                time_str = f"[{minutes}m {seconds:02d}s]"
+            else:
+                time_str = f"[{seconds}s]"
+
+            if self._no_color:
+                formatted += f" {time_str}"
+            else:
+                # Dark gray (90m) for timer
+                formatted += f" \033[90m{time_str}{c_reset}"
+
+        return formatted
 
     def tick(self) -> None:
         """Advance the spinner and reprint the footer."""
@@ -168,6 +193,10 @@ class ProgressFooter:
             branch_name: Branch name to display
         """
         with self._lock:
+            # Reset timer if item changes or if it wasn't set
+            if self._current_item_type != item_type or self._current_item_number != item_number or self._start_time is None:
+                self._start_time = time.time()
+
             self._current_item_type = item_type
             self._current_item_number = item_number
             self._related_issues = related_issues or []
@@ -260,6 +289,7 @@ class ProgressFooter:
             self._current_item_number = None
             self._related_issues = []
             self._branch_name = None
+            self._start_time = None
 
     def newline(self) -> None:
         """
