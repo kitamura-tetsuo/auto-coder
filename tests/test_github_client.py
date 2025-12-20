@@ -727,15 +727,7 @@ class TestGitHubClient:
     def test_has_linked_pr_uses_graphql_first(self, mock_github_class, mock_get_ghapi_client, mock_github_token):
         """Test has_linked_pr uses GraphQL API first."""
         # Setup GraphQL to return a linked PR
-        graphql_response = {
-            "repository": {
-                "issue": {
-                    "timelineItems": {
-                        "nodes": [{"source": {"number": 456, "state": "OPEN"}}]
-                    }
-                }
-            }
-        }
+        graphql_response = {"repository": {"issue": {"timelineItems": {"nodes": [{"source": {"number": 456, "state": "OPEN"}}]}}}}
 
         mock_ghapi_client = Mock()
         mock_ghapi_client.graphql.return_value = graphql_response
