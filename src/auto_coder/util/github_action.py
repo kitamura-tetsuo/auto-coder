@@ -649,9 +649,9 @@ def _check_github_actions_status_from_history(
         logger.info(f"Found {len(latest_commit_runs)} runs matching latest commit {latest_commit_sha[:8]}")
 
         # 5. Determine overall status and count potential checks (without detailed checks)
-        has_in_progress = any(run.get("status", "").lower() in ["in_progress", "queued", "pending"] for run in latest_commit_runs)
+        has_in_progress = any((run.get("status") or "").lower() in ["in_progress", "queued", "pending"] for run in latest_commit_runs)
 
-        any_failed = any(run.get("conclusion", "").lower() in ["failure", "failed", "error"] for run in latest_commit_runs)
+        any_failed = any((run.get("conclusion") or "").lower() in ["failure", "failed", "error"] for run in latest_commit_runs)
 
         # Estimate total checks count based on runs found
         total_checks = len(latest_commit_runs)
