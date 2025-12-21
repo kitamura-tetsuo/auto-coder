@@ -289,7 +289,9 @@ def process_issues(
                     message_manager.close()
                 except Exception:
                     pass
-                return
+                # After resuming and processing the current branch item, 
+                # continue to the main loop to process other items.
+                pass
             else:
                 logger.info(f"No open PR or issue found for branch '{current_branch}', proceeding with normal processing")
 

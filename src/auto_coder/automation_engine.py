@@ -108,8 +108,8 @@ class AutomationEngine:
 
                 # Call check_and_handle_closed_state which will:
                 # 1. Switch to main branch
-                # 2. Exit the program
-                return check_and_handle_closed_state(
+                # 2. Return True if the item was closed and handled
+                handled = check_and_handle_closed_state(
                     repo_name,
                     item_type,
                     item_number,
@@ -117,6 +117,9 @@ class AutomationEngine:
                     self.github,
                     current_item=current_item,
                 )
+                # If it was handled (closed), return False to indicate we should stop
+                # processing this item/branch and move on (e.g. return to main loop)
+                return not handled
 
             # Item is not closed, continue processing
             logger.debug(f"{item_type.capitalize()} #{item_number} is open, continuing processing")
