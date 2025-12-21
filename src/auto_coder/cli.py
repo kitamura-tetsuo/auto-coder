@@ -10,7 +10,6 @@ print(f"DEBUG: sys.executable = {sys.executable}", file=sys.stderr)
 
 import click
 
-
 try:
     from dotenv import load_dotenv
 except ImportError:

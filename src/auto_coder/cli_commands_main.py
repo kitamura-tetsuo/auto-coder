@@ -289,7 +289,7 @@ def process_issues(
                     message_manager.close()
                 except Exception:
                     pass
-                # After resuming and processing the current branch item, 
+                # After resuming and processing the current branch item,
                 # continue to the main loop to process other items.
                 pass
             else:

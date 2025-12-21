@@ -30,6 +30,7 @@ def get_pr_author_login(pr_obj: Any) -> Optional[str]:
     try:
         from unittest.mock import MagicMock as _MagicMock
         from unittest.mock import Mock as _Mock
+
         _mock_types = (_Mock, _MagicMock)
     except Exception:
         _mock_types = tuple()

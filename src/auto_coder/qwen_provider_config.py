@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
-
-import tomllib
 
 from .logger_config import get_logger
 

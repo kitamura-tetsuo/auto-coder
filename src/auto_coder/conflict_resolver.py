@@ -12,8 +12,8 @@ from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
 from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
 from .cli_helpers import create_high_score_backend_manager
-from .github_client import GitHubClient
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
+from .github_client import GitHubClient
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
 from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
@@ -404,11 +404,7 @@ def _close_pr(repo_name: str, pr_number: int) -> None:
     """Close a PR."""
     try:
         client = GitHubClient.get_instance()
-        client.close_pr(
-            repo_name, 
-            pr_number, 
-            comment="Auto-Coder: Closing PR due to merge conflicts and potential degradation risk."
-        )
+        client.close_pr(repo_name, pr_number, comment="Auto-Coder: Closing PR due to merge conflicts and potential degradation risk.")
         logger.info(f"Closed PR #{pr_number}")
     except Exception as e:
         logger.error(f"Error closing PR #{pr_number}: {e}")
@@ -491,14 +487,14 @@ def _perform_base_branch_merge_and_conflict_resolution(
             client = GitHubClient.get_instance()
             pr_data_fresh = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
             head_branch = pr_data_fresh.get("head_branch")
-            
+
             if head_branch:
                 # Fetch and checkout using standard git
                 fetch_pr_result = cmd.run_command(["git", "fetch", "origin", head_branch])
                 if not fetch_pr_result.success:
                     logger.error(f"Failed to fetch PR branch {head_branch}: {fetch_pr_result.stderr}")
                     return False
-                
+
                 checkout_result = cmd.run_command(["git", "checkout", head_branch])
                 if not checkout_result.success:
                     logger.error(f"Failed to checkout branch {head_branch}: {checkout_result.stderr}")

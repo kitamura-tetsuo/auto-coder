@@ -249,8 +249,6 @@ def process_pull_request(
         )
 
 
-
-
 def _is_dependabot_pr(pr_obj: Any) -> bool:
     """Return True if the PR is authored by a dependency bot.
 
@@ -1403,14 +1401,14 @@ def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, githu
         # Use the new search_issues method
         # We only check the top 5 results to avoid indefinite processing if search returns many loose matches
         search_results = github_client.search_issues(query)
-        
+
         # Iterate safely over the generator/list
         count = 0
         for issue in search_results:
             if count >= 5:
                 break
             count += 1
-            
+
             # Double check if session_id is actually in body or comments to be sure
             # Search API might return loose matches, although exact string match usually ranks high
             if issue.body and session_id in issue.body:
