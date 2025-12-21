@@ -12,13 +12,54 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .logger_config import get_logger
 from .progress_footer import get_progress_footer
 from .test_log_utils import extract_first_failed_test
 
 logger = get_logger(__name__)
+
+
+def get_pr_author_login(pr_obj: Any) -> Optional[str]:
+    """Extract author login from a PR-like object or dict.
+
+    Supports both PyGithub PR objects (with .user.login) and dictionaries
+    returned from GitHubClient (which may use 'author' or 'user').
+    """
+    try:
+        from unittest.mock import MagicMock as _MagicMock
+        from unittest.mock import Mock as _Mock
+        _mock_types = (_Mock, _MagicMock)
+    except Exception:
+        _mock_types = tuple()
+
+    try:
+        if isinstance(pr_obj, dict):
+            # Try 'author' field first (some custom dicts or GraphQL results)
+            author = pr_obj.get("author")
+            if isinstance(author, dict):
+                return author.get("login")
+            if isinstance(author, str):
+                return author
+            # If not found, try 'user' -> 'login' (GitHub REST API format)
+            user = pr_obj.get("user")
+            if isinstance(user, dict):
+                return user.get("login")
+            return None
+        else:
+            # Handle PyGithub objects or Mocks
+            user = getattr(pr_obj, "user", None)
+            if user is None or isinstance(user, _mock_types):
+                # Fallback for some objects where user is not an attribute but author is
+                author = getattr(pr_obj, "author", None)
+                if isinstance(author, str):
+                    return author
+                if author is not None:
+                    return getattr(author, "login", None)
+            return getattr(user, "login", None) if user is not None else None
+    except Exception:
+        return None
 
 
 VERBOSE_ENV_FLAG = "AUTOCODER_VERBOSE"

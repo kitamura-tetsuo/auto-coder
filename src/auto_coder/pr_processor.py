@@ -38,7 +38,7 @@ from .progress_footer import ProgressStage, newline_progress
 from .prompt_loader import render_prompt
 from .test_log_utils import extract_first_failed_test
 from .test_result import TestResult
-from .utils import CommandExecutor, CommandResult, log_action
+from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -249,25 +249,6 @@ def process_pull_request(
         )
 
 
-def _get_pr_author_login(pr_obj: Any) -> Optional[str]:
-    """Extract author login from a PR-like object or dict.
-
-    Supports both PyGithub PR objects (with .user.login) and dictionaries
-    returned from GitHubClient.get_pr_details().
-    """
-    try:
-        if isinstance(pr_obj, dict):
-            # Try 'author' field first (some custom dicts)
-            login = pr_obj.get("author")
-            # If not found, try 'user' -> 'login' (GitHub API format)
-            if not login:
-                login = pr_obj.get("user", {}).get("login")
-        else:
-            user = getattr(pr_obj, "user", None)
-            login = getattr(user, "login", None) if user is not None else None
-        return login if isinstance(login, str) else None
-    except Exception:
-        return None
 
 
 def _is_dependabot_pr(pr_obj: Any) -> bool:
@@ -277,7 +258,7 @@ def _is_dependabot_pr(pr_obj: Any) -> bool:
     ends with '[bot]' when IGNORE_DEPENDABOT_PRS is enabled.
     """
     try:
-        login = _get_pr_author_login(pr_obj)
+        login = get_pr_author_login(pr_obj)
         if not login:
             return False
         login_lower = login.lower()

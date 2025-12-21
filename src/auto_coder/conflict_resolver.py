@@ -12,11 +12,11 @@ from auto_coder.backend_manager import run_llm_noedit_prompt, run_llm_prompt
 from .attempt_manager import increment_attempt
 from .automation_config import AutomationConfig
 from .cli_helpers import create_high_score_backend_manager
-from .gh_logger import get_gh_logger
+from .github_client import GitHubClient
 from .git_utils import get_commit_log, git_commit_with_retry, git_push
 from .logger_config import get_logger
 from .prompt_loader import render_prompt
-from .utils import CommandExecutor, CommandResult, log_action
+from .utils import CommandExecutor, CommandResult, get_pr_author_login, log_action
 
 logger = get_logger(__name__)
 cmd = CommandExecutor()
@@ -95,20 +95,12 @@ def _trigger_fallback_for_conflict_failure(
         cmd.run_command(["git", "merge", "--abort"])
 
         # Get PR body to extract linked issues
-        gh_logger = get_gh_logger()
-        pr_view_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--repo", repo_name, "--json", "body"],
-            repo=repo_name,
-            capture_output=True,
-        )
-
-        if pr_view_result.returncode != 0 or not pr_view_result.stdout:
-            logger.debug(f"Failed to get PR #{pr_number} body, cannot extract linked issues")
-            return
-
-        pr_info = json.loads(pr_view_result.stdout)
-        pr_body = pr_info.get("body", "")
-        pr_data = {"number": pr_number, "body": pr_body}
+        if repo_name:
+            client = GitHubClient.get_instance()
+            pr_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+            pr_body = pr_data.get("body", "")
+        else:
+            pr_body = ""
 
         if not pr_body:
             logger.debug(f"No PR body found for PR #{pr_number}, cannot extract linked issues")
@@ -411,16 +403,13 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
 def _close_pr(repo_name: str, pr_number: int) -> None:
     """Close a PR."""
     try:
-        gh_logger = get_gh_logger()
-        result = gh_logger.execute_with_logging(
-            ["gh", "pr", "close", str(pr_number), "--repo", repo_name, "--comment", "Auto-Coder: Closing PR due to merge conflicts and potential degradation risk (no linked issue found)."],
-            repo=repo_name,
-            capture_output=True,
+        client = GitHubClient.get_instance()
+        client.close_pr(
+            repo_name, 
+            pr_number, 
+            comment="Auto-Coder: Closing PR due to merge conflicts and potential degradation risk."
         )
-        if result.returncode == 0:
-            logger.info(f"Closed PR #{pr_number}")
-        else:
-            logger.warning(f"Failed to close PR #{pr_number}: {result.stderr}")
+        logger.info(f"Closed PR #{pr_number}")
     except Exception as e:
         logger.error(f"Error closing PR #{pr_number}: {e}")
 
@@ -467,6 +456,17 @@ def _perform_base_branch_merge_and_conflict_resolution(
         True if conflicts were resolved successfully, False otherwise
     """
     try:
+        # Step -1: Ensure pr_data has necessary details (author, body, baseRefName)
+        if not pr_data or "author" not in pr_data or "body" not in pr_data or "baseRefName" not in pr_data:
+            logger.info(f"Enriching pr_data for PR #{pr_number} with missing details")
+            try:
+                if repo_name:
+                    client = GitHubClient.get_instance()
+                    fresh_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+                    pr_data = {**pr_data, **fresh_data}
+            except Exception as e:
+                logger.warning(f"Failed to enrich pr_data for PR #{pr_number}: {e}")
+
         # Step 0: Clean up any existing git state
         logger.info(f"Cleaning up git state before resolving conflicts for PR #{pr_number}")
 
@@ -487,15 +487,27 @@ def _perform_base_branch_merge_and_conflict_resolution(
 
         # Step 1: Checkout the PR branch (if not already checked out)
         logger.info(f"Checking out PR #{pr_number} to resolve merge conflicts")
-        gh_logger = get_gh_logger()
-        checkout_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "checkout", str(pr_number)],
-            repo=repo_name,
-            capture_output=True,
-        )
-
-        if not checkout_result.success:  # type: ignore[attr-defined]
-            logger.error(f"Failed to checkout PR #{pr_number}: {checkout_result.stderr}")
+        if repo_name:
+            client = GitHubClient.get_instance()
+            pr_data_fresh = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+            head_branch = pr_data_fresh.get("head_branch")
+            
+            if head_branch:
+                # Fetch and checkout using standard git
+                fetch_pr_result = cmd.run_command(["git", "fetch", "origin", head_branch])
+                if not fetch_pr_result.success:
+                    logger.error(f"Failed to fetch PR branch {head_branch}: {fetch_pr_result.stderr}")
+                    return False
+                
+                checkout_result = cmd.run_command(["git", "checkout", head_branch])
+                if not checkout_result.success:
+                    logger.error(f"Failed to checkout branch {head_branch}: {checkout_result.stderr}")
+                    return False
+            else:
+                logger.error(f"Could not determine head branch for PR #{pr_number}")
+                return False
+        else:
+            logger.error(f"No repo_name provided, cannot checkout PR #{pr_number}")
             return False
 
         # Step 2: Fetch the latest base branch
@@ -559,15 +571,15 @@ def _perform_base_branch_merge_and_conflict_resolution(
                 logger.info(f"LLM determined merge would degrade code quality for PR #{pr_number}, skipping merge attempt")
 
                 # Check if PR is from Jules
-                pr_author_login = pr_data.get("author", {}).get("login", "")
-                is_jules_pr = "google-labs-jules" in pr_author_login
+                pr_author_login = get_pr_author_login(pr_data) or ""
+                is_jules_pr = "google-labs-jules" in pr_author_login.lower()
 
-                # Check for linked issues
+                # Check for linked issues (logging only, not used for decision anymore)
                 pr_body = pr_data.get("body", "")
                 linked_issues = _extract_linked_issues(pr_body)
 
-                if is_jules_pr and not linked_issues:
-                    logger.info(f"PR #{pr_number} is a Jules PR with no linked issues and degrade risk. Closing PR and archiving session.")
+                if is_jules_pr:
+                    logger.info(f"PR #{pr_number} is a Jules PR with degrade risk. Closing PR and archiving session.")
                     if repo_name:
                         _close_pr(repo_name, pr_number)
                         _archive_jules_session(repo_name, pr_number, pr_body)
@@ -614,21 +626,13 @@ def resolve_pr_merge_conflicts(repo_name: str, pr_number: int, config: Automatio
     """
     try:
         # Get PR details to determine the target base branch
-        gh_logger = get_gh_logger()
-        pr_details_result = gh_logger.execute_with_logging(
-            ["gh", "pr", "view", str(pr_number), "--json", "baseRefName,author,body"],
-            repo=repo_name,
-            capture_output=True,
-        )
-        if not pr_details_result.success:  # type: ignore[attr-defined]
-            logger.error(f"Failed to get PR #{pr_number} details: {pr_details_result.stderr}")
+        if repo_name:
+            client = GitHubClient.get_instance()
+            pr_data = client.get_pr_details(client.get_repository(repo_name).get_pull(pr_number))
+            base_branch = pr_data.get("base_branch") or pr_data.get("baseRefName", config.MAIN_BRANCH)
+        else:
+            logger.error(f"No repo_name provided for PR #{pr_number}")
             return False
-
-        try:
-            pr_data = json.loads(pr_details_result.stdout)
-            base_branch = pr_data.get("baseRefName", config.MAIN_BRANCH)
-        except Exception:
-            base_branch = config.MAIN_BRANCH
 
         # Use the common subroutine
         return _perform_base_branch_merge_and_conflict_resolution(pr_number, base_branch, config, pr_data, repo_name)
