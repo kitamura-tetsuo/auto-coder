@@ -604,6 +604,13 @@ class BackendManager(LLMBackendManagerBase):
             raise last_error
         raise RuntimeError("No backend available to run prompt")
 
+    def run_prompt(self, prompt: str) -> str:
+        """
+        Execute LLM with the given prompt.
+        Alias for _run_llm_cli for compatibility.
+        """
+        return self._run_llm_cli(prompt)
+
     def _execute_backend_with_providers(
         self,
         backend_name: str,
