@@ -1411,31 +1411,40 @@ def _extract_session_id_from_pr_body(pr_body: str) -> Optional[str]:
 
 
 def _find_issue_by_session_id_in_comments(repo_name: str, session_id: str, github_client: Any) -> Optional[int]:
-    """Find issue number by searching for session ID in issue comments."""
+    """Find issue number by searching for session ID using GitHub Search API."""
     try:
-        logger.info(f"Searching for session ID '{session_id}' in open issue comments...")
-        repo = github_client.get_repository(repo_name)
-        # Get open issues
-        issues = repo.get_issues(state="open")
+        # Use GitHub Search API for efficiency
+        # Query: repo:owner/repo "session_id" type:issue
+        # We search specifically for the session_id string
+        query = f"repo:{repo_name} {session_id} type:issue"
+        logger.info(f"Searching for session ID '{session_id}' with query: '{query}'")
 
-        for issue in issues:
-            # Skip Pull Requests (get_issues returns both)
-            if issue.pull_request is not None:
-                continue
-
-            # Check if session ID is in the issue body itself
+        # Use the new search_issues method
+        # We only check the top 5 results to avoid indefinite processing if search returns many loose matches
+        search_results = github_client.search_issues(query)
+        
+        # Iterate safely over the generator/list
+        count = 0
+        for issue in search_results:
+            if count >= 5:
+                break
+            count += 1
+            
+            # Double check if session_id is actually in body or comments to be sure
+            # Search API might return loose matches, although exact string match usually ranks high
             if issue.body and session_id in issue.body:
                 logger.info(f"Found session ID '{session_id}' in body of issue #{issue.number}")
                 return issue.number
 
             # Check comments
+            # This is still an API call per issue, but we only do it for a few candidates
             comments = issue.get_comments()
             for comment in comments:
                 if comment.body and session_id in comment.body:
                     logger.info(f"Found session ID '{session_id}' in comment of issue #{issue.number}")
                     return issue.number
 
-        logger.warning(f"Session ID '{session_id}' not found in any open issue comments")
+        logger.warning(f"Session ID '{session_id}' not found via search query")
         return None
     except Exception as e:
         logger.error(f"Error searching for session ID in comments: {e}")

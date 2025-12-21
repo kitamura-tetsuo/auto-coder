@@ -1272,6 +1272,24 @@ class GitHubClient:
             logger.error(f"Failed to check labels for {item_type} #{issue_number}: {e}")
             raise
 
+    def search_issues(self, query: str, sort: str = "updated", order: str = "desc") -> List[Any]:
+        """Search issues using GitHub Search API.
+
+        Args:
+            query: Search query string
+            sort: Sort field (default: updated)
+            order: Sort order (default: desc)
+
+        Returns:
+            List of issue objects from PyGithub
+        """
+        try:
+            logger.info(f"Searching issues with query: '{query}'")
+            return list(self.github.search_issues(query, sort=sort, order=order))
+        except GithubException as e:
+            logger.error(f"Failed to search issues with query '{query}': {e}")
+            return []
+
     def _search_issues_by_title(self, repo_name: str, search_title: str) -> Optional[int]:
         """Search for an open issue by title using fuzzy matching.
 
